@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs';
 import { mkdtemp, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   AGENT_PROTOCOL_VERSION,
   AgentTransactionSchema,
@@ -45,6 +46,7 @@ export const EXIT_CONFLICT = 3;
 
 const USAGE = `usage: slide-agent <command> [options]
 
+  docs                                    the full agent guide, as markdown
   context   [deck]                        current selection, revision, liveness
   inspect   [deck] [--selected|--slide id|--all] [--dom]
   render    [deck] [--selected|--slide id|--all] --output <dir> [--annotate] [--built]
@@ -59,6 +61,12 @@ export async function runAgentCli(argv: string[], io: CliIo): Promise<number> {
   const [command, ...rest] = argv;
   try {
     switch (command) {
+      case 'docs':
+        // Markdown, not JSON: this one is for an agent to read, and it is how
+        // an agent working in a deck folder finds the format documentation
+        // without knowing where the editor is installed.
+        io.out(await readFile(agentGuidePath(), 'utf8'));
+        return EXIT_OK;
       case 'context':
         return await contextCommand(rest, io);
       case 'inspect':
@@ -346,6 +354,11 @@ async function request(deckDir: string, payload: Parameters<typeof writeAgentReq
 
 function requestId(): string {
   return `req-${randomUUID()}`;
+}
+
+/** The guide ships with the editor, so it is found relative to this module. */
+export function agentGuidePath(): string {
+  return fileURLToPath(new URL('../../AGENTS.md', import.meta.url));
 }
 
 export function resolveDeckDir(candidate: string | undefined, io: CliIo): string {

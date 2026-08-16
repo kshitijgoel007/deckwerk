@@ -1,0 +1,24 @@
+#!/bin/sh
+# The agent interface, runnable from anywhere:
+#
+#   ln -s /path/to/slide-editor/bin/slide-agent ~/bin/slide-agent
+#   cd ~/talks/my-talk && slide-agent context
+#
+# Unlike `npm run agent`, this keeps *your* working directory, so a deck can be
+# named relatively or left implicit. Symlinks are followed to find the repo, so
+# the link can live anywhere on PATH.
+set -e
+
+target=$0
+while [ -L "$target" ]; do
+  link=$(readlink "$target")
+  case $link in
+    /*) target=$link ;;
+    *) target=$(dirname "$target")/$link ;;
+  esac
+done
+root=$(cd "$(dirname "$target")/.." && pwd)
+
+exec "$root/node_modules/.bin/vite-node" \
+  --config "$root/vitest.config.ts" \
+  "$root/scripts/slide-agent.mts" -- "$@"

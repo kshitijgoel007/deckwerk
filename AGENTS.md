@@ -32,18 +32,35 @@ my-talk/
   block in `theme.css` — installing a theme replaces it wholesale. Everything
   outside it is yours. Agent transactions do not touch the theme at all.
 
+## Getting this guide, from a deck folder
+
+You are probably working in a deck folder, not in the editor's source tree.
+Everything you need is one command away:
+
+```bash
+slide-agent docs        # this document
+slide-agent help        # the command list
+```
+
+If `slide-agent` is not on your PATH, it lives at `bin/slide-agent` in the
+editor's checkout and can be run by its full path from anywhere. There is also
+`npm run agent --silent -- <command>`, but only from inside that checkout, and
+only with an **absolute** deck path — npm runs scripts from its own directory,
+not yours.
+
 ## The CLI
 
 ```bash
-npm run agent --silent -- <command> [options]
+slide-agent <command> [options]
 ```
 
-`--silent` matters: everything the CLI prints on stdout is JSON, and npm's
-banner would otherwise land in front of it. Diagnostics go to stderr. Exit
-codes are `0` ok, `1` error, `2` usage, `3` revision conflict.
+Everything on stdout is JSON — except `docs` and `help`, which are prose for
+you to read. Diagnostics go to stderr. Exit codes are `0` ok, `1` error,
+`2` usage, `3` revision conflict.
 
 | Command | What it answers |
 | --- | --- |
+| `docs` | This guide |
 | `context [deck]` | What is selected, what revision is the deck, is the editor live |
 | `inspect [deck] [--selected\|--slide id\|--all] [--dom]` | What is actually on those slides |
 | `render [deck] [--selected\|--slide id\|--all] --output <dir> [--annotate] [--built]` | Optional PNGs |
@@ -56,7 +73,7 @@ The deck argument defaults to the current directory.
 ### Start with `context`
 
 ```bash
-npm run agent --silent -- context ~/talks/millivid
+slide-agent context ~/talks/millivid
 ```
 
 ```json
@@ -90,7 +107,7 @@ of git.
 produced, not what the JSON says.
 
 ```bash
-npm run agent --silent -- inspect ~/talks/millivid --selected
+slide-agent inspect ~/talks/millivid --selected
 ```
 
 Each element carries:
@@ -117,7 +134,7 @@ every computed style inlined and the selection marked
 Screenshots are optional verification, not the primary view:
 
 ```bash
-npm run agent --silent -- render ~/talks/millivid --selected \
+slide-agent render ~/talks/millivid --selected \
   --output /tmp/shots --annotate --built
 ```
 
@@ -146,7 +163,7 @@ after you read it:
 ```
 
 ```bash
-npm run agent --silent -- transaction apply ~/talks/millivid /tmp/pair.json
+slide-agent transaction apply ~/talks/millivid /tmp/pair.json
 ```
 
 Operations, applied in array order:
@@ -186,7 +203,7 @@ as vectors, and transcodes video Chromium cannot decode (which is otherwise a
 silent black box on the projector):
 
 ```bash
-npm run agent --silent -- asset import ~/talks/millivid ~/Downloads/teaser.mov
+slide-agent asset import ~/talks/millivid ~/Downloads/teaser.mov
 ```
 
 It returns deck-relative `src` paths ready to drop into an element. One
@@ -200,13 +217,13 @@ bibliography system to learn.
 
 ```bash
 DECK=~/talks/millivid
-npm run agent --silent -- context $DECK                      # revision + selection
-npm run agent --silent -- inspect $DECK --selected           # what is on those slides
-npm run agent --silent -- asset import $DECK ~/Downloads/fig.png
+slide-agent context $DECK                      # revision + selection
+slide-agent inspect $DECK --selected           # what is on those slides
+slide-agent asset import $DECK ~/Downloads/fig.png
 # …build the transaction against the revision you just read…
-npm run agent --silent -- transaction apply $DECK /tmp/txn.json
-npm run agent --silent -- validate $DECK
-npm run agent --silent -- inspect $DECK --slide results      # confirm the result
+slide-agent transaction apply $DECK /tmp/txn.json
+slide-agent validate $DECK
+slide-agent inspect $DECK --slide results      # confirm the result
 ```
 
 ## Invariants worth knowing

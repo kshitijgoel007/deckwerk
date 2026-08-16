@@ -6,7 +6,9 @@ import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { AgentContext, AgentTransaction, ComputedSlideScene } from '../src/shared/agent.js';
 import { type Deck, type Slide, emptyDeck, parseDeck } from '../src/shared/deck.js';
-import { EXIT_CONFLICT, EXIT_ERROR, EXIT_OK, EXIT_USAGE, runAgentCli } from '../src/cli/agentCli.js';
+import {
+  EXIT_CONFLICT, EXIT_ERROR, EXIT_OK, EXIT_USAGE, agentGuidePath, runAgentCli,
+} from '../src/cli/agentCli.js';
 import { agentRuntimePaths, deckRevision } from '../src/main/agentRuntime.js';
 import { getFfmpegPath } from '../src/main/ffmpeg.js';
 
@@ -206,6 +208,15 @@ describe('slide-agent CLI', () => {
     const noSuchSlide = await cli('render', '--slide', 'not-a-slide', '--output', join(dir, 'shots'));
     expect(noSuchSlide.code).toBe(EXIT_ERROR);
     expect(noSuchSlide.stderr).toMatch(/no slide matched/);
+  });
+
+  it('hands an agent the format guide without needing to know where the editor lives', async () => {
+    // The whole point: this runs in a deck folder that is not the checkout.
+    const { code, stdout } = await cli('docs');
+    expect(code).toBe(EXIT_OK);
+    expect(stdout).toContain('# Working on a deck as an agent');
+    expect(stdout).toContain('transaction apply');
+    expect(stdout).toBe(await readFile(agentGuidePath(), 'utf8'));
   });
 
   it('rejects a deck folder that is not one, and unknown commands', async () => {

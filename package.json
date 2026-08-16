@@ -4,6 +4,9 @@
   "description": "HTML slide editor and player with first-class video support",
   "main": "out/main/index.js",
   "type": "module",
+  "bin": {
+    "slide-agent": "bin/slide-agent"
+  },
   "license": "MIT",
   "scripts": {
     "dev": "electron-vite dev",

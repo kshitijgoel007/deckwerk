@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { Deck } from '@shared/deck.js';
 import { exportDeck } from '../main/exportDeck.js';
 import { tempDir } from './agentCli.js';
@@ -56,7 +57,9 @@ export async function renderSlidesToPng(request: RenderRequest): Promise<Rendere
 }
 
 function captureScript(): string {
-  return join(process.cwd(), 'scripts', 'capture-slides.cjs');
+  // Resolved from this module, not from the cwd: the CLI is normally run from
+  // the deck folder, which is not this repository.
+  return fileURLToPath(new URL('../../scripts/capture-slides.cjs', import.meta.url));
 }
 
 function electronBinary(): string {
