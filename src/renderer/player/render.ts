@@ -204,6 +204,11 @@ function renderShape(el: Extract<SlideElement, { type: 'shape' }>): SVGElement {
   const view = el.shape === 'path' && el.pathSize ? el.pathSize : { w: el.w, h: el.h };
   svg.setAttribute('viewBox', `0 0 ${view.w} ${view.h}`);
   svg.setAttribute('preserveAspectRatio', 'none');
+  // Inline SVG participates in a text baseline. That adds a ~14px line box
+  // offset when the wrapper is only 1-2px tall, making a correctly positioned
+  // line render below its numeric endpoints. Shapes are graphics, so block
+  // layout is the exact coordinate model we need.
+  svg.style.display = 'block';
   svg.style.overflow = 'visible';
 
   const fill = el.fill ?? 'none';

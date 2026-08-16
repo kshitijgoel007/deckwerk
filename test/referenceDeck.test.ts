@@ -580,10 +580,22 @@ describe.skipIf(!ready)('reference.key ground truth', () => {
     near(endpoints.end.x, 1712, 2);
     near(endpoints.end.y, 443, 2);
 
+    const arrowCentreY = (endpoints.start.y + endpoints.end.y) / 2;
+
     for (const [x, y] of [[662, 427], [808, 427], [940, 427], [1067, 427]]) {
-      expect(shapes.some((e) => e.type === 'shape' && e.fill === '#000000' &&
-        Math.abs(e.x - x) < 2 && Math.abs(e.y - y) < 2), `black node at ${x},${y}`).toBe(true);
+      const node = shapes.find((e) => e.type === 'shape' && e.fill === '#000000' &&
+        Math.abs(e.x - x) < 2 && Math.abs(e.y - y) < 2);
+      expect(node, `black node at ${x},${y}`).toBeDefined();
+      near(node!.y + node!.h / 2, arrowCentreY, 2);
     }
+
+    // The two blue paths form the eye at the arrow's start. Their union is
+    // centred on the same rail, so the arrow emanates from the eye's centre.
+    const eye = shapes.filter((e) => e.type === 'shape' && e.stroke === '#3871c1' &&
+      e.x > 480 && e.x < 600 && e.y < 500);
+    const eyeTop = Math.min(...eye.map((e) => e.y));
+    const eyeBottom = Math.max(...eye.map((e) => e.y + e.h));
+    near((eyeTop + eyeBottom) / 2, arrowCentreY, 2);
   });
 
   it('slide 24: preserves the separated neural-network nodes and connector endpoints', () => {

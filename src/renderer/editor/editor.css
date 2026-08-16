@@ -179,8 +179,8 @@ button.primary {
 
 /* Endpoint coordinates describe the centre of the knob, not its top-left. */
 .handle-endpoint {
-  margin-left: calc(-5px * var(--inv));
-  margin-top: calc(-5px * var(--inv));
+  margin: 0;
+  transform: translate(-50%, -50%);
 }
 
 .guide {
@@ -587,8 +587,8 @@ input[type="range"] { accent-color: var(--accent); padding: 0; background: trans
 .handle-endpoint {
   width: calc(13px * var(--inv));
   height: calc(13px * var(--inv));
-  margin-left: calc(-7px * var(--inv));
-  margin-top: calc(-7px * var(--inv));
+  margin: 0;
+  transform: translate(-50%, -50%);
   border-radius: 50%;
   border: calc(2px * var(--inv)) solid var(--accent);
   background: #fff;

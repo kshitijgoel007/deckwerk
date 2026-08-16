@@ -164,6 +164,33 @@ describe('inline text editing', () => {
     expect(canvas.isEditing()).toBe(false);
   });
 
+  it('inserts multiple lines of text and can delete all of that text again', () => {
+    const { store, canvas, host } = setup();
+    canvas.beginTextEdit('text-1');
+    bodyOf(host, 'text-1').innerHTML = 'First line<br>Second line';
+    bodyOf(host, 'text-1').dispatchEvent(new FocusEvent('blur'));
+    expect((store.slide!.elements[0] as { html: string }).html).toBe(
+      'First line<br>Second line',
+    );
+
+    canvas.beginTextEdit('text-1');
+    bodyOf(host, 'text-1').innerHTML = '';
+    bodyOf(host, 'text-1').dispatchEvent(new FocusEvent('blur'));
+    expect((store.slide!.elements[0] as { html: string }).html).toBe('');
+    expect(store.slide!.elements.some((el) => el.id === 'text-1')).toBe(true);
+  });
+
+  it('keeps Backspace inside an active text edit from deleting the text box', () => {
+    const { store, canvas, host } = setup();
+    store.select(['text-1']);
+    canvas.beginTextEdit('text-1');
+    bodyOf(host, 'text-1').dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Backspace', bubbles: true }),
+    );
+    expect(store.slide!.elements.some((el) => el.id === 'text-1')).toBe(true);
+    expect(canvas.isEditing()).toBe(true);
+  });
+
   it('discards the edit on Escape', () => {
     const { store, canvas, host } = setup();
     canvas.beginTextEdit('text-1');
@@ -428,7 +455,11 @@ describe('object creation and manipulation', () => {
     const { store, host } = setup();
     const ellipse = insertShape(store, 'ellipse');
     expect(store.slide!.elements.at(-1)).toMatchObject({ id: ellipse.id, shape: 'ellipse' });
-    expect(host.querySelector(`[data-element-id="${ellipse.id}"] ellipse`)).not.toBeNull();
+    const rendered = host.querySelector(`[data-element-id="${ellipse.id}"] ellipse`)!;
+    expect(rendered).not.toBeNull();
+    expect(rendered.getAttribute('cx')).toBe(String(ellipse.w / 2));
+    expect(rendered.getAttribute('cy')).toBe(String(ellipse.h / 2));
+    expect(rendered.ownerSVGElement!.style.display).toBe('block');
     expect([...store.get().selection]).toEqual([ellipse.id]);
   });
 
@@ -482,6 +513,25 @@ describe('object creation and manipulation', () => {
     const drawn = host.querySelector<HTMLElement>('.handle-endpoint[data-endpoint="end"]')!;
     expect(Number.parseFloat(drawn.style.left) + changed.x).toBeCloseTo(end.x, 1);
     expect(Number.parseFloat(drawn.style.top) + changed.y).toBeCloseTo(end.y, 1);
+    expect(drawn.style.transform).toBe('translate(-50%, -50%)');
+    expect(host.querySelector(`[data-element-id="${line.id}"] svg`)!.getAttribute('style'))
+      .toContain('display: block');
+  });
+
+  it('deletes a selected text box and clears its selection', () => {
+    const { store, host } = setup();
+    store.commit((deck) => {
+      deck.slides[0].timeline.push({
+        id: 'step-1', trigger: { on: 'click', ref: null, delay: 0 },
+        action: { type: 'appear', target: 'text-1', value: null },
+      });
+    });
+    store.select(['text-1']);
+    store.deleteSelection();
+    expect(store.slide!.elements.some((el) => el.id === 'text-1')).toBe(false);
+    expect(store.slide!.timeline).toHaveLength(0);
+    expect(store.get().selection.size).toBe(0);
+    expect(host.querySelector('[data-element-id="text-1"]')).toBeNull();
   });
 
   it('reliably selects, deselects, and reselects a text box', () => {

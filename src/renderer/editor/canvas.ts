@@ -370,6 +370,10 @@ export class EditorCanvas {
           const p = pts[which];
           h.style.left = `${p.x - el.x}px`;
           h.style.top = `${p.y - el.y}px`;
+          // left/top are the endpoint itself. Centre the complete border box,
+          // independent of whichever visual size the editor theme gives it.
+          h.style.margin = '0';
+          h.style.transform = 'translate(-50%, -50%)';
           box.appendChild(h);
         }
         frag.appendChild(box);

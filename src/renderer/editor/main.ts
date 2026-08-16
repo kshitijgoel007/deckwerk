@@ -135,8 +135,12 @@ const applyOpts: ApplyOptions = {
   backgrounds: false,
 };
 
+/** The gallery selection can lead the installed deck theme until Apply/Install. */
+let selectedThemeId: string | null = null;
+let themeSelect: HTMLSelectElement | null = null;
+
 function currentTheme(): ThemePreset | null {
-  return themeById(store.get().deck.themePreset) ?? null;
+  return themeById(selectedThemeId) ?? themeById(store.get().deck.themePreset) ?? null;
 }
 
 function themePicker(): HTMLElement {
@@ -154,6 +158,11 @@ function themePicker(): HTMLElement {
   }
   const preset = store.get().deck.themePreset;
   if (preset) select.value = preset;
+  selectedThemeId = select.value;
+  themeSelect = select;
+  select.addEventListener('change', () => {
+    selectedThemeId = select.value;
+  });
 
   const boxes: Array<[keyof ApplyOptions, string]> = [
     ['fontSizes', 'sizes'],
@@ -181,8 +190,9 @@ function themePicker(): HTMLElement {
       // exactly how "apply works only once" presented.
       const theme = THEMES.find((t) => t.id === select.value) ?? null;
       if (!theme) return;
-      if (store.get().deck.themePreset !== theme.id) installTheme(theme);
-      applyTheme(theme);
+      const newlyInstalled = store.get().deck.themePreset !== theme.id;
+      if (newlyInstalled) installTheme(theme);
+      applyTheme(theme, newlyInstalled);
     }),
   );
   return wrap;
@@ -218,10 +228,14 @@ function refreshSwatches(theme: ThemePreset | null): void {
   );
 }
 
-function applyTheme(theme: ThemePreset): void {
+function applyTheme(theme: ThemePreset, newlyInstalled = false): void {
   const any = Object.values(applyOpts).some(Boolean);
   if (!any) {
-    setStatusMessage('Nothing selected to apply — tick sizes / colours / bg first.');
+    setStatusMessage(
+      newlyInstalled
+        ? `Installed “${theme.name}” — role-styled text updated.`
+        : 'Theme already installed; tick sizes / colours / bg for additional changes.',
+    );
     return;
   }
   store.commit((d) => applyThemeToDeck(d, theme, { ...applyOpts }));
@@ -235,9 +249,18 @@ function applyThemeToCurrentSlide(): void {
     setStatusMessage('Install a theme first.');
     return;
   }
+  // Applying from the slide panel uses the currently visible gallery choice,
+  // even if Install was not clicked first. Installing supplies the role CSS;
+  // that alone visibly updates explicitly tagged Title/Body elements.
+  const newlyInstalled = store.get().deck.themePreset !== theme.id;
+  if (newlyInstalled) installTheme(theme);
   const any = Object.values(applyOpts).some(Boolean);
   if (!any) {
-    setStatusMessage('Nothing selected to apply — tick sizes / colours / bg first.');
+    setStatusMessage(
+      newlyInstalled
+        ? `Installed “${theme.name}” — role-styled text updated.`
+        : 'Theme already installed; tick sizes / colours / bg to change this slide.',
+    );
     return;
   }
   const { deck, slideIndex } = store.get();
@@ -373,6 +396,9 @@ function scheduleSave(): void {
 async function adopt(dir: string, deck: Parameters<typeof store.load>[0]): Promise<void> {
   store.load(deck, dir);
   cssEditor.setValue(await window.api.loadTheme());
+  selectedThemeId = deck.themePreset;
+  if (themeSelect && deck.themePreset) themeSelect.value = deck.themePreset;
+  refreshSwatches(currentTheme());
 }
 
 /* --- keyboard --- */
@@ -458,18 +484,7 @@ function bindKeys(): void {
 }
 
 function deleteSelection(): void {
-  const ids = store.get().selection;
-  if (ids.size === 0) return;
-  store.commit((deck) => {
-    const slide = deck.slides[store.get().slideIndex];
-    slide.elements = slide.elements.filter((e) => !ids.has(e.id));
-    // Timeline entries pointing at deleted elements would be dead weight and
-    // would count as build steps that do nothing.
-    slide.timeline = slide.timeline.filter(
-      (t) => !ids.has(t.action.target) && !(t.trigger.ref && ids.has(t.trigger.ref)),
-    );
-  });
-  store.clearSelection();
+  store.deleteSelection();
 }
 
 function duplicateSelection(): void {
