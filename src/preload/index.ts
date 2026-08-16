@@ -6,6 +6,8 @@ import type {
   ImportedAsset,
   KeynoteImportResult,
   MediaInfo,
+  PresentationCommand,
+  PresentationState,
   TrimProgress,
   TrimRequest,
   TrimResult,
@@ -44,6 +46,14 @@ const api = {
 
   present: (slideIndex: number): Promise<void> =>
     ipcRenderer.invoke(IPC.presentOpen, slideIndex),
+  sendPresentCommand: (command: PresentationCommand): void =>
+    ipcRenderer.send(IPC.presentCommand, command),
+  publishPresentState: (state: PresentationState): void =>
+    ipcRenderer.send(IPC.presentState, state),
+  onPresentCommand: (fn: (command: PresentationCommand) => void): (() => void) =>
+    on(IPC.presentCommand, fn),
+  onPresentState: (fn: (state: PresentationState) => void): (() => void) =>
+    on(IPC.presentState, fn),
 
   openTrim: (payload: { src: string; elementId: string }): Promise<void> =>
     ipcRenderer.invoke(IPC.trimOpen, payload),

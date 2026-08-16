@@ -355,7 +355,10 @@ export function matchMagicMoveElements(
   const unused = new Set(previous);
   const pairs: Array<[SlideElement, SlideElement]> = [];
   for (const target of next) {
-    let source = [...unused].find((candidate) => candidate.id === target.id);
+    let source = target.magicMoveId
+      ? [...unused].find((candidate) => candidate.magicMoveId === target.magicMoveId)
+      : undefined;
+    if (!source) source = [...unused].find((candidate) => candidate.id === target.id);
     if (!source) {
       const signature = magicSignature(target);
       source = [...unused].find((candidate) => magicSignature(candidate) === signature);

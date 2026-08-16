@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' deck: data:; media-src 'self' deck:; style-src 'self' 'unsafe-inline' deck:; script-src 'self'" />
+    <title>Presenter View</title>
+  </head>
+  <body>
+    <main>
+      <header><div id="timer">00:00</div><div id="position">Slide 1</div></header>
+      <section class="previews">
+        <div><h2>Current</h2><div id="current" class="preview"></div></div>
+        <div><h2>Next</h2><div id="next" class="preview"></div></div>
+      </section>
+      <footer><button id="prev">← Previous</button><button id="blank">Blank</button><button id="nextButton">Next →</button><button id="end">End show</button></footer>
+    </main>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

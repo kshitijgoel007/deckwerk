@@ -54,6 +54,8 @@ const BaseElement = z.object({
   class: z.array(z.string()).default([]),
   /** Inline style escape hatch, applied after classes. */
   style: z.record(z.string()).default({}),
+  /** Explicit identity shared by elements manually paired for Magic Move. */
+  magicMoveId: z.string().nullable().optional(),
 });
 
 const TextElement = BaseElement.extend({

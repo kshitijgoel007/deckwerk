@@ -7,6 +7,8 @@ import type {
   DeckSession,
   ImportedAsset,
   KeynoteImportResult,
+  PresentationCommand,
+  PresentationState,
   TrimRequest,
   TrimResult,
 } from '@shared/ipc.js';
@@ -24,7 +26,9 @@ import {
 import { exportDeck } from './exportDeck.js';
 import { probeMedia, runTrim } from './ffmpeg.js';
 import { importKeynote } from './keynoteImport.js';
-import { createEditorWindow, createPresentWindow, createTrimWindow } from './windows.js';
+import {
+  createEditorWindow, createPresentWindow, createPresenterWindow, createTrimWindow,
+} from './windows.js';
 
 /**
  * Main process: owns the filesystem, ffmpeg and the windows. The renderer never
@@ -39,6 +43,8 @@ registerAssetScheme();
 let session: DeckSession | null = null;
 let editorWindow: BrowserWindow | null = null;
 let presentWindow: BrowserWindow | null = null;
+let presenterWindow: BrowserWindow | null = null;
+let presentationState: PresentationState | null = null;
 let trimWindow: BrowserWindow | null = null;
 
 function requireSession(): DeckSession {
@@ -229,11 +235,37 @@ function registerHandlers(): void {
 
   ipcMain.handle(IPC.presentOpen, (_e, slideIndex: number) => {
     if (presentWindow && !presentWindow.isDestroyed()) {
-      presentWindow.focus();
+      presenterWindow?.focus();
       return;
     }
+    presentationState = null;
     presentWindow = createPresentWindow(slideIndex);
-    presentWindow.on('closed', () => (presentWindow = null));
+    presenterWindow = createPresenterWindow();
+    presentWindow.on('closed', () => {
+      presentWindow = null;
+      if (presenterWindow && !presenterWindow.isDestroyed()) presenterWindow.close();
+    });
+    presenterWindow.webContents.once('did-finish-load', () => {
+      if (presentationState && presenterWindow && !presenterWindow.isDestroyed()) {
+        presenterWindow.webContents.send(IPC.presentState, presentationState);
+      }
+    });
+    presenterWindow.on('closed', () => {
+      presenterWindow = null;
+      if (presentWindow && !presentWindow.isDestroyed()) presentWindow.close();
+    });
+  });
+  ipcMain.on(IPC.presentCommand, (_event, command: PresentationCommand) => {
+    if (command.type === 'exit') {
+      presentWindow?.close();
+      presenterWindow?.close();
+      return;
+    }
+    presentWindow?.webContents.send(IPC.presentCommand, command);
+  });
+  ipcMain.on(IPC.presentState, (_event, state: PresentationState) => {
+    presentationState = state;
+    presenterWindow?.webContents.send(IPC.presentState, state);
   });
 
   ipcMain.handle(IPC.trimOpen, (_e, payload: { src: string; elementId: string }) => {

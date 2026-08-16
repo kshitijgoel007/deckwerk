@@ -19,6 +19,8 @@ export const IPC = {
   assetProbe: 'asset:probe',
   presentOpen: 'present:open',
   presentCursor: 'present:cursor',
+  presentCommand: 'present:command',
+  presentState: 'present:state',
   trimOpen: 'trim:open',
   trimRun: 'trim:run',
   trimProgress: 'trim:progress',
@@ -26,6 +28,16 @@ export const IPC = {
   keynoteImport: 'keynote:import',
   exportBundle: 'export:bundle',
 } as const;
+
+export type PresentationCommand =
+  | { type: 'next' | 'prev' | 'toggleBlank' | 'exit' }
+  | { type: 'goTo'; slide: number };
+
+export interface PresentationState {
+  cursor: { slide: number; step: number };
+  steps: number;
+  startedAt: number;
+}
 
 /** An open deck: its folder on disk plus the parsed document. */
 export interface DeckSession {

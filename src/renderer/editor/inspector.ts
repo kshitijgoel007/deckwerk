@@ -1,4 +1,5 @@
 import type { SlideElement } from '@shared/deck.js';
+import { makeId } from '@shared/geometry.js';
 import { type AlignMode, alignElements } from './align.js';
 import type { EditorStore } from './store.js';
 import { LAYOUT_LABELS, applySlideLayout, type SlideLayout } from './slideLayouts.js';
@@ -128,6 +129,8 @@ export class Inspector {
     this.host.appendChild(sectionTitle(el.type));
     this.host.appendChild(this.geometrySection(selected));
     this.host.appendChild(this.styleSection(el));
+    const magic = this.magicMoveSection(el);
+    if (magic) this.host.appendChild(magic);
 
     const specific = this.typeSection(el);
     if (specific) this.host.appendChild(specific);
@@ -647,6 +650,70 @@ export class Inspector {
     }
   }
 
+  private magicMoveSection(el: SlideElement): HTMLElement | null {
+    const { deck, slideIndex } = this.store.get();
+    const slide = deck.slides[slideIndex];
+    const previous = deck.slides[slideIndex - 1];
+    if (!previous || slide.transition?.type !== 'magicMove') return null;
+    const wrap = group('Magic Move match');
+    const label = document.createElement('label');
+    label.className = 'field';
+    const title = document.createElement('span');
+    title.textContent = 'Previous-slide element';
+    const select = document.createElement('select');
+    const automatic = document.createElement('option');
+    automatic.value = '';
+    automatic.textContent = 'Automatic';
+    select.appendChild(automatic);
+    for (const candidate of previous.elements) {
+      const option = document.createElement('option');
+      option.value = candidate.id;
+      option.textContent = describeForMatch(candidate);
+      select.appendChild(option);
+      if (el.magicMoveId && candidate.magicMoveId === el.magicMoveId) {
+        select.value = candidate.id;
+      }
+    }
+    select.addEventListener('change', () => {
+      this.store.commit((next) => {
+        const currentElements = next.slides[slideIndex].elements;
+        const previousElements = next.slides[slideIndex - 1].elements;
+        const current = currentElements.find((item) => item.id === el.id);
+        if (!current) return;
+        const oldMatchId = current.magicMoveId;
+        if (!select.value) {
+          current.magicMoveId = null;
+          if (oldMatchId && !currentElements.some((item) => item.magicMoveId === oldMatchId)) {
+            for (const item of previousElements) {
+              if (item.magicMoveId === oldMatchId) item.magicMoveId = null;
+            }
+          }
+          return;
+        }
+        const source = previousElements.find((item) => item.id === select.value);
+        if (!source) return;
+        const matchId = source.magicMoveId ?? makeId('magic');
+        for (const item of previousElements) {
+          if (item !== source && item.magicMoveId === matchId) item.magicMoveId = null;
+        }
+        for (const item of currentElements) {
+          if (item !== current && item.magicMoveId === matchId) item.magicMoveId = null;
+        }
+        if (oldMatchId && oldMatchId !== matchId &&
+          !currentElements.some((item) => item !== current && item.magicMoveId === oldMatchId)) {
+          for (const item of previousElements) {
+            if (item.magicMoveId === oldMatchId) item.magicMoveId = null;
+          }
+        }
+        source.magicMoveId = matchId;
+        current.magicMoveId = matchId;
+      });
+    });
+    label.append(title, select);
+    wrap.append(label, hint('Manual matches override content-based matching.'));
+    return wrap;
+  }
+
   private mediaBorderControls(): HTMLElement {
     const el = this.store.selectedElements()[0];
     const wrap = document.createElement('div');
@@ -882,4 +949,14 @@ function button(label: string, onClick: () => void, variant = ''): HTMLElement {
 
 function round(v: number): number {
   return Math.round(v * 1000) / 1000;
+}
+
+function describeForMatch(el: SlideElement): string {
+  if (el.type === 'text') {
+    return `Text: ${el.html.replace(/<[^>]+>/g, '').slice(0, 32) || '(empty)'}`;
+  }
+  if (el.type === 'image' || el.type === 'video') {
+    return `${el.type}: ${el.src.split('/').pop()}`;
+  }
+  return `${el.type}: ${el.id}`;
 }

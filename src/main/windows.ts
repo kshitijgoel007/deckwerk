@@ -1,5 +1,6 @@
 import { join } from 'node:path';
 import { BrowserWindow, screen } from 'electron';
+import { chooseAudienceDisplay } from './presentationDisplays.js';
 
 /**
  * Window creation. Three kinds: the editor, the fullscreen present window and
@@ -50,7 +51,7 @@ export function createEditorWindow(): BrowserWindow {
 export function createPresentWindow(cursorSlide = 0): BrowserWindow {
   const displays = screen.getAllDisplays();
   const primary = screen.getPrimaryDisplay();
-  const target = displays.find((d) => d.id !== primary.id) ?? primary;
+  const target = chooseAudienceDisplay(displays, primary);
 
   const win = new BrowserWindow({
     x: target.bounds.x,
@@ -73,6 +74,28 @@ export function createPresentWindow(cursorSlide = 0): BrowserWindow {
   });
   win.once('ready-to-show', () => win.show());
   loadRenderer(win, 'present', `?slide=${cursorSlide}`);
+  return win;
+}
+
+/** Laptop control surface; the audience window remains fullscreen externally. */
+export function createPresenterWindow(): BrowserWindow {
+  const primary = screen.getPrimaryDisplay();
+  const win = new BrowserWindow({
+    x: primary.workArea.x + 40,
+    y: primary.workArea.y + 40,
+    width: Math.min(1200, primary.workArea.width - 80),
+    height: Math.min(820, primary.workArea.height - 80),
+    minWidth: 900,
+    minHeight: 620,
+    backgroundColor: '#111218',
+    title: 'Presenter View',
+    show: false,
+    webPreferences: {
+      preload: preload(), contextIsolation: true, nodeIntegration: false, sandbox: false,
+    },
+  });
+  win.once('ready-to-show', () => win.show());
+  loadRenderer(win, 'presenter');
   return win;
 }
 

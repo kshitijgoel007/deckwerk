@@ -1,5 +1,6 @@
 import '../player/player.css';
 import type { DeckSession } from '@shared/ipc.js';
+import type { PresentationCommand } from '@shared/ipc.js';
 import { bindPresentKeys } from '../player/keys.js';
 import { Player } from '../player/player.js';
 
@@ -14,6 +15,7 @@ if (!root) throw new Error('missing #root');
 
 let player: Player | null = null;
 let themeLink: HTMLStyleElement | null = null;
+const startedAt = Date.now();
 
 async function applyTheme(): Promise<void> {
   const css = await window.api.loadTheme();
@@ -36,6 +38,7 @@ function start(session: DeckSession): void {
     deck: session.deck,
     container: root!,
     resolveSrc: (src) => window.api.assetUrl(src),
+    onCursor: (cursor, steps) => window.api.publishPresentState({ cursor, steps, startedAt }),
   });
   player.goToSlide(Number.isFinite(startSlide) ? startSlide : 0);
 
@@ -48,6 +51,14 @@ function start(session: DeckSession): void {
   });
   window.addEventListener('contextmenu', (e) => e.preventDefault());
 }
+
+window.api.onPresentCommand((command: PresentationCommand) => {
+  if (!player) return;
+  if (command.type === 'next') player.next();
+  else if (command.type === 'prev') player.prev();
+  else if (command.type === 'goTo') player.goToSlide(command.slide);
+  else if (command.type === 'toggleBlank') player.toggleBlank();
+});
 
 // Live updates while presenting (editing on a second screen mid-rehearsal).
 window.api.onDeckState((session) => {
