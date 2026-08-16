@@ -15,3 +15,6 @@ examples/exported-*/
 # presentation or media payload (both include files over GitHub's size limit).
 test_presentation.key
 examples/test-presentation/assets/
+
+# Large local presentation corpus used by the importer regression suite.
+example_presentations/
