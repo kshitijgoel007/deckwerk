@@ -82,4 +82,19 @@ describe('role-based theme workflow', () => {
     expect(store.slide!.elements.map((el) => el.class.find((c) => c.startsWith('role-'))))
       .toEqual(['role-title', 'role-body']);
   });
+
+  it('keeps the native colour panel anchored until its choice is accepted', () => {
+    const { store, host } = setup();
+    store.select(['title']);
+    const input = host.querySelector<HTMLInputElement>('input[type="color"]')!;
+    const originalInput = input;
+
+    input.value = '#123456';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    expect(host.querySelector('input[type="color"]')).toBe(originalInput);
+    expect(store.slide!.elements.find((el) => el.id === 'title')!.style.color).toBe('#f00');
+
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    expect(store.slide!.elements.find((el) => el.id === 'title')!.style.color).toBe('#123456');
+  });
 });

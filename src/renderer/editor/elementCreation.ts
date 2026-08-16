@@ -56,3 +56,34 @@ export function insertLine(
   store.select([created.id]);
   return created;
 }
+
+/** Shape menu. Releasing focus after insertion lets object shortcuts work immediately. */
+export function createShapeInsertPicker(store: EditorStore): HTMLSelectElement {
+  const select = document.createElement('select');
+  select.className = 'bar-select';
+  const options: Array<[string, string]> = [
+    ['', '+ Shape'],
+    ['rect', 'Rectangle'],
+    ['ellipse', 'Ellipse'],
+    ['line', 'Line'],
+    ['arrow', 'Arrow'],
+    ['curved-arrow', 'Curved arrow'],
+  ];
+  for (const [value, label] of options) {
+    const option = document.createElement('option');
+    option.value = value;
+    option.textContent = label;
+    select.appendChild(option);
+  }
+  select.addEventListener('change', () => {
+    const kind = select.value as 'rect' | 'ellipse' | 'line' | 'arrow' | 'curved-arrow' | '';
+    select.value = '';
+    // A focused <select> suppresses the editor's Backspace/Delete shortcuts.
+    // The newly created object is the active context, so return focus to it.
+    select.blur();
+    if (kind === 'curved-arrow') insertLine(store, 'arrow', true);
+    else if (kind === 'line' || kind === 'arrow') insertLine(store, kind);
+    else if (kind === 'rect' || kind === 'ellipse') insertShape(store, kind);
+  });
+  return select;
+}

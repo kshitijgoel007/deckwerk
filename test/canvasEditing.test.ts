@@ -7,7 +7,12 @@ import {
   lineEndpoints,
   lineFromEndpoints,
 } from '../src/renderer/editor/canvas.js';
-import { insertLine, insertShape, insertText } from '../src/renderer/editor/elementCreation.js';
+import {
+  createShapeInsertPicker,
+  insertLine,
+  insertShape,
+  insertText,
+} from '../src/renderer/editor/elementCreation.js';
 import { EditorStore } from '../src/renderer/editor/store.js';
 
 /**
@@ -543,6 +548,24 @@ describe('object creation and manipulation', () => {
     expect(rendered.getAttribute('cy')).toBe(String(ellipse.h / 2));
     expect(rendered.ownerSVGElement!.style.display).toBe('block');
     expect([...store.get().selection]).toEqual([ellipse.id]);
+  });
+
+  it('releases shape-picker focus so Backspace can delete a new arrow immediately', () => {
+    const { store } = setup();
+    const picker = createShapeInsertPicker(store);
+    document.body.appendChild(picker);
+    picker.focus();
+    picker.value = 'curved-arrow';
+    picker.dispatchEvent(new Event('change', { bubbles: true }));
+
+    expect(document.activeElement).not.toBe(picker);
+    const [id] = [...store.get().selection];
+    expect(store.slide!.elements.find((el) => el.id === id)).toMatchObject({
+      shape: 'arrow',
+      control: expect.any(Object),
+    });
+    store.deleteSelection();
+    expect(store.slide!.elements.some((el) => el.id === id)).toBe(false);
   });
 
   it('inserts text above existing objects and selects it', () => {

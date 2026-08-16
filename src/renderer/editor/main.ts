@@ -8,7 +8,7 @@ import { deckProseMax } from '@shared/fontSets.js';
 import { EditorCanvas } from './canvas.js';
 import { CssEditor } from './cssEditor.js';
 import { Inspector } from './inspector.js';
-import { insertLine, insertShape, insertText } from './elementCreation.js';
+import { createShapeInsertPicker, insertText } from './elementCreation.js';
 import { createThemeGallery, type ThemeGallery } from './themeGallery.js';
 import { SlideRail } from './slideRail.js';
 import { EditorStore, copySelectionToClipboard, cutSelectionToClipboard, pasteFromClipboard } from './store.js';
@@ -104,7 +104,7 @@ function buildToolbar(): void {
 
   const mid = document.createElement('div');
   mid.className = 'bar-group';
-  mid.append(barButton('+ Text', () => addText()), shapeInsertPicker());
+  mid.append(barButton('+ Text', () => addText()), createShapeInsertPicker(store));
 
   const right = document.createElement('div');
   right.className = 'bar-group bar-right';
@@ -339,43 +339,6 @@ function showPanel(id: string): void {
 
 function addText(): void {
   insertText(store);
-}
-
-function addShape(kind: 'rect' | 'ellipse' = 'rect'): void {
-  insertShape(store, kind);
-}
-
-/** "+ Shape" dropdown: rect, ellipse, line, arrow. Inserts on choice. */
-function shapeInsertPicker(): HTMLElement {
-  const select = document.createElement('select');
-  select.className = 'bar-select';
-  const opts: Array<[string, string]> = [
-    ['', '+ Shape'],
-    ['rect', 'Rectangle'],
-    ['ellipse', 'Ellipse'],
-    ['line', 'Line'],
-    ['arrow', 'Arrow'],
-    ['curved-arrow', 'Curved arrow'],
-  ];
-  for (const [v, label] of opts) {
-    const o = document.createElement('option');
-    o.value = v;
-    o.textContent = label;
-    select.appendChild(o);
-  }
-  select.addEventListener('change', () => {
-    const kind = select.value as 'rect' | 'ellipse' | 'line' | 'arrow' | 'curved-arrow' | '';
-    select.value = '';
-    if (!kind) return;
-    if (kind === 'curved-arrow') insertLine(store, 'arrow', true);
-    else if (kind === 'line' || kind === 'arrow') addLine(kind);
-    else addShape(kind);
-  });
-  return select;
-}
-
-function addLine(kind: 'line' | 'arrow'): void {
-  insertLine(store, kind);
 }
 
 /* --- persistence --- */

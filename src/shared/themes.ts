@@ -59,7 +59,7 @@ export const THEMES: ThemePreset[] = [
   {
     id: 'basic',
     name: 'Studio',
-    description: 'Editorial display serif over calm Avenir prose, with a quiet hairline.',
+    description: 'Editorial display serif over calm Avenir prose. Quiet and gallery-like.',
     fonts: {
       title: { family: EDITORIAL_SERIF, size: 102, weight: 700, lineHeight: 1.01, letterSpacing: '-0.025em' },
       heading: { family: EDITORIAL_SERIF, size: 58, weight: 600, lineHeight: 1.1, letterSpacing: '-0.01em' },
@@ -73,7 +73,7 @@ export const THEMES: ThemePreset[] = [
   {
     id: 'hacker',
     name: 'Hacker',
-    description: 'Monospace display over humanist prose, with a phosphor command-rule.',
+    description: 'Monospace display over humanist prose, with crisp phosphor-green accents.',
     fonts: {
       title: { family: MONO, size: 84, weight: 700, lineHeight: 1.1, letterSpacing: '-0.03em' },
       heading: { family: MONO, size: 52, weight: 600, lineHeight: 1.2, letterSpacing: '-0.02em' },
@@ -101,7 +101,7 @@ export const THEMES: ThemePreset[] = [
   {
     id: 'swiss',
     name: 'Swiss',
-    description: 'Oversized Helvetica over literary serif copy, cut by one uncompromising red rule.',
+    description: 'Oversized Helvetica over literary serif copy, with one uncompromising red accent.',
     fonts: {
       title: { family: HELVETICA, size: 110, weight: 700, lineHeight: 0.98, letterSpacing: '-0.04em' },
       heading: { family: HELVETICA, size: 60, weight: 700, lineHeight: 1.05, letterSpacing: '-0.02em' },

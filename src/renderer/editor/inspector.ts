@@ -812,7 +812,10 @@ function colorField(
   // <input type=color> only speaks 6-digit hex; anything else (rgba, names,
   // unset) previews as mid-grey until picked.
   input.value = /^#[0-9a-fA-F]{6}$/.test(value ?? '') ? (value as string) : '#888888';
-  input.addEventListener('input', () => onChange(input.value));
+  // Native colour panels emit `input` while their gradient is being explored.
+  // Committing there rebuilds this inspector and destroys the input anchoring
+  // the still-open panel. Commit once the choice is accepted instead.
+  input.addEventListener('change', () => onChange(input.value));
   const clear = document.createElement('button');
   clear.type = 'button';
   clear.className = 'icon-button';

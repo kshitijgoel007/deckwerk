@@ -61,7 +61,7 @@ describe('slide layouts', () => {
 
     const color = host.querySelector<HTMLInputElement>('input[type="color"]')!;
     color.value = '#123456';
-    color.dispatchEvent(new Event('input', { bubbles: true }));
+    color.dispatchEvent(new Event('change', { bubbles: true }));
     expect(store.slide!.background).toEqual({ color: '#123456', image: null });
     host.querySelector<HTMLButtonElement>('button[title="No colour"]')!.click();
     expect(store.slide!.background).toEqual({ color: null, image: null });
