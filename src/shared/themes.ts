@@ -152,37 +152,7 @@ export function themeCss(theme: ThemePreset): string {
     ``,
     `.role-caption { color: ${theme.colors.muted}; }`,
     ``,
-    layoutChrome(theme),
-    ``,
   ].join('\n');
-}
-
-/** Restrained theme decoration; layout geometry remains theme-independent. */
-function layoutChrome(theme: ThemePreset): string {
-  const rules: Record<string, string> = {
-    basic: `.slide.layout-standard::before {
-  content: ""; position: absolute; left: 120px; right: 120px; top: 219px;
-  height: 1px; background: ${theme.colors.muted}; opacity: .28;
-}`,
-    hacker: `.slide.layout-standard::before {
-  content: "//"; position: absolute; left: 120px; right: 120px; top: 211px;
-  padding-bottom: 7px; border-bottom: 3px solid ${theme.colors.accent};
-  color: ${theme.colors.accent}; font: 700 18px/1 monospace;
-}`,
-    editorial: `.slide.layout-standard::before {
-  content: ""; position: absolute; left: 120px; width: 210px; top: 217px;
-  height: 4px; background: ${theme.colors.accent};
-}`,
-    swiss: `.slide.layout-standard::before {
-  content: ""; position: absolute; left: 120px; right: 120px; top: 211px;
-  height: 8px; background: ${theme.colors.accent};
-}`,
-    soft: `.slide.layout-standard::before {
-  content: ""; position: absolute; left: 120px; width: 96px; top: 216px;
-  height: 6px; border-radius: 999px; background: ${theme.colors.accent}; opacity: .72;
-}`,
-  };
-  return rules[theme.id] ?? '';
 }
 
 /** Replace any previously installed theme block, leaving user CSS untouched. */

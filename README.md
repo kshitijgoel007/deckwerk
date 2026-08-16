@@ -55,8 +55,8 @@ There is also a `type: "html"` element for anything the editor doesn't model —
 it still drags and resizes like everything else.
 
 The slide inspector offers two theme-independent geometry presets: **Title +
-body** and **Title slide**. Themes pair contrasting display and prose faces and
-may add restrained layout chrome, but never move those boxes. A slide background
+body** and **Title slide**. Themes pair contrasting display and prose faces but
+never add objects or move those boxes. A slide background
 can be set there too; clear it to inherit the installed theme background.
 
 Lines and arrows have editable endpoints. A curved arrow is a native quadratic

@@ -9,6 +9,7 @@ import { EditorCanvas } from './canvas.js';
 import { CssEditor } from './cssEditor.js';
 import { Inspector } from './inspector.js';
 import { insertLine, insertShape, insertText } from './elementCreation.js';
+import { createThemeGallery, type ThemeGallery } from './themeGallery.js';
 import { SlideRail } from './slideRail.js';
 import { EditorStore, copySelectionToClipboard, cutSelectionToClipboard, pasteFromClipboard } from './store.js';
 import { TimelinePanel } from './timelinePanel.js';
@@ -137,7 +138,7 @@ const applyOpts: ApplyOptions = {
 
 /** The gallery selection can lead the installed deck theme until Apply/Install. */
 let selectedThemeId: string | null = null;
-let themeSelect: HTMLSelectElement | null = null;
+let themeGallery: ThemeGallery | null = null;
 
 function currentTheme(): ThemePreset | null {
   return themeById(selectedThemeId) ?? themeById(store.get().deck.themePreset) ?? null;
@@ -145,30 +146,27 @@ function currentTheme(): ThemePreset | null {
 
 function themePicker(): HTMLElement {
   const wrap = document.createElement('div');
-  wrap.className = 'bar-group';
+  wrap.className = 'theme-browser';
 
-  const select = document.createElement('select');
-  select.className = 'bar-select';
-  for (const t of THEMES) {
-    const opt = document.createElement('option');
-    opt.value = t.id;
-    opt.textContent = t.name;
-    opt.title = t.description;
-    select.appendChild(opt);
-  }
   const preset = store.get().deck.themePreset;
-  if (preset) select.value = preset;
-  selectedThemeId = select.value;
-  themeSelect = select;
-  select.addEventListener('change', () => {
-    selectedThemeId = select.value;
+  themeGallery = createThemeGallery(THEMES, preset, (theme) => {
+    selectedThemeId = theme.id;
   });
+  selectedThemeId = themeGallery.selectedId();
+
+  const intro = document.createElement('div');
+  intro.className = 'theme-browser-intro';
+  const title = document.createElement('h2');
+  title.textContent = 'Themes';
+  const help = document.createElement('p');
+  help.textContent = 'Select a theme to preview its palette and typography. Installing changes role styling, not slide geometry.';
+  intro.append(title, help);
 
   const boxes: Array<[keyof ApplyOptions, string]> = [
-    ['fontSizes', 'sizes'],
-    ['textColors', 'text col'],
-    ['objectColors', 'obj col'],
-    ['backgrounds', 'bg'],
+    ['fontSizes', 'Font sizes'],
+    ['textColors', 'Text colours'],
+    ['objectColors', 'Object colours'],
+    ['backgrounds', 'Slide backgrounds'],
   ];
   const boxEls = boxes.map(([key, label]) => {
     const o = optionBox(label, applyOpts[key]);
@@ -176,10 +174,11 @@ function themePicker(): HTMLElement {
     return o.label;
   });
 
-  wrap.append(
-    select,
+  const actions = document.createElement('div');
+  actions.className = 'theme-actions';
+  actions.append(
     barButton('Install', () => {
-      const theme = THEMES.find((t) => t.id === select.value);
+      const theme = currentTheme();
       if (theme) installTheme(theme);
     }),
     ...boxEls,
@@ -188,7 +187,7 @@ function themePicker(): HTMLElement {
       // "sizes" or "text col" comes from the stylesheet, so applying a theme
       // that was never installed would look like nothing happened — which is
       // exactly how "apply works only once" presented.
-      const theme = THEMES.find((t) => t.id === select.value) ?? null;
+      const theme = currentTheme();
       if (!theme) return;
       const newlyInstalled = store.get().deck.themePreset !== theme.id;
       // Always refresh the generated block: preset definitions can improve
@@ -197,6 +196,7 @@ function themePicker(): HTMLElement {
       applyTheme(theme, newlyInstalled, true);
     }),
   );
+  wrap.append(intro, themeGallery.element, actions);
   return wrap;
 }
 
@@ -209,6 +209,8 @@ function installTheme(theme: ThemePreset): void {
   cssEditor.setValue(css);
   void window.api.saveTheme(css);
   refreshSwatches(theme);
+  themeGallery?.setSelected(theme.id);
+  themeGallery?.setInstalled(theme.id);
   void save();
   setStatusMessage(`Installed “${theme.name}” — pickers updated, slides untouched.`);
 }
@@ -401,9 +403,18 @@ function scheduleSave(): void {
 
 async function adopt(dir: string, deck: Parameters<typeof store.load>[0]): Promise<void> {
   store.load(deck, dir);
-  cssEditor.setValue(await window.api.loadTheme());
-  selectedThemeId = deck.themePreset;
-  if (themeSelect && deck.themePreset) themeSelect.value = deck.themePreset;
+  const loadedCss = await window.api.loadTheme();
+  const installedTheme = themeById(deck.themePreset);
+  // The marked block belongs to the app. Refresh it when preset definitions
+  // evolve, while preserving every hand-written rule outside that block.
+  const refreshedCss = installedTheme
+    ? withThemeBlock(loadedCss, themeCss(installedTheme))
+    : loadedCss;
+  cssEditor.setValue(refreshedCss);
+  if (refreshedCss !== loadedCss) void window.api.saveTheme(refreshedCss);
+  themeGallery?.setSelected(deck.themePreset);
+  themeGallery?.setInstalled(deck.themePreset);
+  selectedThemeId = themeGallery?.selectedId() ?? deck.themePreset;
   refreshSwatches(currentTheme());
 }
 

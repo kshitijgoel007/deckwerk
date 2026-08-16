@@ -852,9 +852,51 @@ input[type="range"] { accent-color: var(--accent); border: 0; background: transp
 #ctx-menu button:hover { background: var(--accent-soft); color: var(--accent); }
 .ctx-sep { border-top: 1px solid var(--line); margin: 4px 6px; }
 
-/* Theme tab: the toolbar cluster, stacked vertically. */
-.theme-panel .bar-group { display: flex; flex-direction: column; align-items: stretch; gap: 8px; }
-.theme-panel .bar-check { justify-content: flex-start; }
+/* Theme tab: visual palette and typography previews. */
+.theme-browser { display: flex; flex-direction: column; gap: 12px; }
+.theme-browser-intro h2 { margin: 0 0 4px; font-size: 15px; }
+.theme-browser-intro p { margin: 0; color: var(--muted); font-size: 10.5px; line-height: 1.45; }
+.theme-gallery { display: flex; flex-direction: column; gap: 10px; }
+.theme-card {
+  display: block;
+  width: 100%;
+  border: 2px solid var(--line);
+  padding: 0;
+  overflow: hidden;
+  text-align: left;
+}
+.theme-card:hover:not(:disabled) { border-color: var(--muted); }
+.theme-card.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.theme-card-preview { display: flex; flex-direction: column; gap: 8px; padding: 12px; }
+.theme-card-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.theme-card-heading strong { font: 700 13px/1 var(--mono); color: inherit; }
+.theme-installed-badge {
+  border: 1px solid currentColor;
+  padding: 2px 4px;
+  font: 700 8px/1 var(--mono);
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+.theme-card-description { min-height: 31px; opacity: .72; font: 10px/1.45 var(--mono); }
+.theme-card-swatches { display: grid; grid-template-columns: repeat(8, 1fr); height: 18px; border: 1px solid rgb(0 0 0 / 12%); }
+.theme-card-swatch { min-width: 0; }
+.theme-font-samples { display: flex; flex-direction: column; gap: 5px; }
+.theme-font-sample { display: grid; grid-template-columns: 52px 1fr; align-items: baseline; gap: 7px; }
+.theme-font-sample small { opacity: .52; font: 8px/1 var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+.theme-font-sample > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.theme-font-title > span { font-size: 21px; }
+.theme-font-heading > span { font-size: 16px; }
+.theme-font-body > span { font-size: 13px; }
+.theme-font-caption > span { font-size: 10px; }
+.theme-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+.theme-actions .bar-check { justify-content: flex-start; }
+.theme-actions button { grid-column: 1 / -1; }
 
 /* The stage must not clip editor chrome: an element at the slide edge needs
    its handles (and the mask ghost) drawn OUTSIDE the slide. The slide layer

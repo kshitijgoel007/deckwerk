@@ -56,9 +56,10 @@ describe('theme presets', () => {
     }
   });
 
-  it('gives every standard layout theme its own restrained chrome', () => {
+  it('does not inject undeletable layout decoration', () => {
     for (const theme of THEMES) {
-      expect(themeCss(theme)).toContain('.slide.layout-standard::before');
+      expect(themeCss(theme)).not.toContain('.slide.layout-standard::before');
+      expect(themeCss(theme)).not.toContain('content:');
     }
   });
 
