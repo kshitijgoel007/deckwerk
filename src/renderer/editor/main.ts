@@ -3,8 +3,16 @@ import './editor.css';
 import type { SlideElement } from '@shared/deck.js';
 import { emptyDeck } from '@shared/deck.js';
 import { makeId } from '@shared/geometry.js';
-import { type ApplyOptions, THEMES, type ThemePreset, applyThemeToDeck, applyThemeToSlide, themeById, themeCss, withThemeBlock } from '@shared/themes.js';
-import { deckProseMax } from '@shared/fontSets.js';
+import {
+  THEMES,
+  type ThemeAdoption,
+  type ThemePreset,
+  adoptThemeStyles,
+  themeById,
+  themeCss,
+  themeStyleCss,
+  withThemeBlock,
+} from '@shared/themes.js';
 import { EditorCanvas } from './canvas.js';
 import { CssEditor } from './cssEditor.js';
 import { Inspector } from './inspector.js';
@@ -121,19 +129,21 @@ function buildToolbar(): void {
 }
 
 /**
- * The theme gallery, omarchy-style.
- *
- * INSTALL changes what is available — role styles in theme.css, the swatch row
- * in every colour picker — and touches no existing content. APPLY, governed by
- * the checkboxes, is the separate act of conforming existing slides to the
- * theme; with everything unchecked it does nothing at all, and the per-slide
- * button in the sidebar applies the same options to one slide at a time.
+ * Theme presets are immutable style sources. One explicit operation chooses
+ * scope, semantic roles and independent properties; selecting a card alone is
+ * always side-effect-free.
  */
-const applyOpts: ApplyOptions = {
-  textColors: false,
+const themeAdoption: ThemeAdoption = {
+  scope: 'deck',
+  roles: ['title', 'heading', 'body', 'caption', 'base'],
+  fontFamily: true,
+  fontWeight: false,
+  typeScale: false,
+  textColor: false,
+  background: false,
   objectColors: false,
-  fontSizes: false,
-  backgrounds: false,
+  replaceOverrides: true,
+  detectRoles: false,
 };
 
 /** The gallery selection can lead the installed deck theme until Apply/Install. */
@@ -159,60 +169,102 @@ function themePicker(): HTMLElement {
   const title = document.createElement('h2');
   title.textContent = 'Themes';
   const help = document.createElement('p');
-  help.textContent = 'Select a theme to preview its palette and typography. Installing changes role styling, not slide geometry.';
+  help.textContent = 'Select a style source, then choose exactly where and which properties to use. Selection alone changes nothing.';
   intro.append(title, help);
 
-  const boxes: Array<[keyof ApplyOptions, string]> = [
-    ['fontSizes', 'Font sizes'],
-    ['textColors', 'Text colours'],
-    ['objectColors', 'Object colours'],
-    ['backgrounds', 'Slide backgrounds'],
+  const controls = document.createElement('div');
+  controls.className = 'theme-adoption-controls';
+
+  const scopeLabel = document.createElement('label');
+  scopeLabel.className = 'field';
+  const scopeTitle = document.createElement('span');
+  scopeTitle.textContent = 'Apply to';
+  const scope = document.createElement('select');
+  for (const [value, label] of [
+    ['deck', 'Deck defaults + all slides'],
+    ['slide', 'Current slide only'],
+    ['selection', 'Selected objects only'],
+  ] as const) {
+    const option = document.createElement('option');
+    option.value = value;
+    option.textContent = label;
+    scope.appendChild(option);
+  }
+  scope.value = themeAdoption.scope;
+  scope.addEventListener('change', () => {
+    themeAdoption.scope = scope.value as ThemeAdoption['scope'];
+  });
+  scopeLabel.append(scopeTitle, scope);
+
+  const roleTitle = document.createElement('div');
+  roleTitle.className = 'theme-option-title';
+  roleTitle.textContent = 'Text roles';
+  const roleBoxes = (['title', 'heading', 'body', 'caption', 'base'] as const).map((role) => {
+    const box = optionBox(role, themeAdoption.roles.includes(role));
+    box.input.addEventListener('change', () => {
+      themeAdoption.roles = box.input.checked
+        ? [...new Set([...themeAdoption.roles, role])]
+        : themeAdoption.roles.filter((candidate) => candidate !== role);
+    });
+    return box.label;
+  });
+
+  const propertyTitle = document.createElement('div');
+  propertyTitle.className = 'theme-option-title';
+  propertyTitle.textContent = 'Properties from theme';
+  const boxes: Array<[keyof ThemeAdoption, string]> = [
+    ['fontFamily', 'Font family'],
+    ['fontWeight', 'Font weight'],
+    ['typeScale', 'Size + spacing'],
+    ['textColor', 'Text colour'],
+    ['background', 'Slide background'],
+    ['objectColors', 'Shape colours'],
+    ['replaceOverrides', 'Replace matching overrides'],
+    ['detectRoles', 'Detect roles for untagged text'],
   ];
   const boxEls = boxes.map(([key, label]) => {
-    const o = optionBox(label, applyOpts[key]);
-    o.input.addEventListener('change', () => (applyOpts[key] = o.input.checked));
+    const o = optionBox(label, themeAdoption[key] as boolean);
+    o.input.addEventListener('change', () => {
+      (themeAdoption[key] as boolean) = o.input.checked;
+    });
     return o.label;
   });
+  controls.append(scopeLabel, roleTitle, ...roleBoxes, propertyTitle, ...boxEls);
 
   const actions = document.createElement('div');
   actions.className = 'theme-actions';
   actions.append(
-    barButton('Install', () => {
-      const theme = currentTheme();
-      if (theme) installTheme(theme);
-    }),
-    ...boxEls,
-    barButton('Apply to deck', () => {
-      // The dropdown wins, and applying installs first: the visual result of
-      // "sizes" or "text col" comes from the stylesheet, so applying a theme
-      // that was never installed would look like nothing happened — which is
-      // exactly how "apply works only once" presented.
+    barButton('Use selected styles', () => {
       const theme = currentTheme();
       if (!theme) return;
-      const newlyInstalled = store.get().deck.themePreset !== theme.id;
-      // Always refresh the generated block: preset definitions can improve
-      // across app versions even when the stored theme id is unchanged.
-      installTheme(theme);
-      applyTheme(theme, newlyInstalled, true);
+      const { slideIndex, selection } = store.get();
+      store.commit((deck) => adoptThemeStyles(
+        deck,
+        theme,
+        { ...themeAdoption, roles: [...themeAdoption.roles] },
+        slideIndex,
+        new Set(selection),
+      ));
+      if (themeAdoption.scope === 'deck') refreshThemeCss(theme.name);
+      refreshSwatches(theme);
+      themeGallery?.setInstalled(theme.id);
+      void save();
+      const scopeName = themeAdoption.scope === 'deck'
+        ? 'deck defaults and existing slides'
+        : themeAdoption.scope === 'slide' ? 'current slide' : 'selection';
+      setStatusMessage(`Used selected “${theme.name}” styles for ${scopeName}.`);
     }),
   );
-  wrap.append(intro, themeGallery.element, actions);
+  wrap.append(intro, themeGallery.element, controls, actions);
   return wrap;
 }
 
-/** Install: stylesheet + swatches only. Zero pixels of the deck change. */
-function installTheme(theme: ThemePreset): void {
-  store.commit((d) => {
-    d.themePreset = theme.id;
-  });
-  const css = withThemeBlock(cssEditor.getValue(), themeCss(theme));
+function refreshThemeCss(label: string): void {
+  const style = store.get().deck.themeStyle;
+  if (!style) return;
+  const css = withThemeBlock(cssEditor.getValue(), themeStyleCss(style, label));
   cssEditor.setValue(css);
   void window.api.saveTheme(css);
-  refreshSwatches(theme);
-  themeGallery?.setSelected(theme.id);
-  themeGallery?.setInstalled(theme.id);
-  void save();
-  setStatusMessage(`Installed “${theme.name}” — pickers updated, slides untouched.`);
 }
 
 /** The swatch row shown in every colour picker, fed by the installed theme. */
@@ -230,58 +282,6 @@ function refreshSwatches(theme: ThemePreset | null): void {
       return o;
     }),
   );
-}
-
-function applyTheme(theme: ThemePreset, newlyInstalled = false, refreshed = false): void {
-  const any = Object.values(applyOpts).some(Boolean);
-  if (!any) {
-    setStatusMessage(
-      newlyInstalled
-        ? `Installed “${theme.name}” — role-styled text updated.`
-        : refreshed
-          ? `Refreshed “${theme.name}” — role-styled text updated.`
-          : 'Theme already installed; tick sizes / colours / bg for additional changes.',
-    );
-    return;
-  }
-  store.commit((d) => applyThemeToDeck(d, theme, { ...applyOpts }));
-  setStatusMessage(`Applied “${theme.name}” to the whole deck.`);
-}
-
-/** Per-slide application, same options, invoked from the sidebar. */
-function applyThemeToCurrentSlide(): void {
-  const theme = currentTheme();
-  if (!theme) {
-    setStatusMessage('Install a theme first.');
-    return;
-  }
-  // Applying from the slide panel uses the currently visible gallery choice,
-  // even if Install was not clicked first. Installing supplies the role CSS;
-  // that alone visibly updates explicitly tagged Title/Body elements.
-  const newlyInstalled = store.get().deck.themePreset !== theme.id;
-  installTheme(theme);
-  const any = Object.values(applyOpts).some(Boolean);
-  if (!any) {
-    setStatusMessage(
-      newlyInstalled
-        ? `Installed “${theme.name}” — role-styled text updated.`
-        : `Refreshed “${theme.name}” — role-styled text updated.`,
-    );
-    return;
-  }
-  const { deck, slideIndex } = store.get();
-  const maxProse = deckProseMax(
-    deck.slides.flatMap((sl) =>
-      sl.elements
-        .filter((e) => e.type === 'text')
-        .map((e) => ({
-          html: (e as { html: string }).html,
-          size: Number.parseFloat(e.style['font-size'] ?? '0') || 0,
-        })),
-    ),
-  );
-  store.commit((d) => applyThemeToSlide(d.slides[slideIndex], theme, { ...applyOpts }, maxProse));
-  setStatusMessage(`Applied “${theme.name}” to slide ${slideIndex + 1}.`);
 }
 
 function optionBox(text: string, checked: boolean): { label: HTMLElement; input: HTMLInputElement } {
@@ -370,8 +370,10 @@ async function adopt(dir: string, deck: Parameters<typeof store.load>[0]): Promi
   const installedTheme = themeById(deck.themePreset);
   // The marked block belongs to the app. Refresh it when preset definitions
   // evolve, while preserving every hand-written rule outside that block.
-  const refreshedCss = installedTheme
-    ? withThemeBlock(loadedCss, themeCss(installedTheme))
+  const refreshedCss = deck.themeStyle
+    ? withThemeBlock(loadedCss, themeStyleCss(deck.themeStyle))
+    : installedTheme
+      ? withThemeBlock(loadedCss, themeCss(installedTheme))
     : loadedCss;
   cssEditor.setValue(refreshedCss);
   if (refreshedCss !== loadedCss) void window.api.saveTheme(refreshedCss);
@@ -554,7 +556,6 @@ window.api.onTrimDone((result) => {
   void save();
 });
 
-inspector.onApplyTheme = () => applyThemeToCurrentSlide();
 
 canvas.contextActions = (el) => {
   const sel = store.get().selection.size;

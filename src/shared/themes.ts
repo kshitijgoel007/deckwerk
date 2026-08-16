@@ -1,4 +1,4 @@
-import type { Deck, Slide } from './deck.js';
+import type { Deck, Slide, SlideElement, ThemeStyle } from './deck.js';
 import { type FontSet, deckProseMax, fontSetCss, roleForElement } from './fontSets.js';
 
 /**
@@ -136,23 +136,132 @@ export function fontSetOf(theme: ThemePreset): FontSet {
   return { id: theme.id, name: theme.name, description: theme.description, roles: theme.fonts };
 }
 
+export function themeStyleOf(theme: ThemePreset): ThemeStyle {
+  return structuredClone({ fonts: theme.fonts, palette: theme.palette, colors: theme.colors });
+}
+
 /** Markers so installing again replaces rather than stacks. */
 export const THEME_BLOCK_START = '/* >>> slide-editor theme (generated) */';
 export const THEME_BLOCK_END = '/* <<< end theme */';
 
 /** The CSS a theme installs: role typography plus ground colours. */
 export function themeCss(theme: ThemePreset): string {
+  return themeStyleCss(themeStyleOf(theme), `${theme.name} — ${theme.description}`);
+}
+
+/** CSS for a deck's composed defaults, which may draw properties from several presets. */
+export function themeStyleCss(style: ThemeStyle, label = 'Custom deck defaults'): string {
   return [
-    `/* theme: ${theme.name} — ${theme.description} */`,
-    fontSetCss(fontSetOf(theme)),
+    `/* theme: ${label} */`,
+    fontSetCss({ id: 'deck-defaults', name: label, description: '', roles: style.fonts }),
     `.slide {`,
-    `  background: ${theme.colors.background};`,
-    `  color: ${theme.colors.text};`,
+    `  background: ${style.colors.background};`,
+    `  color: ${style.colors.text};`,
     `}`,
     ``,
-    `.role-caption { color: ${theme.colors.muted}; }`,
+    `.role-caption { color: ${style.colors.muted}; }`,
     ``,
   ].join('\n');
+}
+
+export type ThemeScope = 'deck' | 'slide' | 'selection';
+export type ThemeTextRole = 'title' | 'heading' | 'body' | 'caption' | 'base';
+export interface ThemeAdoption {
+  scope: ThemeScope;
+  roles: ThemeTextRole[];
+  fontFamily: boolean;
+  fontWeight: boolean;
+  typeScale: boolean;
+  textColor: boolean;
+  background: boolean;
+  objectColors: boolean;
+  replaceOverrides: boolean;
+  detectRoles: boolean;
+}
+
+function explicitRole(el: SlideElement): ThemeTextRole {
+  const found = el.class.find((name) => /^role-(title|heading|body|caption)$/.test(name));
+  return (found?.slice(5) as ThemeTextRole | undefined) ?? 'base';
+}
+
+/** Adopt only requested properties from a preset, at an explicit scope. */
+export function adoptThemeStyles(
+  deck: Deck,
+  theme: ThemePreset,
+  options: ThemeAdoption,
+  slideIndex: number,
+  selection: Set<string>,
+): void {
+  const source = themeStyleOf(theme);
+  const slides = options.scope === 'deck'
+    ? deck.slides
+    : [deck.slides[slideIndex]].filter((slide): slide is Slide => Boolean(slide));
+  const maxProse = deckProseMax(deck.slides.flatMap((slide) => slide.elements
+    .filter((el) => el.type === 'text')
+    .map((el) => ({ html: el.html, size: Number.parseFloat(el.style['font-size'] ?? '0') || 0 }))));
+
+  if (options.scope === 'deck') {
+    const defaults = structuredClone(deck.themeStyle ?? source);
+    for (const role of options.roles) {
+      if (options.fontFamily) defaults.fonts[role].family = source.fonts[role].family;
+      if (options.fontWeight) defaults.fonts[role].weight = source.fonts[role].weight;
+      if (options.typeScale) {
+        defaults.fonts[role].size = source.fonts[role].size;
+        defaults.fonts[role].lineHeight = source.fonts[role].lineHeight;
+        defaults.fonts[role].letterSpacing = source.fonts[role].letterSpacing;
+      }
+      if (options.textColor) {
+        defaults.fonts[role].color = source.fonts[role].color ?? source.colors.text;
+      }
+    }
+    if (options.textColor && options.roles.includes('base')) defaults.colors.text = source.colors.text;
+    if (options.textColor && options.roles.includes('caption')) defaults.colors.muted = source.colors.muted;
+    if (options.background) defaults.colors.background = source.colors.background;
+    if (options.objectColors) {
+      defaults.palette = [...source.palette];
+      defaults.colors.accent = source.colors.accent;
+    }
+    deck.themeStyle = defaults;
+    deck.themePreset = theme.id;
+  }
+
+  for (const slide of slides) {
+    if (options.background && options.scope !== 'selection') {
+      slide.background = { color: source.colors.background, image: null };
+    }
+    for (const el of slide.elements) {
+      if (options.scope === 'selection' && !selection.has(el.id)) continue;
+      if (el.type === 'text') {
+        let role = explicitRole(el);
+        if (options.detectRoles && role === 'base') {
+          const size = Number.parseFloat(el.style['font-size'] ?? '0') || 0;
+          role = roleForElement(el.class, size, maxProse);
+          el.class = [...el.class.filter((name) => !name.startsWith('role-')), `role-${role}`];
+        }
+        if (!options.roles.includes(role)) continue;
+        if (options.scope === 'deck' && !options.replaceOverrides) continue;
+        const font = source.fonts[role];
+        const style = { ...el.style };
+        const inherit = options.scope === 'deck' && options.replaceOverrides;
+        const set = (property: string, value: string) => {
+          if (inherit) delete style[property];
+          else style[property] = value;
+        };
+        if (options.fontFamily) set('font-family', font.family);
+        if (options.fontWeight) set('font-weight', String(font.weight));
+        if (options.typeScale) {
+          set('font-size', `${font.size}px`);
+          set('line-height', String(font.lineHeight));
+          set('letter-spacing', font.letterSpacing);
+        }
+        if (options.textColor) set('color', font.color ?? source.colors.text);
+        el.style = style;
+      } else if (el.type === 'shape' && options.objectColors) {
+        if (el.fill) el.fill = nearestPaletteColor(el.fill, source.palette);
+        if (el.stroke) el.stroke = nearestPaletteColor(el.stroke, source.palette);
+      }
+    }
+  }
 }
 
 /** Replace any previously installed theme block, leaving user CSS untouched. */

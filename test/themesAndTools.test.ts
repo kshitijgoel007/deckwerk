@@ -6,6 +6,7 @@ import {
   THEME_BLOCK_START,
   applyThemeToDeck,
   applyThemeToSlide,
+  adoptThemeStyles,
   nearestPaletteColor,
   themeCss,
   withThemeBlock,
@@ -73,6 +74,37 @@ describe('theme presets', () => {
 });
 
 describe('applying a theme', () => {
+  it('can adopt only title font families as deck defaults without changing colours', () => {
+    const deck = sampleDeck();
+    const title = deck.slides[0].elements.find((el) => el.id === 't1')!;
+    title.class = ['role-title'];
+    title.style = { 'font-family': 'Imported Font', color: '#123456', 'font-size': '96px' };
+    adoptThemeStyles(deck, THEMES[2], {
+      scope: 'deck', roles: ['title'], fontFamily: true, fontWeight: false,
+      typeScale: false, textColor: false, background: false, objectColors: false,
+      replaceOverrides: true, detectRoles: false,
+    }, 0, new Set());
+    expect(deck.themeStyle?.fonts.title.family).toBe(THEMES[2].fonts.title.family);
+    expect(title.style['font-family']).toBeUndefined();
+    expect(title.style.color).toBe('#123456');
+    expect(title.style['font-size']).toBe('96px');
+  });
+
+  it('applies a family to one slide without changing deck defaults or sibling slides', () => {
+    const deck = sampleDeck();
+    deck.slides.push(structuredClone(deck.slides[0]));
+    deck.slides[1].id = 'slide-2';
+    for (const slide of deck.slides) slide.elements[0].class = ['role-title'];
+    adoptThemeStyles(deck, THEMES[1], {
+      scope: 'slide', roles: ['title'], fontFamily: true, fontWeight: false,
+      typeScale: false, textColor: false, background: false, objectColors: false,
+      replaceOverrides: true, detectRoles: false,
+    }, 0, new Set());
+    expect(deck.themeStyle).toBeNull();
+    expect(deck.slides[0].elements[0].style['font-family']).toBe(THEMES[1].fonts.title.family);
+    expect(deck.slides[1].elements[0].style['font-family']).toBeUndefined();
+  });
+
   it('with every option off, changes nothing', () => {
     const deck = sampleDeck();
     const before = JSON.stringify(deck);

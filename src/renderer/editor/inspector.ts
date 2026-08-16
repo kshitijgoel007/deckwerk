@@ -32,8 +32,6 @@ export class Inspector {
   videoDuration?: (elementId: string) => number | null;
   /** Seeks the sidebar trim preview; rebuilt with the panel. */
   private trimPreviewSeek: ((t: number) => void) | null = null;
-  /** Apply the installed theme (with the toolbar's checkboxes) to this slide. */
-  onApplyTheme?: () => void;
 
   /** What the panel showed last, to skip re-renders that would change nothing. */
   private lastDeck: unknown = null;
@@ -95,12 +93,6 @@ export class Inspector {
             next.slides[slideIndex].background = { color: value, image: null };
           });
         }),
-      );
-      slideGroup.appendChild(
-        button('Apply theme to slide', () => this.onApplyTheme?.()),
-      );
-      slideGroup.appendChild(
-        hint('Applies the installed theme with the aspects ticked in the toolbar.'),
       );
       this.host.appendChild(slideGroup);
       return;

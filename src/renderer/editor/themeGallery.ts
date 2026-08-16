@@ -61,7 +61,7 @@ export function createThemeGallery(
     name.textContent = theme.name;
     const badge = document.createElement('span');
     badge.className = 'theme-installed-badge';
-    badge.textContent = 'Installed';
+    badge.textContent = 'Last used';
     heading.append(name, badge);
     badges.set(theme.id, badge);
 

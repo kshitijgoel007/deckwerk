@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { emptyDeck } from '../src/shared/deck.js';
 import { THEMES, NO_APPLY, applyThemeToSlide } from '../src/shared/themes.js';
 import { Inspector } from '../src/renderer/editor/inspector.js';
@@ -44,14 +44,12 @@ describe('slide layouts', () => {
     expect(slide.elements.map(({ id, x, y, w, h }) => ({ id, x, y, w, h }))).toEqual(before);
   });
 
-  it('offers layout and background beside Apply theme to slide', () => {
+  it('offers slide layout and a direct background override', () => {
     const deck = emptyDeck();
     const store = new EditorStore(deck, '/tmp/layout');
     const host = document.createElement('div');
     document.body.appendChild(host);
-    const inspector = new Inspector(host, store);
-    const apply = vi.fn();
-    inspector.onApplyTheme = apply;
+    new Inspector(host, store);
 
     const layout = [...host.querySelectorAll<HTMLSelectElement>('select')].find((select) =>
       [...select.options].some((option) => option.value === 'standard'))!;
@@ -65,9 +63,7 @@ describe('slide layouts', () => {
     expect(store.slide!.background).toEqual({ color: '#123456', image: null });
     host.querySelector<HTMLButtonElement>('button[title="No colour"]')!.click();
     expect(store.slide!.background).toEqual({ color: null, image: null });
-    const applyButton = [...host.querySelectorAll('button')].find((button) =>
-      button.textContent === 'Apply theme to slide')!;
-    applyButton.click();
-    expect(apply).toHaveBeenCalledOnce();
+    expect([...host.querySelectorAll('button')].some((button) =>
+      button.textContent === 'Apply theme to slide')).toBe(false);
   });
 });

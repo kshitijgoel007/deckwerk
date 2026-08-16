@@ -897,6 +897,22 @@ input[type="range"] { accent-color: var(--accent); border: 0; background: transp
 }
 .theme-actions .bar-check { justify-content: flex-start; }
 .theme-actions button { grid-column: 1 / -1; }
+.theme-adoption-controls {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 10px;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+.theme-adoption-controls .field,
+.theme-option-title { grid-column: 1 / -1; }
+.theme-option-title {
+  margin-top: 4px;
+  color: var(--muted);
+  font: 700 9px/1 var(--mono);
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
 
 /* The stage must not clip editor chrome: an element at the slide edge needs
    its handles (and the mask ghost) drawn OUTSIDE the slide. The slide layer

@@ -12,6 +12,32 @@ import { z } from 'zod';
 
 const Id = z.string().min(1);
 
+const ThemeFontRoleSchema = z.object({
+  family: z.string(),
+  size: z.number().positive(),
+  weight: z.number(),
+  lineHeight: z.number().positive(),
+  letterSpacing: z.string(),
+  color: z.string().optional(),
+});
+
+const ThemeStyleSchema = z.object({
+  fonts: z.object({
+    title: ThemeFontRoleSchema,
+    heading: ThemeFontRoleSchema,
+    body: ThemeFontRoleSchema,
+    caption: ThemeFontRoleSchema,
+    base: ThemeFontRoleSchema,
+  }),
+  palette: z.array(z.string()),
+  colors: z.object({
+    background: z.string(),
+    text: z.string(),
+    muted: z.string(),
+    accent: z.string(),
+  }),
+});
+
 /** Shared geometry for every element. */
 const BaseElement = z.object({
   id: Id,
@@ -198,6 +224,8 @@ export const DeckSchema = z.object({
   theme: z.string().default('theme.css'),
   /** Installed theme preset id (see shared/themes.ts); null when none. */
   themePreset: z.string().nullable().default(null),
+  /** Persistent deck defaults, composed property-by-property from theme presets. */
+  themeStyle: ThemeStyleSchema.nullable().default(null),
   slides: z.array(SlideSchema).default([]),
 });
 
@@ -214,6 +242,7 @@ export type HtmlEl = z.infer<typeof HtmlElement>;
 export type UnsupportedEl = z.infer<typeof UnsupportedElement>;
 export type Slide = z.infer<typeof SlideSchema>;
 export type Deck = z.infer<typeof DeckSchema>;
+export type ThemeStyle = z.infer<typeof ThemeStyleSchema>;
 
 export const DECK_VERSION = 1 as const;
 
