@@ -21,6 +21,7 @@ import { parseDeck } from '../src/shared/deck.js';
 const PYTHON = join(process.cwd(), '.venv-import/bin/python');
 const SCRIPT = join(process.cwd(), 'importers/keynote/import_keynote.py');
 const FIXTURES = process.env.KEYNOTE_FIXTURES;
+const LOCAL_FIXTURES = join(process.cwd(), 'example_presentations');
 
 const ready = existsSync(PYTHON) && existsSync(SCRIPT);
 
@@ -38,7 +39,9 @@ function report(keyPath: string): {
 }
 
 describe.skipIf(!ready)('keynote importer', () => {
-  const fixtures = FIXTURES && existsSync(FIXTURES) ? FIXTURES : null;
+  const fixtures = FIXTURES && existsSync(FIXTURES)
+    ? FIXTURES
+    : existsSync(LOCAL_FIXTURES) ? LOCAL_FIXTURES : null;
 
   it.skipIf(!fixtures)('imports every fixture deck without failing', () => {
     const { readdirSync } = require('node:fs') as typeof import('node:fs');
@@ -57,7 +60,10 @@ describe.skipIf(!ready)('keynote importer', () => {
     }
   }, 600_000);
 
-  it.skipIf(!fixtures)('produces schema-valid decks with sane geometry', async () => {
+  // Full written imports copy and transcode gigabytes of assets. Keep this
+  // opt-in for CI or focused local runs; report mode above still parses every
+  // object in every local corpus deck.
+  it.skipIf(!FIXTURES || !existsSync(FIXTURES))('produces schema-valid decks with sane geometry', async () => {
     const { readdirSync } = require('node:fs') as typeof import('node:fs');
     const first = readdirSync(fixtures!).find((f) => f.endsWith('.key'));
     if (!first) return;
@@ -89,6 +95,22 @@ describe.skipIf(!ready)('keynote importer', () => {
     } finally {
       await rm(out, { recursive: true, force: true });
     }
+  }, 600_000);
+
+  it.skipIf(!fixtures)('preserves curved Keynote connectors as editable curves', () => {
+    const { readdirSync } = require('node:fs') as typeof import('node:fs');
+    const candidates = readdirSync(fixtures!).filter((name) => name.endsWith('.key'));
+    let curves = 0;
+    for (const name of candidates.slice(0, 8)) {
+      const stdout = execFileSync(PYTHON, ['-c', [
+        'from pathlib import Path',
+        'from importers.keynote.import_keynote import import_key',
+        `d,_=import_key(Path(${JSON.stringify(join(fixtures!, name))}),Path('/dev/null'),False)`,
+        "print(sum(1 for s in d['slides'] for e in s['elements'] if e.get('control')))",
+      ].join(';')], { encoding: 'utf8', cwd: process.cwd() });
+      curves += Number(stdout.trim()) || 0;
+    }
+    expect(curves).toBeGreaterThan(0);
   }, 600_000);
 
   it('reports a clear error for a file that is not a Keynote deck', async () => {

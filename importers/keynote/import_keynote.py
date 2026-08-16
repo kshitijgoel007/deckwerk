@@ -1341,10 +1341,9 @@ class Importer:
         path_w = max(max_x - min_x, 1.0)
         path_h = max(max_y - min_y, 1.0)
 
-        # A connector is an editable relationship, not immutable vector art.
-        # Keep its endpoints and arrowhead direction, but deliberately discard
-        # Keynote's curve control points so the editor can use native endpoint
-        # handles and its own future attachment constraints.
+        # Connectors stay editable native lines/arrows. Curved connection lines
+        # carry one native quadratic control point so their bend survives while
+        # endpoints remain freely draggable in the editor.
         if is_connection and path_msg is not None:
             endpoints = _path_endpoints(path_msg)
             if endpoints is not None:
@@ -1359,7 +1358,15 @@ class Importer:
                     box["x"] + (end[0] - min_x) * sx,
                     box["y"] + (end[1] - min_y) * sy,
                 )
-                return self._native_line(style, start_abs, end_abs, z)
+                control_abs = None
+                curve = _connection_curve(path_msg)
+                if curve is not None:
+                    _, control, _ = curve
+                    control_abs = (
+                        box["x"] + (control[0] - min_x) * sx,
+                        box["y"] + (control[1] - min_y) * sy,
+                    )
+                return self._native_line(style, start_abs, end_abs, z, control_abs)
 
         # The viewBox is the path's own extent, never Keynote's `naturalSize`,
         # which is unreliable in both directions and wrong in opposite ways:
@@ -1432,6 +1439,7 @@ class Importer:
         start: tuple[float, float],
         end: tuple[float, float],
         z: int,
+        control: tuple[float, float] | None = None,
     ) -> dict[str, Any]:
         """Build an editable native line/arrow from canvas-space endpoints."""
         dx = end[0] - start[0]
@@ -1459,6 +1467,11 @@ class Importer:
                 "radius": 0,
                 "arrowStart": style.arrow_start,
                 "arrowEnd": style.arrow_end,
+                "control": (
+                    {"x": round(control[0], 2), "y": round(control[1], 2)}
+                    if control is not None
+                    else None
+                ),
             }
         )
         return element
@@ -1759,8 +1772,12 @@ def _is_node_connector(element: dict[str, Any], siblings: list[dict[str, Any]]) 
     return False
 
 
-def _connection_to_curve(path_msg: Any) -> str | None:
-    """Rebuild a curved Keynote connector as an actual curve.
+def _connection_curve(
+    path_msg: Any,
+) -> tuple[
+    tuple[float, float], tuple[float, float], tuple[float, float]
+] | None:
+    """Return start/control/end for a curved Keynote connector.
 
     A curved connection line is stored as a 3-point polyline whose middle point
     lies ON the curve, not a bezier — Keynote reconstructs the curve at draw
@@ -1769,21 +1786,42 @@ def _connection_to_curve(path_msg: Any) -> str | None:
     curve. Straight connectors have 2 points and are left alone.
     """
     pts: list[tuple[float, float]] = []
+    start: tuple[float, float] | None = None
     for el in path_msg.elements:
         t = int(el.type)
         if t in (1, 2):
             for p in el.points:
-                pts.append((float(p.x), float(p.y)))
+                point = (float(p.x), float(p.y))
+                if start is None:
+                    start = point
+                pts.append(point)
+        elif t == 3 and start is not None and len(el.points) >= 2:
+            control = (float(el.points[0].x), float(el.points[0].y))
+            end = (float(el.points[1].x), float(el.points[1].y))
+            return start, control, end
+        elif t == 4 and start is not None and len(el.points) >= 3:
+            p1 = (float(el.points[0].x), float(el.points[0].y))
+            p2 = (float(el.points[1].x), float(el.points[1].y))
+            end = (float(el.points[2].x), float(el.points[2].y))
+            midpoint = (
+                0.125 * start[0] + 0.375 * p1[0] + 0.375 * p2[0] + 0.125 * end[0],
+                0.125 * start[1] + 0.375 * p1[1] + 0.375 * p2[1] + 0.125 * end[1],
+            )
+            control = (
+                2 * midpoint[0] - (start[0] + end[0]) / 2,
+                2 * midpoint[1] - (start[1] + end[1]) / 2,
+            )
+            return start, control, end
         elif t == 5:
             continue
         else:
-            return None  # already a real curve; keep it
+            return None
     if len(pts) != 3:
         return None
     (x0, y0), (mx, my), (x2, y2) = pts
     cx = 2 * mx - (x0 + x2) / 2
     cy = 2 * my - (y0 + y2) / 2
-    return f"M {x0:.2f} {y0:.2f} Q {cx:.2f} {cy:.2f} {x2:.2f} {y2:.2f}"
+    return (x0, y0), (cx, cy), (x2, y2)
 
 
 def _path_endpoints(
