@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { parseDeck } from '../src/shared/deck.js';
+import { applySlideLayout } from '../src/renderer/editor/slideLayouts.js';
+import { EditorStore } from '../src/renderer/editor/store.js';
 
 /**
  * Import regression tests.
@@ -112,6 +114,87 @@ describe.skipIf(!ready)('keynote importer', () => {
     }
     expect(curves).toBeGreaterThan(0);
   }, 600_000);
+
+  const bitterLessonDeck = join(LOCAL_FIXTURES, '2606_bitter_lesson.key');
+
+  function importBitterLesson() {
+    const stdout = execFileSync(PYTHON, ['-c', [
+      'import json',
+      'from pathlib import Path',
+      'from importers.keynote.import_keynote import import_key',
+      `d,_=import_key(Path(${JSON.stringify(bitterLessonDeck)}),Path('/dev/null'),False)`,
+      'print(json.dumps(d))',
+    ].join(';')], { encoding: 'utf8', cwd: process.cwd(), maxBuffer: 64 * 1024 * 1024 });
+    return parseDeck(JSON.parse(stdout));
+  }
+
+  it.skipIf(!existsSync(bitterLessonDeck))(
+    'can insert and lay out a new slide after the real Bitter Lesson slide',
+    () => {
+      const deck = importBitterLesson();
+      const bitterIndex = deck.slides.findIndex((slide) =>
+        slide.elements.some((element) =>
+          element.type === 'text' &&
+          element.html.toLowerCase().includes('the flavor of the bitter lesson')));
+      expect(bitterIndex).toBeGreaterThanOrEqual(0);
+      const originalBitterSlide = deck.slides[bitterIndex];
+      const store = new EditorStore(deck, '/tmp/bitter-lesson');
+      store.selectSlide(bitterIndex);
+      store.commit((next) => next.slides.splice(bitterIndex + 1, 0, {
+        id: 'new-after-bitter', name: '', background: { color: null, image: null },
+        notes: '', elements: [], timeline: [],
+      }));
+      store.selectSlide(bitterIndex + 1);
+      store.commit((next) => applySlideLayout(next.slides[bitterIndex + 1], 'standard'));
+
+      expect(store.get().deck.slides[bitterIndex]).toBe(originalBitterSlide);
+      expect(store.slide?.elements.map((element) => element.class[0])).toEqual([
+        'role-title', 'role-body',
+      ]);
+      expect(() => parseDeck(store.get().deck)).not.toThrow();
+    },
+    60_000,
+  );
+
+  it.skipIf(!existsSync(bitterLessonDeck))(
+    'keeps Bitter Lesson text boxes editable within the slide bounds',
+    () => {
+      const deck = importBitterLesson();
+      for (const slide of deck.slides) {
+        for (const element of slide.elements) {
+          if (element.type !== 'text') continue;
+          expect(element.autoFit, element.html).toBe(true);
+          expect(element.x, element.html).toBeGreaterThanOrEqual(0);
+          expect(element.y, element.html).toBeGreaterThanOrEqual(0);
+          expect(element.x + element.w, element.html).toBeLessThanOrEqual(deck.canvas.w);
+          expect(element.y + element.h, element.html).toBeLessThanOrEqual(deck.canvas.h);
+        }
+      }
+
+      const training = deck.slides.flatMap((slide) => slide.elements).find((element) =>
+        element.type === 'text' && element.html === 'Diffusion Forcing - Training');
+      expect(training).toMatchObject({ x: 0, w: 1920 });
+    },
+    60_000,
+  );
+
+  it.skipIf(!existsSync(bitterLessonDeck))(
+    'uses Keynote heading sizes with a browser-resolvable Times fallback',
+    () => {
+      const deck = importBitterLesson();
+      const headings = deck.slides.flatMap((slide) => slide.elements).filter((element) =>
+        element.type === 'text' &&
+        (element.html.includes('LLM-style') || element.html.includes('Video-gen style')));
+
+      expect(headings).toHaveLength(2);
+      for (const heading of headings) {
+        expect(heading.style['font-size']).toBe('70px');
+        expect(heading.style['font-family']).toContain('"Times New Roman"');
+        expect(heading.style['font-family']).toMatch(/serif$/);
+      }
+    },
+    60_000,
+  );
 
   it('reports a clear error for a file that is not a Keynote deck', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'kn-bad-'));

@@ -623,9 +623,17 @@ def _font_family_css(font_name: str) -> str:
         "HelveticaNeue": "Helvetica Neue",
         "Helvetica-Light": "Helvetica",
         "Avenir-Book": "Avenir",
+        # Keynote records the PostScript name. Browsers do not consistently
+        # accept it as a CSS family name, even when Times New Roman is
+        # installed, and silently substitute a much wider sans-serif face.
+        "TimesNewRomanPSMT": "Times New Roman",
+        "TimesNewRomanPS-BoldMT": "Times New Roman",
+        "TimesNewRomanPS-ItalicMT": "Times New Roman",
+        "TimesNewRomanPS-BoldItalicMT": "Times New Roman",
     }.get(font_name)
     if friendly:
-        return f'"{escaped}", "{friendly}", sans-serif'
+        generic = "serif" if friendly == "Times New Roman" else "sans-serif"
+        return f'"{escaped}", "{friendly}", {generic}'
     return f'"{escaped}", sans-serif'
 
 
@@ -1079,6 +1087,7 @@ class Importer:
             element.update(
                 {
                     "html": PLACEHOLDER_TEXT,
+                    "autoFit": True,
                     "align": style.align,
                     "valign": style.valign,
                     "class": ["kn-text", "placeholder"],
@@ -1137,6 +1146,7 @@ class Importer:
             element.update(
                 {
                     "html": text_to_html(text),
+                    "autoFit": True,
                     "align": style.align,
                     "valign": style.valign,
                     "class": ["kn-text"],
@@ -1221,6 +1231,25 @@ class Importer:
                 out["y"] = centre_y - out["h"]
             self.report.autosized_boxes += 1
 
+        return self._clamp_text_box(out)
+
+    def _clamp_text_box(self, box: dict[str, float]) -> dict[str, float]:
+        """Keep imported text geometry inside the editable slide canvas.
+
+        Keynote permits a text container to extend beyond the slide while its
+        centred contents remain visible. In the editor that hidden extent
+        creates enormous selection boxes and makes resize handles unreachable.
+        Intersecting the container with the canvas preserves the visible area
+        and turns it into an ordinary, editable text box.
+        """
+        out = dict(box)
+        canvas_w, canvas_h = self.canvas
+        right = min(canvas_w, max(0.0, out["x"] + out["w"]))
+        bottom = min(canvas_h, max(0.0, out["y"] + out["h"]))
+        out["x"] = min(canvas_w - 1.0, max(0.0, out["x"]))
+        out["y"] = min(canvas_h - 1.0, max(0.0, out["y"]))
+        out["w"] = max(1.0, right - out["x"])
+        out["h"] = max(1.0, bottom - out["y"])
         return out
 
     def _text_natural_size(self, obj: Any) -> tuple[float, float] | None:
@@ -1921,6 +1950,31 @@ THEME_CSS = """/*
 
 .kn-text {
   line-height: 1.2;
+}
+
+/* Semantic defaults for text boxes created after import. Imported Keynote text
+ * keeps its own inline size, so these do not disturb the source slides. */
+.role-title {
+  font-size: 92px;
+  font-weight: 700;
+  line-height: 1.08;
+  letter-spacing: -0.02em;
+}
+
+.role-heading {
+  font-size: 58px;
+  font-weight: 600;
+  line-height: 1.15;
+}
+
+.role-body {
+  font-size: 44px;
+  line-height: 1.3;
+}
+
+.role-caption {
+  font-size: 28px;
+  line-height: 1.3;
 }
 """
 

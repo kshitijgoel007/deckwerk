@@ -1,6 +1,6 @@
 import type { Deck, Slide, SlideElement } from '@shared/deck.js';
 import { type Rect, fitScale, makeId } from '@shared/geometry.js';
-import { quadraticPath, renderSlide } from '../player/render.js';
+import { fitAutoText, quadraticPath, renderSlide, scheduleAutoFit } from '../player/render.js';
 import { HANDLES, type SnapLine, snapMove, snapResize } from './snapping.js';
 import type { EditorStore } from './store.js';
 
@@ -65,6 +65,8 @@ export class EditorCanvas {
 
   /** Id of the text element currently being edited in place, if any. */
   private editingId: string | null = null;
+  /** Last non-collapsed browser selection inside the active text element. */
+  private textSelectionRange: Range | null = null;
 
   /**
    * Id of the element whose crop is being edited, if any.
@@ -80,6 +82,8 @@ export class EditorCanvas {
 
   /** Notified when mask mode turns on or off, so the inspector can relabel. */
   onMaskModeChange?: (elementId: string | null) => void;
+  /** Notified when inline text editing starts or ends. */
+  onTextEditModeChange?: (elementId: string | null) => void;
 
   /**
    * Context-menu actions, supplied by the shell so the menu can reach
@@ -106,6 +110,7 @@ export class EditorCanvas {
     new ResizeObserver(() => this.rescale()).observe(this.host);
     this.bindPointer();
     this.bindDrop();
+    document.addEventListener('selectionchange', () => this.captureTextSelection());
 
     store.subscribe(() => this.render());
     this.render();
@@ -176,6 +181,12 @@ export class EditorCanvas {
     for (const node of this.slideLayer.querySelectorAll<HTMLElement>('[data-element-id]')) {
       const video = node.querySelector('video');
       if (!video) continue;
+      const badge = document.createElement('span');
+      badge.className = 'video-editor-badge';
+      badge.textContent = '▶';
+      badge.title = 'Video';
+      badge.setAttribute('aria-label', 'Video');
+      node.appendChild(badge);
       video.removeAttribute('autoplay');
       video.controls = false;
       if (playing.has(node.dataset.elementId!)) void video.play().catch(() => {});
@@ -213,6 +224,15 @@ export class EditorCanvas {
       node.style.height = `${el.h}px`;
       node.style.opacity = String(el.opacity);
       node.style.transform = el.rot ? `rotate(${el.rot}deg)` : '';
+      if (el.type === 'text') {
+        if (el.autoFit) {
+          node.dataset.autoFit = 'true';
+          scheduleAutoFit(node);
+        } else {
+          delete node.dataset.autoFit;
+          node.querySelector<HTMLElement>('.text-content')?.style.removeProperty('font-size');
+        }
+      }
       if (el.type === 'image' || el.type === 'video') {
         const width = el.borderWidth ?? 0;
         node.style.border = width > 0
@@ -327,6 +347,7 @@ export class EditorCanvas {
     this.stage.style.width = `${deck.canvas.w}px`;
     this.stage.style.height = `${deck.canvas.h}px`;
     this.stage.style.transform = `scale(${scale})`;
+    this.stage.style.setProperty('--editor-inv-scale', String(1 / scale));
     this.stage.style.transformOrigin = 'top left';
     this.stage.style.left = `${(r.width - deck.canvas.w * scale) / 2}px`;
     this.stage.style.top = `${(r.height - deck.canvas.h * scale) / 2}px`;
@@ -463,10 +484,14 @@ export class EditorCanvas {
 
   private onPointerDown(ev: PointerEvent): void {
     if (ev.button !== 0) return;
+    const target = ev.target as HTMLElement;
+    // The no-deck welcome screen lives inside the canvas host, but its buttons
+    // are ordinary application controls. Capturing their pointer on the canvas
+    // changes the pointer-up target and prevents Chromium from synthesising a
+    // click, which made all three welcome actions appear inert.
+    if (target.closest('.welcome-screen')) return;
     const slide = this.store.slide;
     if (!slide) return;
-
-    const target = ev.target as HTMLElement;
 
     // Suppress the browser's own text selection: dragging across a slide would
     // otherwise sweep-select the text of every element it crossed.
@@ -787,6 +812,9 @@ export class EditorCanvas {
       menu.appendChild(row);
     }
     document.body.appendChild(menu);
+    // A document-level pointerdown used to remove the menu *before* its row
+    // could receive click, making actions such as Edit mask appear inert.
+    menu.addEventListener('pointerdown', (event) => event.stopPropagation());
     const close = () => menu.remove();
     setTimeout(() => document.addEventListener('pointerdown', close, { once: true }), 0);
   }
@@ -796,6 +824,10 @@ export class EditorCanvas {
    * play a video, open the trim window for nothing else.
    */
   private onDoubleClick(ev: PointerEvent | MouseEvent): void {
+    // Once editing is active, native browser double-click selection owns this
+    // gesture. Calling beginTextEdit again would select the entire text box and
+    // replace the word selection the browser just made.
+    if (this.editingId && (ev.target as HTMLElement).closest('.editing')) return;
     const slide = this.store.slide;
     if (!slide) return;
     const hit = this.hitTest(this.toCanvas(ev as PointerEvent));
@@ -823,7 +855,7 @@ export class EditorCanvas {
     const node = this.slideLayer.querySelector<HTMLElement>(
       `[data-element-id="${CSS.escape(elementId)}"]`,
     );
-    const body = node?.firstElementChild as HTMLElement | null;
+    const body = node?.querySelector<HTMLElement>('.text-content') ?? null;
     if (!body) return;
 
     this.editingId = elementId;
@@ -844,18 +876,26 @@ export class EditorCanvas {
     const selection = window.getSelection();
     selection?.removeAllRanges();
     selection?.addRange(range);
+    this.textSelectionRange = range.cloneRange();
+    this.onTextEditModeChange?.(elementId);
 
     const finish = (commit: boolean) => {
       body.removeEventListener('blur', onBlur);
       body.removeEventListener('keydown', onKey);
+      body.removeEventListener('input', onInput);
       if (commit) this.commitTextEdit();
       else {
         this.editingId = null;
+        this.textSelectionRange = null;
+        this.onTextEditModeChange?.(null);
         this.render();
       }
     };
 
     const onBlur = () => finish(true);
+    const onInput = () => {
+      if (el.type === 'text' && el.autoFit) scheduleAutoFit(node!);
+    };
     const onKey = (e: KeyboardEvent) => {
       // Editing keys must not reach the canvas shortcuts (Delete would remove
       // the element you are typing into).
@@ -871,6 +911,7 @@ export class EditorCanvas {
 
     body.addEventListener('blur', onBlur);
     body.addEventListener('keydown', onKey);
+    body.addEventListener('input', onInput);
   }
 
   /** Write the edited markup back to the deck as a single undoable change. */
@@ -878,11 +919,13 @@ export class EditorCanvas {
     const elementId = this.editingId;
     if (!elementId) return;
     this.editingId = null;
+    this.textSelectionRange = null;
+    this.onTextEditModeChange?.(null);
 
     const node = this.slideLayer.querySelector<HTMLElement>(
       `[data-element-id="${CSS.escape(elementId)}"]`,
     );
-    const body = node?.firstElementChild as HTMLElement | null;
+    const body = node?.querySelector<HTMLElement>('.text-content') ?? null;
     if (!body) return;
 
     const html = body.innerHTML;
@@ -901,12 +944,56 @@ export class EditorCanvas {
         el.html = html;
         el.class = el.class.filter((name) => name !== 'placeholder');
       }
-    });
+    }, { label: 'Edit text' });
   }
 
   /** True while a text element is being edited, so callers can defer redraws. */
   isEditing(): boolean {
     return this.editingId !== null;
+  }
+
+  /** Refit after live theme CSS changes without rebuilding the slide DOM. */
+  refitAutoText(): void {
+    fitAutoText(this.slideLayer);
+  }
+
+  /** Apply weight to the selected characters without styling the whole box. */
+  applyTextSelectionWeight(weight: number): boolean {
+    if (!this.editingId) return false;
+    const content = this.slideLayer.querySelector<HTMLElement>(
+      `[data-element-id="${CSS.escape(this.editingId)}"] .text-content`,
+    );
+    const live = window.getSelection();
+    const range = live && live.rangeCount > 0 && !live.getRangeAt(0).collapsed
+      ? live.getRangeAt(0)
+      : this.textSelectionRange;
+    if (!content || !range || range.collapsed || !content.contains(range.commonAncestorContainer)) {
+      return false;
+    }
+
+    const span = document.createElement('span');
+    span.style.fontWeight = String(Math.max(100, Math.min(900, weight)));
+    span.appendChild(range.extractContents());
+    range.insertNode(span);
+    const next = document.createRange();
+    next.selectNodeContents(span);
+    live?.removeAllRanges();
+    live?.addRange(next);
+    this.textSelectionRange = next.cloneRange();
+    return true;
+  }
+
+  private captureTextSelection(): void {
+    if (!this.editingId) return;
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0 || selection.isCollapsed) return;
+    const range = selection.getRangeAt(0);
+    const content = this.slideLayer.querySelector<HTMLElement>(
+      `[data-element-id="${CSS.escape(this.editingId)}"] .text-content`,
+    );
+    if (content?.contains(range.commonAncestorContainer)) {
+      this.textSelectionRange = range.cloneRange();
+    }
   }
 
   /** The element whose mask is being edited, if any. */
@@ -942,7 +1029,7 @@ export class EditorCanvas {
           // the identity transform and nothing moves on screen.
           target.sourceBox = { x: 0, y: 0, w: target.w, h: target.h };
         }
-      });
+      }, { label: 'Edit media mask' });
     }
 
     this.maskingId = elementId;
@@ -1107,8 +1194,18 @@ function sameStructure(a: Slide, b: Slide): boolean {
     const y = b.elements[i];
     if (x.id !== y.id || x.type !== y.type || x.z !== y.z) return false;
     if ('src' in x && 'src' in y && x.src !== y.src) return false;
+    if (
+      (x.type === 'image' || x.type === 'video') &&
+      (y.type === 'image' || y.type === 'video') &&
+      Boolean(x.sourceBox) !== Boolean(y.sourceBox)
+    ) return false;
     if ('html' in x && 'html' in y && x.html !== y.html) return false;
     if (x.class.join(' ') !== y.class.join(' ')) return false;
+    if (
+      (x.type === 'image' || x.type === 'video') &&
+      (y.type === 'image' || y.type === 'video') &&
+      JSON.stringify(x.effects ?? []) !== JSON.stringify(y.effects ?? [])
+    ) return false;
     // Shape paint and kind live on SVG children; wrapper-only updates cannot
     // apply them. Rebuild when they change (including rect -> ellipse).
     if (x.type === 'shape' && y.type === 'shape') {

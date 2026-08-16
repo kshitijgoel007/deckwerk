@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { emptyDeck } from '../src/shared/deck.js';
 import { THEMES, NO_APPLY, applyThemeToSlide } from '../src/shared/themes.js';
 import { Inspector } from '../src/renderer/editor/inspector.js';
@@ -65,5 +67,23 @@ describe('slide layouts', () => {
     expect(store.slide!.background).toEqual({ color: null, image: null });
     expect([...host.querySelectorAll('button')].some((button) =>
       button.textContent === 'Apply theme to slide')).toBe(false);
+  });
+
+  it('gives semantic layout text readable fallback sizes in an imported deck', () => {
+    const playerCss = readFileSync(
+      join(process.cwd(), 'src/renderer/player/player.css'),
+      'utf8',
+    );
+    const styles = document.createElement('style');
+    styles.textContent = `${playerCss}\n.slide { font-family: sans-serif; }\n.kn-text { line-height: 1.2; }`;
+    document.head.appendChild(styles);
+    const slide = emptyDeck().slides[0];
+    applySlideLayout(slide, 'standard');
+    const rendered = renderSlide(slide, { resolveSrc: (src) => src });
+    document.body.appendChild(rendered);
+
+    expect(getComputedStyle(rendered.querySelector('.role-title')!).fontSize).toBe('92px');
+    expect(getComputedStyle(rendered.querySelector('.role-body')!).fontSize).toBe('44px');
+    styles.remove();
   });
 });

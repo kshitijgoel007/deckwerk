@@ -21,15 +21,34 @@ export interface EditorState {
 
 type Listener = (state: EditorState) => void;
 
+export interface HistoryItem {
+  id: number;
+  label: string;
+  at: number;
+  slideIndex: number;
+}
+
+interface DeckHistoryItem extends HistoryItem {
+  deck: Deck;
+}
+
+interface UndoItem {
+  deck: Deck;
+  label: string;
+}
+
 const HISTORY_LIMIT = 200;
 
 export class EditorStore {
   private state: EditorState;
   private listeners = new Set<Listener>();
-  private undoStack: Deck[] = [];
-  private redoStack: Deck[] = [];
+  private undoStack: UndoItem[] = [];
+  private redoStack: UndoItem[] = [];
+  private historyLog: DeckHistoryItem[] = [];
+  private nextHistoryId = 1;
   /** Coalesces a drag into one undo entry instead of one per mousemove. */
   private txnBase: Deck | null = null;
+  private txnLabel = 'Move or resize objects';
 
   constructor(deck: Deck, dir: string | null = null) {
     this.state = {
@@ -39,6 +58,7 @@ export class EditorStore {
       selection: new Set(),
       dirty: false,
     };
+    this.recordHistory('Initial state');
   }
 
   get(): EditorState {
@@ -62,6 +82,7 @@ export class EditorStore {
   load(deck: Deck, dir: string, opts: { keepView?: boolean } = {}): void {
     this.undoStack = [];
     this.redoStack = [];
+    this.historyLog = [];
     // An external reload (agent edit, git) must not teleport the editor away
     // from the slide being worked on.
     const slideIndex = opts.keepView
@@ -74,6 +95,7 @@ export class EditorStore {
       selection: new Set(),
       dirty: false,
     };
+    this.recordHistory('Opened deck');
     this.emit();
   }
 
@@ -83,15 +105,20 @@ export class EditorStore {
    * The clone is what lets the undo stack hold plain references: no other code
    * can mutate a deck that history is holding.
    */
-  commit(fn: (deck: Deck) => void, opts: { history?: boolean } = {}): void {
+  commit(
+    fn: (deck: Deck) => void,
+    opts: { history?: boolean; label?: string } = {},
+  ): void {
     const previous = this.state.deck;
     const next = structuredClone(previous) as Deck;
     fn(next);
+    shareUnchangedSlides(previous, next);
 
     if (opts.history !== false && !this.txnBase) {
-      this.pushUndo(previous);
+      this.pushUndo(previous, opts.label ?? 'Edit slide');
     }
     this.state = { ...this.state, deck: next, dirty: true };
+    if (!this.txnBase) this.recordHistory(opts.label ?? 'Edit slide');
     this.emit();
   }
 
@@ -99,8 +126,11 @@ export class EditorStore {
    * Group everything until `endTransaction` into a single undo entry. Used for
    * drags and resizes, which fire continuously but mean one edit.
    */
-  beginTransaction(): void {
-    if (!this.txnBase) this.txnBase = this.state.deck;
+  beginTransaction(label = 'Move or resize objects'): void {
+    if (!this.txnBase) {
+      this.txnBase = this.state.deck;
+      this.txnLabel = label;
+    }
   }
 
   endTransaction(): void {
@@ -108,11 +138,14 @@ export class EditorStore {
     const base = this.txnBase;
     this.txnBase = null;
     // A drag that ended where it started shouldn't consume an undo slot.
-    if (base !== this.state.deck) this.pushUndo(base);
+    if (base !== this.state.deck) {
+      this.pushUndo(base, this.txnLabel);
+      this.recordHistory(this.txnLabel);
+    }
   }
 
-  private pushUndo(deck: Deck): void {
-    this.undoStack.push(deck);
+  private pushUndo(deck: Deck, label: string): void {
+    this.undoStack.push({ deck, label });
     if (this.undoStack.length > HISTORY_LIMIT) this.undoStack.shift();
     this.redoStack = [];
   }
@@ -120,18 +153,20 @@ export class EditorStore {
   undo(): void {
     const prev = this.undoStack.pop();
     if (!prev) return;
-    this.redoStack.push(this.state.deck);
-    this.state = { ...this.state, deck: prev, dirty: true };
+    this.redoStack.push({ deck: this.state.deck, label: prev.label });
+    this.state = { ...this.state, deck: prev.deck, dirty: true };
     this.clampCursor();
+    this.recordHistory(`Undo: ${prev.label}`);
     this.emit();
   }
 
   redo(): void {
     const next = this.redoStack.pop();
     if (!next) return;
-    this.undoStack.push(this.state.deck);
-    this.state = { ...this.state, deck: next, dirty: true };
+    this.undoStack.push({ deck: this.state.deck, label: next.label });
+    this.state = { ...this.state, deck: next.deck, dirty: true };
     this.clampCursor();
+    this.recordHistory(`Redo: ${next.label}`);
     this.emit();
   }
 
@@ -141,6 +176,27 @@ export class EditorStore {
 
   canRedo(): boolean {
     return this.redoStack.length > 0;
+  }
+
+  history(): HistoryItem[] {
+    return this.historyLog.map(({ deck: _deck, ...item }) => ({ ...item })).reverse();
+  }
+
+  restoreHistory(id: number): boolean {
+    const snapshot = this.historyLog.find((item) => item.id === id);
+    if (!snapshot || snapshot.deck === this.state.deck) return false;
+    this.pushUndo(this.state.deck, `Revert to ${snapshot.label}`);
+    this.redoStack = [];
+    this.state = {
+      ...this.state,
+      deck: structuredClone(snapshot.deck),
+      slideIndex: Math.min(snapshot.slideIndex, Math.max(0, snapshot.deck.slides.length - 1)),
+      selection: new Set(),
+      dirty: true,
+    };
+    this.recordHistory(`Reverted to ${snapshot.label}`);
+    this.emit();
+    return true;
   }
 
   markClean(): void {
@@ -180,7 +236,7 @@ export class EditorStore {
   /** Mutate every selected element on the current slide in one commit. */
   updateSelected(
     fn: (el: SlideElement) => void,
-    opts: { history?: boolean } = {},
+    opts: { history?: boolean; label?: string } = {},
   ): void {
     const ids = this.state.selection;
     if (ids.size === 0) return;
@@ -203,7 +259,7 @@ export class EditorStore {
       slide.timeline = slide.timeline.filter(
         (t) => !ids.has(t.action.target) && !(t.trigger.ref && ids.has(t.trigger.ref)),
       );
-    });
+    }, { label: ids.size === 1 ? 'Delete object' : 'Delete objects' });
     this.clearSelection();
   }
 
@@ -219,6 +275,35 @@ export class EditorStore {
       slideIndex,
       selection: new Set([...this.state.selection].filter((id) => live.has(id))),
     };
+  }
+
+  private recordHistory(label: string): void {
+    this.historyLog.push({
+      id: this.nextHistoryId++,
+      label,
+      at: Date.now(),
+      slideIndex: this.state.slideIndex,
+      deck: this.state.deck,
+    });
+    if (this.historyLog.length > HISTORY_LIMIT) this.historyLog.shift();
+  }
+}
+
+/**
+ * Restore object identity for slides an edit did not touch.
+ *
+ * `commit` deliberately gives mutation callbacks a fully independent clone,
+ * but the canvas and slide rail use slide identity to retain expensive DOM and
+ * decoded media. Without this reconciliation, changing one layout in a large
+ * imported deck rebuilds every thumbnail and can exhaust the renderer.
+ */
+function shareUnchangedSlides(previous: Deck, next: Deck): void {
+  const byId = new Map(previous.slides.map((slide) => [slide.id, slide]));
+  for (let i = 0; i < next.slides.length; i++) {
+    const candidate = byId.get(next.slides[i].id);
+    if (candidate && JSON.stringify(candidate) === JSON.stringify(next.slides[i])) {
+      next.slides[i] = candidate;
+    }
   }
 }
 

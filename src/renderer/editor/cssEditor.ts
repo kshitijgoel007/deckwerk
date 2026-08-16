@@ -10,6 +10,7 @@ import { EditorView, basicSetup } from 'codemirror';
  * are written to disk on a debounce, so tuning type feels immediate.
  */
 export class CssEditor {
+  onChange?: () => void;
   private view: EditorView;
   private styleTag: HTMLStyleElement;
   private saveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -30,6 +31,7 @@ export class CssEditor {
           if (!update.docChanged) return;
           const text = update.state.doc.toString();
           this.styleTag.textContent = text;
+          this.onChange?.();
           this.scheduleSave(text);
         }),
       ],
@@ -42,6 +44,7 @@ export class CssEditor {
       changes: { from: 0, to: this.view.state.doc.length, insert: text },
     });
     this.styleTag.textContent = text;
+    this.onChange?.();
     if (this.saveTimer) {
       clearTimeout(this.saveTimer);
       this.saveTimer = null;

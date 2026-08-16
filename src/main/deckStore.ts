@@ -34,13 +34,18 @@ const DEFAULT_THEME = `/* Fonts, sizes and colours live here. The editor never r
   line-height: 1.25;
 }
 
-.title {
+.role-title, .title {
   font-size: 92px;
   font-weight: 700;
   letter-spacing: -0.02em;
 }
 
-.caption {
+.role-body {
+  font-size: 44px;
+  line-height: 1.3;
+}
+
+.role-caption, .caption {
   font-size: 28px;
   color: #666666;
 }

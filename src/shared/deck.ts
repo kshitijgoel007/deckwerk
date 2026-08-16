@@ -62,9 +62,17 @@ const TextElement = BaseElement.extend({
   type: z.literal('text'),
   /** Inline HTML. Fonts and sizes are expected to come from theme.css. */
   html: z.string().default(''),
+  /** Shrink text as needed to keep it inside its box; never enlarge past its authored size. */
+  autoFit: z.boolean().optional(),
   align: z.enum(['left', 'center', 'right', 'justify']).default('left'),
   valign: z.enum(['top', 'middle', 'bottom']).default('top'),
 });
+
+export const MediaEffectSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('blur'), radius: z.number().min(0).max(200) }),
+  z.object({ type: z.literal('posterize'), levels: z.number().int().min(2).max(32) }),
+  z.object({ type: z.literal('grayscale'), amount: z.number().min(0).max(1) }),
+]);
 
 const ImageElement = BaseElement.extend({
   type: z.literal('image'),
@@ -72,6 +80,8 @@ const ImageElement = BaseElement.extend({
   src: z.string(),
   fit: z.enum(['contain', 'cover', 'fill']).default('contain'),
   alt: z.string().default(''),
+  /** Ordered, non-destructive visual effects. Order is significant. */
+  effects: z.array(MediaEffectSchema).optional(),
   borderColor: z.string().nullable().optional(),
   borderWidth: z.number().min(0).optional(),
   borderRadius: z.number().min(0).optional(),
@@ -98,6 +108,8 @@ const VideoElement = BaseElement.extend({
   loop: z.boolean().default(true),
   muted: z.boolean().default(true),
   controls: z.boolean().default(false),
+  /** Ordered, non-destructive visual effects. Order is significant. */
+  effects: z.array(MediaEffectSchema).optional(),
   borderColor: z.string().nullable().optional(),
   borderWidth: z.number().min(0).optional(),
   borderRadius: z.number().min(0).optional(),
@@ -247,6 +259,7 @@ export type TimelineEntry = z.infer<typeof TimelineEntrySchema>;
 export type SlideElement = z.infer<typeof ElementSchema>;
 export type ElementType = SlideElement['type'];
 export type TextEl = z.infer<typeof TextElement>;
+export type MediaEffect = z.infer<typeof MediaEffectSchema>;
 export type ImageEl = z.infer<typeof ImageElement>;
 export type VideoEl = z.infer<typeof VideoElement>;
 export type ShapeEl = z.infer<typeof ShapeElement>;

@@ -1,4 +1,4 @@
-import type { SlideElement } from '@shared/deck.js';
+import type { MediaEffect, SlideElement } from '@shared/deck.js';
 import { makeId } from '@shared/geometry.js';
 import { type AlignMode, alignElements } from './align.js';
 import type { EditorStore } from './store.js';
@@ -23,6 +23,10 @@ export class Inspector {
   onTogglePlay?: (elementId: string) => boolean;
   /** Start editing a text element in place on the canvas. */
   onEditText?: (elementId: string) => void;
+  /** Whether the canvas currently owns a live text selection. */
+  editingText?: () => boolean;
+  /** Apply weight to only the selected characters in the live text edit. */
+  onApplyTextSelectionWeight?: (weight: number) => boolean;
   /** Toggle crop-editing mode on the canvas for an image or video. */
   onToggleMask?: (elementId: string) => void;
   /** Which element is currently in mask mode, so the button can reflect it. */
@@ -84,7 +88,7 @@ export class Inspector {
       layoutSelect.addEventListener('change', () => {
         this.store.commit((next) => {
           applySlideLayout(next.slides[slideIndex], layoutSelect.value as SlideLayout);
-        });
+        }, { label: `Apply ${layoutSelect.selectedOptions[0]?.textContent ?? 'slide'} layout` });
       });
       layout.append(layoutLabel, layoutSelect);
       slideGroup.appendChild(layout);
@@ -456,6 +460,7 @@ export class Inspector {
           ),
         );
         wrap.appendChild(this.mediaBorderControls());
+        wrap.appendChild(this.mediaEffectsControls());
 
         wrap.appendChild(this.maskButton(el.id));
         wrap.appendChild(this.trimSection(el));
@@ -479,11 +484,61 @@ export class Inspector {
           ),
         );
         wrap.appendChild(this.mediaBorderControls());
+        wrap.appendChild(this.mediaEffectsControls());
         return wrap;
       }
 
       case 'text': {
         const wrap = group('Text');
+
+        wrap.appendChild(checkboxField('Auto-fit text to box', Boolean(el.autoFit), (on) =>
+          this.store.updateSelected((target) => {
+            if (target.type === 'text') target.autoFit = on;
+          }, { label: on ? 'Enable text auto-fit' : 'Disable text auto-fit' }),
+        ));
+
+        wrap.appendChild(optionalNumberField(
+          'Font size',
+          Number.parseFloat(el.style['font-size'] ?? '') || null,
+          (value) => this.store.updateSelected((target) => {
+            target.style = { ...target.style, 'font-size': `${Math.max(6, Math.min(400, value))}px` };
+          }, { label: 'Change font size' }),
+          () => this.store.updateSelected((target) => {
+            const style = { ...target.style };
+            delete style['font-size'];
+            target.style = style;
+          }, { label: 'Use theme font size' }),
+          'px',
+        ));
+        wrap.appendChild(selectField(
+          'Font weight',
+          ['inherit', '100', '200', '300', '400', '500', '600', '700', '800', '900'],
+          el.style['font-weight'] ?? 'inherit',
+          (value) => this.store.updateSelected((target) => {
+            const style = { ...target.style };
+            if (value === 'inherit') delete style['font-weight'];
+            else style['font-weight'] = value;
+            target.style = style;
+          }, { label: 'Change font weight' }),
+        ));
+
+        if (this.editingText?.()) {
+          const selectionStyle = document.createElement('div');
+          selectionStyle.className = 'text-selection-style';
+          const selectionLabel = document.createElement('span');
+          selectionLabel.textContent = 'Selected text weight';
+          const buttons = document.createElement('div');
+          buttons.className = 'button-row';
+          for (const weight of [100, 200, 300, 400, 500, 600, 700, 800, 900]) {
+            const choice = button(String(weight), () => this.onApplyTextSelectionWeight?.(weight));
+            // Keep the contenteditable selection alive while the button is
+            // pressed; blur would commit and destroy its Range before click.
+            choice.addEventListener('pointerdown', (event) => event.preventDefault());
+            buttons.appendChild(choice);
+          }
+          selectionStyle.append(selectionLabel, buttons);
+          wrap.appendChild(selectionStyle);
+        }
 
         // Semantic role, orthogonal to the free-form class field: the role is
         // what "Cast fonts" and theme.css target, so restyling the deck later
@@ -545,13 +600,16 @@ export class Inspector {
 
         wrap.appendChild(hint('Double-click the text on the slide to edit it.'));
         wrap.appendChild(
-          colorField('Colour', el.style['color'] ?? null, (v) =>
-            this.store.updateSelected((e) => {
-              const rest = { ...e.style };
-              if (v) rest['color'] = v;
-              else delete rest['color'];
-              e.style = rest;
-            }),
+          colorField(
+            'Colour',
+            el.style['color'] ?? null,
+            (v) => this.store.updateSelected((e) => {
+                const rest = { ...e.style };
+                if (v) rest['color'] = v;
+                else delete rest['color'];
+                e.style = rest;
+              }),
+            this.effectiveTextColor(el),
           ),
         );
         wrap.appendChild(
@@ -714,6 +772,28 @@ export class Inspector {
     return wrap;
   }
 
+  /** The colour the canvas actually paints when the element inherits from CSS. */
+  private effectiveTextColor(el: SlideElement): string | null {
+    if (el.type !== 'text') return null;
+    const escapeCss = (globalThis.CSS as { escape?: (value: string) => string } | undefined)
+      ?.escape;
+    const escaped = escapeCss ? escapeCss(el.id) : el.id.replace(/["\\]/g, '\\$&');
+    const node = document.querySelector<HTMLElement>(
+      `.canvas-host [data-element-id="${escaped}"]`,
+    );
+    const rendered = node ? colorForInput(getComputedStyle(node).color) : null;
+    if (rendered) return rendered;
+
+    const style = this.store.get().deck.themeStyle;
+    if (!style) return null;
+    const role = el.class.find((name) =>
+      /^role-(title|heading|body|caption)$/.test(name))?.slice(5) as
+      | 'title' | 'heading' | 'body' | 'caption' | undefined;
+    return colorForInput(
+      (role ? style.fonts[role].color : undefined) ?? style.colors.text,
+    );
+  }
+
   private mediaBorderControls(): HTMLElement {
     const el = this.store.selectedElements()[0];
     const wrap = document.createElement('div');
@@ -742,6 +822,98 @@ export class Inspector {
     wrap.appendChild(numbers);
     return wrap;
   }
+
+  private mediaEffectsControls(): HTMLElement {
+    const el = this.store.selectedElements()[0];
+    const wrap = document.createElement('div');
+    wrap.className = 'media-effects-controls';
+    if (!el || (el.type !== 'image' && el.type !== 'video')) return wrap;
+
+    const title = document.createElement('div');
+    title.className = 'insp-subtitle';
+    title.textContent = 'Effects';
+    wrap.appendChild(title);
+
+    for (const [index, effect] of (el.effects ?? []).entries()) {
+      const row = document.createElement('div');
+      row.className = 'media-effect-row';
+      row.dataset.effectIndex = String(index);
+      const name = document.createElement('span');
+      name.textContent = effect.type === 'grayscale' ? 'Greyscale' :
+        effect.type[0].toUpperCase() + effect.type.slice(1);
+      const value = document.createElement('input');
+      value.type = 'number';
+      value.min = effect.type === 'posterize' ? '2' : '0';
+      value.max = effect.type === 'blur' ? '200' : effect.type === 'posterize' ? '32' : '1';
+      value.step = effect.type === 'grayscale' ? '0.05' : '1';
+      value.value = String(effectValue(effect));
+      value.title = effect.type === 'blur' ? 'Blur radius in pixels' :
+        effect.type === 'posterize' ? 'Number of colour levels' : 'Amount from 0 to 1';
+      value.addEventListener('change', () => {
+        const next = Number(value.value);
+        if (!Number.isFinite(next)) return;
+        this.store.updateSelected((target) => {
+          if (target.type !== 'image' && target.type !== 'video') return;
+          const current = target.effects?.[index];
+          if (!current) return;
+          if (current.type === 'blur') current.radius = clamp(next, 0, 200);
+          else if (current.type === 'posterize') current.levels = Math.round(clamp(next, 2, 32));
+          else current.amount = clamp(next, 0, 1);
+        }, { label: `Adjust ${effect.type} effect` });
+      });
+
+      const up = smallButton('↑', 'Move effect earlier', () => this.moveMediaEffect(index, -1));
+      const down = smallButton('↓', 'Move effect later', () => this.moveMediaEffect(index, 1));
+      up.disabled = index === 0;
+      down.disabled = index === (el.effects?.length ?? 0) - 1;
+      const remove = smallButton('×', 'Remove effect', () => {
+        this.store.updateSelected((target) => {
+          if (target.type !== 'image' && target.type !== 'video') return;
+          target.effects = (target.effects ?? []).filter((_, candidate) => candidate !== index);
+        }, { label: `Remove ${effect.type} effect` });
+      });
+      row.append(name, value, up, down, remove);
+      wrap.appendChild(row);
+    }
+
+    const add = document.createElement('select');
+    add.className = 'effect-add';
+    for (const [value, label] of [
+      ['', '+ Add effect'], ['blur', 'Blur'], ['posterize', 'Posterize'], ['grayscale', 'Greyscale'],
+    ]) {
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = label;
+      add.appendChild(option);
+    }
+    add.addEventListener('change', () => {
+      if (!add.value) return;
+      const effect: MediaEffect = add.value === 'blur'
+        ? { type: 'blur', radius: 8 }
+        : add.value === 'posterize'
+          ? { type: 'posterize', levels: 4 }
+          : { type: 'grayscale', amount: 1 };
+      this.store.updateSelected((target) => {
+        if (target.type === 'image' || target.type === 'video') {
+          target.effects = [...(target.effects ?? []), structuredClone(effect)];
+        }
+      }, { label: `Add ${effect.type} effect` });
+      add.value = '';
+    });
+    wrap.appendChild(add);
+    return wrap;
+  }
+
+  private moveMediaEffect(index: number, delta: -1 | 1): void {
+    this.store.updateSelected((target) => {
+      if (target.type !== 'image' && target.type !== 'video') return;
+      const effects = [...(target.effects ?? [])];
+      const destination = index + delta;
+      if (!effects[index] || destination < 0 || destination >= effects.length) return;
+      [effects[index], effects[destination]] = [effects[destination], effects[index]];
+      target.effects = effects;
+    }, { label: 'Reorder media effects' });
+  }
 }
 
 /* --- small DOM helpers, kept local so the panel stays self-contained --- */
@@ -769,6 +941,26 @@ function hint(text: string): HTMLElement {
   return el;
 }
 
+function effectValue(effect: MediaEffect): number {
+  if (effect.type === 'blur') return effect.radius;
+  if (effect.type === 'posterize') return effect.levels;
+  return effect.amount;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+function smallButton(label: string, title: string, onClick: () => void): HTMLButtonElement {
+  const control = document.createElement('button');
+  control.type = 'button';
+  control.className = 'icon-button';
+  control.textContent = label;
+  control.title = title;
+  control.addEventListener('click', onClick);
+  return control;
+}
+
 function numberField(
   label: string,
   value: number | null,
@@ -791,6 +983,43 @@ function numberField(
     if (Number.isFinite(v)) onChange(v);
   });
   wrap.append(span, input);
+  return wrap;
+}
+
+function optionalNumberField(
+  label: string,
+  value: number | null,
+  onChange: (value: number) => void,
+  onClear: () => void,
+  suffix = '',
+): HTMLElement {
+  const wrap = document.createElement('label');
+  wrap.className = 'field field-number';
+  const span = document.createElement('span');
+  span.textContent = label;
+  const input = document.createElement('input');
+  input.type = 'number';
+  input.min = '1';
+  input.value = value === null ? '' : String(value);
+  input.placeholder = 'theme';
+  input.title = suffix ? `Value in ${suffix}` : label;
+  input.addEventListener('change', () => {
+    if (!input.value.trim()) onClear();
+    else {
+      const parsed = Number(input.value);
+      if (Number.isFinite(parsed)) onChange(parsed);
+    }
+  });
+  const clear = document.createElement('button');
+  clear.type = 'button';
+  clear.className = 'icon-button';
+  clear.textContent = '×';
+  clear.title = 'Use theme value';
+  clear.addEventListener('click', (event) => {
+    event.preventDefault();
+    onClear();
+  });
+  wrap.append(span, input, clear);
   return wrap;
 }
 
@@ -909,6 +1138,7 @@ function colorField(
   label: string,
   value: string | null,
   onChange: (v: string | null) => void,
+  inheritedValue: string | null = null,
 ): HTMLElement {
   const wrap = document.createElement('label');
   wrap.className = 'field field-color';
@@ -921,7 +1151,9 @@ function colorField(
   input.setAttribute('list', 'theme-swatches');
   // <input type=color> only speaks 6-digit hex; anything else (rgba, names,
   // unset) previews as mid-grey until picked.
-  input.value = /^#[0-9a-fA-F]{6}$/.test(value ?? '') ? (value as string) : '#888888';
+  input.value = colorForInput(value) ?? inheritedValue ?? '#888888';
+  input.dataset.inherited = String(value === null);
+  input.title = value === null ? 'Inherited colour' : 'Explicit colour';
   // Native colour panels emit `input` while their gradient is being explored.
   // Committing there rebuilds this inspector and destroys the input anchoring
   // the still-open panel. Commit once the choice is accepted instead.
@@ -937,6 +1169,21 @@ function colorField(
   });
   wrap.append(span, input, clear);
   return wrap;
+}
+
+/** Convert CSS hex/rgb colours to the six-digit format native colour inputs require. */
+function colorForInput(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const hex = /^#([0-9a-f]{6})$/i.exec(value.trim());
+  if (hex) return `#${hex[1].toLowerCase()}`;
+  const short = /^#([0-9a-f])([0-9a-f])([0-9a-f])$/i.exec(value.trim());
+  if (short) return `#${short.slice(1).map((part) => part + part).join('').toLowerCase()}`;
+  const rgb = /^rgba?\(\s*(\d+)\s*[, ]\s*(\d+)\s*[, ]\s*(\d+)(?:\s*[,/]\s*(?:1(?:\.0+)?))?\s*\)$/i.exec(
+    value.trim(),
+  );
+  if (!rgb) return null;
+  return `#${rgb.slice(1, 4).map((part) =>
+    Math.max(0, Math.min(255, Number(part))).toString(16).padStart(2, '0')).join('')}`;
 }
 
 function button(label: string, onClick: () => void, variant = ''): HTMLElement {

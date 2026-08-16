@@ -4,6 +4,23 @@ import { emptyDeck } from '../src/shared/deck.js';
 import { renderSlide } from '../src/renderer/player/render.js';
 
 describe('LaTeX text rendering', () => {
+  it('keeps an inline equation in the same text flow as its sentence', () => {
+    const slide = emptyDeck().slides[0];
+    slide.elements.push({
+      id: 'inline-math', type: 'text', x: 0, y: 0, w: 1600, h: 200, rot: 0, z: 1,
+      opacity: 1, class: [], style: {}, align: 'left', valign: 'middle',
+      html: 'Die Mitternachtsformel lautet $(a+b)^2 = (a^2 + 2ab + b^2)$',
+    });
+    const rendered = renderSlide(slide, { resolveSrc: (src) => src });
+    const body = rendered.querySelector<HTMLElement>('.text-body')!;
+    const content = body.querySelector<HTMLElement>(':scope > .text-content')!;
+
+    expect(body.children).toHaveLength(1);
+    expect(content.querySelector('.katex')).not.toBeNull();
+    expect(content.querySelector('.katex-display')).toBeNull();
+    expect(content.textContent).toContain('Die Mitternachtsformel lautet');
+  });
+
   it('renders inline and display equations while preserving escaped dollars', () => {
     const slide = emptyDeck().slides[0];
     slide.elements.push({

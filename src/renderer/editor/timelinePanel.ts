@@ -34,7 +34,7 @@ export class TimelinePanel {
     header.appendChild(title);
 
     const add = document.createElement('button');
-    add.textContent = '+ Reveal on click';
+    add.textContent = 'Reveal selected on click';
     add.disabled = this.store.get().selection.size === 0;
     add.title = add.disabled
       ? 'Select an element first'
@@ -42,6 +42,13 @@ export class TimelinePanel {
     add.addEventListener('click', () => this.addRevealForSelection());
     header.appendChild(add);
     this.host.appendChild(header);
+
+    const help = document.createElement('p');
+    help.className = 'insp-hint build-help';
+    help.textContent = this.store.get().selection.size === 0
+      ? 'Select one or more slide objects, then reveal them on a click.'
+      : 'The selected objects will start hidden and appear at the next click.';
+    this.host.appendChild(help);
 
     const elementsTitle = document.createElement('div');
     elementsTitle.className = 'step-label';
@@ -100,35 +107,46 @@ export class TimelinePanel {
   private entryRow(entry: TimelineEntry, elements: SlideElement[]): HTMLElement {
     const row = document.createElement('div');
     row.className = 'timeline-row';
-    row.draggable = true;
     row.dataset.entryId = entry.id;
-    row.addEventListener('dragstart', () => {
+    const grip = document.createElement('button');
+    grip.type = 'button';
+    grip.className = 'build-drag-handle';
+    grip.textContent = '⋮⋮';
+    grip.title = 'Drag above or below to reorder; drop in the centre to reveal together';
+    grip.draggable = true;
+    grip.addEventListener('dragstart', (event) => {
       this.draggingEntryId = entry.id;
       row.classList.add('dragging');
+      event.dataTransfer?.setData('text/plain', entry.id);
+      if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
     });
-    row.addEventListener('dragend', () => {
+    grip.addEventListener('dragend', () => {
       this.draggingEntryId = null;
       row.classList.remove('dragging');
     });
     row.addEventListener('dragover', (event) => {
       event.preventDefault();
-      row.classList.add('drop-target');
-    });
-    row.addEventListener('dragleave', () => row.classList.remove('drop-target'));
-    row.addEventListener('drop', (event) => {
-      event.preventDefault();
-      row.classList.remove('drop-target');
-      if (!this.draggingEntryId || this.draggingEntryId === entry.id) return;
+      if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
       const bounds = row.getBoundingClientRect();
       const ratio = bounds.height > 0 ? (event.clientY - bounds.top) / bounds.height : 0.5;
-      const mode = ratio > 0.25 && ratio < 0.75 ? 'fuse' : ratio <= 0.25 ? 'before' : 'after';
+      row.dataset.dropMode = ratio > 0.33 && ratio < 0.67
+        ? 'fuse' : ratio <= 0.33 ? 'before' : 'after';
+    });
+    row.addEventListener('dragleave', () => delete row.dataset.dropMode);
+    row.addEventListener('drop', (event) => {
+      event.preventDefault();
+      const visualMode = row.dataset.dropMode as BuildDropMode | undefined;
+      delete row.dataset.dropMode;
+      if (!this.draggingEntryId || this.draggingEntryId === entry.id) return;
+      const mode = visualMode ?? 'after';
       this.store.commit((deck) => {
         const timeline = deck.slides[this.store.get().slideIndex].timeline;
         reorderBuildEntry(timeline, this.draggingEntryId!, entry.id, mode);
-      });
+      }, { label: mode === 'fuse' ? 'Group build animations' : 'Reorder build animations' });
     });
 
     const action = document.createElement('select');
+    action.className = 'build-action';
     for (const t of ['appear', 'disappear', 'play', 'pause'] as const) {
       const opt = document.createElement('option');
       opt.value = t;
@@ -143,6 +161,7 @@ export class TimelinePanel {
     );
 
     const target = document.createElement('select');
+    target.className = 'build-target';
     for (const el of elements) {
       const opt = document.createElement('option');
       opt.value = el.id;
@@ -157,6 +176,7 @@ export class TimelinePanel {
     );
 
     const trigger = document.createElement('select');
+    trigger.className = 'build-trigger';
     for (const t of ['click', 'afterPrev', 'withPrev', 'mediaEnd'] as const) {
       const opt = document.createElement('option');
       opt.value = t;
@@ -172,7 +192,7 @@ export class TimelinePanel {
 
     const delay = document.createElement('input');
     delay.type = 'number';
-    delay.className = 'delay-input';
+    delay.className = 'delay-input build-delay';
     delay.step = '50';
     delay.min = '0';
     delay.value = String(entry.trigger.delay);
@@ -200,7 +220,7 @@ export class TimelinePanel {
       this.store.select([entry.action.target]);
     });
 
-    row.append(trigger, action, target, delay, remove);
+    row.append(grip, action, target, trigger, delay, remove);
     return row;
   }
 
@@ -222,7 +242,10 @@ export class TimelinePanel {
     if (ids.length === 0) return;
     this.store.commit((deck) => {
       const slide = deck.slides[this.store.get().slideIndex];
-      ids.forEach((target, i) => {
+      const existing = new Set(slide.timeline
+        .filter((entry) => entry.action.type === 'appear')
+        .map((entry) => entry.action.target));
+      ids.filter((target) => !existing.has(target)).forEach((target, i) => {
         slide.timeline.push({
           id: makeId('t'),
           trigger: {
@@ -233,7 +256,7 @@ export class TimelinePanel {
           action: { type: 'appear', target, value: null },
         });
       });
-    });
+    }, { label: 'Reveal selected objects on click' });
   }
 
   private setAppear(target: string, enabled: boolean): void {

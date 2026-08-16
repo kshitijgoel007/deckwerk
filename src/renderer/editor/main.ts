@@ -16,11 +16,13 @@ import {
 import { EditorCanvas } from './canvas.js';
 import { CssEditor } from './cssEditor.js';
 import { Inspector } from './inspector.js';
+import { HistoryPanel } from './historyPanel.js';
 import { createShapeInsertPicker, insertText } from './elementCreation.js';
 import { createThemeGallery, type ThemeGallery } from './themeGallery.js';
 import { SlideRail } from './slideRail.js';
 import { EditorStore, copySelectionToClipboard, cutSelectionToClipboard, pasteFromClipboard } from './store.js';
 import { TimelinePanel } from './timelinePanel.js';
+import { WelcomeScreen } from './welcomeScreen.js';
 
 /**
  * Editor shell: wires the panels to one store, owns the toolbar, the keyboard
@@ -37,8 +39,15 @@ const store = new EditorStore(emptyDeck());
 const canvas = new EditorCanvas(el('canvas'), store);
 const inspector = new Inspector(el('inspector'), store);
 new TimelinePanel(el('timeline'), store);
+new HistoryPanel(el('history'), store);
 const rail = new SlideRail(el('rail'), store);
 const cssEditor = new CssEditor(el('theme'));
+cssEditor.onChange = () => canvas.refitAutoText();
+const welcome = new WelcomeScreen(el('canvas'), {
+  newPresentation,
+  openPresentation,
+  importKeynote: importKeynotePresentation,
+});
 
 /**
  * Remember which element asked for a trim: the trim window reports back only
@@ -54,11 +63,14 @@ canvas.onTrimRequest = openTrim;
 inspector.onTrimRequest = openTrim;
 inspector.onTogglePlay = (id) => canvas.toggleVideo(id);
 inspector.onEditText = (id) => canvas.beginTextEdit(id);
+inspector.editingText = () => canvas.isEditing();
+inspector.onApplyTextSelectionWeight = (weight) => canvas.applyTextSelectionWeight(weight);
 inspector.onToggleMask = (id) => canvas.toggleMaskMode(id);
 inspector.maskingElement = () => canvas.maskingElement();
 inspector.onSeekPreview = (id, t) => canvas.seekVideo(id, t);
 inspector.videoDuration = (id) => canvas.videoDuration(id);
 canvas.onMaskModeChange = () => inspector.render();
+canvas.onTextEditModeChange = () => inspector.render();
 
 /* --- toolbar --- */
 
@@ -69,35 +81,9 @@ function buildToolbar(): void {
   const left = document.createElement('div');
   left.className = 'bar-group';
   left.append(
-    barButton('New', async () => {
-      const session = await window.api.newDeck();
-      if (session) await adopt(session.dir, session.deck);
-    }),
-    barButton('Open', async () => {
-      const session = await window.api.openDeck();
-      if (session) await adopt(session.dir, session.deck);
-    }),
-    barButton('Import Keynote…', async () => {
-      setStatusMessage('Importing… this can take a minute for a large deck.');
-      try {
-        const result = await window.api.importKeynote();
-        if (!result) {
-          setStatusMessage('');
-          return;
-        }
-        await adopt(result.dir, result.deck);
-        const skipped = Object.values(result.report.unsupported).reduce(
-          (a, b) => a + b,
-          0,
-        );
-        setStatusMessage(
-          `Imported ${result.report.slides} slides, ${result.report.elements} elements` +
-            (skipped > 0 ? ` — ${skipped} objects became placeholders` : ''),
-        );
-      } catch (err) {
-        setStatusMessage(`Import failed: ${err instanceof Error ? err.message : err}`);
-      }
-    }),
+    barButton('New', newPresentation),
+    barButton('Open', openPresentation),
+    barButton('Import Keynote…', importKeynotePresentation),
     barButton('Export web…', async () => {
       await cssEditor.flush();
       await save();
@@ -107,15 +93,15 @@ function buildToolbar(): void {
       } catch (err) {
         setStatusMessage(`Export failed: ${err instanceof Error ? err.message : err}`);
       }
-    }),
+    }, 'deck-only'),
   );
 
   const mid = document.createElement('div');
-  mid.className = 'bar-group';
+  mid.className = 'bar-group deck-only';
   mid.append(barButton('+ Text', () => addText()), createShapeInsertPicker(store));
 
   const right = document.createElement('div');
-  right.className = 'bar-group bar-right';
+  right.className = 'bar-group bar-right deck-only';
   right.append(
     barButton('Present', async () => {
       // Flush before presenting: the projector must not show a stale theme.
@@ -126,6 +112,38 @@ function buildToolbar(): void {
   );
 
   bar.append(left, mid, right);
+}
+
+async function newPresentation(): Promise<void> {
+  const session = await window.api.newDeck();
+  if (session) await adopt(session.dir, session.deck);
+}
+
+async function openPresentation(): Promise<void> {
+  const session = await window.api.openDeck();
+  if (session) await adopt(session.dir, session.deck);
+}
+
+async function importKeynotePresentation(): Promise<void> {
+  setStatusMessage('Importing… this can take a minute for a large deck.');
+  try {
+    const result = await window.api.importKeynote();
+    if (!result) {
+      setStatusMessage('');
+      return;
+    }
+    await adopt(result.dir, result.deck);
+    const skipped = Object.values(result.report.unsupported).reduce(
+      (a, b) => a + b,
+      0,
+    );
+    setStatusMessage(
+      `Imported ${result.report.slides} slides, ${result.report.elements} elements` +
+        (skipped > 0 ? ` — ${skipped} objects became placeholders` : ''),
+    );
+  } catch (err) {
+    setStatusMessage(`Import failed: ${err instanceof Error ? err.message : err}`);
+  }
 }
 
 /**
@@ -310,7 +328,7 @@ const PANELS = [
   { id: 'inspector', label: 'Props' },
   { id: 'themePanel', label: 'Theme' },
   { id: 'timeline', label: 'Build' },
-  { id: 'theme', label: 'CSS' },
+  { id: 'history', label: 'History' },
 ] as const;
 
 function buildTabs(): void {
@@ -366,6 +384,7 @@ function scheduleSave(): void {
 
 async function adopt(dir: string, deck: Parameters<typeof store.load>[0]): Promise<void> {
   store.load(deck, dir);
+  welcome.setVisible(false);
   const loadedCss = await window.api.loadTheme();
   const installedTheme = themeById(deck.themePreset);
   // The marked block belongs to the app. Refresh it when preset definitions
@@ -598,8 +617,12 @@ canvas.contextActions = (el) => {
 // disk (an agent, a git checkout, hand editing) and broadcasts it here. Our
 // own saves echo back identical content and are ignored by comparison.
 window.api.onDeckState((session) => {
-  if (JSON.stringify(session.deck) === JSON.stringify(store.get().deck)) return;
+  if (
+    session.dir === store.get().dir &&
+    JSON.stringify(session.deck) === JSON.stringify(store.get().deck)
+  ) return;
   store.load(session.deck, session.dir, { keepView: true });
+  welcome.setVisible(false);
   refreshSwatches(currentTheme());
   setStatusMessage('Deck reloaded from disk.');
 });

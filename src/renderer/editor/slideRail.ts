@@ -1,5 +1,6 @@
 import { makeId } from '@shared/geometry.js';
 import { renderSlide } from '../player/render.js';
+import { applySlideLayout } from './slideLayouts.js';
 import type { EditorStore } from './store.js';
 
 /**
@@ -131,6 +132,15 @@ export class SlideRail {
         this.addSlide();
         return;
       }
+      if (e.key === 'Backspace') {
+        // When the rail or its active thumbnail owns focus, Backspace is a
+        // slide command. Stop it here so the window-level shortcut cannot also
+        // delete a selected canvas object.
+        e.preventDefault();
+        e.stopPropagation();
+        this.deleteSlide();
+        return;
+      }
       if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
       e.preventDefault();
       e.stopPropagation();
@@ -202,15 +212,17 @@ export class SlideRail {
   addSlide(): void {
     const at = this.store.get().slideIndex + 1;
     this.store.commit((deck) => {
-      deck.slides.splice(at, 0, {
+      const slide = {
         id: makeId('slide'),
         name: '',
         background: { color: null, image: null },
         notes: '',
         elements: [],
         timeline: [],
-      });
-    });
+      };
+      deck.slides.splice(at, 0, slide);
+      applySlideLayout(slide, 'standard');
+    }, { label: 'Add slide' });
     this.store.selectSlide(at);
   }
 
@@ -247,7 +259,7 @@ export class SlideRail {
     if (deck.slides.length <= 1) return;
     this.store.commit((d) => {
       d.slides.splice(slideIndex, 1);
-    });
+    }, { label: 'Delete slide' });
     this.store.selectSlide(Math.max(0, slideIndex - 1));
   }
 }

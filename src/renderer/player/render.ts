@@ -64,8 +64,135 @@ export function renderElement(
     s.overflow = 'hidden';
   }
 
-  node.appendChild(renderBody(el, opts));
+  const body = renderBody(el, opts);
+  if ((el.type === 'image' || el.type === 'video') && el.effects?.length) {
+    const renderedEffects = renderMediaEffects(el.id, el.effects);
+    body.style.filter = renderedEffects.filter;
+    for (const definition of renderedEffects.definitions) node.appendChild(definition);
+  }
+
+  node.appendChild(body);
+  if (el.type === 'text' && el.autoFit) {
+    node.dataset.autoFit = 'true';
+    scheduleAutoFit(node);
+  }
   return node;
+}
+
+function renderMediaEffects(
+  elementId: string,
+  effects: NonNullable<Extract<SlideElement, { type: 'image' }>['effects']>,
+): { filter: string; definitions: SVGSVGElement[] } {
+  const filters: string[] = [];
+  const definitions: SVGSVGElement[] = [];
+  effects.forEach((effect, index) => {
+    if (effect.type === 'blur') {
+      filters.push(`blur(${effect.radius}px)`);
+    } else if (effect.type === 'grayscale') {
+      filters.push(`grayscale(${effect.amount})`);
+    } else {
+      const id = `posterize-${elementId}-${index}`.replace(/[^a-zA-Z0-9_-]/g, '-');
+      definitions.push(posterizeDefinition(id, effect.levels));
+      filters.push(`url("#${id}")`);
+    }
+  });
+  return { filter: filters.join(' '), definitions };
+}
+
+function posterizeDefinition(id: string, levels: number): SVGSVGElement {
+  const ns = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(ns, 'svg');
+  svg.classList.add('media-effect-definition');
+  svg.setAttribute('width', '0');
+  svg.setAttribute('height', '0');
+  svg.setAttribute('aria-hidden', 'true');
+  const filter = document.createElementNS(ns, 'filter');
+  filter.id = id;
+  filter.setAttribute('color-interpolation-filters', 'sRGB');
+  const transfer = document.createElementNS(ns, 'feComponentTransfer');
+  const values = Array.from({ length: levels }, (_, i) => i / (levels - 1)).join(' ');
+  for (const channel of ['R', 'G', 'B']) {
+    const fn = document.createElementNS(ns, `feFunc${channel}`);
+    fn.setAttribute('type', 'discrete');
+    fn.setAttribute('tableValues', values);
+    transfer.appendChild(fn);
+  }
+  filter.appendChild(transfer);
+  svg.appendChild(filter);
+  return svg;
+}
+
+const pendingTextFits = new WeakSet<HTMLElement>();
+const fontRefitsRegistered = new WeakSet<HTMLElement>();
+
+/** Fit every opted-in text element below a freshly rendered slide or stage. */
+export function fitAutoText(root: ParentNode): void {
+  for (const node of root.querySelectorAll<HTMLElement>('.element-text[data-auto-fit="true"]')) {
+    fitAutoTextElement(node);
+  }
+}
+
+/**
+ * Shrink one text element until both its width and height fit its box.
+ *
+ * The wrapper retains the authored/theme font size. Only `.text-content` gets
+ * a fitted override, so shortening the text or enlarging the box can grow it
+ * back up to that original ceiling on the next pass.
+ */
+export function fitAutoTextElement(node: HTMLElement, minimum = 6): number | null {
+  const body = node.querySelector<HTMLElement>(':scope > .text-body');
+  const content = body?.querySelector<HTMLElement>(':scope > .text-content');
+  if (!body || !content || body.clientWidth <= 0 || body.clientHeight <= 0) return null;
+
+  content.style.removeProperty('font-size');
+  const ceiling = Number.parseFloat(getComputedStyle(node).fontSize);
+  if (!Number.isFinite(ceiling) || ceiling <= 0) return null;
+
+  const fits = (size: number): boolean => {
+    content.style.fontSize = `${size}px`;
+    return content.scrollWidth <= body.clientWidth + 0.5 &&
+      content.scrollHeight <= body.clientHeight + 0.5;
+  };
+
+  if (fits(ceiling)) {
+    content.dataset.fittedFontSize = String(ceiling);
+    return ceiling;
+  }
+
+  let low = Math.min(minimum, ceiling);
+  let high = ceiling;
+  // A sub-pixel binary search is stable and takes far fewer layouts than
+  // decrementing one pixel at a time for 100pt imported display type.
+  for (let i = 0; i < 10; i++) {
+    const middle = (low + high) / 2;
+    if (fits(middle)) low = middle;
+    else high = middle;
+  }
+  const fitted = Math.round(low * 10) / 10;
+  content.style.fontSize = `${fitted}px`;
+  content.dataset.fittedFontSize = String(fitted);
+  return fitted;
+}
+
+/** Defer until the rendered node has been attached and therefore has layout. */
+export function scheduleAutoFit(node: HTMLElement): void {
+  if (pendingTextFits.has(node)) return;
+  pendingTextFits.add(node);
+  const run = () => {
+    pendingTextFits.delete(node);
+    if (node.isConnected) fitAutoTextElement(node);
+  };
+  if (typeof requestAnimationFrame === 'function') requestAnimationFrame(run);
+  else setTimeout(run, 0);
+
+  // Web fonts can replace fallback metrics after the first layout pass.
+  const fonts = (document as Document & { fonts?: FontFaceSet }).fonts;
+  if (fonts && !fontRefitsRegistered.has(node)) {
+    fontRefitsRegistered.add(node);
+    void fonts.ready.then(() => {
+      if (node.isConnected) scheduleAutoFit(node);
+    });
+  }
 }
 
 function renderBody(el: SlideElement, opts: RenderOptions): HTMLElement | SVGElement {
@@ -84,11 +211,17 @@ function renderBody(el: SlideElement, opts: RenderOptions): HTMLElement | SVGEle
             : 'center';
       div.style.width = '100%';
       div.style.height = '100%';
+      // Keep vertical alignment on the outer flex box, but put all authored
+      // markup inside one flow container. Otherwise every KaTeX inline span
+      // becomes its own flex item and is forced onto a separate line.
+      const content = document.createElement('div');
+      content.className = 'text-content';
+      content.style.width = '100%';
       // KaTeX auto-render does not exclude escaped delimiter characters before
       // pairing `$...$`. Protect literal dollars, render, then restore them.
       const escapedDollar = '\uE000';
-      div.innerHTML = el.html.replace(/\\\$/g, escapedDollar);
-      renderMathInElement(div, {
+      content.innerHTML = el.html.replace(/\\\$/g, escapedDollar);
+      renderMathInElement(content, {
         // Standard TeX convention: display math first so $$ is not consumed
         // as two empty inline expressions. A literal dollar is written as \$.
         delimiters: [
@@ -98,13 +231,14 @@ function renderBody(el: SlideElement, opts: RenderOptions): HTMLElement | SVGEle
         throwOnError: false,
         strict: 'ignore',
       });
-      const walker = document.createTreeWalker(div, NodeFilter.SHOW_TEXT);
+      const walker = document.createTreeWalker(content, NodeFilter.SHOW_TEXT);
       while (walker.nextNode()) {
         const text = walker.currentNode as Text;
         if (text.data.includes(escapedDollar)) {
           text.data = text.data.replaceAll(escapedDollar, '$');
         }
       }
+      div.appendChild(content);
       return div;
     }
 

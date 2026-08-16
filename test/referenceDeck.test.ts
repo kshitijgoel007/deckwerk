@@ -319,10 +319,10 @@ describe.skipIf(!ready)('reference.key ground truth', () => {
     const at = (x: number, y: number) =>
       texts.find((t) => Math.abs(t.x - x) < 4 && Math.abs(t.y - y) < 4);
 
-    const heading = at(44, -4);
-    expect(heading, 'heading at 44,-4').toBeDefined();
+    const heading = at(44, 0);
+    expect(heading, 'canvas-clamped heading at 44,0').toBeDefined();
     near(heading!.w, 1873, 3);
-    near(heading!.h, 169, 4);
+    near(heading!.h, 165, 4);
 
     // These two are auto-sizing boxes: Keynote computes their extent from font
     // metrics we do not have, so width is estimated from character count. The
@@ -657,8 +657,10 @@ describe.skipIf(!ready)('reference.key ground truth', () => {
             e.html.replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').includes(content))
           .sort((a, b) => Math.hypot(a.x - x, a.y - y) - Math.hypot(b.x - x, b.y - y))[0];
         expect(text, `slide ${slideNumber}: ${content}`).toBeDefined();
-        near(text!.x, x, 2);
-        near(text!.y, y, 2);
+        // Imported text containers are intersected with the canvas so their
+        // selection outlines and resize handles always remain reachable.
+        near(text!.x, Math.max(0, x), 2);
+        near(text!.y, Math.max(0, y), 2);
         expect(text!.w).toBeGreaterThan(0);
         expect(text!.h).toBeGreaterThan(0);
       }

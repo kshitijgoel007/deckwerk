@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { emptyDeck } from '../src/shared/deck.js';
 import {
   EditorCanvas,
@@ -13,6 +15,8 @@ import {
   insertShape,
   insertText,
 } from '../src/renderer/editor/elementCreation.js';
+import { Inspector } from '../src/renderer/editor/inspector.js';
+import { applySlideLayout } from '../src/renderer/editor/slideLayouts.js';
 import { EditorStore } from '../src/renderer/editor/store.js';
 
 /**
@@ -139,7 +143,7 @@ function setup() {
 }
 
 const bodyOf = (host: HTMLElement, id: string): HTMLElement =>
-  host.querySelector(`[data-element-id="${id}"]`)!.firstElementChild as HTMLElement;
+  host.querySelector(`[data-element-id="${id}"] .text-content`)! as HTMLElement;
 
 describe('inline text editing', () => {
   beforeEach(() => {
@@ -181,6 +185,79 @@ describe('inline text editing', () => {
     expect(el.type).toBe('text');
     expect((el as { html: string }).html).toBe('Edited text');
     expect(canvas.isEditing()).toBe(false);
+  });
+
+  it('keeps inherited text colour and its picker preview stable after editing', () => {
+    installDomShims();
+    const styles = document.createElement('style');
+    styles.textContent = [
+      readFileSync(join(process.cwd(), 'src/renderer/player/player.css'), 'utf8'),
+      readFileSync(join(process.cwd(), 'src/renderer/editor/editor.css'), 'utf8'),
+      '.slide { color: #5b21b6; }',
+    ].join('\n');
+    document.head.appendChild(styles);
+    const deck = emptyDeck('Inherited colour');
+    applySlideLayout(deck.slides[0], 'standard');
+    const title = deck.slides[0].elements.find((element) =>
+      element.class.includes('role-title'))!;
+    const canvasHost = document.createElement('div');
+    const inspectorHost = document.createElement('div');
+    document.body.replaceChildren(canvasHost, inspectorHost);
+    const store = new EditorStore(deck, '/tmp/inherited-colour');
+    const canvas = new EditorCanvas(canvasHost, store);
+    new Inspector(inspectorHost, store);
+    store.select([title.id]);
+
+    const beforeNode = canvasHost.querySelector<HTMLElement>(
+      `[data-element-id="${title.id}"]`,
+    )!;
+    const beforePicker = inspectorHost.querySelector<HTMLInputElement>('input[type="color"]')!;
+    expect(getComputedStyle(beforeNode).color).toBe('rgb(91, 33, 182)');
+    expect(getComputedStyle(beforeNode.firstElementChild!).opacity).not.toBe('0.4');
+    expect(beforePicker.value).toBe('#5b21b6');
+    expect(beforePicker.dataset.inherited).toBe('true');
+
+    canvas.beginTextEdit(title.id);
+    bodyOf(canvasHost, title.id).innerHTML = 'Edited title';
+    bodyOf(canvasHost, title.id).dispatchEvent(new FocusEvent('blur'));
+
+    const afterNode = canvasHost.querySelector<HTMLElement>(
+      `[data-element-id="${title.id}"]`,
+    )!;
+    const afterPicker = inspectorHost.querySelector<HTMLInputElement>('input[type="color"]')!;
+    const edited = store.slide!.elements.find((element) => element.id === title.id)!;
+    expect(edited.class).not.toContain('placeholder');
+    expect(edited.style.color).toBeUndefined();
+    expect(getComputedStyle(afterNode).color).toBe('rgb(91, 33, 182)');
+    expect(afterPicker.value).toBe('#5b21b6');
+    expect(afterPicker.dataset.inherited).toBe('true');
+
+    afterPicker.value = '#c026d3';
+    afterPicker.dispatchEvent(new Event('change', { bubbles: true }));
+    let live = store.slide!.elements.find((element) => element.id === title.id)!;
+    let livePicker = inspectorHost.querySelector<HTMLInputElement>('input[type="color"]')!;
+    expect(live.style.color).toBe('#c026d3');
+    expect(getComputedStyle(canvasHost.querySelector<HTMLElement>(
+      `[data-element-id="${title.id}"]`,
+    )!).color).toBe('rgb(192, 38, 211)');
+    expect(livePicker.value).toBe('#c026d3');
+    expect(livePicker.dataset.inherited).toBe('false');
+
+    canvas.beginTextEdit(title.id);
+    bodyOf(canvasHost, title.id).innerHTML = 'Edited again';
+    bodyOf(canvasHost, title.id).dispatchEvent(new FocusEvent('blur'));
+    live = store.slide!.elements.find((element) => element.id === title.id)!;
+    livePicker = inspectorHost.querySelector<HTMLInputElement>('input[type="color"]')!;
+    expect(live.style.color).toBe('#c026d3');
+    expect(livePicker.value).toBe('#c026d3');
+
+    inspectorHost.querySelector<HTMLButtonElement>('button[title="No colour"]')!.click();
+    live = store.slide!.elements.find((element) => element.id === title.id)!;
+    livePicker = inspectorHost.querySelector<HTMLInputElement>('input[type="color"]')!;
+    expect(live.style.color).toBeUndefined();
+    expect(livePicker.value).toBe('#5b21b6');
+    expect(livePicker.dataset.inherited).toBe('true');
+    styles.remove();
   });
 
   it('inserts multiple lines of text and can delete all of that text again', () => {
@@ -261,6 +338,46 @@ describe('inline text editing', () => {
     expect(canvas.isEditing()).toBe(true);
   });
 
+  it('does not replace a native word selection with select-all on double-click', () => {
+    const { canvas, host } = setup();
+    canvas.beginTextEdit('text-1');
+    const body = bodyOf(host, 'text-1');
+    const range = document.createRange();
+    range.setStart(body.firstChild!, 0);
+    range.setEnd(body.firstChild!, 8);
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+
+    body.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+
+    expect(selection.toString()).toBe('Original');
+    expect(canvas.isEditing()).toBe(true);
+  });
+
+  it('applies font weight to only the selected text range', () => {
+    const { store, canvas, host } = setup();
+    canvas.beginTextEdit('text-1');
+    const body = bodyOf(host, 'text-1');
+    const range = document.createRange();
+    range.setStart(body.firstChild!, 0);
+    range.setEnd(body.firstChild!, 8);
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+
+    expect(canvas.applyTextSelectionWeight(700)).toBe(true);
+    expect(body.innerHTML).toContain('font-weight: 700');
+    expect(body.textContent).toBe('Original text');
+    body.dispatchEvent(new FocusEvent('blur'));
+
+    const text = store.slide!.elements.find((element) => element.id === 'text-1')!;
+    expect(text.type).toBe('text');
+    if (text.type === 'text') {
+      expect(text.html).toContain('<span style="font-weight: 700;">Original</span> text');
+    }
+  });
+
   it('plays the video when it is double-clicked', () => {
     const { canvas, host } = setup();
     const stage = host.querySelector<HTMLElement>('.stage')!;
@@ -273,6 +390,41 @@ describe('inline text editing', () => {
     );
 
     expect(canvas.isPlaying('video-1')).toBe(true);
+  });
+
+  it('marks videos with a small editor-only corner badge', () => {
+    const { host } = setup();
+    const video = host.querySelector<HTMLElement>('[data-element-id="video-1"]')!;
+    const badge = video.querySelector<HTMLElement>(':scope > .video-editor-badge');
+    expect(badge).not.toBeNull();
+    expect(badge?.textContent).toBe('▶');
+    expect(badge?.getAttribute('aria-label')).toBe('Video');
+  });
+
+  it('enters mask mode through the media context-menu action', async () => {
+    const { store, canvas, host } = setup();
+    const stage = host.querySelector<HTMLElement>('.stage')!;
+    stage.getBoundingClientRect = () =>
+      ({ left: 0, top: 0, width: 1920, height: 1080 }) as DOMRect;
+    canvas.contextActions = (element) => element?.type === 'video'
+      ? [{ label: 'Edit mask (crop)', action: () => canvas.toggleMaskMode(element.id) }]
+      : [];
+    host.dispatchEvent(new MouseEvent('contextmenu', {
+      clientX: 300, clientY: 400, bubbles: true,
+    }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const item = document.querySelector<HTMLButtonElement>('#ctx-menu button')!;
+
+    item.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+    expect(item.isConnected).toBe(true);
+    item.click();
+
+    expect(canvas.maskingElement()).toBe('video-1');
+    const video = store.slide!.elements.find((element) => element.id === 'video-1')!;
+    expect(video.type).toBe('video');
+    if (video.type === 'video') expect(video.sourceBox).toEqual({ x: 0, y: 0, w: 640, h: 360 });
+    expect(host.querySelector('.sel-box.masking')).not.toBeNull();
+    expect(host.querySelector('[data-element-id="video-1"] > div > video')).not.toBeNull();
   });
 });
 

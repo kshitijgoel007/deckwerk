@@ -97,4 +97,31 @@ describe('role-based theme workflow', () => {
     input.dispatchEvent(new Event('change', { bubbles: true }));
     expect(store.slide!.elements.find((el) => el.id === 'title')!.style.color).toBe('#123456');
   });
+
+  it('edits whole-box font size and weight and can return both to the theme', () => {
+    const { store, host } = setup();
+    store.select(['body']);
+    const field = (label: string) => [...host.querySelectorAll<HTMLLabelElement>('label.field')]
+      .find((candidate) => candidate.querySelector('span')?.textContent === label)!;
+    const size = field('Font size').querySelector<HTMLInputElement>('input[type="number"]')!;
+    const weight = field('Font weight').querySelector<HTMLSelectElement>('select')!;
+
+    size.value = '54';
+    size.dispatchEvent(new Event('change', { bubbles: true }));
+    field('Font weight').querySelector<HTMLSelectElement>('select')!.value = '700';
+    field('Font weight').querySelector<HTMLSelectElement>('select')!
+      .dispatchEvent(new Event('change', { bubbles: true }));
+    let body = store.slide!.elements.find((element) => element.id === 'body')!;
+    expect(body.style['font-size']).toBe('54px');
+    expect(body.style['font-weight']).toBe('700');
+
+    field('Font size').querySelector<HTMLButtonElement>('button[title="Use theme value"]')!.click();
+    field('Font weight').querySelector<HTMLSelectElement>('select')!.value = 'inherit';
+    field('Font weight').querySelector<HTMLSelectElement>('select')!
+      .dispatchEvent(new Event('change', { bubbles: true }));
+    body = store.slide!.elements.find((element) => element.id === 'body')!;
+    expect(body.style['font-size']).toBeUndefined();
+    expect(body.style['font-weight']).toBeUndefined();
+    expect(weight).not.toBeNull();
+  });
 });

@@ -69,6 +69,8 @@ button.primary {
   color: #fff;
 }
 
+body.welcome-mode .deck-only { display: none; }
+
 /* --- layout --- */
 
 #body {
@@ -128,6 +130,103 @@ button.primary {
   position: absolute;
   box-shadow: 0 8px 40px rgb(0 0 0 / 50%);
 }
+
+/* Editor-only media cue. It is injected by EditorCanvas, so it never appears
+   in thumbnails, presenter view, projected slides, or web exports. */
+.video-editor-badge {
+  position: absolute;
+  top: calc(7px * var(--editor-inv-scale, 1));
+  left: calc(7px * var(--editor-inv-scale, 1));
+  z-index: 5;
+  display: grid;
+  width: calc(22px * var(--editor-inv-scale, 1));
+  height: calc(19px * var(--editor-inv-scale, 1));
+  border: calc(1px * var(--editor-inv-scale, 1)) solid rgb(255 255 255 / 28%);
+  border-radius: calc(5px * var(--editor-inv-scale, 1));
+  place-items: center;
+  background: rgb(15 15 18 / 72%);
+  box-shadow: 0 calc(1px * var(--editor-inv-scale, 1)) calc(4px * var(--editor-inv-scale, 1)) rgb(0 0 0 / 35%);
+  color: rgb(255 255 255 / 88%);
+  font: 600 calc(9px * var(--editor-inv-scale, 1))/1 system-ui, sans-serif;
+  pointer-events: none;
+}
+
+/* --- no-deck welcome --- */
+
+#body.welcome-mode { grid-template-columns: 1fr; }
+#body.welcome-mode > #rail,
+#body.welcome-mode > #side { display: none; }
+.canvas-host.welcome-mode .stage { display: none; }
+
+.welcome-screen {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  padding: 48px;
+  background:
+    radial-gradient(circle at 50% 38%, rgb(59 130 246 / 14%), transparent 38%),
+    #141416;
+  text-align: center;
+}
+
+.welcome-screen[hidden] { display: none; }
+
+.welcome-mark {
+  display: grid;
+  width: 54px;
+  height: 54px;
+  margin-bottom: 20px;
+  border-radius: 15px;
+  place-items: center;
+  background: var(--accent);
+  box-shadow: 0 12px 35px rgb(59 130 246 / 28%);
+  color: white;
+  font: 700 28px/1 system-ui, sans-serif;
+}
+
+.welcome-screen h1 {
+  margin: 0;
+  font-size: 30px;
+  letter-spacing: -0.025em;
+}
+
+.welcome-screen > p {
+  max-width: 570px;
+  margin: 9px 0 30px;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.welcome-actions {
+  display: grid;
+  width: min(760px, 100%);
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+}
+
+.welcome-action {
+  display: flex;
+  min-height: 118px;
+  align-items: flex-start;
+  justify-content: center;
+  flex-direction: column;
+  padding: 20px;
+  border-color: #404047;
+  background: rgb(46 46 50 / 88%);
+  text-align: left;
+}
+
+.welcome-action:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: #343944;
+  transform: translateY(-1px);
+}
+
+.welcome-action strong { margin-bottom: 7px; font-size: 15px; }
+.welcome-action span { color: var(--muted); font-size: 12px; line-height: 1.45; }
 
 .slide-layer, .overlay-layer {
   position: absolute;
@@ -352,10 +451,22 @@ button.primary {
 .timeline-row {
   display: grid;
   gap: 4px;
-  grid-template-columns: 1fr 1fr 1.4fr 52px 24px;
+  grid-template-areas:
+    "grip action target remove"
+    "grip trigger delay remove";
+  grid-template-columns: 22px 1fr 1.35fr 24px;
   align-items: center;
-  margin-bottom: 4px;
+  margin-bottom: 7px;
+  padding: 4px;
+  border-radius: 5px;
 }
+
+.build-drag-handle { grid-area: grip; align-self: stretch; padding: 0; cursor: grab; color: var(--muted); }
+.build-action { grid-area: action; }
+.build-target { grid-area: target; }
+.build-trigger { grid-area: trigger; }
+.build-delay { grid-area: delay; }
+.timeline-row > .icon-button { grid-area: remove; }
 
 .timeline-row select, .timeline-row input {
   min-width: 0;
@@ -614,7 +725,10 @@ input[type="range"] { accent-color: var(--accent); padding: 0; background: trans
    though the player/export hides their placeholder copy. */
 .canvas-host .element.placeholder .text-body {
   visibility: visible;
-  opacity: 0.4;
+}
+.canvas-host .element.placeholder {
+  outline: 1px dashed rgb(128 128 128 / 45%);
+  outline-offset: -1px;
 }
 
 /* Status bar quieter. */
@@ -623,6 +737,21 @@ input[type="range"] { accent-color: var(--accent); padding: 0; background: trans
 /* Timeline rows breathe a little. */
 .step-block { border-radius: var(--radius); background: rgb(255 255 255 / 1.5%); }
 .timeline-row select, .timeline-row input { border-radius: 5px; }
+.history-item {
+  display: grid;
+  gap: 3px;
+  width: 100%;
+  margin: 0 0 6px;
+  padding: 9px 10px;
+  text-align: left;
+}
+.history-item strong { font-size: 11px; font-weight: 600; }
+.history-item span { color: var(--muted); font-size: 10px; }
+.history-item:disabled { border-color: var(--accent); opacity: 1; }
+.text-selection-style { display: grid; gap: 6px; margin: 4px 0 8px; }
+.text-selection-style > span { color: var(--muted); font-size: 10.5px; }
+.text-selection-style .button-row { display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; }
+.text-selection-style button { padding: 5px 2px; font-size: 10px; }
 .build-element-row {
   display: flex;
   align-items: center;
@@ -634,9 +763,23 @@ input[type="range"] { accent-color: var(--accent); padding: 0; background: trans
 }
 .build-element-row span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .build-element-row input { accent-color: var(--accent); }
-.timeline-row[draggable="true"] { cursor: grab; }
 .timeline-row.dragging { opacity: .4; }
-.timeline-row.drop-target { outline: 2px solid var(--accent); outline-offset: 2px; }
+.timeline-row[data-drop-mode="before"] { box-shadow: inset 0 3px 0 var(--accent); }
+.timeline-row[data-drop-mode="after"] { box-shadow: inset 0 -3px 0 var(--accent); }
+.timeline-row[data-drop-mode="fuse"] { outline: 2px solid var(--accent); background: var(--accent-soft); }
+
+.insp-subtitle { margin: 12px 0 6px; color: var(--muted); font-size: 10.5px; font-weight: 650; text-transform: uppercase; }
+.media-effect-row {
+  display: grid;
+  grid-template-columns: 1fr 64px 24px 24px 24px;
+  align-items: center;
+  gap: 3px;
+  margin-bottom: 4px;
+}
+.media-effect-row > span { font-size: 11px; }
+.media-effect-row input { min-width: 0; width: 100%; padding: 4px; }
+.media-effect-row .icon-button { padding: 3px; }
+.effect-add { width: 100%; margin-top: 4px; }
 
 /* ============================================================= */
 /* Final design layer: terminal-inspired. Monospace UI, hard      */
