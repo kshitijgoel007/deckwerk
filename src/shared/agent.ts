@@ -296,18 +296,26 @@ export function validateDeckIntegrity(deck: Deck, assetExists?: (src: string) =>
   return errors;
 }
 
+/**
+ * A scene derived from `deck.json` alone, for when no editor is running.
+ *
+ * Everything the authored deck states is here; everything only a rendering can
+ * know — measured bounds, resolved styles, the size auto-fit settled on — is
+ * explicitly null rather than guessed, so an agent can tell the difference.
+ */
 export function authoredScene(
   deck: Deck,
   slide: Slide,
   index: number,
   selectedSlideIds = new Set<string>(),
   selectedElementIds = new Set<string>(),
+  activeSlideId: string | null = null,
 ): ComputedSlideScene {
   return {
     id: slide.id,
     index,
     name: slide.name,
-    active: index === 0,
+    active: activeSlideId === null ? index === 0 : slide.id === activeSlideId,
     selected: selectedSlideIds.has(slide.id),
     canvas: deck.canvas,
     background: slide.background,

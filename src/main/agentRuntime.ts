@@ -17,9 +17,17 @@ import {
 import type { Deck } from '@shared/deck.js';
 import { IPC } from '@shared/ipc.js';
 
-export const AGENT_STATE_ROOT = process.env.SLIDE_EDITOR_STATE_DIR
-  ? resolve(process.env.SLIDE_EDITOR_STATE_DIR)
-  : join(homedir(), '.slide-editor', 'runtime');
+/**
+ * Where ephemeral agent state lives. Deliberately outside the deck folder:
+ * a sidecar describing a selection is not part of the document and has no
+ * business in the user's git history. Read per call so a test (or a second
+ * app instance) can point it somewhere else.
+ */
+export function agentStateRoot(): string {
+  return process.env.SLIDE_EDITOR_STATE_DIR
+    ? resolve(process.env.SLIDE_EDITOR_STATE_DIR)
+    : join(homedir(), '.slide-editor', 'runtime');
+}
 
 export function deckRevision(deck: Deck): string {
   return createHash('sha256').update(canonicalDeckJson(deck)).digest('hex');
@@ -28,7 +36,7 @@ export function deckRevision(deck: Deck): string {
 export function agentRuntimeDir(deckDir: string): string {
   const canonical = resolve(deckDir);
   const key = createHash('sha256').update(canonical).digest('hex').slice(0, 24);
-  return join(AGENT_STATE_ROOT, `${sanitize(basename(canonical))}-${key}`);
+  return join(agentStateRoot(), `${sanitize(basename(canonical))}-${key}`);
 }
 
 export function agentRuntimePaths(deckDir: string) {
@@ -59,6 +67,7 @@ export class AgentRuntime {
     const paths = agentRuntimePaths(deckDir);
     await mkdir(paths.inbox, { recursive: true });
     await mkdir(paths.responses, { recursive: true });
+    await sweepTempFiles(paths.root);
     this.watcher = watch(paths.inbox, () => void this.drain());
     await this.drain();
   }
@@ -143,21 +152,34 @@ export async function writeAgentRequest(deckDir: string, request: AgentRequest):
   return join(paths.responses, `${safeId(request.id)}.json`);
 }
 
-export async function readLiveAgentContext(deckDir: string): Promise<AgentContext | null> {
+/** The sidecar as written, live or not, for stale-selection fallback. */
+export async function readAgentContextFile(deckDir: string): Promise<AgentContext | null> {
   const path = agentRuntimePaths(deckDir).context;
   if (!existsSync(path)) return null;
   try {
-    const context = AgentContextSchema.parse(JSON.parse(await readFile(path, 'utf8')));
-    if (!context.live || resolve(context.deckPath) !== resolve(deckDir)) return null;
-    try {
-      process.kill(context.pid, 0);
-    } catch {
-      return null;
-    }
-    return context;
+    return AgentContextSchema.parse(JSON.parse(await readFile(path, 'utf8')));
   } catch {
     return null;
   }
+}
+
+/**
+ * The sidecar, but only when a running editor still stands behind it.
+ *
+ * A crashed app leaves `live: true` on disk forever, so liveness is a
+ * conjunction of the flag, the deck it claims to describe, and the process
+ * actually existing.
+ */
+export async function readLiveAgentContext(deckDir: string): Promise<AgentContext | null> {
+  const context = await readAgentContextFile(deckDir);
+  if (!context) return null;
+  if (!context.live || resolve(context.deckPath) !== resolve(deckDir)) return null;
+  try {
+    process.kill(context.pid, 0);
+  } catch {
+    return null;
+  }
+  return context;
 }
 
 export async function waitForAgentResponse(
@@ -182,6 +204,19 @@ export async function atomicJson(path: string, value: unknown): Promise<void> {
   const temp = `${path}.${process.pid}.${randomUUID()}.tmp`;
   await writeFile(temp, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
   await rename(temp, path);
+}
+
+/**
+ * Discard half-written sidecars from a previous run.
+ *
+ * `atomicJson` writes to a temp name and renames; a process killed between the
+ * two leaves the temp behind forever, and there is no session it could still
+ * belong to by the time a new one opens the deck.
+ */
+async function sweepTempFiles(root: string): Promise<void> {
+  for (const name of await readdir(root).catch(() => [])) {
+    if (name.endsWith('.tmp')) await unlink(join(root, name)).catch(() => undefined);
+  }
 }
 
 function safeId(id: string): string {

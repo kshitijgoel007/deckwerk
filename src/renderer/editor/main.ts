@@ -13,6 +13,7 @@ import {
   themeStyleCss,
   withThemeBlock,
 } from '@shared/themes.js';
+import { AgentBridge } from './agentBridge.js';
 import { EditorCanvas } from './canvas.js';
 import { CssEditor } from './cssEditor.js';
 import { Inspector } from './inspector.js';
@@ -71,6 +72,20 @@ inspector.onSeekPreview = (id, t) => canvas.seekVideo(id, t);
 inspector.videoDuration = (id) => canvas.videoDuration(id);
 canvas.onMaskModeChange = () => inspector.render();
 canvas.onTextEditModeChange = () => inspector.render();
+
+/**
+ * The agent's window into this editor: it publishes the computed selection to
+ * the runtime sidecar and applies inbound transactions here, in the live
+ * document, so each one becomes a single named undo entry rather than a file
+ * that lands underneath the user.
+ */
+const agent = new AgentBridge(store, {
+  publish: (context) => window.api.publishAgentContext(context),
+  respond: (response) => window.api.respondAgentRequest(response),
+  save,
+  resolveSrc: (src) => window.api.assetUrl(src),
+});
+window.api.onAgentRequest?.((request) => void agent.handle(request));
 
 /* --- toolbar --- */
 
@@ -660,11 +675,15 @@ canvas.contextActions = (el) => {
 // disk (an agent, a git checkout, hand editing) and broadcasts it here. Our
 // own saves echo back identical content and are ignored by comparison.
 window.api.onDeckState((session) => {
+  const state = store.get();
   if (
-    session.dir === store.get().dir &&
-    JSON.stringify(session.deck) === JSON.stringify(store.get().deck)
+    session.dir === state.dir &&
+    JSON.stringify(session.deck) === JSON.stringify(state.deck)
   ) return;
-  store.load(session.deck, session.dir, { keepView: true });
+  // A different deck is a genuine open; the same deck rewritten underneath us
+  // is an edit, and an edit should be undoable rather than a history wipe.
+  if (session.dir !== state.dir) store.load(session.deck, session.dir, { keepView: true });
+  else store.replaceExternal(session.deck, session.dir);
   welcome.setVisible(false);
   refreshSwatches(currentTheme());
   setStatusMessage('Deck reloaded from disk.');

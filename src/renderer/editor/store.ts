@@ -112,20 +112,43 @@ export class EditorStore {
    * edits therefore behave like ordinary, reversible editor actions.
    */
   replaceExternal(deck: Deck, dir: string, label = 'External edit'): void {
+    const anchor = this.cursorAnchor();
     this.pushUndo(this.state.deck, label);
     this.state = { ...this.state, dir, deck: parseDeck(deck), dirty: false };
-    this.clampCursor();
+    this.restoreCursor(anchor);
     this.recordHistory(label);
     this.emit();
   }
 
   /** Replace the document as one local, dirty, undoable transaction. */
   replaceWithHistory(deck: Deck, label: string): void {
+    const anchor = this.cursorAnchor();
     this.pushUndo(this.state.deck, label);
     this.state = { ...this.state, deck: parseDeck(deck), dirty: true };
-    this.clampCursor();
+    this.restoreCursor(anchor);
     this.recordHistory(label);
     this.emit();
+  }
+
+  /** The slide the user is looking at, named by id rather than by position. */
+  private cursorAnchor(): string | null {
+    return this.state.deck.slides[this.state.slideIndex]?.id ?? null;
+  }
+
+  /**
+   * Put the cursor back on the slide it was on.
+   *
+   * A rewrite from outside — an agent transaction, a hand edit, a git checkout
+   * — routinely inserts or removes slides ahead of the one being worked on.
+   * Restoring by index would silently teleport the user; restoring by id is
+   * what makes those edits feel like edits.
+   */
+  private restoreCursor(anchorSlideId: string | null): void {
+    const at = anchorSlideId === null
+      ? -1
+      : this.state.deck.slides.findIndex((slide) => slide.id === anchorSlideId);
+    if (at !== -1) this.state = { ...this.state, slideIndex: at };
+    this.clampCursor();
   }
 
   /**

@@ -48,6 +48,13 @@ export class AgentBridge {
     }, 140);
   }
 
+  /** Publish now rather than on the debounce, for tests and for shutdown. */
+  async flush(): Promise<void> {
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = null;
+    await this.publish();
+  }
+
   async handle(request: AgentRequest): Promise<void> {
     const deck = this.store.get().deck;
     const revision = await browserDeckRevision(deck);
@@ -175,6 +182,7 @@ export async function buildComputedScenes(
     // Allow layout, fonts and media wrappers to settle before measuring.
     await nextFrame();
     const rootRect = root.getBoundingClientRect();
+    const nodes = elementNodes(root);
     output.push({
       id: slide.id,
       index,
@@ -188,7 +196,7 @@ export async function buildComputedScenes(
       timeline: structuredClone(slide.timeline),
       elements: slide.elements.map((element) => computedElement(
         element,
-        root.querySelector<HTMLElement>(`[data-element-id="${CSS.escape(element.id)}"]`),
+        nodes.get(element.id) ?? null,
         rootRect,
         selectedElementIds,
       )),
@@ -212,12 +220,17 @@ async function buildInlineDom(
     for (const node of root.querySelectorAll<HTMLElement>('*')) {
       const style = getComputedStyle(node);
       let inline = '';
-      for (const property of style) inline += `${property}:${style.getPropertyValue(property)};`;
+      // Indexed access rather than iteration: `CSSStyleDeclaration` is only
+      // iterable in real browsers, and this same code runs under jsdom in tests.
+      for (let i = 0; i < style.length; i++) {
+        const property = style.item(i);
+        inline += `${property}:${style.getPropertyValue(property)};`;
+      }
       node.setAttribute('style', inline);
     }
+    const nodes = elementNodes(root);
     for (const id of selectedElementIds) {
-      root.querySelector<HTMLElement>(`[data-element-id="${CSS.escape(id)}"]`)
-        ?.setAttribute('data-agent-selected', 'true');
+      nodes.get(id)?.setAttribute('data-agent-selected', 'true');
     }
     result.push({ slideId: slide.id, html: root.outerHTML });
     host.remove();
@@ -240,6 +253,22 @@ function mountSlide(deck: Deck, slide: Slide, resolveSrc: (src: string) => strin
   return { host, root };
 }
 
+/**
+ * Index the rendered nodes by element id in one pass.
+ *
+ * Deliberately not `querySelector('[data-element-id="…"]')`: deck ids are
+ * arbitrary strings, so that route needs `CSS.escape`, which is one more thing
+ * to be wrong about — and it is quadratic over a busy slide besides.
+ */
+function elementNodes(root: HTMLElement): Map<string, HTMLElement> {
+  const map = new Map<string, HTMLElement>();
+  for (const node of root.querySelectorAll<HTMLElement>('[data-element-id]')) {
+    const id = node.dataset.elementId;
+    if (id !== undefined && !map.has(id)) map.set(id, node);
+  }
+  return map;
+}
+
 function computedElement(
   element: SlideElement,
   node: HTMLElement | null,
@@ -247,11 +276,21 @@ function computedElement(
   selectedIds: Set<string>,
 ): ComputedElementScene {
   const rect = node?.getBoundingClientRect();
-  const style = node ? getComputedStyle(node) : null;
   const content = node?.querySelector<HTMLElement>('.text-content') ?? null;
   const body = node?.querySelector<HTMLElement>('.text-body') ?? null;
+  // Typography is split across the wrapper (font, colour), the body (alignment)
+  // and the content (the fitted size), so the resolved answer to "what does
+  // this text look like" is the three layers merged outwards-in.
   const computedStyle: Record<string, string> = {};
-  if (style) for (const property of COMPUTED_PROPERTIES) computedStyle[property] = style.getPropertyValue(property);
+  for (const layer of [node, body, content]) {
+    if (!layer) continue;
+    const layerStyle = getComputedStyle(layer);
+    for (const property of COMPUTED_PROPERTIES) {
+      const value = layerStyle.getPropertyValue(property);
+      if (value) computedStyle[property] = value;
+      else computedStyle[property] ??= '';
+    }
+  }
   return {
     id: element.id,
     type: element.type,
