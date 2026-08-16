@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { copyFile, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { basename, extname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { type Deck, emptyDeck, parseDeck } from '@shared/deck.js';
 import type { ImportedAsset } from '@shared/ipc.js';
 import { isWebSafeCodec, probeMedia, transcodeToH264, videoCodec } from './ffmpeg.js';
@@ -17,6 +18,7 @@ import { isWebSafeCodec, probeMedia, transcodeToH264, videoCodec } from './ffmpe
 
 export const DECK_FILE = 'deck.json';
 export const ASSETS_DIR = 'assets';
+export const AGENT_GUIDE_FILE = 'AGENTS.md';
 
 const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.avif', '.pdf']);
 const VIDEO_EXTS = new Set(['.mp4', '.mov', '.m4v', '.webm', '.mkv', '.avi']);
@@ -75,7 +77,57 @@ export async function createDeck(dir: string, title?: string): Promise<Deck> {
   const deck = emptyDeck(title ?? basename(dir));
   await saveDeck(dir, deck);
   await writeFile(join(dir, deck.theme), DEFAULT_THEME, 'utf8');
+  await ensureAgentGuide(dir);
   return deck;
+}
+
+/**
+ * Leave a short brief for coding agents in the deck folder.
+ *
+ * Agent CLIs read `AGENTS.md` from their working directory, and their working
+ * directory is the deck — not this repository, where the real guide lives. So
+ * every deck gets a stub that points at `slide-agent docs`, which is how an
+ * agent finds the format and the transaction contract without being told where
+ * the editor is installed.
+ *
+ * Never overwrites: once the file exists it belongs to the user, who may well
+ * have added their own notes about the talk to it.
+ */
+export async function ensureAgentGuide(dir: string): Promise<boolean> {
+  const path = join(dir, AGENT_GUIDE_FILE);
+  if (existsSync(path)) return false;
+  await mkdir(dir, { recursive: true });
+  await writeFile(path, agentGuideStub(), 'utf8');
+  return true;
+}
+
+function agentGuideStub(): string {
+  // A checkout has the launcher next to it; a packaged app does not ship the
+  // dev CLI at all, so the absolute-path hint is offered only when it is real.
+  const launcher = fileURLToPath(new URL('../../bin/slide-agent', import.meta.url));
+  const fallback = existsSync(launcher)
+    ? `\nIf \`slide-agent\` is not on your PATH, it is at:\n\n    ${launcher}\n`
+    : '';
+
+  return `# Working on this deck
+
+This folder is a slide-editor deck:
+
+    deck.json   content, geometry and builds
+    theme.css   typography and colour
+    assets/     media, referenced by deck-relative path
+
+Do not hand-edit \`deck.json\`. Use the \`slide-agent\` CLI instead: it is
+revision-checked, validated and atomic, and while the editor is open your
+changes land in its undo history as one labelled entry, with the author's
+selection left where it was.
+
+    slide-agent docs      # the full format and workflow guide — read this first
+    slide-agent context   # what is selected right now, and the deck revision
+${fallback}
+This file was generated when the deck was opened. It is yours now — add notes
+about the talk to it if you like; the editor never rewrites it.
+`;
 }
 
 export async function loadTheme(dir: string, theme: string): Promise<string> {

@@ -10,6 +10,7 @@ import {
   EXIT_CONFLICT, EXIT_ERROR, EXIT_OK, EXIT_USAGE, agentGuidePath, runAgentCli,
 } from '../src/cli/agentCli.js';
 import { agentRuntimePaths, deckRevision } from '../src/main/agentRuntime.js';
+import { createDeck, ensureAgentGuide } from '../src/main/deckStore.js';
 import { getFfmpegPath } from '../src/main/ffmpeg.js';
 
 /**
@@ -217,6 +218,33 @@ describe('slide-agent CLI', () => {
     expect(stdout).toContain('# Working on a deck as an agent');
     expect(stdout).toContain('transaction apply');
     expect(stdout).toBe(await readFile(agentGuidePath(), 'utf8'));
+  });
+
+  describe('the brief left in the deck folder', () => {
+    it('lands in a newly created deck, pointing at the real guide', async () => {
+      const fresh = join(dir, 'new-talk');
+      await createDeck(fresh, 'New talk');
+
+      const brief = await readFile(join(fresh, 'AGENTS.md'), 'utf8');
+      expect(brief).toContain('slide-agent docs');
+      expect(brief).toContain('slide-agent context');
+      expect(brief).toContain('deck.json');
+      // The point of the stub is to stop an agent hand-editing the document.
+      expect(brief).toMatch(/Do not hand-edit/);
+    });
+
+    it('is written for a deck that does not have one yet', async () => {
+      expect(await ensureAgentGuide(dir)).toBe(true);
+      expect(await readFile(join(dir, 'AGENTS.md'), 'utf8')).toContain('slide-agent docs');
+    });
+
+    it('never overwrites notes the user has added to it', async () => {
+      const mine = '# My talk\n\nRemember to rehearse the demo.\n';
+      await writeFile(join(dir, 'AGENTS.md'), mine, 'utf8');
+
+      expect(await ensureAgentGuide(dir)).toBe(false);
+      expect(await readFile(join(dir, 'AGENTS.md'), 'utf8')).toBe(mine);
+    });
   });
 
   it('rejects a deck folder that is not one, and unknown commands', async () => {

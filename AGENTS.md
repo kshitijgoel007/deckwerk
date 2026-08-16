@@ -35,7 +35,9 @@ my-talk/
 ## Getting this guide, from a deck folder
 
 You are probably working in a deck folder, not in the editor's source tree.
-Everything you need is one command away:
+Every deck the editor opens, creates or imports gets a short `AGENTS.md` of its
+own — that is likely how you got here. It points back at this guide, which is
+one command away:
 
 ```bash
 slide-agent docs        # this document

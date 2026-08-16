@@ -19,6 +19,7 @@ import { installAssetProtocol, registerAssetScheme, setDeckDir } from './assetPr
 import {
   createDeck,
   derivedAssetPath,
+  ensureAgentGuide,
   importAsset,
   loadDeck,
   loadTheme,
@@ -65,6 +66,9 @@ function setSession(dir: string, deck: Deck): DeckSession {
   setDeckDir(dir);
   watchDeck(dir, deck.theme);
   void agentRuntime.open(dir);
+  // New deck, opened deck, imported deck: whichever way a deck arrives, an
+  // agent asked to work on it should find instructions sitting next to it.
+  void ensureAgentGuide(dir).catch((err) => console.error('Could not write AGENTS.md:', err));
   return session;
 }
 
