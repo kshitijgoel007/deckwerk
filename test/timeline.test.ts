@@ -8,6 +8,7 @@ import {
   resolveState,
   stepCount,
 } from '../src/shared/timeline.js';
+import { reorderBuildEntry } from '../src/renderer/editor/timelinePanel.js';
 
 /** A slide with three elements and whatever timeline the test needs. */
 function slideWith(timeline: unknown[]): Slide {
@@ -139,5 +140,26 @@ describe('deck navigation', () => {
 
   it('stops at the start of the deck', () => {
     expect(prevCursor(slides, { slide: 0, step: 0 })).toEqual({ slide: 0, step: 0 });
+  });
+});
+
+describe('build authoring order', () => {
+  it('reorders click reveals and fuses a dropped entry with its target', () => {
+    const slide = slideWith([reveal('a'), reveal('b'), reveal('v')]);
+    reorderBuildEntry(slide.timeline, 't-v', 't-a', 'fuse');
+    expect(slide.timeline.map((entry) => entry.id)).toEqual([
+      't-a', 't-v', 't-b',
+    ]);
+    expect(slide.timeline[1].trigger.on).toBe('withPrev');
+    expect(groupIntoSteps(slide)[1].map((entry) => entry.action.target)).toEqual(['a', 'v']);
+  });
+
+  it('moves an entry between click positions without fusing it', () => {
+    const slide = slideWith([reveal('a'), reveal('b'), reveal('v')]);
+    reorderBuildEntry(slide.timeline, 't-v', 't-a', 'before');
+    expect(slide.timeline.map((entry) => entry.id)).toEqual([
+      't-v', 't-a', 't-b',
+    ]);
+    expect(slide.timeline[0].trigger.on).toBe('click');
   });
 });

@@ -216,6 +216,10 @@ export const SlideSchema = z.object({
   notes: z.string().default(''),
   /** Geometry preset; themes may decorate it but never own its positions. */
   layout: z.enum(['freeform', 'standard', 'title']).optional(),
+  transition: z.object({
+    type: z.enum(['none', 'magicMove']),
+    duration: z.number().min(100).max(5000),
+  }).optional(),
   elements: z.array(ElementSchema).default([]),
   timeline: z.array(TimelineEntrySchema).default([]),
 });

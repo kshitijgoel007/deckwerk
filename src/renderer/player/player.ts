@@ -1,4 +1,4 @@
-import type { Deck, Slide } from '@shared/deck.js';
+import type { Deck, Slide, SlideElement } from '@shared/deck.js';
 import {
   type Cursor,
   type SlideState,
@@ -108,7 +108,11 @@ export class Player {
       this.stage.replaceChildren();
       return;
     }
+    const previousSlideIndex = this.cursor.slide;
     const slide = slides[Math.min(Math.max(cursor.slide, 0), slides.length - 1)];
+    const previousSlide = slides[previousSlideIndex];
+    const magicMove = previousSlideIndex !== slides.indexOf(slide) &&
+      slide.transition?.type === 'magicMove';
     const steps = stepCount(slide);
     this.cursor = {
       slide: slides.indexOf(slide),
@@ -142,7 +146,31 @@ export class Player {
     this.rescale();
 
     this.applyState(slide, resolveState(slide, this.cursor.step));
+    if (magicMove && previousSlide) this.runMagicMove(previousSlide, slide);
     this.onCursor?.(this.getCursor(), steps);
+  }
+
+  private runMagicMove(previous: Slide, next: Slide): void {
+    const duration = next.transition?.duration ?? 700;
+    for (const [from, to] of matchMagicMoveElements(previous.elements, next.elements)) {
+      const node = this.stage.querySelector<HTMLElement>(
+        `[data-element-id="${CSS.escape(to.id)}"]`,
+      );
+      if (!node?.animate) continue;
+      const dx = from.x - to.x;
+      const dy = from.y - to.y;
+      const sx = from.w / to.w;
+      const sy = from.h / to.h;
+      const finalTransform = to.rot ? `rotate(${to.rot}deg)` : 'none';
+      node.style.transformOrigin = 'top left';
+      node.animate([
+        {
+          transform: `translate(${dx}px, ${dy}px) scale(${sx}, ${sy})${from.rot ? ` rotate(${from.rot}deg)` : ''}`,
+          opacity: String(from.opacity),
+        },
+        { transform: finalTransform, opacity: String(to.opacity) },
+      ], { duration, easing: 'cubic-bezier(.2,.8,.2,1)', fill: 'both' });
+    }
   }
 
   /**
@@ -316,5 +344,36 @@ export class Player {
     const r = this.container.getBoundingClientRect();
     if (r.width === 0 || r.height === 0) return;
     applyStageScale(this.stage, this.deck, { w: r.width, h: r.height });
+  }
+}
+
+/** Match duplicated slide objects by identity first, then stable visible content. */
+export function matchMagicMoveElements(
+  previous: SlideElement[],
+  next: SlideElement[],
+): Array<[SlideElement, SlideElement]> {
+  const unused = new Set(previous);
+  const pairs: Array<[SlideElement, SlideElement]> = [];
+  for (const target of next) {
+    let source = [...unused].find((candidate) => candidate.id === target.id);
+    if (!source) {
+      const signature = magicSignature(target);
+      source = [...unused].find((candidate) => magicSignature(candidate) === signature);
+    }
+    if (!source) continue;
+    unused.delete(source);
+    pairs.push([source, target]);
+  }
+  return pairs;
+}
+
+function magicSignature(element: SlideElement): string {
+  switch (element.type) {
+    case 'text': return `text:${element.html}:${element.class.join('.')}`;
+    case 'image': return `image:${element.src}`;
+    case 'video': return `video:${element.src}`;
+    case 'shape': return `shape:${element.shape}:${element.fill}:${element.stroke}:${element.class.join('.')}`;
+    case 'html': return `html:${element.html}`;
+    case 'unsupported': return `unsupported:${element.originalType}:${element.note}`;
   }
 }

@@ -13,6 +13,7 @@ import type { EditorStore } from './store.js';
 export class TimelinePanel {
   private host: HTMLElement;
   private store: EditorStore;
+  private draggingEntryId: string | null = null;
 
   constructor(host: HTMLElement, store: EditorStore) {
     this.host = host;
@@ -41,6 +42,27 @@ export class TimelinePanel {
     add.addEventListener('click', () => this.addRevealForSelection());
     header.appendChild(add);
     this.host.appendChild(header);
+
+    const elementsTitle = document.createElement('div');
+    elementsTitle.className = 'step-label';
+    elementsTitle.textContent = 'Slide elements';
+    this.host.appendChild(elementsTitle);
+    const revealTargets = new Set(slide.timeline
+      .filter((entry) => entry.action.type === 'appear')
+      .map((entry) => entry.action.target));
+    for (const element of slide.elements) {
+      const row = document.createElement('label');
+      row.className = 'build-element-row';
+      row.dataset.elementId = element.id;
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.checked = revealTargets.has(element.id);
+      checkbox.addEventListener('change', () => this.setAppear(element.id, checkbox.checked));
+      const name = document.createElement('span');
+      name.textContent = describeElement(element);
+      row.append(checkbox, name);
+      this.host.appendChild(row);
+    }
 
     if (slide.timeline.length === 0) {
       const hint = document.createElement('p');
@@ -78,6 +100,33 @@ export class TimelinePanel {
   private entryRow(entry: TimelineEntry, elements: SlideElement[]): HTMLElement {
     const row = document.createElement('div');
     row.className = 'timeline-row';
+    row.draggable = true;
+    row.dataset.entryId = entry.id;
+    row.addEventListener('dragstart', () => {
+      this.draggingEntryId = entry.id;
+      row.classList.add('dragging');
+    });
+    row.addEventListener('dragend', () => {
+      this.draggingEntryId = null;
+      row.classList.remove('dragging');
+    });
+    row.addEventListener('dragover', (event) => {
+      event.preventDefault();
+      row.classList.add('drop-target');
+    });
+    row.addEventListener('dragleave', () => row.classList.remove('drop-target'));
+    row.addEventListener('drop', (event) => {
+      event.preventDefault();
+      row.classList.remove('drop-target');
+      if (!this.draggingEntryId || this.draggingEntryId === entry.id) return;
+      const bounds = row.getBoundingClientRect();
+      const ratio = bounds.height > 0 ? (event.clientY - bounds.top) / bounds.height : 0.5;
+      const mode = ratio > 0.25 && ratio < 0.75 ? 'fuse' : ratio <= 0.25 ? 'before' : 'after';
+      this.store.commit((deck) => {
+        const timeline = deck.slides[this.store.get().slideIndex].timeline;
+        reorderBuildEntry(timeline, this.draggingEntryId!, entry.id, mode);
+      });
+    });
 
     const action = document.createElement('select');
     for (const t of ['appear', 'disappear', 'play', 'pause'] as const) {
@@ -185,6 +234,47 @@ export class TimelinePanel {
         });
       });
     });
+  }
+
+  private setAppear(target: string, enabled: boolean): void {
+    this.store.commit((deck) => {
+      const slide = deck.slides[this.store.get().slideIndex];
+      slide.timeline = slide.timeline.filter((entry) =>
+        !(entry.action.target === target && entry.action.type === 'appear'));
+      if (enabled) {
+        slide.timeline.push({
+          id: makeId('t'), trigger: { on: 'click', ref: null, delay: 0 },
+          action: { type: 'appear', target, value: null },
+        });
+      }
+    });
+  }
+}
+
+export type BuildDropMode = 'before' | 'after' | 'fuse';
+
+/** Reorder one build entry; fuse means reveal alongside the target click. */
+export function reorderBuildEntry(
+  timeline: TimelineEntry[],
+  draggedId: string,
+  targetId: string,
+  mode: BuildDropMode,
+): void {
+  const draggedIndex = timeline.findIndex((entry) => entry.id === draggedId);
+  if (draggedIndex < 0 || draggedId === targetId) return;
+  const [dragged] = timeline.splice(draggedIndex, 1);
+  const targetIndex = timeline.findIndex((entry) => entry.id === targetId);
+  if (targetIndex < 0) {
+    timeline.push(dragged);
+    return;
+  }
+  if (mode === 'fuse') {
+    dragged.trigger.on = 'withPrev';
+    dragged.trigger.delay = 0;
+    timeline.splice(targetIndex + 1, 0, dragged);
+  } else {
+    dragged.trigger.on = 'click';
+    timeline.splice(targetIndex + (mode === 'after' ? 1 : 0), 0, dragged);
   }
 }
 

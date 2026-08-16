@@ -87,6 +87,26 @@ export class Inspector {
       });
       layout.append(layoutLabel, layoutSelect);
       slideGroup.appendChild(layout);
+      slideGroup.appendChild(selectField(
+        'Transition',
+        ['none', 'magicMove'],
+        slide?.transition?.type ?? 'none',
+        (value) => this.store.commit((next) => {
+          next.slides[slideIndex].transition = {
+            type: value as 'none' | 'magicMove',
+            duration: slide?.transition?.duration ?? 700,
+          };
+        }),
+      ));
+      if (slide?.transition?.type === 'magicMove') {
+        slideGroup.appendChild(numberField(
+          'Transition ms', slide.transition.duration, (value) => this.store.commit((next) => {
+            next.slides[slideIndex].transition = {
+              type: 'magicMove', duration: Math.max(100, Math.min(5000, value)),
+            };
+          }),
+        ));
+      }
       slideGroup.appendChild(
         colorField('Background (clear = theme)', slide?.background.color ?? null, (value) => {
           this.store.commit((next) => {

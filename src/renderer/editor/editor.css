@@ -623,6 +623,20 @@ input[type="range"] { accent-color: var(--accent); padding: 0; background: trans
 /* Timeline rows breathe a little. */
 .step-block { border-radius: var(--radius); background: rgb(255 255 255 / 1.5%); }
 .timeline-row select, .timeline-row input { border-radius: 5px; }
+.build-element-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  padding: 5px 4px;
+  color: var(--text);
+  font-size: 10px;
+}
+.build-element-row span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.build-element-row input { accent-color: var(--accent); }
+.timeline-row[draggable="true"] { cursor: grab; }
+.timeline-row.dragging { opacity: .4; }
+.timeline-row.drop-target { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 /* ============================================================= */
 /* Final design layer: terminal-inspired. Monospace UI, hard      */
