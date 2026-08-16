@@ -183,6 +183,17 @@ button.primary {
   transform: translate(-50%, -50%);
 }
 
+.handle-curve-control {
+  width: calc(13px * var(--inv));
+  height: calc(13px * var(--inv));
+  border: calc(2px * var(--inv)) solid var(--purple, #a78bfa);
+  background: #fff;
+  border-radius: 2px;
+  cursor: move;
+  pointer-events: auto;
+  transform: translate(-50%, -50%) rotate(45deg) !important;
+}
+
 .guide {
   position: absolute;
   background: #ff2d55;

@@ -58,11 +58,11 @@ const HUMANIST = '"Gill Sans", "Gill Sans MT", Seravek, "Segoe UI", Verdana, san
 export const THEMES: ThemePreset[] = [
   {
     id: 'basic',
-    name: 'Basic',
-    description: 'Avenir geometry on white. Quietly confident; disappears behind the work.',
+    name: 'Studio',
+    description: 'Editorial display serif over calm Avenir prose, with a quiet hairline.',
     fonts: {
-      title: { family: AVENIR, size: 96, weight: 600, lineHeight: 1.04, letterSpacing: '-0.02em' },
-      heading: { family: AVENIR, size: 58, weight: 600, lineHeight: 1.12, letterSpacing: '-0.01em' },
+      title: { family: EDITORIAL_SERIF, size: 102, weight: 700, lineHeight: 1.01, letterSpacing: '-0.025em' },
+      heading: { family: EDITORIAL_SERIF, size: 58, weight: 600, lineHeight: 1.1, letterSpacing: '-0.01em' },
       body: { family: AVENIR, size: 38, weight: 400, lineHeight: 1.35, letterSpacing: '0' },
       caption: { family: AVENIR, size: 26, weight: 500, lineHeight: 1.3, letterSpacing: '0.01em', color: '#6e6e73' },
       base: { family: AVENIR, size: 34, weight: 400, lineHeight: 1.35, letterSpacing: '0' },
@@ -73,13 +73,13 @@ export const THEMES: ThemePreset[] = [
   {
     id: 'hacker',
     name: 'Hacker',
-    description: 'Monospace everything on soft off-white. Terminal calm, phosphor accents.',
+    description: 'Monospace display over humanist prose, with a phosphor command-rule.',
     fonts: {
       title: { family: MONO, size: 84, weight: 700, lineHeight: 1.1, letterSpacing: '-0.03em' },
       heading: { family: MONO, size: 52, weight: 600, lineHeight: 1.2, letterSpacing: '-0.02em' },
-      body: { family: MONO, size: 32, weight: 400, lineHeight: 1.5, letterSpacing: '-0.01em' },
-      caption: { family: MONO, size: 22, weight: 400, lineHeight: 1.4, letterSpacing: '0', color: '#7c7f93' },
-      base: { family: MONO, size: 30, weight: 400, lineHeight: 1.5, letterSpacing: '-0.01em' },
+      body: { family: HUMANIST, size: 36, weight: 400, lineHeight: 1.42, letterSpacing: '0' },
+      caption: { family: MONO, size: 22, weight: 500, lineHeight: 1.4, letterSpacing: '0', color: '#7c7f93' },
+      base: { family: HUMANIST, size: 33, weight: 400, lineHeight: 1.42, letterSpacing: '0' },
     },
     palette: ['#24273a', '#7c7f93', '#40a02b', '#d20f39', '#1e66f5', '#df8e1d', '#8839ef', '#eff1f5'],
     colors: { background: '#eff1f5', text: '#24273a', muted: '#7c7f93', accent: '#40a02b' },
@@ -90,7 +90,7 @@ export const THEMES: ThemePreset[] = [
     description: 'Serif display on warm paper, magazine margins. For talks that read like essays.',
     fonts: {
       title: { family: EDITORIAL_SERIF, size: 100, weight: 700, lineHeight: 1.02, letterSpacing: '-0.015em' },
-      heading: { family: EDITORIAL_SERIF, size: 56, weight: 600, lineHeight: 1.15, letterSpacing: '0' },
+      heading: { family: HUMANIST, size: 54, weight: 600, lineHeight: 1.15, letterSpacing: '0.01em' },
       body: { family: AVENIR, size: 36, weight: 400, lineHeight: 1.45, letterSpacing: '0' },
       caption: { family: AVENIR, size: 24, weight: 500, lineHeight: 1.35, letterSpacing: '0.06em', color: '#8a817c' },
       base: { family: AVENIR, size: 33, weight: 400, lineHeight: 1.45, letterSpacing: '0' },
@@ -101,13 +101,13 @@ export const THEMES: ThemePreset[] = [
   {
     id: 'swiss',
     name: 'Swiss',
-    description: 'Helvetica, stark white, one red. International Typographic Style, no apologies.',
+    description: 'Oversized Helvetica over literary serif copy, cut by one uncompromising red rule.',
     fonts: {
       title: { family: HELVETICA, size: 110, weight: 700, lineHeight: 0.98, letterSpacing: '-0.04em' },
       heading: { family: HELVETICA, size: 60, weight: 700, lineHeight: 1.05, letterSpacing: '-0.02em' },
-      body: { family: HELVETICA, size: 38, weight: 400, lineHeight: 1.3, letterSpacing: '0' },
-      caption: { family: HELVETICA, size: 24, weight: 700, lineHeight: 1.25, letterSpacing: '0.08em', color: '#111111' },
-      base: { family: HELVETICA, size: 34, weight: 400, lineHeight: 1.3, letterSpacing: '0' },
+      body: { family: EDITORIAL_SERIF, size: 38, weight: 400, lineHeight: 1.34, letterSpacing: '0' },
+      caption: { family: MONO, size: 23, weight: 600, lineHeight: 1.25, letterSpacing: '0.06em', color: '#111111' },
+      base: { family: EDITORIAL_SERIF, size: 34, weight: 400, lineHeight: 1.34, letterSpacing: '0' },
     },
     palette: ['#111111', '#555555', '#e63946', '#0057b7', '#f4a261', '#2a9d8f', '#eeeeee', '#ffffff'],
     colors: { background: '#ffffff', text: '#111111', muted: '#555555', accent: '#e63946' },
@@ -118,10 +118,10 @@ export const THEMES: ThemePreset[] = [
     description: 'Humanist sans, cream ground, muted pastels. Friendly without being cute.',
     fonts: {
       title: { family: HUMANIST, size: 92, weight: 600, lineHeight: 1.06, letterSpacing: '-0.01em' },
-      heading: { family: HUMANIST, size: 54, weight: 600, lineHeight: 1.15, letterSpacing: '0' },
-      body: { family: HUMANIST, size: 37, weight: 400, lineHeight: 1.4, letterSpacing: '0' },
+      heading: { family: EDITORIAL_SERIF, size: 55, weight: 600, lineHeight: 1.12, letterSpacing: '0' },
+      body: { family: EDITORIAL_SERIF, size: 37, weight: 400, lineHeight: 1.4, letterSpacing: '0' },
       caption: { family: HUMANIST, size: 25, weight: 500, lineHeight: 1.35, letterSpacing: '0.02em', color: '#9c8e85' },
-      base: { family: HUMANIST, size: 33, weight: 400, lineHeight: 1.4, letterSpacing: '0' },
+      base: { family: EDITORIAL_SERIF, size: 33, weight: 400, lineHeight: 1.4, letterSpacing: '0' },
     },
     palette: ['#4a4458', '#8d86a0', '#e07a5f', '#81b29a', '#6d9dc5', '#e9c46a', '#f2e9e4', '#fffdf8'],
     colors: { background: '#fffdf8', text: '#4a4458', muted: '#9c8e85', accent: '#e07a5f' },
@@ -152,7 +152,37 @@ export function themeCss(theme: ThemePreset): string {
     ``,
     `.role-caption { color: ${theme.colors.muted}; }`,
     ``,
+    layoutChrome(theme),
+    ``,
   ].join('\n');
+}
+
+/** Restrained theme decoration; layout geometry remains theme-independent. */
+function layoutChrome(theme: ThemePreset): string {
+  const rules: Record<string, string> = {
+    basic: `.slide.layout-standard::before {
+  content: ""; position: absolute; left: 120px; right: 120px; top: 219px;
+  height: 1px; background: ${theme.colors.muted}; opacity: .28;
+}`,
+    hacker: `.slide.layout-standard::before {
+  content: "//"; position: absolute; left: 120px; right: 120px; top: 211px;
+  padding-bottom: 7px; border-bottom: 3px solid ${theme.colors.accent};
+  color: ${theme.colors.accent}; font: 700 18px/1 monospace;
+}`,
+    editorial: `.slide.layout-standard::before {
+  content: ""; position: absolute; left: 120px; width: 210px; top: 217px;
+  height: 4px; background: ${theme.colors.accent};
+}`,
+    swiss: `.slide.layout-standard::before {
+  content: ""; position: absolute; left: 120px; right: 120px; top: 211px;
+  height: 8px; background: ${theme.colors.accent};
+}`,
+    soft: `.slide.layout-standard::before {
+  content: ""; position: absolute; left: 120px; width: 96px; top: 216px;
+  height: 6px; border-radius: 999px; background: ${theme.colors.accent}; opacity: .72;
+}`,
+  };
+  return rules[theme.id] ?? '';
 }
 
 /** Replace any previously installed theme block, leaving user CSS untouched. */

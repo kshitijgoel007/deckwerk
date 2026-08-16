@@ -252,6 +252,10 @@ export function pasteFromClipboard(store: EditorStore): string[] {
       copy.id = `${el.type}-${Math.random().toString(36).slice(2, 10)}`;
       copy.x += 24;
       copy.y += 24;
+      if (copy.type === 'shape' && copy.control) {
+        copy.control.x += 24;
+        copy.control.y += 24;
+      }
       copy.z = maxZ + 1 + i;
       created.push(copy.id);
       slide.elements.push(copy);

@@ -23,6 +23,13 @@
   overflow: hidden;
 }
 
+/* Title-only is non-destructive: body placeholders/content remain in the deck
+   and return when switching back to Standard. */
+.slide.layout-title > .role-body,
+.slide.layout-title > .role-heading {
+  display: none;
+}
+
 .element {
   position: absolute;
   box-sizing: border-box;

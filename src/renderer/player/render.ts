@@ -19,7 +19,7 @@ export interface RenderOptions {
 /** Build the `<div class="slide">` for a slide, with elements absolutely placed. */
 export function renderSlide(slide: Slide, opts: RenderOptions): HTMLElement {
   const root = document.createElement('div');
-  root.className = 'slide';
+  root.className = `slide layout-${slide.layout ?? 'freeform'}`;
   root.dataset.slideId = slide.id;
 
   if (slide.background.color) root.style.background = slide.background.color;
@@ -238,11 +238,18 @@ function renderShape(el: Extract<SlideElement, { type: 'shape' }>): SVGElement {
     }
     case 'line':
     case 'arrow': {
-      node = document.createElementNS(ns, 'line');
-      node.setAttribute('x1', '0');
-      node.setAttribute('y1', String(el.h / 2));
-      node.setAttribute('x2', String(el.w));
-      node.setAttribute('y2', String(el.h / 2));
+      if (el.control) {
+        node = document.createElementNS(ns, 'path');
+        node.setAttribute('d', quadraticPath(el));
+        node.setAttribute('stroke-linecap', 'round');
+        node.setAttribute('stroke-linejoin', 'round');
+      } else {
+        node = document.createElementNS(ns, 'line');
+        node.setAttribute('x1', '0');
+        node.setAttribute('y1', String(el.h / 2));
+        node.setAttribute('x2', String(el.w));
+        node.setAttribute('y2', String(el.h / 2));
+      }
       if (el.shape === 'arrow' || el.arrowEnd || el.arrowStart) {
         const markerId = `arrowhead-${el.id}`;
         svg.appendChild(arrowMarker(ns, markerId, stroke));
@@ -277,6 +284,19 @@ function renderShape(el: Extract<SlideElement, { type: 'shape' }>): SVGElement {
   node.setAttribute('stroke-width', sw);
   svg.appendChild(node);
   return svg;
+}
+
+/** Quadratic Bézier path in the rotated line element's local coordinates. */
+export function quadraticPath(el: Extract<SlideElement, { type: 'shape' }>): string {
+  if (!el.control) return '';
+  const cx = el.x + el.w / 2;
+  const cy = el.y + el.h / 2;
+  const radians = (el.rot * Math.PI) / 180;
+  const dx = el.control.x - cx;
+  const dy = el.control.y - cy;
+  const localX = dx * Math.cos(radians) + dy * Math.sin(radians) + el.w / 2;
+  const localY = -dx * Math.sin(radians) + dy * Math.cos(radians) + el.h / 2;
+  return `M 0 ${el.h / 2} Q ${localX} ${localY} ${el.w} ${el.h / 2}`;
 }
 
 function arrowMarker(ns: string, id: string, color: string): SVGDefsElement {

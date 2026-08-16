@@ -36,7 +36,11 @@ export function insertShape(store: EditorStore, kind: 'rect' | 'ellipse'): Shape
 }
 
 /** Insert a native line or arrow and select it. */
-export function insertLine(store: EditorStore, kind: 'line' | 'arrow'): ShapeEl {
+export function insertLine(
+  store: EditorStore,
+  kind: 'line' | 'arrow',
+  curved = false,
+): ShapeEl {
   const { deck } = store.get();
   const created: ShapeEl = {
     type: 'shape', id: makeId('shape'),
@@ -44,6 +48,9 @@ export function insertLine(store: EditorStore, kind: 'line' | 'arrow'): ShapeEl 
     w: 420, h: 2, rot: 0, z: nextZ(store), opacity: 1, class: [], style: {},
     shape: kind, fill: null, stroke: '#111827', strokeWidth: 4, radius: 0,
     path: null, pathSize: null, arrowStart: false, arrowEnd: kind === 'arrow',
+    control: curved
+      ? { x: Math.round(deck.canvas.w * 0.35) + 210, y: Math.round(deck.canvas.h * 0.5) - 140 }
+      : null,
   };
   store.commit((d) => d.slides[store.get().slideIndex].elements.push(created));
   store.select([created.id]);

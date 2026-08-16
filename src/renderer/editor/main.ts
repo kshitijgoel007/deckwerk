@@ -191,8 +191,10 @@ function themePicker(): HTMLElement {
       const theme = THEMES.find((t) => t.id === select.value) ?? null;
       if (!theme) return;
       const newlyInstalled = store.get().deck.themePreset !== theme.id;
-      if (newlyInstalled) installTheme(theme);
-      applyTheme(theme, newlyInstalled);
+      // Always refresh the generated block: preset definitions can improve
+      // across app versions even when the stored theme id is unchanged.
+      installTheme(theme);
+      applyTheme(theme, newlyInstalled, true);
     }),
   );
   return wrap;
@@ -228,13 +230,15 @@ function refreshSwatches(theme: ThemePreset | null): void {
   );
 }
 
-function applyTheme(theme: ThemePreset, newlyInstalled = false): void {
+function applyTheme(theme: ThemePreset, newlyInstalled = false, refreshed = false): void {
   const any = Object.values(applyOpts).some(Boolean);
   if (!any) {
     setStatusMessage(
       newlyInstalled
         ? `Installed “${theme.name}” — role-styled text updated.`
-        : 'Theme already installed; tick sizes / colours / bg for additional changes.',
+        : refreshed
+          ? `Refreshed “${theme.name}” — role-styled text updated.`
+          : 'Theme already installed; tick sizes / colours / bg for additional changes.',
     );
     return;
   }
@@ -253,13 +257,13 @@ function applyThemeToCurrentSlide(): void {
   // even if Install was not clicked first. Installing supplies the role CSS;
   // that alone visibly updates explicitly tagged Title/Body elements.
   const newlyInstalled = store.get().deck.themePreset !== theme.id;
-  if (newlyInstalled) installTheme(theme);
+  installTheme(theme);
   const any = Object.values(applyOpts).some(Boolean);
   if (!any) {
     setStatusMessage(
       newlyInstalled
         ? `Installed “${theme.name}” — role-styled text updated.`
-        : 'Theme already installed; tick sizes / colours / bg to change this slide.',
+        : `Refreshed “${theme.name}” — role-styled text updated.`,
     );
     return;
   }
@@ -349,6 +353,7 @@ function shapeInsertPicker(): HTMLElement {
     ['ellipse', 'Ellipse'],
     ['line', 'Line'],
     ['arrow', 'Arrow'],
+    ['curved-arrow', 'Curved arrow'],
   ];
   for (const [v, label] of opts) {
     const o = document.createElement('option');
@@ -357,10 +362,11 @@ function shapeInsertPicker(): HTMLElement {
     select.appendChild(o);
   }
   select.addEventListener('change', () => {
-    const kind = select.value as 'rect' | 'ellipse' | 'line' | 'arrow' | '';
+    const kind = select.value as 'rect' | 'ellipse' | 'line' | 'arrow' | 'curved-arrow' | '';
     select.value = '';
     if (!kind) return;
-    if (kind === 'line' || kind === 'arrow') addLine(kind);
+    if (kind === 'curved-arrow') insertLine(store, 'arrow', true);
+    else if (kind === 'line' || kind === 'arrow') addLine(kind);
     else addShape(kind);
   });
   return select;
@@ -473,6 +479,10 @@ function bindKeys(): void {
         store.updateSelected((el) => {
           el.x += dx;
           el.y += dy;
+          if (el.type === 'shape' && el.control) {
+            el.control.x += dx;
+            el.control.y += dy;
+          }
         });
         break;
       }
@@ -498,6 +508,10 @@ function duplicateSelection(): void {
       copy.id = makeId(el.type);
       copy.x += 24;
       copy.y += 24;
+      if (copy.type === 'shape' && copy.control) {
+        copy.control.x += 24;
+        copy.control.y += 24;
+      }
       created.push(copy.id);
       slide.elements.push(copy);
     }

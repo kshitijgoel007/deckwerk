@@ -105,6 +105,8 @@ const ShapeElement = BaseElement.extend({
     .default(null),
   arrowStart: z.boolean().default(false),
   arrowEnd: z.boolean().default(false),
+  /** Absolute canvas-space control point for an editable quadratic curve. */
+  control: z.object({ x: z.number(), y: z.number() }).nullable().optional(),
 });
 
 /** Escape hatch: arbitrary markup that still drags and resizes like anything else. */
@@ -180,6 +182,8 @@ export const SlideSchema = z.object({
     })
     .default({ color: null, image: null }),
   notes: z.string().default(''),
+  /** Geometry preset; themes may decorate it but never own its positions. */
+  layout: z.enum(['freeform', 'standard', 'title']).optional(),
   elements: z.array(ElementSchema).default([]),
   timeline: z.array(TimelineEntrySchema).default([]),
 });

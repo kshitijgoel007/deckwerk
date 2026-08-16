@@ -424,6 +424,86 @@ describe('native line endpoint editing', () => {
   });
 });
 
+describe('quadratic curved arrows', () => {
+  beforeEach(() => document.body.replaceChildren());
+
+  function stageAtOne(host: HTMLElement): void {
+    host.querySelector<HTMLElement>('.stage')!.getBoundingClientRect = () =>
+      ({ left: 0, top: 0, width: 1920, height: 1080 }) as DOMRect;
+  }
+
+  function pointer(target: EventTarget, type: string, x: number, y: number): void {
+    target.dispatchEvent(new PointerEvent(type, {
+      clientX: x, clientY: y, bubbles: true, pointerId: 1, button: 0,
+    }));
+  }
+
+  it('renders an inserted curved arrow as a quadratic path with an arrowhead', () => {
+    const { store, host } = setup();
+    const arrow = insertLine(store, 'arrow', true);
+    const path = host.querySelector<SVGPathElement>(
+      `[data-element-id="${arrow.id}"] svg > path`,
+    )!;
+    expect(path.getAttribute('d')).toContain(' Q ');
+    expect(path.getAttribute('marker-end')).toContain('arrowhead-');
+    expect(host.querySelector('.handle-curve-control')).not.toBeNull();
+  });
+
+  it('selects a curved arrow by clicking near the visible curve', () => {
+    const { store, host } = setup();
+    stageAtOne(host);
+    const arrow = insertLine(store, 'arrow', true);
+    const { start, end } = lineEndpoints(arrow);
+    const control = arrow.control!;
+    const midpoint = {
+      x: start.x * 0.25 + control.x * 0.5 + end.x * 0.25,
+      y: start.y * 0.25 + control.y * 0.5 + end.y * 0.25,
+    };
+    store.clearSelection();
+    pointer(host, 'pointerdown', midpoint.x, midpoint.y);
+    pointer(host, 'pointerup', midpoint.x, midpoint.y);
+    expect([...store.get().selection]).toEqual([arrow.id]);
+  });
+
+  it('reshapes the curve with its bend handle', () => {
+    const { store, host } = setup();
+    stageAtOne(host);
+    const arrow = insertLine(store, 'arrow', true);
+    const beforePath = host.querySelector<SVGPathElement>(
+      `[data-element-id="${arrow.id}"] svg > path`,
+    )!.getAttribute('d');
+    const handle = host.querySelector<HTMLElement>('.handle-curve-control')!;
+    pointer(handle, 'pointerdown', arrow.control!.x, arrow.control!.y);
+    pointer(host, 'pointermove', arrow.control!.x + 80, arrow.control!.y - 60);
+    pointer(host, 'pointerup', arrow.control!.x + 80, arrow.control!.y - 60);
+    const changed = store.slide!.elements.find((el) => el.id === arrow.id)!;
+    expect(changed.type === 'shape' && changed.control).toEqual({
+      x: arrow.control!.x + 80, y: arrow.control!.y - 60,
+    });
+    expect(host.querySelector<SVGPathElement>(
+      `[data-element-id="${arrow.id}"] svg > path`,
+    )!.getAttribute('d')).not.toBe(beforePath);
+  });
+
+  it('moves endpoints and bend together when dragging the arrow', () => {
+    const { store, host } = setup();
+    stageAtOne(host);
+    const arrow = insertLine(store, 'arrow', true);
+    const originalControl = { ...arrow.control! };
+    const { start, end } = lineEndpoints(arrow);
+    const onCurve = {
+      x: start.x * 0.25 + arrow.control!.x * 0.5 + end.x * 0.25,
+      y: start.y * 0.25 + arrow.control!.y * 0.5 + end.y * 0.25,
+    };
+    pointer(host, 'pointerdown', onCurve.x, onCurve.y);
+    pointer(host, 'pointermove', onCurve.x + 100, onCurve.y + 60);
+    pointer(host, 'pointerup', onCurve.x + 100, onCurve.y + 60);
+    const moved = store.slide!.elements.find((el) => el.id === arrow.id)!;
+    expect(moved.type === 'shape' && moved.control!.x).toBeGreaterThan(originalControl.x);
+    expect(moved.type === 'shape' && moved.control!.y).toBeGreaterThan(originalControl.y);
+  });
+});
+
 describe('object creation and manipulation', () => {
   beforeEach(() => document.body.replaceChildren());
 
@@ -455,7 +535,9 @@ describe('object creation and manipulation', () => {
     const { store, host } = setup();
     const ellipse = insertShape(store, 'ellipse');
     expect(store.slide!.elements.at(-1)).toMatchObject({ id: ellipse.id, shape: 'ellipse' });
-    const rendered = host.querySelector(`[data-element-id="${ellipse.id}"] ellipse`)!;
+    const rendered = host.querySelector<SVGEllipseElement>(
+      `[data-element-id="${ellipse.id}"] ellipse`,
+    )!;
     expect(rendered).not.toBeNull();
     expect(rendered.getAttribute('cx')).toBe(String(ellipse.w / 2));
     expect(rendered.getAttribute('cy')).toBe(String(ellipse.h / 2));

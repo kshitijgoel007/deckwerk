@@ -1,6 +1,7 @@
 import type { SlideElement } from '@shared/deck.js';
 import { type AlignMode, alignElements } from './align.js';
 import type { EditorStore } from './store.js';
+import { LAYOUT_LABELS, applySlideLayout, type SlideLayout } from './slideLayouts.js';
 
 /**
  * The properties panel.
@@ -68,6 +69,33 @@ export class Inspector {
     if (selected.length === 0) {
       this.host.appendChild(hint('Nothing selected'));
       const slideGroup = group('Slide');
+      const slide = deck.slides[slideIndex];
+      const layout = document.createElement('label');
+      layout.className = 'field';
+      const layoutLabel = document.createElement('span');
+      layoutLabel.textContent = 'Layout';
+      const layoutSelect = document.createElement('select');
+      for (const [value, label] of LAYOUT_LABELS) {
+        const option = document.createElement('option');
+        option.value = value;
+        option.textContent = label;
+        layoutSelect.appendChild(option);
+      }
+      layoutSelect.value = slide?.layout ?? 'freeform';
+      layoutSelect.addEventListener('change', () => {
+        this.store.commit((next) => {
+          applySlideLayout(next.slides[slideIndex], layoutSelect.value as SlideLayout);
+        });
+      });
+      layout.append(layoutLabel, layoutSelect);
+      slideGroup.appendChild(layout);
+      slideGroup.appendChild(
+        colorField('Background (clear = theme)', slide?.background.color ?? null, (value) => {
+          this.store.commit((next) => {
+            next.slides[slideIndex].background = { color: value, image: null };
+          });
+        }),
+      );
       slideGroup.appendChild(
         button('Apply theme to slide', () => this.onApplyTheme?.()),
       );
@@ -249,8 +277,14 @@ export class Inspector {
       this.store.updateSelected((el) => {
         const m = moves.get(el.id);
         if (!m) return;
-        if (m.x !== undefined) el.x = Math.round(m.x);
-        if (m.y !== undefined) el.y = Math.round(m.y);
+        const dx = m.x === undefined ? 0 : Math.round(m.x) - el.x;
+        const dy = m.y === undefined ? 0 : Math.round(m.y) - el.y;
+        if (m.x !== undefined) el.x += dx;
+        if (m.y !== undefined) el.y += dy;
+        if (el.type === 'shape' && el.control) {
+          el.control.x += dx;
+          el.control.y += dy;
+        }
         if (m.w !== undefined) el.w = Math.round(m.w);
         if (m.h !== undefined) el.h = Math.round(m.h);
       });
@@ -282,7 +316,11 @@ export class Inspector {
         numberField(key.toUpperCase(), multi ? null : first[key], (v) => {
           this.store.updateSelected((el) => {
             if (key === 'w' || key === 'h') el[key] = Math.max(8, v);
-            else el[key] = v;
+            else {
+              const delta = v - el[key];
+              el[key] = v;
+              if (el.type === 'shape' && el.control) el.control[key] += delta;
+            }
           });
         }),
       );
@@ -537,6 +575,18 @@ export class Inspector {
             }),
           ),
         );
+        if (el.shape === 'line' || el.shape === 'arrow') {
+          wrap.appendChild(
+            checkboxField('Curved', Boolean(el.control), (on) =>
+              this.store.updateSelected((e) => {
+                if (e.type !== 'shape') return;
+                e.control = on
+                  ? { x: e.x + e.w / 2, y: e.y + e.h / 2 - Math.max(80, e.w / 3) }
+                  : null;
+              }),
+            ),
+          );
+        }
         wrap.appendChild(
           colorField('Fill', el.fill, (v) =>
             this.store.updateSelected((e) => {

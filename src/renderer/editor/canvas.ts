@@ -1,6 +1,6 @@
 import type { Deck, Slide, SlideElement } from '@shared/deck.js';
 import { type Rect, fitScale, makeId } from '@shared/geometry.js';
-import { renderSlide } from '../player/render.js';
+import { quadraticPath, renderSlide } from '../player/render.js';
 import { HANDLES, type SnapLine, snapMove, snapResize } from './snapping.js';
 import type { EditorStore } from './store.js';
 
@@ -19,10 +19,11 @@ const LINE_HIT_SCREEN_PX = 8;
 /** Screen-pixel movement before a press becomes a drag rather than a click. */
 const DRAG_THRESHOLD_PX = 3;
 const HANDLE_NAMES = Object.keys(HANDLES);
+type MoveOrigin = Rect & { control?: { x: number; y: number } };
 
 type DragMode =
   | { kind: 'none' }
-  | { kind: 'move'; startCanvas: { x: number; y: number }; origin: Map<string, Rect> }
+  | { kind: 'move'; startCanvas: { x: number; y: number }; origin: Map<string, MoveOrigin> }
   | {
       kind: 'resize';
       handle: string;
@@ -32,7 +33,8 @@ type DragMode =
       aspect: number;
     }
   | { kind: 'marquee'; startCanvas: { x: number; y: number } }
-  | { kind: 'endpoint'; which: 'start' | 'end'; elementId: string };
+  | { kind: 'endpoint'; which: 'start' | 'end'; elementId: string }
+  | { kind: 'curve-control'; elementId: string };
 
 export class EditorCanvas {
   private store: EditorStore;
@@ -212,6 +214,10 @@ export class EditorCanvas {
       node.style.opacity = String(el.opacity);
       node.style.transform = el.rot ? `rotate(${el.rot}deg)` : '';
 
+      if (el.type === 'shape' && el.control) {
+        node.querySelector('svg > path')?.setAttribute('d', quadraticPath(el));
+      }
+
       // Cropped media: the inner tag is positioned in the window's coordinates
       // and has to follow crop changes here, since they no longer rebuild.
       if ((el.type === 'image' || el.type === 'video') && el.sourceBox) {
@@ -376,6 +382,17 @@ export class EditorCanvas {
           h.style.transform = 'translate(-50%, -50%)';
           box.appendChild(h);
         }
+        if (el.control) {
+          const control = document.createElement('div');
+          control.className = 'handle handle-curve-control';
+          control.dataset.curveControl = 'true';
+          control.dataset.elementId = el.id;
+          control.style.left = `${el.control.x - el.x}px`;
+          control.style.top = `${el.control.y - el.y}px`;
+          control.style.margin = '0';
+          control.style.transform = 'translate(-50%, -50%)';
+          box.appendChild(control);
+        }
         frag.appendChild(box);
         continue;
       }
@@ -455,6 +472,13 @@ export class EditorCanvas {
     const point = this.toCanvas(ev);
     this.host.setPointerCapture(ev.pointerId);
 
+    // Bend handle on a quadratic line or arrow.
+    if (target.dataset?.curveControl && target.dataset.elementId) {
+      this.store.beginTransaction();
+      this.drag = { kind: 'curve-control', elementId: target.dataset.elementId };
+      return;
+    }
+
     // Endpoint handle on a line or arrow.
     const endpoint = target.dataset?.endpoint;
     if (endpoint && target.dataset.elementId) {
@@ -500,9 +524,12 @@ export class EditorCanvas {
         this.store.select([hit.id], true);
         return;
       }
-      const origin = new Map<string, Rect>();
+      const origin = new Map<string, MoveOrigin>();
       for (const el of this.store.selectedElements()) {
-        origin.set(el.id, { x: el.x, y: el.y, w: el.w, h: el.h });
+        origin.set(el.id, {
+          x: el.x, y: el.y, w: el.w, h: el.h,
+          ...((el.type === 'shape' && el.control) ? { control: { ...el.control } } : {}),
+        });
       }
       this.store.beginTransaction();
       this.drag = { kind: 'move', startCanvas: point, origin };
@@ -527,7 +554,8 @@ export class EditorCanvas {
     if (
       !this.dragStarted &&
       this.drag.kind !== 'marquee' &&
-      this.drag.kind !== 'endpoint'
+      this.drag.kind !== 'endpoint' &&
+      this.drag.kind !== 'curve-control'
     ) {
       const start = this.drag.startCanvas;
       const moved =
@@ -568,6 +596,12 @@ export class EditorCanvas {
           if (!o) return;
           el.x = Math.round(o.x + finalDx);
           el.y = Math.round(o.y + finalDy);
+          if (el.type === 'shape' && 'control' in o && o.control) {
+            el.control = {
+              x: Math.round(o.control.x + finalDx),
+              y: Math.round(o.control.y + finalDy),
+            };
+          }
         });
         break;
       }
@@ -651,6 +685,16 @@ export class EditorCanvas {
           target.y = Math.round(geo.y);
           target.w = Math.round(geo.w);
           target.rot = Math.round(geo.rot * 10) / 10;
+        });
+        break;
+      }
+
+      case 'curve-control': {
+        const drag = this.drag;
+        this.store.updateSelected((target) => {
+          if (target.id === drag.elementId && target.type === 'shape') {
+            target.control = { x: Math.round(point.x), y: Math.round(point.y) };
+          }
         });
         break;
       }
@@ -842,7 +886,10 @@ export class EditorCanvas {
       const el = deck.slides[this.store.get().slideIndex].elements.find(
         (e) => e.id === elementId,
       );
-      if (el && (el.type === 'text' || el.type === 'html')) el.html = html;
+      if (el && (el.type === 'text' || el.type === 'html')) {
+        el.html = html;
+        el.class = el.class.filter((name) => name !== 'placeholder');
+      }
     });
   }
 
@@ -1057,7 +1104,8 @@ function sameStructure(a: Slide, b: Slide): boolean {
       if (
         x.shape !== y.shape || x.fill !== y.fill || x.stroke !== y.stroke ||
         x.strokeWidth !== y.strokeWidth || x.radius !== y.radius ||
-        x.path !== y.path || x.arrowStart !== y.arrowStart || x.arrowEnd !== y.arrowEnd
+        x.path !== y.path || x.arrowStart !== y.arrowStart || x.arrowEnd !== y.arrowEnd ||
+        Boolean(x.control) !== Boolean(y.control)
       ) return false;
     }
     // The crop VALUE is geometry (applyGeometry moves the inner media), but a
@@ -1079,6 +1127,22 @@ export function elementContainsPoint(
 ): boolean {
   if (el.type === 'shape' && (el.shape === 'line' || el.shape === 'arrow')) {
     const { start, end } = lineEndpoints(el);
+    if (el.control) {
+      let previous = start;
+      for (let i = 1; i <= 24; i++) {
+        const t = i / 24;
+        const inverse = 1 - t;
+        const next = {
+          x: inverse * inverse * start.x + 2 * inverse * t * el.control.x + t * t * end.x,
+          y: inverse * inverse * start.y + 2 * inverse * t * el.control.y + t * t * end.y,
+        };
+        if (distanceToSegment(point, previous, next) <= Math.max(tolerance, el.strokeWidth / 2)) {
+          return true;
+        }
+        previous = next;
+      }
+      return false;
+    }
     const vx = end.x - start.x;
     const vy = end.y - start.y;
     const length2 = vx * vx + vy * vy;
@@ -1091,6 +1155,19 @@ export function elementContainsPoint(
   }
   return point.x >= el.x && point.x <= el.x + el.w &&
     point.y >= el.y && point.y <= el.y + el.h;
+}
+
+function distanceToSegment(
+  point: { x: number; y: number },
+  start: { x: number; y: number },
+  end: { x: number; y: number },
+): number {
+  const vx = end.x - start.x;
+  const vy = end.y - start.y;
+  const length2 = vx * vx + vy * vy;
+  const t = length2 === 0 ? 0 : Math.max(0, Math.min(1,
+    ((point.x - start.x) * vx + (point.y - start.y) * vy) / length2));
+  return Math.hypot(point.x - (start.x + t * vx), point.y - (start.y + t * vy));
 }
 
 /**

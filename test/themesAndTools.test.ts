@@ -51,6 +51,14 @@ describe('theme presets', () => {
       expect((r + g + b) / 3, `${t.name} background is not light`).toBeGreaterThan(200);
       expect(t.palette.length).toBeGreaterThanOrEqual(6);
       expect(t.fonts.title.size).toBeGreaterThan(t.fonts.caption.size);
+      expect(t.fonts.title.family, `${t.name} uses one face for title and body`)
+        .not.toBe(t.fonts.body.family);
+    }
+  });
+
+  it('gives every standard layout theme its own restrained chrome', () => {
+    for (const theme of THEMES) {
+      expect(themeCss(theme)).toContain('.slide.layout-standard::before');
     }
   });
 
@@ -207,5 +215,19 @@ describe('element clipboard', () => {
     store.selectSlide(1);
     pasteFromClipboard(store);
     expect(store.get().deck.slides[1].elements).toHaveLength(1);
+  });
+
+  it('offsets a curved arrow control point together with its endpoints', () => {
+    const deck = sampleDeck();
+    const shape = deck.slides[0].elements.find((el) => el.id === 's1')!;
+    if (shape.type !== 'shape') throw new Error('expected shape');
+    shape.shape = 'arrow';
+    shape.control = { x: 250, y: 320 };
+    const store = new EditorStore(deck, '/tmp/x');
+    store.select(['s1']);
+    copySelectionToClipboard(store);
+    const [id] = pasteFromClipboard(store);
+    const pasted = store.slide!.elements.find((el) => el.id === id)!;
+    expect(pasted.type === 'shape' && pasted.control).toEqual({ x: 274, y: 344 });
   });
 });
