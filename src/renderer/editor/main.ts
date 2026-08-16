@@ -8,6 +8,7 @@ import { deckProseMax } from '@shared/fontSets.js';
 import { EditorCanvas } from './canvas.js';
 import { CssEditor } from './cssEditor.js';
 import { Inspector } from './inspector.js';
+import { insertLine, insertShape, insertText } from './elementCreation.js';
 import { SlideRail } from './slideRail.js';
 import { EditorStore, copySelectionToClipboard, cutSelectionToClipboard, pasteFromClipboard } from './store.js';
 import { TimelinePanel } from './timelinePanel.js';
@@ -308,61 +309,11 @@ function showPanel(id: string): void {
 /* --- element creation --- */
 
 function addText(): void {
-  const id = makeId('text');
-  const { deck } = store.get();
-  store.commit((d) => {
-    const slide = d.slides[store.get().slideIndex];
-    const maxZ = slide.elements.reduce((m, e) => Math.max(m, e.z), 0);
-    slide.elements.push({
-      type: 'text',
-      id,
-      x: Math.round(deck.canvas.w * 0.1),
-      y: Math.round(deck.canvas.h * 0.4),
-      w: Math.round(deck.canvas.w * 0.8),
-      h: 160,
-      rot: 0,
-      z: maxZ + 1,
-      opacity: 1,
-      class: [],
-      style: {},
-      html: 'New text',
-      align: 'left',
-      valign: 'middle',
-    });
-  });
-  store.select([id]);
+  insertText(store);
 }
 
 function addShape(kind: 'rect' | 'ellipse' = 'rect'): void {
-  const id = makeId('shape');
-  const { deck } = store.get();
-  store.commit((d) => {
-    const slide = d.slides[store.get().slideIndex];
-    const maxZ = slide.elements.reduce((m, e) => Math.max(m, e.z), 0);
-    slide.elements.push({
-      type: 'shape',
-      id,
-      x: Math.round(deck.canvas.w * 0.4),
-      y: Math.round(deck.canvas.h * 0.4),
-      w: 400,
-      h: 240,
-      rot: 0,
-      z: maxZ + 1,
-      opacity: 1,
-      class: [],
-      style: {},
-      shape: kind,
-      fill: '#3b82f6',
-      stroke: null,
-      strokeWidth: 2,
-      radius: 8,
-      path: null,
-      pathSize: null,
-      arrowStart: false,
-      arrowEnd: false,
-    });
-  });
-  store.select([id]);
+  insertShape(store, kind);
 }
 
 /** "+ Shape" dropdown: rect, ellipse, line, arrow. Inserts on choice. */
@@ -393,36 +344,7 @@ function shapeInsertPicker(): HTMLElement {
 }
 
 function addLine(kind: 'line' | 'arrow'): void {
-  const id = makeId('shape');
-  const { deck } = store.get();
-  store.commit((d) => {
-    const slide = d.slides[store.get().slideIndex];
-    const maxZ = slide.elements.reduce((m, e) => Math.max(m, e.z), 0);
-    slide.elements.push({
-      type: 'shape',
-      id,
-      x: Math.round(deck.canvas.w * 0.35),
-      y: Math.round(deck.canvas.h * 0.5),
-      w: 420,
-      // Thin box: an arrow is its stroke, and endpoint handles do the editing.
-      h: 2,
-      rot: 0,
-      z: maxZ + 1,
-      opacity: 1,
-      class: [],
-      style: {},
-      shape: kind,
-      fill: null,
-      stroke: '#111827',
-      strokeWidth: 4,
-      radius: 0,
-      path: null,
-      pathSize: null,
-      arrowStart: false,
-      arrowEnd: kind === 'arrow',
-    });
-  });
-  store.select([id]);
+  insertLine(store, kind);
 }
 
 /* --- persistence --- */

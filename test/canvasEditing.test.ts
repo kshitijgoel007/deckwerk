@@ -1,7 +1,13 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { emptyDeck } from '../src/shared/deck.js';
-import { EditorCanvas } from '../src/renderer/editor/canvas.js';
+import {
+  EditorCanvas,
+  elementContainsPoint,
+  lineEndpoints,
+  lineFromEndpoints,
+} from '../src/renderer/editor/canvas.js';
+import { insertLine, insertShape, insertText } from '../src/renderer/editor/elementCreation.js';
 import { EditorStore } from '../src/renderer/editor/store.js';
 
 /**
@@ -363,6 +369,140 @@ describe('dragging does not disturb media', () => {
 
     const after = document.querySelector('[data-element-id="video-1"] video');
     expect(after).not.toBe(before);
+  });
+});
+
+describe('native line endpoint editing', () => {
+  it('round-trips free start and end points through line geometry', () => {
+    const start = { x: 606, y: 651 };
+    const end = { x: 665, y: 672 };
+    const geometry = lineFromEndpoints(start, end, 1);
+    const points = lineEndpoints(geometry);
+
+    expect(points.start.x).toBeCloseTo(start.x, 6);
+    expect(points.start.y).toBeCloseTo(start.y, 6);
+    expect(points.end.x).toBeCloseTo(end.x, 6);
+    expect(points.end.y).toBeCloseTo(end.y, 6);
+  });
+
+  it('hits a rotated line near its visible segment, outside its thin box', () => {
+    const line = {
+      type: 'shape' as const, id: 'line', z: 1, opacity: 1, class: [], style: {},
+      ...lineFromEndpoints({ x: 800, y: 200 }, { x: 1000, y: 400 }, 2),
+      shape: 'line' as const, fill: null, stroke: '#000', strokeWidth: 4,
+      radius: 0, path: null, pathSize: null, arrowStart: false, arrowEnd: false,
+    };
+    expect(elementContainsPoint(line, { x: 850, y: 250 })).toBe(true);
+    expect(elementContainsPoint(line, { x: 850, y: 280 })).toBe(false);
+  });
+});
+
+describe('object creation and manipulation', () => {
+  beforeEach(() => document.body.replaceChildren());
+
+  function stageAtOne(host: HTMLElement): void {
+    host.querySelector<HTMLElement>('.stage')!.getBoundingClientRect = () =>
+      ({ left: 0, top: 0, width: 1920, height: 1080 }) as DOMRect;
+  }
+
+  function pointer(target: EventTarget, type: string, x: number, y: number): void {
+    target.dispatchEvent(new PointerEvent(type, {
+      clientX: x, clientY: y, bubbles: true, pointerId: 1, button: 0,
+    }));
+  }
+
+  it.each(['line', 'arrow'] as const)('selects a rotated %s by clicking its stroke', (kind) => {
+    const { store, host } = setup();
+    stageAtOne(host);
+    const created = insertLine(store, kind);
+    const geometry = lineFromEndpoints({ x: 800, y: 200 }, { x: 1000, y: 400 }, 2);
+    store.updateSelected((el) => Object.assign(el, geometry));
+    store.clearSelection();
+
+    pointer(host, 'pointerdown', 850, 250);
+    pointer(host, 'pointerup', 850, 250);
+    expect([...store.get().selection]).toEqual([created.id]);
+  });
+
+  it('inserts and renders an ellipse without throwing', () => {
+    const { store, host } = setup();
+    const ellipse = insertShape(store, 'ellipse');
+    expect(store.slide!.elements.at(-1)).toMatchObject({ id: ellipse.id, shape: 'ellipse' });
+    expect(host.querySelector(`[data-element-id="${ellipse.id}"] ellipse`)).not.toBeNull();
+    expect([...store.get().selection]).toEqual([ellipse.id]);
+  });
+
+  it('inserts text above existing objects and selects it', () => {
+    const { store } = setup();
+    const text = insertText(store);
+    expect(text.z).toBe(3);
+    expect(text.html).toBe('New text');
+    expect([...store.get().selection]).toEqual([text.id]);
+  });
+
+  it('moves an inserted ellipse by dragging it', () => {
+    const { store, host } = setup();
+    stageAtOne(host);
+    const ellipse = insertShape(store, 'ellipse');
+    const start = { x: ellipse.x + 100, y: ellipse.y + 100 };
+    pointer(host, 'pointerdown', start.x, start.y);
+    pointer(host, 'pointermove', start.x + 100, start.y + 60);
+    pointer(host, 'pointerup', start.x + 100, start.y + 60);
+    const moved = store.slide!.elements.find((el) => el.id === ellipse.id)!;
+    expect(moved.x).toBeGreaterThan(ellipse.x);
+    expect(moved.y).toBeGreaterThan(ellipse.y);
+  });
+
+  it('reshapes an ellipse with its southeast handle', () => {
+    const { store, host } = setup();
+    stageAtOne(host);
+    const ellipse = insertShape(store, 'ellipse');
+    const handle = host.querySelector<HTMLElement>(`.handle-se[data-element-id="${ellipse.id}"]`)!;
+    pointer(handle, 'pointerdown', ellipse.x + ellipse.w, ellipse.y + ellipse.h);
+    pointer(host, 'pointermove', ellipse.x + ellipse.w + 80, ellipse.y + ellipse.h + 40);
+    pointer(host, 'pointerup', ellipse.x + ellipse.w + 80, ellipse.y + ellipse.h + 40);
+    const resized = store.slide!.elements.find((el) => el.id === ellipse.id)!;
+    expect(resized.w).toBeGreaterThan(ellipse.w);
+    expect(resized.h).toBeGreaterThan(ellipse.h);
+  });
+
+  it('drags a line endpoint and keeps the handle centred on the new endpoint', () => {
+    const { store, host } = setup();
+    stageAtOne(host);
+    const line = insertLine(store, 'line');
+    const handle = host.querySelector<HTMLElement>(`.handle-endpoint[data-endpoint="end"]`)!;
+    const target = { x: 1300, y: 700 };
+    pointer(handle, 'pointerdown', line.x + line.w, line.y + line.h / 2);
+    pointer(host, 'pointermove', target.x, target.y);
+    pointer(host, 'pointerup', target.x, target.y);
+    const changed = store.slide!.elements.find((el) => el.id === line.id)!;
+    const { end } = lineEndpoints(changed);
+    expect(end.x).toBeCloseTo(target.x, 0);
+    expect(end.y).toBeCloseTo(target.y, 0);
+    const drawn = host.querySelector<HTMLElement>('.handle-endpoint[data-endpoint="end"]')!;
+    expect(Number.parseFloat(drawn.style.left) + changed.x).toBeCloseTo(end.x, 1);
+    expect(Number.parseFloat(drawn.style.top) + changed.y).toBeCloseTo(end.y, 1);
+  });
+
+  it('reliably selects, deselects, and reselects a text box', () => {
+    const { store, host } = setup();
+    stageAtOne(host);
+    for (const [x, y, selected] of [[200, 150, true], [1500, 900, false], [200, 150, true]] as const) {
+      pointer(host, 'pointerdown', x, y);
+      pointer(host, 'pointerup', x, y);
+      expect(store.get().selection.has('text-1')).toBe(selected);
+      expect(host.querySelectorAll('.sel-box')).toHaveLength(selected ? 1 : 0);
+    }
+  });
+
+  it('rebuilds an SVG when its kind or theme-driven paint changes', () => {
+    const { store, host } = setup();
+    const shape = insertShape(store, 'rect');
+    store.updateSelected((el) => {
+      if (el.type === 'shape') { el.shape = 'ellipse'; el.fill = '#ff0000'; }
+    });
+    const ellipse = host.querySelector(`[data-element-id="${shape.id}"] ellipse`)!;
+    expect(ellipse.getAttribute('fill')).toBe('#ff0000');
   });
 });
 

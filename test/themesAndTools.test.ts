@@ -5,6 +5,7 @@ import {
   THEMES,
   THEME_BLOCK_START,
   applyThemeToDeck,
+  applyThemeToSlide,
   nearestPaletteColor,
   themeCss,
   withThemeBlock,
@@ -105,6 +106,24 @@ describe('applying a theme', () => {
     const deck = sampleDeck();
     applyThemeToDeck(deck, THEMES[2], { ...NO_APPLY, backgrounds: true });
     expect(deck.slides[0].background.color).toBe(THEMES[2].colors.background);
+  });
+
+  it('can apply a theme to one slide without moving objects or touching siblings', () => {
+    const deck = sampleDeck();
+    deck.slides.push(structuredClone(deck.slides[0]));
+    deck.slides[1].id = 'slide-2';
+    const siblingBefore = structuredClone(deck.slides[1]);
+    const geometryBefore = deck.slides[0].elements.map(({ id, x, y, w, h, rot }) =>
+      ({ id, x, y, w, h, rot }));
+
+    applyThemeToSlide(deck.slides[0], THEMES[1], {
+      ...NO_APPLY, backgrounds: true, fontSizes: true, textColors: true, objectColors: true,
+    }, 96);
+
+    expect(deck.slides[0].background.color).toBe(THEMES[1].colors.background);
+    expect(deck.slides[1]).toEqual(siblingBefore);
+    expect(deck.slides[0].elements.map(({ id, x, y, w, h, rot }) =>
+      ({ id, x, y, w, h, rot }))).toEqual(geometryBefore);
   });
 });
 

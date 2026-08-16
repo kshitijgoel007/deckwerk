@@ -39,6 +39,13 @@
   word-break: break-word;
 }
 
+/* Empty imported Keynote text boxes are authoring affordances, not slide
+   content. The editor makes them faintly visible again; presentations and web
+   exports must never show a literal "Text" placeholder. */
+.element.placeholder .text-body {
+  visibility: hidden;
+}
+
 /* Import gaps are meant to be conspicuous: a placeholder you can see is a
    placeholder you will fix. */
 .element-unsupported {

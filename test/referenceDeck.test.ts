@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { type Deck, parseDeck } from '../src/shared/deck.js';
+import { lineEndpoints } from '../src/renderer/editor/canvas.js';
 
 /**
  * Ground-truth import tests against `reference.key`.
@@ -65,7 +66,7 @@ describe.skipIf(!ready)('reference.key ground truth', () => {
   it('reads the canvas size and slide count', () => {
     // A lower bound, not an exact count: the reference deck gains slides as
     // more cases get pinned down, and that should never fail the suite.
-    expect(deck.slides.length).toBeGreaterThanOrEqual(13);
+    expect(deck.slides.length).toBeGreaterThanOrEqual(24);
     expect(deck.canvas).toEqual({ w: 1920, h: 1080 });
   });
 
@@ -80,19 +81,18 @@ describe.skipIf(!ready)('reference.key ground truth', () => {
     expect(shape.fill).toMatch(/^rgba\(/);
   });
 
-  it('slide 11: imports a curved connector as an arrow between two boxes', () => {
+  it('slide 11: imports a connector as an editable native arrow', () => {
     const shapes = deck.slides[10].elements.filter((e) => e.type === 'shape');
     expect(shapes).toHaveLength(3);
 
     const arrow = shapes.find((s) => s.type === 'shape' && s.arrowEnd);
     if (arrow?.type !== 'shape') throw new Error('expected an arrow');
     expect(arrow.stroke).not.toBeNull();
-    expect(arrow.path).toBeTruthy();
-    // It must span the gap between the boxes, not collapse to a stub.
+    expect(arrow.shape).toBe('arrow');
+    expect(arrow.path).toBeNull();
+    // It spans the gap but deliberately drops Keynote's opaque curve, so the
+    // editor's native endpoint handles can reshape it.
     expect(arrow.w).toBeGreaterThan(400);
-    // And it is a curve: Keynote stores it as a 3-point polyline whose middle
-    // point lies ON the curve, which used to render as a kinked elbow.
-    expect(arrow.path).toContain('Q');
   });
 
   /**
@@ -460,6 +460,228 @@ describe.skipIf(!ready)('reference.key ground truth', () => {
       expect(s.arrowStart && s.arrowEnd, 'both ends have arrowheads').toBe(false);
       expect(s.arrowStart || s.arrowEnd, 'neither end has an arrowhead').toBe(true);
     }
+  });
+
+  it('slide 19: keeps the painted conviction box behind its text', () => {
+    const slide = deck.slides[18];
+    const caption = slide.elements.find(
+      (e) => e.type === 'text' && e.html.startsWith('My conviction:'),
+    );
+    expect(caption?.type).toBe('text');
+    if (caption?.type !== 'text') throw new Error('expected conviction text');
+    near(caption.x, 66);
+    near(caption.y, 457, 2);
+    near(caption.w, 1788, 2);
+    near(caption.h, 265, 2);
+
+    const backing = slide.elements.find(
+      (e) =>
+        e.type === 'shape' &&
+        Math.abs(e.x - caption.x) < 1 &&
+        Math.abs(e.y - caption.y) < 1 &&
+        Math.abs(e.w - caption.w) < 1 &&
+        Math.abs(e.h - caption.h) < 1,
+    );
+    expect(backing?.type).toBe('shape');
+    if (backing?.type !== 'shape') throw new Error('expected painted backing shape');
+    expect(backing.fill).toBe('#ffffff');
+    expect(backing.stroke).toBe('#000000');
+    near(backing.strokeWidth, 4, 0.1);
+    expect(backing.z).toBeLessThan(caption.z);
+  });
+
+  it('slide 19: uses Keynote natural sizes to place the gradient labels', () => {
+    const texts = deck.slides[18].elements.filter((e) => e.type === 'text');
+    const expected = [
+      ['FlowMap', 193, 244],
+      ['Diffusion w/', 744, 170],
+      ['pixelSplat', 1474, 244],
+    ] as const;
+
+    for (const [label, x, y] of expected) {
+      const text = texts.find((e) => e.type === 'text' && e.html.includes(label));
+      expect(text, label).toBeDefined();
+      near(text!.x, x, 2);
+      near(text!.y, y, 2);
+      expect(text!.style['background-image']).toContain('linear-gradient');
+      expect(text!.style.color).toBe('transparent');
+    }
+  });
+
+  it('slide 19: places the three image regions behind the conviction box', () => {
+    const images = deck.slides[18].elements.filter((e) => e.type === 'image');
+    expect(images.length).toBeGreaterThanOrEqual(3);
+    const starts = [
+      [10, 569],
+      [669, 475],
+      [1314, 558],
+    ];
+    for (const [x, y] of starts) {
+      expect(
+        images.some((image) => Math.abs(image.x - x) < 2 && Math.abs(image.y - y) < 2),
+        `image near ${x},${y}`,
+      ).toBe(true);
+    }
+  });
+
+  it('slide 20: makes the LVP label bottom-up and its connector editable', () => {
+    const slide = deck.slides[19];
+    const lvp = slide.elements.find((e) => e.type === 'text' && e.html === 'LVP');
+    expect(lvp?.type).toBe('text');
+    if (lvp?.type !== 'text') throw new Error('expected LVP label');
+    near(lvp.rot, -90, 0.5);
+
+    const arrows = slide.elements.filter(
+      (e) => e.type === 'shape' && e.shape === 'arrow',
+    );
+    const connector = arrows.find((e) => {
+      if (e.type !== 'shape') return false;
+      const cx = e.x + e.w / 2;
+      const cy = e.y + e.h / 2;
+      const radians = (e.rot * Math.PI) / 180;
+      const start = {
+        x: cx - (Math.cos(radians) * e.w) / 2,
+        y: cy - (Math.sin(radians) * e.w) / 2,
+      };
+      return Math.abs(start.x - 606) < 2 && Math.abs(start.y - 651) < 2;
+    });
+    expect(connector?.type).toBe('shape');
+    if (connector?.type !== 'shape') throw new Error('expected native connector');
+    expect(connector.path).toBeNull();
+
+    const cx = connector.x + connector.w / 2;
+    const cy = connector.y + connector.h / 2;
+    const radians = (connector.rot * Math.PI) / 180;
+    near(cx + (Math.cos(radians) * connector.w) / 2, 665, 2);
+    near(cy + (Math.sin(radians) * connector.w) / 2, 672, 2);
+  });
+
+  it('slide 22: centres the goal text around its authored anchor', () => {
+    const goal = deck.slides[21].elements.find(
+      (e) => e.type === 'text' && e.html.startsWith('My goal:'),
+    );
+    expect(goal?.type).toBe('text');
+    if (goal?.type !== 'text') throw new Error('expected goal text');
+    near(goal.x, 396, 2);
+    near(goal.y, 400, 2);
+    near(goal.w, 1134, 2);
+    near(goal.h, 254, 2);
+    expect(goal.align).toBe('center');
+  });
+
+  it('slide 23: keeps the main arrow and black sample nodes on their authored rail', () => {
+    const shapes = deck.slides[22].elements.filter((e) => e.type === 'shape');
+    const arrow = shapes.find((e) => e.type === 'shape' && e.shape === 'arrow' && e.w > 1000);
+    expect(arrow?.type).toBe('shape');
+    if (arrow?.type !== 'shape') throw new Error('expected the long sample arrow');
+    const endpoints = lineEndpoints(arrow);
+    near(endpoints.start.x, 554, 2);
+    near(endpoints.start.y, 443, 2);
+    near(endpoints.end.x, 1712, 2);
+    near(endpoints.end.y, 443, 2);
+
+    for (const [x, y] of [[662, 427], [808, 427], [940, 427], [1067, 427]]) {
+      expect(shapes.some((e) => e.type === 'shape' && e.fill === '#000000' &&
+        Math.abs(e.x - x) < 2 && Math.abs(e.y - y) < 2), `black node at ${x},${y}`).toBe(true);
+    }
+  });
+
+  it('slide 24: preserves the separated neural-network nodes and connector endpoints', () => {
+    const shapes = deck.slides[23].elements.filter((e) => e.type === 'shape');
+    const nodeAt = (x: number, y: number) => shapes.find((e) =>
+      e.type === 'shape' && Math.abs(e.x - x) < 2 && Math.abs(e.y - y) < 2);
+
+    const first = nodeAt(490, 319);
+    expect(first?.type).toBe('shape');
+    if (first?.type !== 'shape') throw new Error('expected first neural node');
+    near(first.w, 113, 1);
+    near(first.h, 113, 1);
+
+    const secondColumn = nodeAt(766, 232);
+    expect(secondColumn?.type).toBe('shape');
+
+    const connector = shapes.find((e) => {
+      if (e.type !== 'shape' || e.shape !== 'line') return false;
+      const { start, end } = lineEndpoints(e);
+      return Math.abs(start.x - 603) < 2 && Math.abs(start.y - 375) < 2 &&
+        Math.abs(end.x - 766) < 2 && Math.abs(end.y - 289) < 2;
+    });
+    expect(connector?.type).toBe('shape');
+  });
+
+  it('preserves the complete reference text inventory and its geometry', () => {
+    const expected: Record<number, Array<[string, number, number]>> = {
+      8: [['Text', 100, 100]],
+      9: [['This is a test', 100, 100]],
+      15: [['Video Models: Full-Sequence Diffusion', 44, -4], ['Video Models', -3, 266]],
+      16: [
+        ['Diffusion Forcing', 44, -4], ['Text', 50, 151], ['=', 1221, 505], ['+', 543, 505],
+        ['Video-gen style', 704, 279], ['LLM-style', 99, 281], ['World Model', 1394, 279],
+      ],
+      19: [
+        ['I used to work on 3D', 44, -4], ['Text', 50, 151], ['Towards SfM', 43, 323],
+        ['Probabilistic', 735, 329], ['Generalizable', 1372, 329], ['FlowMap', 193, 244],
+        ['Diffusion w/', 744, 170], ['pixelSplat', 1474, 244], ['My conviction:', 66, 457],
+      ],
+      20: [['Input image', 88, 250], ['Prompt:', 96, 855], ['The Large Video Planner', 133, 8], ['LVP', 646, 645]],
+      21: [
+        ['Computer Vision: A practical perspective', -71, -44], ['Computer', 423, 519],
+        ['Input: imagery', 27, 310], ['Output: Hand-crafted Modalities', 700, 134],
+        ['Robotics', 1378, 522], ['Actions', 1744, 574],
+      ],
+      22: [['Text', 144, 255], ['Interactive experiment', 133, 8], ['My goal:', 396, 400]],
+      23: [['General structure of Neural Renderers', 39, 27]],
+      24: [['\uFFFC', 1682, 1014]],
+    };
+
+    const allText = deck.slides.flatMap((slide) => slide.elements.filter((e) => e.type === 'text'));
+    expect(allText).toHaveLength(Object.values(expected).reduce((sum, list) => sum + list.length, 0));
+    for (const [slideNumber, items] of Object.entries(expected)) {
+      const texts = deck.slides[Number(slideNumber) - 1].elements.filter((e) => e.type === 'text');
+      expect(texts).toHaveLength(items.length);
+      for (const [content, x, y] of items) {
+        const text = texts
+          .filter((e) => e.type === 'text' &&
+            e.html.replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').includes(content))
+          .sort((a, b) => Math.hypot(a.x - x, a.y - y) - Math.hypot(b.x - x, b.y - y))[0];
+        expect(text, `slide ${slideNumber}: ${content}`).toBeDefined();
+        near(text!.x, x, 2);
+        near(text!.y, y, 2);
+        expect(text!.w).toBeGreaterThan(0);
+        expect(text!.h).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  it('slide 23: keeps the rounded neural-network container', () => {
+    const box = deck.slides[22].elements.find(
+      (e) =>
+        e.type === 'shape' &&
+        e.shape === 'rect' &&
+        Math.abs(e.x - 1229) < 3 &&
+        Math.abs(e.y - 458) < 3,
+    );
+    expect(box?.type).toBe('shape');
+    if (box?.type !== 'shape') throw new Error('expected network container');
+    near(box.w, 249, 2);
+    near(box.h, 236, 2);
+    near(box.radius, 15.35, 0.5);
+    expect(box.fill).toMatch(/^rgba\(68, 114, 196/);
+    expect(box.stroke).toBe('#4472c4');
+    near(box.strokeWidth, 4, 0.1);
+  });
+
+  it('slide 23: keeps its auto-sized title to one line near the top', () => {
+    const title = deck.slides[22].elements.find(
+      (e) => e.type === 'text' && e.html.startsWith('General structure'),
+    );
+    expect(title?.type).toBe('text');
+    if (title?.type !== 'text') throw new Error('expected slide title');
+    near(title.x, 39, 2);
+    expect(title.y).toBeGreaterThan(20);
+    expect(title.h).toBeLessThan(100);
+    expect(title.valign).toBe('top');
+    expect(title.html).not.toContain('<br>');
   });
 
   it('writes every referenced asset to disk', () => {

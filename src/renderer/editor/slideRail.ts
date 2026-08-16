@@ -120,13 +120,17 @@ export class SlideRail {
     this.host.appendChild(actions);
   }
 
-  /**
-   * Up/down arrows move through the slide list whenever the rail has focus,
-   * so the deck can be reviewed from the keyboard.
-   */
+  /** Keyboard navigation and quick insertion while the rail has focus. */
   private bindKeys(): void {
     this.host.tabIndex = 0;
     this.host.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        // Suppress the focused button's synthetic click: Return inserts once.
+        e.preventDefault();
+        e.stopPropagation();
+        this.addSlide();
+        return;
+      }
       if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
       e.preventDefault();
       e.stopPropagation();

@@ -177,6 +177,12 @@ button.primary {
 .handle-sw { bottom: calc(-5px * var(--inv)); left: calc(-5px * var(--inv)); cursor: nesw-resize; }
 .handle-w  { top: 50%; left: calc(-5px * var(--inv)); margin-top: calc(-5px * var(--inv)); cursor: ew-resize; }
 
+/* Endpoint coordinates describe the centre of the knob, not its top-left. */
+.handle-endpoint {
+  margin-left: calc(-5px * var(--inv));
+  margin-top: calc(-5px * var(--inv));
+}
+
 .guide {
   position: absolute;
   background: #ff2d55;
@@ -592,6 +598,13 @@ input[type="range"] { accent-color: var(--accent); padding: 0; background: trans
 
 /* A selected line shows no outline box — just its endpoints. */
 .sel-box.line-sel { outline: none; }
+
+/* Imported empty text boxes stay discoverable and editable on the canvas even
+   though the player/export hides their placeholder copy. */
+.canvas-host .element.placeholder .text-body {
+  visibility: visible;
+  opacity: 0.4;
+}
 
 /* Status bar quieter. */
 #status { border-top: 1px solid var(--line); background: var(--bg); font-size: 10.5px; letter-spacing: 0.01em; }

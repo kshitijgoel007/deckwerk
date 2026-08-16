@@ -107,9 +107,9 @@ What comes across: slide order and canvas size, text content, images, video
 (with start/end points), vector shapes and connector arrows with their real
 stroke colours, groups (flattened), and speaker notes.
 
-What deliberately does not: **fonts, sizes and colours**, which are meant to be
-re-set in `theme.css`; imported text carries a `.kn-text` class and a font size
-fitted to the box it occupied. Keynote's build graph is also not imported —
+Imported text keeps its layout-critical face, size, colour or gradient, and
+alignment; it also carries a `.kn-text` class so those inline values can be
+removed and replaced in `theme.css`. Keynote's build graph is not imported —
 guessing it wrong is worse than leaving slides fully visible.
 
 **Import degrades, it never fails.** Anything unrecognised becomes a visible

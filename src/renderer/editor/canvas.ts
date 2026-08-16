@@ -14,6 +14,8 @@ import type { EditorStore } from './store.js';
  */
 
 const SNAP_SCREEN_PX = 6;
+/** Forgiving screen-space target around a visible line or arrow. */
+const LINE_HIT_SCREEN_PX = 8;
 /** Screen-pixel movement before a press becomes a drag rather than a click. */
 const DRAG_THRESHOLD_PX = 3;
 const HANDLE_NAMES = Object.keys(HANDLES);
@@ -930,14 +932,7 @@ export class EditorCanvas {
     if (!slide) return null;
     const ordered = [...slide.elements].sort((a, b) => b.z - a.z);
     for (const el of ordered) {
-      if (
-        point.x >= el.x &&
-        point.x <= el.x + el.w &&
-        point.y >= el.y &&
-        point.y <= el.y + el.h
-      ) {
-        return el;
-      }
+      if (elementContainsPoint(el, point, LINE_HIT_SCREEN_PX / this.scale)) return el;
     }
     return null;
   }
@@ -1052,6 +1047,15 @@ function sameStructure(a: Slide, b: Slide): boolean {
     if ('src' in x && 'src' in y && x.src !== y.src) return false;
     if ('html' in x && 'html' in y && x.html !== y.html) return false;
     if (x.class.join(' ') !== y.class.join(' ')) return false;
+    // Shape paint and kind live on SVG children; wrapper-only updates cannot
+    // apply them. Rebuild when they change (including rect -> ellipse).
+    if (x.type === 'shape' && y.type === 'shape') {
+      if (
+        x.shape !== y.shape || x.fill !== y.fill || x.stroke !== y.stroke ||
+        x.strokeWidth !== y.strokeWidth || x.radius !== y.radius ||
+        x.path !== y.path || x.arrowStart !== y.arrowStart || x.arrowEnd !== y.arrowEnd
+      ) return false;
+    }
     // The crop VALUE is geometry (applyGeometry moves the inner media), but a
     // crop appearing or vanishing changes the DOM shape (wrapper vs bare tag).
     // Treating value changes as structural rebuilt the <video> on every frame
@@ -1061,6 +1065,28 @@ function sameStructure(a: Slide, b: Slide): boolean {
     if (ac !== bc) return false;
   }
   return true;
+}
+
+/** Geometry-aware hit testing, with a screen-derived tolerance for strokes. */
+export function elementContainsPoint(
+  el: SlideElement,
+  point: { x: number; y: number },
+  tolerance = LINE_HIT_SCREEN_PX,
+): boolean {
+  if (el.type === 'shape' && (el.shape === 'line' || el.shape === 'arrow')) {
+    const { start, end } = lineEndpoints(el);
+    const vx = end.x - start.x;
+    const vy = end.y - start.y;
+    const length2 = vx * vx + vy * vy;
+    const t = length2 === 0 ? 0 : Math.max(0, Math.min(1,
+      ((point.x - start.x) * vx + (point.y - start.y) * vy) / length2));
+    const nearestX = start.x + t * vx;
+    const nearestY = start.y + t * vy;
+    return Math.hypot(point.x - nearestX, point.y - nearestY) <=
+      Math.max(tolerance, el.strokeWidth / 2);
+  }
+  return point.x >= el.x && point.x <= el.x + el.w &&
+    point.y >= el.y && point.y <= el.y + el.h;
 }
 
 /**

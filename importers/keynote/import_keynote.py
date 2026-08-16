@@ -24,10 +24,12 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import functools
 import html
 import json
 import math
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -218,9 +220,10 @@ def data_file_table(objects: dict[int, Any]) -> dict[int, str]:
 def extract_text(objects: dict[int, Any], shape: Any) -> str:
     """Pull plain text out of a shape's storage.
 
-    Fonts, sizes and colours are deliberately dropped: those are meant to be
-    re-set in the deck's own theme.css, and carrying Keynote's styling across
-    would fight that rather than help.
+    Text content is extracted separately from its paragraph styling. The
+    converter later preserves the first paragraph's layout-critical face,
+    size, colour, gradient and alignment; theme.css remains available for
+    deliberate restyling after import.
     """
     for field_name in ("owned_storage", "deprecated_storage"):
         # Placeholders wrap a ShapeInfoArchive, so the storage reference can sit
@@ -250,8 +253,8 @@ PATH_COMMANDS = {
 }
 
 
-def path_bounds(path_msg: Any) -> tuple[float, float]:
-    """Extent of a path's own coordinates.
+def path_bounds(path_msg: Any) -> tuple[float, float, float, float]:
+    """Minimum and maximum coordinates of a path.
 
     Keynote's `naturalSize` on a path source is *not* reliably the size of the
     path it accompanies — for outline boxes it is routinely smaller. Using it as
@@ -259,13 +262,15 @@ def path_bounds(path_msg: Any) -> tuple[float, float]:
     element's box even though the box itself is correct. Measuring the path is
     the only trustworthy answer.
     """
-    max_x = 0.0
-    max_y = 0.0
+    xs: list[float] = []
+    ys: list[float] = []
     for element in path_msg.elements:
         for point in element.points:
-            max_x = max(max_x, float(point.x))
-            max_y = max(max_y, float(point.y))
-    return max_x, max_y
+            xs.append(float(point.x))
+            ys.append(float(point.y))
+    if not xs:
+        return 0.0, 0.0, 0.0, 0.0
+    return min(xs), min(ys), max(xs), max(ys)
 
 
 def path_to_svg(path_msg: Any) -> str:
@@ -305,6 +310,30 @@ def color_to_hex(color: Any) -> str | None:
     if alpha >= 0.999:
         return f"#{r:02x}{g:02x}{b:02x}"
     return f"rgba({r}, {g}, {b}, {alpha:.3f})"
+
+
+def gradient_to_css(gradient: Any) -> str | None:
+    """Convert a Keynote text gradient to a CSS linear gradient."""
+    stops: list[str] = []
+    try:
+        for stop in gradient.stops:
+            colour = color_to_hex(stop.color)
+            if colour:
+                stops.append(f"{colour} {float(stop.fraction) * 100:.2f}%")
+    except (AttributeError, TypeError, ValueError):
+        return None
+    if len(stops) < 2:
+        return None
+
+    # Keynote stores the angle in radians from the horizontal axis; CSS uses
+    # clockwise degrees from vertical, hence the quarter-turn offset.
+    angle = 90.0
+    try:
+        if gradient.HasField("anglegradient"):
+            angle += math.degrees(float(gradient.anglegradient.gradientangle))
+    except (AttributeError, TypeError, ValueError):
+        pass
+    return f"linear-gradient({angle:.2f}deg, {', '.join(stops)})"
 
 
 @dataclass
@@ -355,8 +384,18 @@ def resolve_shape_style(objects: dict[int, Any], style_id: int | None) -> ShapeS
         if not stroke_resolved and props.HasField("stroke"):
             stroke_resolved = True
             stroke = props.stroke
-            # A stroke with no colour set is a deliberate "none".
-            if stroke.HasField("color"):
+            # A stroke with no colour, or with Keynote's explicit empty
+            # pattern, is a deliberate "none". Text-box styles commonly carry
+            # a black colour together with that empty pattern; ignoring the
+            # pattern puts a phantom outline around every label.
+            draws = True
+            try:
+                draws = not (
+                    stroke.HasField("pattern") and int(stroke.pattern.type) == 2
+                )
+            except (AttributeError, TypeError, ValueError):
+                pass
+            if draws and stroke.HasField("color"):
                 out.stroke_depth = depth - 1
                 out.stroke = color_to_hex(stroke.color)
                 width = float(getattr(stroke, "width", 0.0) or 0.0)
@@ -402,26 +441,31 @@ ALIGNMENT_NAMES = {
 class TextStyle:
     """The few text properties worth carrying across from Keynote.
 
-    Font *family* is dropped by design. Size, alignment and colour are kept
-    because without them text is not merely styled differently — it is
-    mispositioned or invisible. White type on a dark box is the clearest case:
-    drop the colour and the label disappears entirely.
+    Font face, size, alignment and paint are kept because without them text is
+    not merely styled differently — it wraps, moves, or becomes invisible.
     """
 
     font_size: float | None = None
+    font_name: str | None = None
+    bold: bool | None = None
     align: str = "left"
+    valign: str = "middle"
     color: str | None = None
+    gradient: str | None = None
+    horizontal_padding: float = 8.0
 
 
 def resolve_text_style(objects: dict[int, Any], shape: Any) -> TextStyle:
     """Read font size and paragraph alignment from a shape's first paragraph.
 
-    Font *family* and colour are deliberately ignored — those belong in the
-    deck's theme.css. Size and alignment are not styling in the same sense:
-    without them, imported text either collapses or lands in the wrong place,
-    which is a layout bug rather than a matter of taste.
+    The first paragraph supplies the layout-critical face, size, alignment and
+    paint. A user can still remove those inline values to hand control back to
+    theme.css after import.
     """
-    out = TextStyle()
+    out = TextStyle(
+        valign=_resolve_text_valign(objects, shape),
+        horizontal_padding=_resolve_text_horizontal_padding(objects, shape),
+    )
     for field_name in ("owned_storage", "deprecated_storage"):
         reference = find_in_super_chain(shape, field_name)
         if reference is None:
@@ -440,6 +484,56 @@ def resolve_text_style(objects: dict[int, Any], shape: Any) -> TextStyle:
         if out.font_size is not None:
             return out
     return out
+
+
+def _resolve_text_valign(objects: dict[int, Any], shape: Any) -> str:
+    """Resolve a text shape's vertical anchor from its shape style."""
+    style_ref = find_in_super_chain(shape, "style")
+    current_id = (
+        int(style_ref.identifier)
+        if style_ref is not None and style_ref.identifier
+        else None
+    )
+    seen: set[int] = set()
+    for _ in range(8):
+        if current_id is None or current_id not in objects or current_id in seen:
+            break
+        seen.add(current_id)
+        style = objects[current_id]
+        if _has(style, "shape_properties"):
+            props = style.shape_properties
+            if props.HasField("vertical_alignment"):
+                return {0: "top", 1: "middle", 2: "bottom"}.get(
+                    int(props.vertical_alignment), "middle"
+                )
+        try:
+            parent = style.super.super.parent
+            current_id = int(parent.identifier) if parent.identifier else None
+        except AttributeError:
+            break
+    return "middle"
+
+
+def _resolve_text_horizontal_padding(objects: dict[int, Any], shape: Any) -> float:
+    """Resolve the left+right inset used by Keynote's text layout."""
+    style_ref = find_in_super_chain(shape, "style")
+    current_id = int(style_ref.identifier) if style_ref is not None and style_ref.identifier else None
+    seen: set[int] = set()
+    for _ in range(8):
+        if current_id is None or current_id not in objects or current_id in seen:
+            break
+        seen.add(current_id)
+        style = objects[current_id]
+        if _has(style, "shape_properties"):
+            props = style.shape_properties
+            if props.HasField("padding"):
+                return float(props.padding.left) + float(props.padding.right)
+        try:
+            parent = style.super.super.parent
+            current_id = int(parent.identifier) if parent.identifier else None
+        except AttributeError:
+            break
+    return 8.0
 
 
 def _read_para_style(objects: dict[int, Any], style_id: int, out: TextStyle) -> None:
@@ -467,8 +561,16 @@ def _read_para_style(objects: dict[int, Any], style_id: int, out: TextStyle) -> 
                 size = float(chars.font_size)
                 if size > 0:
                     out.font_size = size
+            if out.font_name is None and chars.HasField("font_name"):
+                out.font_name = str(chars.font_name) or None
+            if out.bold is None and chars.HasField("bold"):
+                out.bold = bool(chars.bold)
             if out.color is None and chars.HasField("font_color"):
                 out.color = color_to_hex(chars.font_color)
+            if out.gradient is None and chars.HasField("tsd_fill"):
+                fill = chars.tsd_fill
+                if fill.HasField("gradient"):
+                    out.gradient = gradient_to_css(fill.gradient)
 
         if not align_found and _has(style, "para_properties"):
             paras = style.para_properties
@@ -479,7 +581,11 @@ def _read_para_style(objects: dict[int, Any], style_id: int, out: TextStyle) -> 
                     out.align = ALIGNMENT_NAMES.get(int(digits), "left")
                     align_found = True
 
-        if out.font_size is not None and out.color is not None and align_found:
+        if (
+            out.font_size is not None
+            and (out.color is not None or out.gradient is not None)
+            and align_found
+        ):
             return
         try:
             parent = style.super.parent
@@ -507,6 +613,20 @@ def text_to_html(text: str) -> str:
     while paragraphs and not paragraphs[-1].strip():
         paragraphs.pop()
     return "<br>".join(paragraphs)
+
+
+def _font_family_css(font_name: str) -> str:
+    """CSS fallback list for a Keynote PostScript font name."""
+    escaped = font_name.replace("\\", "\\\\").replace('"', '\\"')
+    friendly = {
+        "HelveticaNeue-Light": "Helvetica Neue",
+        "HelveticaNeue": "Helvetica Neue",
+        "Helvetica-Light": "Helvetica",
+        "Avenir-Book": "Avenir",
+    }.get(font_name)
+    if friendly:
+        return f'"{escaped}", "{friendly}", sans-serif'
+    return f'"{escaped}", sans-serif'
 
 
 @dataclass
@@ -808,7 +928,16 @@ class Importer:
                     int(child.identifier), z + i, (box["x"], box["y"])
                 )
             )
-        return out
+        # Keynote diagrams commonly store nodes before their connecting lines,
+        # but mask each connector below the filled node at paint time. Once the
+        # group is flattened, reproduce that semantic layering: a native line
+        # whose endpoint lies inside a filled sibling is a connector and paints
+        # first. Ordinary decorative lines keep their archive order.
+        connectors = [el for el in out if _is_node_connector(el, out)]
+        if not connectors:
+            return out
+        connector_ids = {id(el) for el in connectors}
+        return connectors + [el for el in out if id(el) not in connector_ids]
 
     def _convert_movie(
         self, obj: Any, box: dict[str, float], z: int
@@ -920,15 +1049,7 @@ class Importer:
     def _convert_shape(
         self, obj: Any, box: dict[str, float], z: int
     ) -> list[dict[str, Any]]:
-        """A Keynote shape is either vector art or a text box.
-
-        Text wins when both are present. Keynote's themes give text boxes a
-        default 1px black stroke that the app does not actually draw, so
-        emitting the outline as well puts a border around every title and
-        bullet. The trade-off is that a text box with a *genuinely* visible
-        border loses it — rare in practice, and far less disruptive than
-        boxing every line of text on every slide.
-        """
+        """Convert a Keynote shape, including both paint and text when present."""
         out: list[dict[str, Any]] = []
 
         text = extract_text(self.objects, obj)
@@ -940,35 +1061,76 @@ class Importer:
         if not text.strip() and _is_text_box(obj):
             style = resolve_text_style(self.objects, obj)
             font_size = style.font_size or DEFAULT_FONT_SIZE
-            box = self._size_text_box(box, PLACEHOLDER_TEXT, font_size)
+            box = self._size_text_box(
+                box,
+                PLACEHOLDER_TEXT,
+                font_size,
+                style.align,
+                style.valign,
+                self._text_natural_size(obj),
+                style.font_name,
+                bool(style.bold),
+                style.horizontal_padding,
+            )
             element = self._base(box, z, "text")
+            inline = {"font-size": f"{font_size:.0f}px"}
+            if style.font_name:
+                inline["font-family"] = _font_family_css(style.font_name)
             element.update(
                 {
                     "html": PLACEHOLDER_TEXT,
                     "align": style.align,
-                    "valign": "middle",
+                    "valign": style.valign,
                     "class": ["kn-text", "placeholder"],
-                    "style": {"font-size": f"{font_size:.0f}px"},
+                    "style": inline,
                 }
             )
             out.append(element)
             return out
 
-        vector = None if text.strip() else self._convert_vector(obj, box, z)
+        # Some Keynote shapes are genuinely both: slide 19's white, black-
+        # bordered conviction box also owns its caption text. Empty-pattern
+        # strokes were filtered while resolving the style, so ordinary text
+        # boxes still do not acquire phantom borders here.
+        vector = self._convert_vector(obj, box, z)
         if vector is not None:
             out.append(vector)
 
         if text.strip():
             style = resolve_text_style(self.objects, obj)
             font_size = style.font_size or DEFAULT_FONT_SIZE
-            box = self._size_text_box(box, text, font_size)
+            box = self._size_text_box(
+                box,
+                text,
+                font_size,
+                style.align,
+                style.valign,
+                self._text_natural_size(obj),
+                style.font_name,
+                bool(style.bold),
+                style.horizontal_padding,
+            )
 
-            # The real Keynote size and colour, so the slide keeps its visual
-            # hierarchy and light-on-dark labels stay readable. Font family is
-            # left to theme.css; deleting these inline values hands sizing and
-            # colour over to it too.
+            # Layout-critical Keynote typography keeps wrapping and light-on-
+            # dark labels faithful. Deleting these inline values hands control
+            # back to theme.css.
             inline = {"font-size": f"{font_size:.0f}px"}
-            if style.color:
+            if style.font_name:
+                inline["font-family"] = _font_family_css(style.font_name)
+            if style.bold:
+                inline["font-weight"] = "700"
+            elif style.font_name and "light" in style.font_name.lower():
+                inline["font-weight"] = "300"
+            if style.gradient:
+                inline.update(
+                    {
+                        "background-image": style.gradient,
+                        "background-clip": "text",
+                        "-webkit-background-clip": "text",
+                        "color": "transparent",
+                    }
+                )
+            elif style.color:
                 inline["color"] = style.color
 
             element = self._base(box, z, "text")
@@ -976,7 +1138,7 @@ class Importer:
                 {
                     "html": text_to_html(text),
                     "align": style.align,
-                    "valign": "middle",
+                    "valign": style.valign,
                     "class": ["kn-text"],
                     "style": inline,
                 }
@@ -986,7 +1148,16 @@ class Importer:
         return out
 
     def _size_text_box(
-        self, box: dict[str, float], text: str, font_size: float
+        self,
+        box: dict[str, float],
+        text: str,
+        font_size: float,
+        align: str,
+        valign: str,
+        natural_size: tuple[float, float] | None,
+        font_name: str | None = None,
+        bold: bool = False,
+        horizontal_padding: float = 8.0,
     ) -> dict[str, float]:
         """Give an auto-sizing text box a real width and height.
 
@@ -996,41 +1167,81 @@ class Importer:
         box, which renders as a column of single characters — the "vertical
         text" failure.
 
-        We have no font metrics, so this estimates from the character count at
-        the real font size. The result is approximate by nature: the aim is a
-        box that is legible and roughly where it belongs, which can then be
-        nudged by hand, rather than a faithful reproduction.
+        The path source normally carries Keynote's computed ``naturalSize``,
+        which is the exact result of its font layout. Character-count estimates
+        are only a fallback for older files that omit that cache.
         """
         out = dict(box)
         lines = _normalise_breaks(text).split("\n")
         longest = max((len(line) for line in lines), default=1)
+        width_was_auto = out["w"] <= 1
 
-        if out["w"] <= 1:
-            # 0.55em per character is a reasonable mean for proportional faces.
-            estimated = longest * font_size * 0.55
-            remaining = max(200.0, self.canvas[0] - out["x"] - 40)
-            out["w"] = max(200.0, min(estimated, remaining))
+        if width_was_auto:
+            measured = _measure_text_width(
+                text, font_size, font_name, bold, horizontal_padding
+            )
+            if measured is not None:
+                out["w"] = measured
+            elif natural_size is not None and natural_size[0] > 1:
+                out["w"] = natural_size[0]
+            else:
+                # 0.48em is a conservative mean for display faces.
+                estimated = longest * font_size * 0.48
+                out["w"] = max(200.0, min(estimated, self.canvas[0] - 40))
+
+            # Auto-width geometry stores the alignment anchor, not always the
+            # left edge: centred labels use their horizontal centre and
+            # right-aligned labels use their right edge.
+            if align == "center":
+                out["x"] -= out["w"] / 2
+            elif align == "right":
+                out["x"] -= out["w"]
             self.report.autosized_boxes += 1
 
         if out["h"] <= 1:
-            # Wrapping makes the real line count higher than the newline count.
-            per_line = max(1.0, out["w"] / max(1.0, font_size * 0.55))
-            wrapped = sum(max(1, math.ceil(len(line) / per_line)) for line in lines)
             centre_y = out["y"]
-            estimated = max(font_size * 1.3, wrapped * font_size * 1.3)
-            # An over-estimate on a box near the bottom would hang off the
-            # slide. Text is vertically centred, so trimming the box keeps the
-            # words where they belong rather than pushing them off-screen.
-            room = max(font_size * 1.3, self.canvas[1] - out["y"])
-            out["h"] = min(estimated, room)
-            # For a box whose height Keynote computes at layout time, the stored
-            # y is the vertical *centre* of the resulting text, not its top: it
-            # grows evenly in both directions. Treating it as the top drops every
-            # such label roughly half a line down the slide.
-            out["y"] = centre_y - out["h"] / 2
+            if natural_size is not None and natural_size[1] > 1:
+                out["h"] = natural_size[1]
+            else:
+                # Auto-width text is laid out as its explicit lines; a fixed
+                # width can introduce additional soft wrapping.
+                if width_was_auto:
+                    wrapped = len(lines)
+                else:
+                    per_line = max(1.0, out["w"] / max(1.0, font_size * 0.48))
+                    wrapped = sum(max(1, math.ceil(len(line) / per_line)) for line in lines)
+                estimated = max(font_size * 1.3, wrapped * font_size * 1.3)
+                room = max(font_size * 1.3, self.canvas[1] - out["y"])
+                out["h"] = min(estimated, room)
+            # Auto-height geometry stores the vertical alignment anchor: top,
+            # centre, or bottom depending on the shape style.
+            if valign == "middle":
+                out["y"] = centre_y - out["h"] / 2
+            elif valign == "bottom":
+                out["y"] = centre_y - out["h"]
             self.report.autosized_boxes += 1
 
         return out
+
+    def _text_natural_size(self, obj: Any) -> tuple[float, float] | None:
+        """Return Keynote's cached layout size for an auto-sizing text shape."""
+        pathsource = find_in_super_chain(obj, "pathsource")
+        if pathsource is None:
+            return None
+        for field_name in (
+            "bezier_path_source",
+            "editable_bezier_path_source",
+            "point_path_source",
+            "scalar_path_source",
+        ):
+            if not _has(pathsource, field_name) or not pathsource.HasField(field_name):
+                continue
+            source = getattr(pathsource, field_name)
+            base = source.super if _has(source, "super") else source
+            if _has(base, "naturalSize") and base.HasField("naturalSize"):
+                size = base.naturalSize
+                return float(size.width), float(size.height)
+        return None
 
     def _convert_vector(
         self, obj: Any, box: dict[str, float], z: int
@@ -1074,9 +1285,34 @@ class Importer:
         if style.stroke is None and style.fill is None:
             return None
 
+        # Rounded rectangles use a scalar path source with no explicit bezier
+        # path. They map directly onto the editor's native rounded rectangle.
+        if (
+            _has(pathsource, "scalar_path_source")
+            and pathsource.HasField("scalar_path_source")
+        ):
+            source = pathsource.scalar_path_source
+            if int(source.type) == 0:
+                element = self._base(box, z, "shape")
+                element.update(
+                    {
+                        "shape": "rect",
+                        "path": None,
+                        "pathSize": None,
+                        "fill": style.fill,
+                        "stroke": style.stroke,
+                        "strokeWidth": style.stroke_width,
+                        "radius": max(0.0, float(source.scalar)),
+                        "arrowStart": False,
+                        "arrowEnd": False,
+                    }
+                )
+                return element
+
         path_data = ""
-        natural = None
-        bounds = (0.0, 0.0)
+        bounds = (0.0, 0.0, 0.0, 0.0)
+        path_msg = None
+        is_connection = False
         for field_name in (
             "bezier_path_source",
             "connection_line_path_source",
@@ -1091,16 +1327,39 @@ class Importer:
             base = source.super if _has(source, "super") else source
             if not _has(base, "path"):
                 continue
-            path_data = path_to_svg(base.path)
+            path_msg = base.path
+            path_data = path_to_svg(path_msg)
             if field_name == "connection_line_path_source":
-                path_data = _connection_to_curve(base.path) or path_data
-            if _has(base, "naturalSize"):
-                natural = base.naturalSize
-            bounds = path_bounds(base.path)
+                is_connection = True
+            bounds = path_bounds(path_msg)
             break
 
         if not path_data:
             return None
+
+        min_x, min_y, max_x, max_y = bounds
+        path_w = max(max_x - min_x, 1.0)
+        path_h = max(max_y - min_y, 1.0)
+
+        # A connector is an editable relationship, not immutable vector art.
+        # Keep its endpoints and arrowhead direction, but deliberately discard
+        # Keynote's curve control points so the editor can use native endpoint
+        # handles and its own future attachment constraints.
+        if is_connection and path_msg is not None:
+            endpoints = _path_endpoints(path_msg)
+            if endpoints is not None:
+                start, end = endpoints
+                sx = box["w"] / path_w
+                sy = box["h"] / path_h
+                start_abs = (
+                    box["x"] + (start[0] - min_x) * sx,
+                    box["y"] + (start[1] - min_y) * sy,
+                )
+                end_abs = (
+                    box["x"] + (end[0] - min_x) * sx,
+                    box["y"] + (end[1] - min_y) * sy,
+                )
+                return self._native_line(style, start_abs, end_abs, z)
 
         # The viewBox is the path's own extent, never Keynote's `naturalSize`,
         # which is unreliable in both directions and wrong in opposite ways:
@@ -1111,8 +1370,8 @@ class Importer:
         # Measuring the path fixes both, because the box is then stretched to
         # exactly the element's geometry — which the reference deck confirms is
         # already correct.
-        view_w = max(bounds[0], 1.0)
-        view_h = max(bounds[1], 1.0)
+        view_w = path_w
+        view_h = path_h
 
         # Scale the path into the element's own coordinate space so the SVG
         # needs no stretching at all. Non-uniform stretching is what made
@@ -1120,8 +1379,13 @@ class Importer:
         # 345x1 is scaled 2.4x horizontally and not at all vertically.
         sx = box["w"] / view_w
         sy = box["h"] / view_h
-        if abs(sx - 1.0) > 0.001 or abs(sy - 1.0) > 0.001:
-            path_data = _scale_path(path_data, sx, sy)
+        if (
+            abs(min_x) > 0.001
+            or abs(min_y) > 0.001
+            or abs(sx - 1.0) > 0.001
+            or abs(sy - 1.0) > 0.001
+        ):
+            path_data = _scale_path(path_data, sx, sy, min_x, min_y)
             view_w = max(box["w"], 1.0)
             view_h = max(box["h"], 1.0)
 
@@ -1153,6 +1417,43 @@ class Importer:
                 "path": path_data,
                 "pathSize": {"w": view_w, "h": view_h},
                 "fill": style.fill,
+                "stroke": style.stroke,
+                "strokeWidth": style.stroke_width,
+                "radius": 0,
+                "arrowStart": style.arrow_start,
+                "arrowEnd": style.arrow_end,
+            }
+        )
+        return element
+
+    def _native_line(
+        self,
+        style: ShapeStyle,
+        start: tuple[float, float],
+        end: tuple[float, float],
+        z: int,
+    ) -> dict[str, Any]:
+        """Build an editable native line/arrow from canvas-space endpoints."""
+        dx = end[0] - start[0]
+        dy = end[1] - start[1]
+        length = max(1.0, math.hypot(dx, dy))
+        height = 1.0
+        centre_x = (start[0] + end[0]) / 2
+        centre_y = (start[1] + end[1]) / 2
+        native_box = {
+            "x": centre_x - length / 2,
+            "y": centre_y - height / 2,
+            "w": length,
+            "h": height,
+            "rot": math.degrees(math.atan2(dy, dx)),
+        }
+        element = self._base(native_box, z, "shape")
+        element.update(
+            {
+                "shape": "arrow" if (style.arrow_end or style.arrow_start) else "line",
+                "path": None,
+                "pathSize": None,
+                "fill": None,
                 "stroke": style.stroke,
                 "strokeWidth": style.stroke_width,
                 "radius": 0,
@@ -1255,6 +1556,12 @@ class Importer:
         for z, drawable_id in enumerate(drawable_ids):
             elements.extend(self.convert_drawable(drawable_id, z))
 
+        # Flattened group children must remain one contiguous paint block.
+        # ``z + child_index`` overlaps later top-level z values and interleaves
+        # complex grouped drawings, which is especially visible on slide 23.
+        for paint_order, element in enumerate(elements):
+            element["z"] = paint_order
+
         name = ""
         try:
             name = slide_obj.name or ""
@@ -1303,6 +1610,61 @@ def _normalise_angle(degrees: float) -> float:
     if wrapped > 180.0:
         wrapped -= 360.0
     return round(wrapped, 2)
+
+
+@functools.lru_cache(maxsize=128)
+def _resolved_font(font_name: str, bold: bool) -> tuple[str, int] | None:
+    """Find a local font file and collection index without platform APIs."""
+    if not font_name or shutil.which("fc-match") is None:
+        return None
+    base, _, declared_style = font_name.partition("-")
+    family = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", base.replace("PSMT", ""))
+    style = "Bold" if bold else (declared_style or "Regular")
+    try:
+        match = subprocess.run(
+            ["fc-match", "--format=%{file}|%{index}|%{family}", f"{family}:style={style}"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        ).stdout
+        path, index, matched_family = match.split("|", 2)
+    except Exception:
+        return None
+
+    def compact(value: str) -> str:
+        return "".join(c.lower() for c in value if c.isalnum())
+
+    wanted = compact(family)
+    found = compact(matched_family.split(",", 1)[0])
+    if not wanted or (wanted not in found and found not in wanted):
+        return None
+    return path, int(index or 0)
+
+
+def _measure_text_width(
+    text: str,
+    font_size: float,
+    font_name: str | None,
+    bold: bool,
+    horizontal_padding: float,
+) -> float | None:
+    """Measure the longest explicit line with the actual imported font."""
+    if not font_name:
+        return None
+    resolved = _resolved_font(font_name, bold)
+    if resolved is None:
+        return None
+    try:
+        from PIL import ImageFont
+
+        pixel_size = max(1, round(font_size))
+        font = ImageFont.truetype(resolved[0], pixel_size, index=resolved[1])
+        scale = font_size / pixel_size
+        lines = _normalise_breaks(text).split("\n")
+        return max(float(font.getlength(line)) * scale for line in lines) + horizontal_padding
+    except Exception:
+        return None
 
 
 def _classify_text_roles(slides: list[dict[str, Any]]) -> None:
@@ -1376,6 +1738,27 @@ def _simple_line(path_data: str) -> bool:
     return abs(y0) <= 2 and abs(y1) <= 2
 
 
+def _is_node_connector(element: dict[str, Any], siblings: list[dict[str, Any]]) -> bool:
+    """Whether a native line terminates inside a filled sibling node."""
+    if element.get("type") != "shape" or element.get("shape") != "line":
+        return False
+    cx = float(element["x"]) + float(element["w"]) / 2
+    cy = float(element["y"]) + float(element["h"]) / 2
+    angle = math.radians(float(element.get("rot", 0)))
+    dx = math.cos(angle) * float(element["w"]) / 2
+    dy = math.sin(angle) * float(element["w"]) / 2
+    endpoints = ((cx - dx, cy - dy), (cx + dx, cy + dy))
+    for sibling in siblings:
+        if sibling is element or sibling.get("type") != "shape" or not sibling.get("fill"):
+            continue
+        left, top = float(sibling["x"]), float(sibling["y"])
+        right = left + float(sibling["w"])
+        bottom = top + float(sibling["h"])
+        if any(left <= x <= right and top <= y <= bottom for x, y in endpoints):
+            return True
+    return False
+
+
 def _connection_to_curve(path_msg: Any) -> str | None:
     """Rebuild a curved Keynote connector as an actual curve.
 
@@ -1403,8 +1786,27 @@ def _connection_to_curve(path_msg: Any) -> str | None:
     return f"M {x0:.2f} {y0:.2f} Q {cx:.2f} {cy:.2f} {x2:.2f} {y2:.2f}"
 
 
-def _scale_path(path_data: str, sx: float, sy: float) -> str:
-    """Scale every coordinate pair in an SVG path."""
+def _path_endpoints(
+    path_msg: Any,
+) -> tuple[tuple[float, float], tuple[float, float]] | None:
+    """First and last drawn points of a Keynote path."""
+    points: list[tuple[float, float]] = []
+    for element in path_msg.elements:
+        for point in element.points:
+            points.append((float(point.x), float(point.y)))
+    if len(points) < 2:
+        return None
+    return points[0], points[-1]
+
+
+def _scale_path(
+    path_data: str,
+    sx: float,
+    sy: float,
+    origin_x: float = 0.0,
+    origin_y: float = 0.0,
+) -> str:
+    """Translate a path to a zero origin, then scale each coordinate pair."""
     out: list[str] = []
     axis = 0
     for token in path_data.split(" "):
@@ -1417,7 +1819,8 @@ def _scale_path(path_data: str, sx: float, sy: float) -> str:
             # Commands restart the x/y alternation.
             axis = 0
             continue
-        out.append(f"{value * (sx if axis == 0 else sy):.2f}")
+        origin = origin_x if axis == 0 else origin_y
+        out.append(f"{(value - origin) * (sx if axis == 0 else sy):.2f}")
         axis ^= 1
     return " ".join(out)
 
@@ -1464,8 +1867,8 @@ def _safe_name(name: str) -> str:
 
 
 THEME_CSS = """/*
- * Imported from Keynote. Fonts and colours were deliberately NOT carried over —
- * set them here.
+ * Imported from Keynote. Layout-critical text face, size and paint are kept as
+ * inline values; remove them from an element to style it entirely from here.
  *
  * Imported text carries the class .kn-text and an inline font-size fitted to the
  * box it occupied in Keynote. Delete those inline sizes once you have styled
