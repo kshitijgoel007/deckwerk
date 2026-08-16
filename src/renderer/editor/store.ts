@@ -107,6 +107,28 @@ export class EditorStore {
   }
 
   /**
+   * Incorporate a deck written outside the editor without throwing away the
+   * user's undo history or stable-id selection. Agent transactions and hand
+   * edits therefore behave like ordinary, reversible editor actions.
+   */
+  replaceExternal(deck: Deck, dir: string, label = 'External edit'): void {
+    this.pushUndo(this.state.deck, label);
+    this.state = { ...this.state, dir, deck: parseDeck(deck), dirty: false };
+    this.clampCursor();
+    this.recordHistory(label);
+    this.emit();
+  }
+
+  /** Replace the document as one local, dirty, undoable transaction. */
+  replaceWithHistory(deck: Deck, label: string): void {
+    this.pushUndo(this.state.deck, label);
+    this.state = { ...this.state, deck: parseDeck(deck), dirty: true };
+    this.clampCursor();
+    this.recordHistory(label);
+    this.emit();
+  }
+
+  /**
    * Apply a mutation to a structurally-cloned deck.
    *
    * The clone is what lets the undo stack hold plain references: no other code

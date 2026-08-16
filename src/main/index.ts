@@ -4,6 +4,8 @@ import { BrowserWindow, app, dialog, ipcMain } from 'electron';
 import type { Deck } from '@shared/deck.js';
 import { IPC } from '@shared/ipc.js';
 import type {
+  AgentContextDraft,
+  AgentResponse,
   DeckSession,
   ImportedAsset,
   KeynoteImportResult,
@@ -12,6 +14,7 @@ import type {
   TrimRequest,
   TrimResult,
 } from '@shared/ipc.js';
+import { AgentRuntime } from './agentRuntime.js';
 import { installAssetProtocol, registerAssetScheme, setDeckDir } from './assetProtocol.js';
 import {
   createDeck,
@@ -46,6 +49,7 @@ let presentWindow: BrowserWindow | null = null;
 let presenterWindow: BrowserWindow | null = null;
 let presentationState: PresentationState | null = null;
 let trimWindow: BrowserWindow | null = null;
+const agentRuntime = new AgentRuntime(() => editorWindow);
 
 function requireSession(): DeckSession {
   if (!session) throw new Error('No deck is open');
@@ -60,6 +64,7 @@ function setSession(dir: string, deck: Deck): DeckSession {
   session = { dir, deck };
   setDeckDir(dir);
   watchDeck(dir, deck.theme);
+  void agentRuntime.open(dir);
   return session;
 }
 
@@ -160,6 +165,10 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
 
+app.on('before-quit', () => {
+  void agentRuntime.close();
+});
+
 function registerHandlers(): void {
   ipcMain.handle(IPC.deckNew, async (): Promise<DeckSession | null> => {
     const res = await dialog.showSaveDialog({
@@ -187,6 +196,13 @@ function registerHandlers(): void {
   // Pull rather than push: a window that opens mid-session asks for the current
   // deck itself, so it can't miss a broadcast that fired before it loaded.
   ipcMain.handle(IPC.deckGet, (): DeckSession | null => session);
+
+  ipcMain.handle(IPC.agentContextPublish, async (_event, context: AgentContextDraft) => {
+    await agentRuntime.publish(context);
+  });
+  ipcMain.on(IPC.agentResponse, (_event, response: AgentResponse) => {
+    void agentRuntime.respond(response);
+  });
 
   ipcMain.handle(
     IPC.deckOpenPath,

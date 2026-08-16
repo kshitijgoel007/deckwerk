@@ -1,4 +1,5 @@
 import type { Deck } from './deck.js';
+import type { AgentContextDraft, AgentRequest, AgentResponse } from './agent.js';
 
 /**
  * The contract between the renderer and the main process. Both sides import
@@ -27,7 +28,12 @@ export const IPC = {
   trimDone: 'trim:done',
   keynoteImport: 'keynote:import',
   exportBundle: 'export:bundle',
+  agentContextPublish: 'agent:contextPublish',
+  agentRequest: 'agent:request',
+  agentResponse: 'agent:response',
 } as const;
+
+export type { AgentContextDraft, AgentRequest, AgentResponse };
 
 export type PresentationCommand =
   | { type: 'next' | 'prev' | 'toggleBlank' | 'exit' }

@@ -2,6 +2,9 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type { Deck } from '@shared/deck.js';
 import { IPC } from '@shared/ipc.js';
 import type {
+  AgentContextDraft,
+  AgentRequest,
+  AgentResponse,
   DeckSession,
   ImportedAsset,
   KeynoteImportResult,
@@ -43,6 +46,10 @@ const api = {
   importKeynote: (): Promise<KeynoteImportResult | null> =>
     ipcRenderer.invoke(IPC.keynoteImport),
   exportBundle: (): Promise<string | null> => ipcRenderer.invoke(IPC.exportBundle),
+  publishAgentContext: (context: AgentContextDraft): Promise<void> =>
+    ipcRenderer.invoke(IPC.agentContextPublish, context),
+  respondAgentRequest: (response: AgentResponse): void =>
+    ipcRenderer.send(IPC.agentResponse, response),
 
   present: (slideIndex: number): Promise<void> =>
     ipcRenderer.invoke(IPC.presentOpen, slideIndex),
@@ -67,6 +74,8 @@ const api = {
   onDeckState: (fn: (s: DeckSession) => void): (() => void) =>
     on(IPC.deckState, fn),
   onThemeCss: (fn: (css: string) => void): (() => void) => on(IPC.themeCss, fn),
+  onAgentRequest: (fn: (request: AgentRequest) => void): (() => void) =>
+    on(IPC.agentRequest, fn),
   onTrimTarget: (fn: (p: { src: string; elementId: string }) => void): (() => void) =>
     on(IPC.trimOpen, fn),
   onTrimProgress: (fn: (p: TrimProgress) => void): (() => void) =>
