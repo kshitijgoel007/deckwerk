@@ -70,6 +70,9 @@ const ImageElement = BaseElement.extend({
   src: z.string(),
   fit: z.enum(['contain', 'cover', 'fill']).default('contain'),
   alt: z.string().default(''),
+  borderColor: z.string().nullable().optional(),
+  borderWidth: z.number().min(0).optional(),
+  borderRadius: z.number().min(0).optional(),
   /**
    * A crop, expressed as where the *whole* image sits relative to this
    * element's box. The element box is the visible window; anything outside it
@@ -93,6 +96,9 @@ const VideoElement = BaseElement.extend({
   loop: z.boolean().default(true),
   muted: z.boolean().default(true),
   controls: z.boolean().default(false),
+  borderColor: z.string().nullable().optional(),
+  borderWidth: z.number().min(0).optional(),
+  borderRadius: z.number().min(0).optional(),
   /** Non-destructive in/out points in seconds; `end: null` means end of file. */
   start: z.number().min(0).default(0),
   end: z.number().min(0).nullable().default(null),

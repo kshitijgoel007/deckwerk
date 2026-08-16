@@ -58,6 +58,11 @@ export function renderElement(
   s.opacity = String(el.opacity);
   if (el.rot) s.transform = `rotate(${el.rot}deg)`;
   for (const [k, v] of Object.entries(el.style)) s.setProperty(k, v);
+  if ((el.type === 'image' || el.type === 'video') && (el.borderWidth ?? 0) > 0) {
+    s.border = `${el.borderWidth}px solid ${el.borderColor ?? '#000000'}`;
+    s.borderRadius = `${el.borderRadius ?? 0}px`;
+    s.overflow = 'hidden';
+  }
 
   node.appendChild(renderBody(el, opts));
   return node;
@@ -104,6 +109,15 @@ function renderBody(el: SlideElement, opts: RenderOptions): HTMLElement | SVGEle
     }
 
     case 'image': {
+      if (/\.pdf(?:$|[?#])/i.test(el.src)) {
+        const pdf = document.createElement('embed');
+        pdf.src = `${opts.resolveSrc(el.src)}#page=1&toolbar=0&navpanes=0`;
+        pdf.type = 'application/pdf';
+        pdf.style.width = '100%';
+        pdf.style.height = '100%';
+        pdf.style.pointerEvents = 'none';
+        return pdf;
+      }
       const img = document.createElement('img');
       img.src = opts.resolveSrc(el.src);
       img.alt = el.alt;

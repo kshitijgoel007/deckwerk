@@ -18,7 +18,7 @@ import { isWebSafeCodec, probeMedia, transcodeToH264, videoCodec } from './ffmpe
 export const DECK_FILE = 'deck.json';
 export const ASSETS_DIR = 'assets';
 
-const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.avif']);
+const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.avif', '.pdf']);
 const VIDEO_EXTS = new Set(['.mp4', '.mov', '.m4v', '.webm', '.mkv', '.avi']);
 
 const DEFAULT_THEME = `/* Fonts, sizes and colours live here. The editor never rewrites this file. */
@@ -136,11 +136,12 @@ export async function importAsset(
   const finalPath = join(assetsDir, finalName);
 
   const info = await probeMedia(finalPath);
+  const fallback = ext === '.pdf' ? { width: 1400, height: 1000 } : { width: null, height: null };
   return {
     src: `${ASSETS_DIR}/${finalName}`,
     kind,
-    width: info.width,
-    height: info.height,
+    width: info.width ?? fallback.width,
+    height: info.height ?? fallback.height,
     duration: info.duration,
   };
 }

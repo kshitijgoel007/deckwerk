@@ -213,6 +213,14 @@ export class EditorCanvas {
       node.style.height = `${el.h}px`;
       node.style.opacity = String(el.opacity);
       node.style.transform = el.rot ? `rotate(${el.rot}deg)` : '';
+      if (el.type === 'image' || el.type === 'video') {
+        const width = el.borderWidth ?? 0;
+        node.style.border = width > 0
+          ? `${width}px solid ${el.borderColor ?? '#000000'}`
+          : '';
+        node.style.borderRadius = width > 0 ? `${el.borderRadius ?? 0}px` : '';
+        node.style.overflow = width > 0 ? 'hidden' : '';
+      }
 
       if (el.type === 'shape' && el.control) {
         node.querySelector('svg > path')?.setAttribute('d', quadraticPath(el));

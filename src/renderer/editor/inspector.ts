@@ -432,6 +432,7 @@ export class Inspector {
             }),
           ),
         );
+        wrap.appendChild(this.mediaBorderControls());
 
         wrap.appendChild(this.maskButton(el.id));
         wrap.appendChild(this.trimSection(el));
@@ -454,6 +455,7 @@ export class Inspector {
             }),
           ),
         );
+        wrap.appendChild(this.mediaBorderControls());
         return wrap;
       }
 
@@ -623,6 +625,35 @@ export class Inspector {
         return wrap;
       }
     }
+  }
+
+  private mediaBorderControls(): HTMLElement {
+    const el = this.store.selectedElements()[0];
+    const wrap = document.createElement('div');
+    wrap.className = 'media-border-controls';
+    if (!el || (el.type !== 'image' && el.type !== 'video')) return wrap;
+    wrap.appendChild(colorField('Border colour', el.borderColor ?? null, (value) =>
+      this.store.updateSelected((target) => {
+        if (target.type === 'image' || target.type === 'video') target.borderColor = value;
+      })));
+    const numbers = document.createElement('div');
+    numbers.className = 'field-grid';
+    numbers.append(
+      numberField('WIDTH', el.borderWidth ?? 0, (value) =>
+        this.store.updateSelected((target) => {
+          if (target.type === 'image' || target.type === 'video') {
+            target.borderWidth = Math.max(0, value);
+          }
+        })),
+      numberField('RADIUS', el.borderRadius ?? 0, (value) =>
+        this.store.updateSelected((target) => {
+          if (target.type === 'image' || target.type === 'video') {
+            target.borderRadius = Math.max(0, value);
+          }
+        })),
+    );
+    wrap.appendChild(numbers);
+    return wrap;
   }
 }
 
