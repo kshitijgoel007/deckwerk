@@ -593,6 +593,134 @@ describe('native line endpoint editing', () => {
     expect(elementContainsPoint(line, { x: 850, y: 250 })).toBe(true);
     expect(elementContainsPoint(line, { x: 850, y: 280 })).toBe(false);
   });
+
+  it('shows clean traces and persistent shared width controls for selected arrows', () => {
+    const { store, host } = setup();
+    const arrow = (id: string, start: { x: number; y: number }, end: { x: number; y: number }) => ({
+      id,
+      type: 'shape' as const,
+      shape: 'arrow' as const,
+      ...lineFromEndpoints(start, end, 1),
+      z: 3,
+      opacity: 1,
+      class: [],
+      style: {},
+      fill: null,
+      stroke: '#000000',
+      strokeWidth: 7,
+      radius: 0,
+      path: null,
+      pathSize: null,
+      arrowStart: false,
+      arrowEnd: true,
+      control: null,
+    });
+    store.commit((deck) => deck.slides[0].elements.push(
+      arrow('slide44-arrow-1', { x: 400, y: 300 }, { x: 610, y: 300 }),
+      arrow('slide44-arrow-2', { x: 700, y: 500 }, { x: 770, y: 570 }),
+    ));
+    store.select(['slide44-arrow-1', 'slide44-arrow-2']);
+
+    expect(host.querySelectorAll('.multi-line-sel')).toHaveLength(2);
+    expect(host.querySelectorAll('.selection-line-preview')).toHaveLength(2);
+    expect(host.querySelectorAll('.multi-line-sel .handle')).toHaveLength(0);
+
+    const inspectorHost = document.createElement('aside');
+    document.body.appendChild(inspectorHost);
+    new Inspector(inspectorHost, store);
+    const arrowStyle = [...inspectorHost.querySelectorAll<HTMLElement>('.insp-group')]
+      .find((section) => section.querySelector('h3')?.textContent === 'Arrow style')!;
+    const widthField = [...arrowStyle.querySelectorAll<HTMLLabelElement>('label')]
+      .find((label) => label.querySelector('span')?.textContent === 'WIDTH')!;
+    const width = widthField.querySelector<HTMLInputElement>('input')!;
+    expect(width.value).toBe('7');
+
+    width.value = '11.5';
+    width.dispatchEvent(new Event('change', { bubbles: true }));
+
+    const selected = store.selectedElements();
+    expect(selected.map((element) => element.type === 'shape' && element.strokeWidth))
+      .toEqual([11.5, 11.5]);
+    const rerenderedWidth = [...inspectorHost.querySelectorAll<HTMLLabelElement>('label')]
+      .find((label) => label.querySelector('span')?.textContent === 'WIDTH')!
+      .querySelector<HTMLInputElement>('input')!;
+    expect(rerenderedWidth.value).toBe('11.5');
+  });
+});
+
+describe('same-kind multi-selection properties', () => {
+  it('exposes mixed and shared text styling, applies it to all, and hides Magic Move', () => {
+    const { store } = setup();
+    const first = store.slide!.elements.find((element) => element.id === 'text-1')!;
+    if (first.type !== 'text') throw new Error('expected text');
+    first.style = { 'font-family': 'Avenir', 'font-size': '42px', 'font-weight': '400' };
+    store.commit((deck) => deck.slides[0].elements.push({
+      ...structuredClone(first),
+      id: 'text-2',
+      y: 220,
+      html: 'Second text box',
+      style: { 'font-family': 'Helvetica', 'font-size': '42px', 'font-weight': '700' },
+    }));
+    store.select(['text-1', 'text-2']);
+    const inspectorHost = document.createElement('aside');
+    document.body.appendChild(inspectorHost);
+    new Inspector(inspectorHost, store);
+
+    expect(inspectorHost.querySelector('.magic-move-section')).toBeNull();
+    const textGroup = [...inspectorHost.querySelectorAll<HTMLElement>('.insp-group')]
+      .find((section) => section.querySelector('h3')?.textContent === 'Text')!;
+    const field = (label: string) => [...textGroup.querySelectorAll<HTMLLabelElement>('label')]
+      .find((candidate) => candidate.querySelector('span')?.textContent === label)!;
+    const family = field('Font family').querySelector<HTMLInputElement>('input')!;
+    const size = field('Font size').querySelector<HTMLInputElement>('input')!;
+    const weight = field('Font weight').querySelector<HTMLSelectElement>('select')!;
+    expect(family.value).toBe('');
+    expect(family.placeholder).toContain('Mixed');
+    expect(size.value).toBe('42');
+    expect(weight.value).toBe('__mixed__');
+
+    family.value = 'Inter';
+    family.dispatchEvent(new Event('change', { bubbles: true }));
+    const rerenderedText = [...inspectorHost.querySelectorAll<HTMLElement>('.insp-group')]
+      .find((section) => section.querySelector('h3')?.textContent === 'Text')!;
+    const rerenderedWeight = [...rerenderedText.querySelectorAll<HTMLLabelElement>('label')]
+      .find((candidate) => candidate.querySelector('span')?.textContent === 'Font weight')!
+      .querySelector<HTMLSelectElement>('select')!;
+    rerenderedWeight.value = '600';
+    rerenderedWeight.dispatchEvent(new Event('change', { bubbles: true }));
+
+    expect(store.selectedElements().map((element) => element.style['font-family']))
+      .toEqual(['Inter', 'Inter']);
+    expect(store.selectedElements().map((element) => element.style['font-weight']))
+      .toEqual(['600', '600']);
+    expect(inspectorHost.querySelector('.magic-move-section')).toBeNull();
+  });
+
+  it('keeps shared video options available without exposing single-clip tools', () => {
+    const { store } = setup();
+    const first = store.slide!.elements.find((element) => element.id === 'video-1')!;
+    if (first.type !== 'video') throw new Error('expected video');
+    store.commit((deck) => deck.slides[0].elements.push({
+      ...structuredClone(first), id: 'video-2', x: 800, autoplay: false,
+    }));
+    store.select(['video-1', 'video-2']);
+    const inspectorHost = document.createElement('aside');
+    document.body.appendChild(inspectorHost);
+    new Inspector(inspectorHost, store);
+
+    const videoGroup = [...inspectorHost.querySelectorAll<HTMLElement>('.insp-group')]
+      .find((section) => section.querySelector('h3')?.textContent === 'Video')!;
+    const autoplay = [...videoGroup.querySelectorAll<HTMLLabelElement>('label')]
+      .find((label) => label.querySelector('span')?.textContent === 'autoplay')!
+      .querySelector<HTMLInputElement>('input')!;
+    expect(autoplay.indeterminate).toBe(true);
+    autoplay.checked = true;
+    autoplay.dispatchEvent(new Event('change', { bubbles: true }));
+    expect(store.selectedElements().map((element) => element.type === 'video' && element.autoplay))
+      .toEqual([true, true]);
+    expect(videoGroup.textContent).not.toContain('Edit mask');
+    expect(videoGroup.textContent).not.toContain('Trim');
+  });
 });
 
 describe('quadratic curved arrows', () => {

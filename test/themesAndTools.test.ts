@@ -105,6 +105,30 @@ describe('applying a theme', () => {
     expect(deck.slides[1].elements[0].style['font-family']).toBeUndefined();
   });
 
+  it('applies a theme only to the selected slides', () => {
+    const deck = sampleDeck();
+    deck.slides.push(structuredClone(deck.slides[0]), structuredClone(deck.slides[0]));
+    deck.slides[1].id = 'slide-2';
+    deck.slides[2].id = 'slide-3';
+    for (const [index, slide] of deck.slides.entries()) {
+      slide.elements[0].id = `title-${index}`;
+      slide.elements[0].class = ['role-title'];
+      slide.elements[0].style = { color: '#123456' };
+    }
+
+    adoptThemeStyles(deck, THEMES[1], {
+      scope: 'slides', roles: ['title'], fontFamily: true, fontWeight: false,
+      typeScale: false, textColor: false, background: false, objectColors: false,
+      replaceOverrides: true, detectRoles: false,
+    }, 0, new Set(), new Set(['slide-1', 'slide-3']));
+
+    expect(deck.slides[0].elements[0].style['font-family']).toBe(THEMES[1].fonts.title.family);
+    expect(deck.slides[1].elements[0].style['font-family']).toBeUndefined();
+    expect(deck.slides[2].elements[0].style['font-family']).toBe(THEMES[1].fonts.title.family);
+    expect(deck.slides.every((slide) => slide.elements[0].style.color === '#123456')).toBe(true);
+    expect(deck.themeStyle).toBeNull();
+  });
+
   it('with every option off, changes nothing', () => {
     const deck = sampleDeck();
     const before = JSON.stringify(deck);
@@ -234,6 +258,8 @@ describe('element clipboard', () => {
     const pasted = slide.elements.find((e) => e.id === created[0])!;
     expect(pasted.x).toBe(24); // original 0 + offset
     expect(created[0]).not.toBe('t1');
+    expect(pasted.lineageId).toBe('t1');
+    expect(pasted.magicMoveId).toBeNull();
   });
 
   it('pastes onto a different slide', () => {
@@ -246,8 +272,13 @@ describe('element clipboard', () => {
     store.select(['s1']);
     copySelectionToClipboard(store);
     store.selectSlide(1);
-    pasteFromClipboard(store);
+    const [pastedId] = pasteFromClipboard(store);
     expect(store.get().deck.slides[1].elements).toHaveLength(1);
+    expect(store.get().deck.slides[1].elements[0]).toMatchObject({
+      id: pastedId,
+      lineageId: 's1',
+      magicMoveId: null,
+    });
   });
 
   it('offsets a curved arrow control point together with its endpoints', () => {

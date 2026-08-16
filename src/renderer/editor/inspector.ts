@@ -1,8 +1,8 @@
 import type { MediaEffect, SlideElement } from '@shared/deck.js';
-import { makeId } from '@shared/geometry.js';
 import { type AlignMode, alignElements } from './align.js';
 import type { EditorStore } from './store.js';
 import { LAYOUT_LABELS, applySlideLayout, type SlideLayout } from './slideLayouts.js';
+import { MagicMovePanel } from './magicMovePanel.js';
 
 /**
  * The properties panel.
@@ -42,10 +42,14 @@ export class Inspector {
   private lastDeck: unknown = null;
   private lastSelection = '';
   private lastSlide = -1;
+  private magicMoveHost = document.createElement('section');
+  private magicMovePanel: MagicMovePanel;
 
   constructor(host: HTMLElement, store: EditorStore) {
     this.host = host;
     this.store = store;
+    this.magicMoveHost.className = 'magic-move-section';
+    this.magicMovePanel = new MagicMovePanel(this.magicMoveHost, store, false);
     // Only re-render when the deck, selection or slide actually changed. The
     // store also emits for bookkeeping (autosave's markClean among them), and
     // rebuilding then destroys whatever control the user is holding — the trim
@@ -56,6 +60,7 @@ export class Inspector {
       if (deck === this.lastDeck && sel === this.lastSelection && slideIndex === this.lastSlide) {
         return;
       }
+      if (this.host.hidden) return;
       this.render();
     });
     this.render();
@@ -68,6 +73,7 @@ export class Inspector {
     this.lastSlide = slideIndex;
     const selected = this.store.selectedElements();
     this.host.replaceChildren();
+    if (selected.length > 0) this.magicMovePanel.dismiss();
 
     if (selected.length === 0) {
       this.host.appendChild(hint('Nothing selected'));
@@ -92,26 +98,6 @@ export class Inspector {
       });
       layout.append(layoutLabel, layoutSelect);
       slideGroup.appendChild(layout);
-      slideGroup.appendChild(selectField(
-        'Transition',
-        ['none', 'magicMove'],
-        slide?.transition?.type ?? 'none',
-        (value) => this.store.commit((next) => {
-          next.slides[slideIndex].transition = {
-            type: value as 'none' | 'magicMove',
-            duration: slide?.transition?.duration ?? 700,
-          };
-        }),
-      ));
-      if (slide?.transition?.type === 'magicMove') {
-        slideGroup.appendChild(numberField(
-          'Transition ms', slide.transition.duration, (value) => this.store.commit((next) => {
-            next.slides[slideIndex].transition = {
-              type: 'magicMove', duration: Math.max(100, Math.min(5000, value)),
-            };
-          }),
-        ));
-      }
       slideGroup.appendChild(
         colorField('Background (clear = theme)', slide?.background.color ?? null, (value) => {
           this.store.commit((next) => {
@@ -120,12 +106,32 @@ export class Inspector {
         }),
       );
       this.host.appendChild(slideGroup);
+      this.appendMagicMove();
       return;
     }
     if (selected.length > 1) {
       this.host.appendChild(hint(`${selected.length} elements selected`));
       this.host.appendChild(this.alignSection());
       this.host.appendChild(this.geometrySection(selected));
+      const first = selected[0];
+      const sameType = selected.every((element) => element.type === first.type);
+      if (sameType) this.host.appendChild(this.styleSection(first, selected));
+      if (
+        first.type === 'shape' &&
+        selected.every((element) => element.type === 'shape' && element.shape === first.shape)
+      ) {
+        this.host.appendChild(this.multiShapeSection(
+          selected as Array<Extract<SlideElement, { type: 'shape' }>>,
+        ));
+      } else if (sameType && first.type === 'text') {
+        this.host.appendChild(this.multiTextSection(
+          selected as Array<Extract<SlideElement, { type: 'text' }>>,
+        ));
+      } else if (sameType && (first.type === 'image' || first.type === 'video')) {
+        this.host.appendChild(this.multiMediaSection(
+          selected as Array<Extract<SlideElement, { type: 'image' | 'video' }>>,
+        ));
+      }
       return;
     }
 
@@ -133,11 +139,13 @@ export class Inspector {
     this.host.appendChild(sectionTitle(el.type));
     this.host.appendChild(this.geometrySection(selected));
     this.host.appendChild(this.styleSection(el));
-    const magic = this.magicMoveSection(el);
-    if (magic) this.host.appendChild(magic);
-
     const specific = this.typeSection(el);
     if (specific) this.host.appendChild(specific);
+  }
+
+  private appendMagicMove(): void {
+    this.magicMovePanel.render();
+    this.host.appendChild(this.magicMoveHost);
   }
 
   /**
@@ -332,16 +340,20 @@ export class Inspector {
     row.className = 'field-grid';
     for (const key of ['x', 'y', 'w', 'h'] as const) {
       row.appendChild(
-        numberField(key.toUpperCase(), multi ? null : first[key], (v) => {
-          this.store.updateSelected((el) => {
-            if (key === 'w' || key === 'h') el[key] = Math.max(8, v);
-            else {
-              const delta = v - el[key];
-              el[key] = v;
-              if (el.type === 'shape' && el.control) el.control[key] += delta;
-            }
-          });
-        }),
+        numberField(
+          key.toUpperCase(),
+          multi ? commonValue(selected.map((element) => element[key])) : first[key],
+          (v) => {
+            this.store.updateSelected((el) => {
+              if (key === 'w' || key === 'h') el[key] = Math.max(8, v);
+              else {
+                const delta = v - el[key];
+                el[key] = v;
+                if (el.type === 'shape' && el.control) el.control[key] += delta;
+              }
+            });
+          },
+        ),
       );
     }
     wrap.appendChild(row);
@@ -349,18 +361,21 @@ export class Inspector {
     const row2 = document.createElement('div');
     row2.className = 'field-grid';
     row2.appendChild(
-      numberField('ROT', multi ? null : first.rot, (v) =>
+      numberField('ROT', multi ? commonValue(selected.map((element) => element.rot)) : first.rot, (v) =>
         this.store.updateSelected((el) => (el.rot = v)),
       ),
     );
     row2.appendChild(
-      numberField('Z', multi ? null : first.z, (v) =>
+      numberField('Z', multi ? commonValue(selected.map((element) => element.z)) : first.z, (v) =>
         this.store.updateSelected((el) => (el.z = Math.round(v))),
       ),
     );
     row2.appendChild(
-      numberField('OPACITY', multi ? null : first.opacity, (v) =>
-        this.store.updateSelected((el) => (el.opacity = Math.min(1, Math.max(0, v)))),
+      numberField(
+        'OPACITY',
+        multi ? commonValue(selected.map((element) => element.opacity)) : first.opacity,
+        (v) => this.store.updateSelected((el) =>
+          (el.opacity = Math.min(1, Math.max(0, v)))),
         { step: 0.05 },
       ),
     );
@@ -393,20 +408,24 @@ export class Inspector {
   }
 
   /** The hook into theme.css, plus the inline-style escape hatch. */
-  private styleSection(el: SlideElement): HTMLElement {
+  private styleSection(el: SlideElement, selected: SlideElement[] = [el]): HTMLElement {
     const wrap = group('Style');
+    const classValues = selected.map((element) => element.class.join(' '));
+    const commonClasses = commonValue(classValues);
     wrap.appendChild(
-      textField('CSS classes', el.class.join(' '), (v) => {
+      textField('CSS classes', commonClasses ?? '', (v) => {
         const classes = v.split(/\s+/).filter(Boolean);
         this.store.updateSelected((e) => (e.class = classes));
-      }, 'Space-separated, defined in theme.css'),
+      }, commonClasses === null ? 'Mixed — enter to replace all' : 'Space-separated, defined in theme.css'),
     );
+    const inlineValues = selected.map((element) => Object.entries(element.style)
+      .map(([k, v]) => `${k}: ${v}`)
+      .join('; '));
+    const commonInline = commonValue(inlineValues);
     wrap.appendChild(
       textField(
         'Inline style',
-        Object.entries(el.style)
-          .map(([k, v]) => `${k}: ${v}`)
-          .join('; '),
+        commonInline ?? '',
         (v) => {
           const style: Record<string, string> = {};
           for (const decl of v.split(';')) {
@@ -416,9 +435,244 @@ export class Inspector {
           }
           this.store.updateSelected((e) => (e.style = style));
         },
-        'e.g. color: #e33; letter-spacing: -0.02em',
+        commonInline === null
+          ? 'Mixed — enter to replace all'
+          : 'e.g. color: #e33; letter-spacing: -0.02em',
       ),
     );
+    return wrap;
+  }
+
+  /** Shared, safe style controls for a same-kind shape multi-selection. */
+  private multiShapeSection(
+    shapes: Array<Extract<SlideElement, { type: 'shape' }>>,
+  ): HTMLElement {
+    const kind = shapes[0].shape;
+    const label = kind === 'arrow' ? 'Arrow style' : kind === 'line' ? 'Line style' : 'Shape style';
+    const wrap = group(label);
+    wrap.appendChild(hint(`Changes apply to all ${shapes.length} selected ${kind}s.`));
+
+    if (kind === 'line' || kind === 'arrow') {
+      wrap.appendChild(mixedCheckboxField(
+        'Curved',
+        commonValue(shapes.map((shape) => Boolean(shape.control))),
+        (on) => this.store.updateSelected((element) => {
+          if (element.type !== 'shape') return;
+          element.control = on
+            ? { x: element.x + element.w / 2, y: element.y + element.h / 2 - Math.max(80, element.w / 3) }
+            : null;
+        }),
+      ));
+    } else {
+      wrap.appendChild(colorField('Fill', commonValue(shapes.map((shape) => shape.fill)) ?? shapes[0].fill, (value) =>
+        this.store.updateSelected((element) => {
+          if (element.type === 'shape') element.fill = value;
+        }),
+      ));
+    }
+
+    wrap.appendChild(colorField(
+      'Stroke',
+      commonValue(shapes.map((shape) => shape.stroke)) ?? shapes[0].stroke,
+      (value) => this.store.updateSelected((element) => {
+        if (element.type === 'shape') element.stroke = value;
+      }),
+    ));
+    const numbers = document.createElement('div');
+    numbers.className = 'field-grid';
+    numbers.appendChild(numberField(
+      'WIDTH',
+      commonValue(shapes.map((shape) => shape.strokeWidth)),
+      (value) => this.store.updateSelected((element) => {
+        if (element.type === 'shape') element.strokeWidth = Math.max(0, value);
+      }),
+      { step: 0.5 },
+    ));
+    if (kind === 'rect' || kind === 'ellipse') {
+      numbers.appendChild(numberField(
+        'RADIUS',
+        commonValue(shapes.map((shape) => shape.radius)),
+        (value) => this.store.updateSelected((element) => {
+          if (element.type === 'shape') element.radius = Math.max(0, value);
+        }),
+      ));
+    }
+    wrap.appendChild(numbers);
+    return wrap;
+  }
+
+  private multiTextSection(
+    texts: Array<Extract<SlideElement, { type: 'text' }>>,
+  ): HTMLElement {
+    const wrap = group('Text');
+    wrap.appendChild(hint(`Changes apply to all ${texts.length} selected text boxes.`));
+    wrap.appendChild(mixedCheckboxField(
+      'Auto-fit text to box',
+      commonValue(texts.map((text) => Boolean(text.autoFit))),
+      (on) => this.store.updateSelected((element) => {
+        if (element.type === 'text') element.autoFit = on;
+      }),
+    ));
+
+    const families = commonValue(texts.map((text) => text.style['font-family'] ?? ''));
+    wrap.appendChild(textField(
+      'Font family', families ?? '',
+      (value) => this.store.updateSelected((element) => {
+        if (element.type !== 'text') return;
+        const style = { ...element.style };
+        if (value.trim()) style['font-family'] = value.trim();
+        else delete style['font-family'];
+        element.style = style;
+      }, { label: 'Change font family' }),
+      families === null ? 'Mixed — enter to replace all' : 'Theme font',
+    ));
+
+    const sizes = sharedValue(texts.map((text) => {
+      const size = Number.parseFloat(text.style['font-size'] ?? '');
+      return Number.isFinite(size) ? size : null;
+    }));
+    const sizeField = optionalNumberField(
+      'Font size', sizes.mixed ? null : sizes.value,
+      (value) => this.store.updateSelected((element) => {
+        if (element.type === 'text') element.style = {
+          ...element.style, 'font-size': `${Math.max(6, Math.min(400, value))}px`,
+        };
+      }),
+      () => this.store.updateSelected((element) => {
+        if (element.type !== 'text') return;
+        const style = { ...element.style };
+        delete style['font-size'];
+        element.style = style;
+      }),
+      'px',
+    );
+    if (sizes.mixed) sizeField.querySelector('input')!.placeholder = 'Mixed';
+    wrap.appendChild(sizeField);
+
+    wrap.appendChild(mixedSelectField(
+      'Font weight',
+      ['inherit', '100', '200', '300', '400', '500', '600', '700', '800', '900'],
+      commonValue(texts.map((text) => text.style['font-weight'] ?? 'inherit')),
+      (value) => this.store.updateSelected((element) => {
+        if (element.type !== 'text') return;
+        const style = { ...element.style };
+        if (value === 'inherit') delete style['font-weight'];
+        else style['font-weight'] = value;
+        element.style = style;
+      }),
+    ));
+
+    const roles = texts.map((text) =>
+      text.class.find((name) => /^role-(title|heading|body|caption)$/.test(name)) ?? 'none');
+    wrap.appendChild(mixedSelectField(
+      'Role', ['none', 'role-title', 'role-heading', 'role-body', 'role-caption'],
+      commonValue(roles),
+      (value) => this.store.updateSelected((element) => {
+        if (element.type !== 'text') return;
+        element.class = element.class.filter((name) => !name.startsWith('role-'));
+        if (value !== 'none') element.class.push(value);
+      }),
+    ));
+
+    wrap.appendChild(mixedCheckboxField(
+      'Bulleted list',
+      commonValue(texts.map((text) => text.html.trimStart().startsWith('<ul'))),
+      (on) => this.store.updateSelected((element) => {
+        if (element.type !== 'text') return;
+        if (on && !element.html.trimStart().startsWith('<ul')) {
+          const items = element.html.split(/<br\s*\/?>/i).map((line) => line.trim())
+            .filter(Boolean).map((line) => `<li>${line}</li>`).join('');
+          element.html = `<ul>${items || '<li>Item</li>'}</ul>`;
+        } else if (!on && element.html.trimStart().startsWith('<ul')) {
+          const div = document.createElement('div');
+          div.innerHTML = element.html;
+          element.html = [...div.querySelectorAll('li')].map((item) => item.innerHTML).join('<br>');
+        }
+      }),
+    ));
+
+    const colors = commonValue(texts.map((text) => text.style.color ?? ''));
+    wrap.appendChild(colorField(
+      colors === null ? 'Colour (mixed)' : 'Colour',
+      colors === null ? (texts[0].style.color ?? null) : (colors || null),
+      (value) => this.store.updateSelected((element) => {
+        if (element.type !== 'text') return;
+        const style = { ...element.style };
+        if (value) style.color = value;
+        else delete style.color;
+        element.style = style;
+      }),
+      this.effectiveTextColor(texts[0]),
+    ));
+    wrap.appendChild(mixedSelectField(
+      'Align', ['left', 'center', 'right', 'justify'],
+      commonValue(texts.map((text) => text.align)),
+      (value) => this.store.updateSelected((element) => {
+        if (element.type === 'text') element.align = value as 'left';
+      }),
+    ));
+    wrap.appendChild(mixedSelectField(
+      'Vertical', ['top', 'middle', 'bottom'],
+      commonValue(texts.map((text) => text.valign)),
+      (value) => this.store.updateSelected((element) => {
+        if (element.type === 'text') element.valign = value as 'top';
+      }),
+    ));
+    return wrap;
+  }
+
+  private multiMediaSection(
+    media: Array<Extract<SlideElement, { type: 'image' | 'video' }>>,
+  ): HTMLElement {
+    const kind = media[0].type;
+    const wrap = group(kind === 'image' ? 'Image' : 'Video');
+    wrap.appendChild(hint(`Changes apply to all ${media.length} selected ${kind}s.`));
+    if (kind === 'video') {
+      for (const key of ['autoplay', 'loop', 'muted', 'controls'] as const) {
+        wrap.appendChild(mixedCheckboxField(
+          key,
+          commonValue(media.map((element) => element.type === 'video' && element[key])),
+          (value) => this.store.updateSelected((element) => {
+            if (element.type === 'video') element[key] = value;
+          }),
+        ));
+      }
+    }
+    wrap.appendChild(mixedCheckboxField(
+      'Keep aspect ratio',
+      commonValue(media.map((element) => element.fit !== 'fill')),
+      (value) => this.store.updateSelected((element) => {
+        if (element.type === 'image' || element.type === 'video') {
+          element.fit = value ? 'contain' : 'fill';
+        }
+      }),
+    ));
+    const borderColors = commonValue(media.map((element) => element.borderColor ?? ''));
+    wrap.appendChild(colorField(
+      borderColors === null ? 'Border colour (mixed)' : 'Border colour',
+      borderColors === null ? (media[0].borderColor ?? null) : (borderColors || null),
+      (value) => this.store.updateSelected((element) => {
+        if (element.type === 'image' || element.type === 'video') element.borderColor = value;
+      }),
+    ));
+    const numbers = document.createElement('div');
+    numbers.className = 'field-grid';
+    numbers.append(
+      numberField('WIDTH', commonValue(media.map((element) => element.borderWidth ?? 0)), (value) =>
+        this.store.updateSelected((element) => {
+          if (element.type === 'image' || element.type === 'video') element.borderWidth = Math.max(0, value);
+        })),
+      numberField('RADIUS', commonValue(media.map((element) => element.borderRadius ?? 0)), (value) =>
+        this.store.updateSelected((element) => {
+          if (element.type === 'image' || element.type === 'video') element.borderRadius = Math.max(0, value);
+        })),
+    );
+    wrap.appendChild(numbers);
+    if (commonValue(media.map((element) => JSON.stringify(element.effects ?? []))) !== null) {
+      wrap.appendChild(this.mediaEffectsControls());
+    } else {
+      wrap.appendChild(hint('Effects differ across the selection. Clear or align them individually first.'));
+    }
     return wrap;
   }
 
@@ -495,6 +749,18 @@ export class Inspector {
           this.store.updateSelected((target) => {
             if (target.type === 'text') target.autoFit = on;
           }, { label: on ? 'Enable text auto-fit' : 'Disable text auto-fit' }),
+        ));
+
+        wrap.appendChild(textField(
+          'Font family', el.style['font-family'] ?? '',
+          (value) => this.store.updateSelected((target) => {
+            if (target.type !== 'text') return;
+            const style = { ...target.style };
+            if (value.trim()) style['font-family'] = value.trim();
+            else delete style['font-family'];
+            target.style = style;
+          }, { label: 'Change font family' }),
+          'Theme font',
         ));
 
         wrap.appendChild(optionalNumberField(
@@ -706,70 +972,6 @@ export class Inspector {
         return wrap;
       }
     }
-  }
-
-  private magicMoveSection(el: SlideElement): HTMLElement | null {
-    const { deck, slideIndex } = this.store.get();
-    const slide = deck.slides[slideIndex];
-    const previous = deck.slides[slideIndex - 1];
-    if (!previous || slide.transition?.type !== 'magicMove') return null;
-    const wrap = group('Magic Move match');
-    const label = document.createElement('label');
-    label.className = 'field';
-    const title = document.createElement('span');
-    title.textContent = 'Previous-slide element';
-    const select = document.createElement('select');
-    const automatic = document.createElement('option');
-    automatic.value = '';
-    automatic.textContent = 'Automatic';
-    select.appendChild(automatic);
-    for (const candidate of previous.elements) {
-      const option = document.createElement('option');
-      option.value = candidate.id;
-      option.textContent = describeForMatch(candidate);
-      select.appendChild(option);
-      if (el.magicMoveId && candidate.magicMoveId === el.magicMoveId) {
-        select.value = candidate.id;
-      }
-    }
-    select.addEventListener('change', () => {
-      this.store.commit((next) => {
-        const currentElements = next.slides[slideIndex].elements;
-        const previousElements = next.slides[slideIndex - 1].elements;
-        const current = currentElements.find((item) => item.id === el.id);
-        if (!current) return;
-        const oldMatchId = current.magicMoveId;
-        if (!select.value) {
-          current.magicMoveId = null;
-          if (oldMatchId && !currentElements.some((item) => item.magicMoveId === oldMatchId)) {
-            for (const item of previousElements) {
-              if (item.magicMoveId === oldMatchId) item.magicMoveId = null;
-            }
-          }
-          return;
-        }
-        const source = previousElements.find((item) => item.id === select.value);
-        if (!source) return;
-        const matchId = source.magicMoveId ?? makeId('magic');
-        for (const item of previousElements) {
-          if (item !== source && item.magicMoveId === matchId) item.magicMoveId = null;
-        }
-        for (const item of currentElements) {
-          if (item !== current && item.magicMoveId === matchId) item.magicMoveId = null;
-        }
-        if (oldMatchId && oldMatchId !== matchId &&
-          !currentElements.some((item) => item !== current && item.magicMoveId === oldMatchId)) {
-          for (const item of previousElements) {
-            if (item.magicMoveId === oldMatchId) item.magicMoveId = null;
-          }
-        }
-        source.magicMoveId = matchId;
-        current.magicMoveId = matchId;
-      });
-    });
-    label.append(title, select);
-    wrap.append(label, hint('Manual matches override content-based matching.'));
-    return wrap;
   }
 
   /** The colour the canvas actually paints when the element inherits from CSS. */
@@ -1076,6 +1278,27 @@ function checkboxField(
   return wrap;
 }
 
+function mixedCheckboxField(
+  label: string,
+  value: boolean | null,
+  onChange: (v: boolean) => void,
+): HTMLElement {
+  const wrap = document.createElement('label');
+  wrap.className = 'field field-check';
+  const input = document.createElement('input');
+  input.type = 'checkbox';
+  input.checked = value ?? false;
+  input.indeterminate = value === null;
+  input.addEventListener('change', () => {
+    input.indeterminate = false;
+    onChange(input.checked);
+  });
+  const span = document.createElement('span');
+  span.textContent = label;
+  wrap.append(input, span);
+  return wrap;
+}
+
 function selectField(
   label: string,
   options: string[],
@@ -1095,6 +1318,38 @@ function selectField(
   }
   select.value = value;
   select.addEventListener('change', () => onChange(select.value));
+  wrap.append(span, select);
+  return wrap;
+}
+
+function mixedSelectField(
+  label: string,
+  options: string[],
+  value: string | null,
+  onChange: (v: string) => void,
+): HTMLElement {
+  const wrap = document.createElement('label');
+  wrap.className = 'field';
+  const span = document.createElement('span');
+  span.textContent = label;
+  const select = document.createElement('select');
+  if (value === null) {
+    const mixed = document.createElement('option');
+    mixed.value = '__mixed__';
+    mixed.textContent = 'Mixed';
+    mixed.disabled = true;
+    select.appendChild(mixed);
+  }
+  for (const optionValue of options) {
+    const option = document.createElement('option');
+    option.value = optionValue;
+    option.textContent = optionValue;
+    select.appendChild(option);
+  }
+  select.value = value ?? '__mixed__';
+  select.addEventListener('change', () => {
+    if (select.value !== '__mixed__') onChange(select.value);
+  });
   wrap.append(span, select);
   return wrap;
 }
@@ -1198,12 +1453,13 @@ function round(v: number): number {
   return Math.round(v * 1000) / 1000;
 }
 
-function describeForMatch(el: SlideElement): string {
-  if (el.type === 'text') {
-    return `Text: ${el.html.replace(/<[^>]+>/g, '').slice(0, 32) || '(empty)'}`;
-  }
-  if (el.type === 'image' || el.type === 'video') {
-    return `${el.type}: ${el.src.split('/').pop()}`;
-  }
-  return `${el.type}: ${el.id}`;
+function commonValue<T>(values: T[]): T | null {
+  if (values.length === 0) return null;
+  return values.every((value) => Object.is(value, values[0])) ? values[0] : null;
+}
+
+function sharedValue<T>(values: T[]): { mixed: boolean; value: T | null } {
+  if (values.length === 0) return { mixed: false, value: null };
+  const mixed = !values.every((value) => Object.is(value, values[0]));
+  return { mixed, value: mixed ? null : values[0] };
 }

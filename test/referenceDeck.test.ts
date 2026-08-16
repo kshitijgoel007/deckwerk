@@ -646,8 +646,12 @@ describe.skipIf(!ready)('reference.key ground truth', () => {
       24: [['\uFFFC', 1682, 1014]],
     };
 
-    const allText = deck.slides.flatMap((slide) => slide.elements.filter((e) => e.type === 'text'));
-    expect(allText).toHaveLength(Object.values(expected).reduce((sum, list) => sum + list.length, 0));
+    // The reference deck is intentionally extended with new cases over time.
+    // Count only the slides whose complete inventory is pinned below; text on
+    // newly appended slides must not invalidate already verified ground truth.
+    const coveredText = Object.keys(expected).flatMap((slideNumber) =>
+      deck.slides[Number(slideNumber) - 1].elements.filter((e) => e.type === 'text'));
+    expect(coveredText).toHaveLength(Object.values(expected).reduce((sum, list) => sum + list.length, 0));
     for (const [slideNumber, items] of Object.entries(expected)) {
       const texts = deck.slides[Number(slideNumber) - 1].elements.filter((e) => e.type === 'text');
       expect(texts).toHaveLength(items.length);

@@ -720,6 +720,18 @@ input[type="range"] { accent-color: var(--accent); padding: 0; background: trans
 
 /* A selected line shows no outline box — just its endpoints. */
 .sel-box.line-sel { outline: none; }
+.selection-line-preview {
+  position: absolute;
+  inset: 0;
+  overflow: visible;
+  pointer-events: none;
+}
+.selection-line-preview path {
+  stroke: var(--accent);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: .9;
+}
 
 /* Imported empty text boxes stay discoverable and editable on the canvas even
    though the player/export hides their placeholder copy. */
@@ -780,6 +792,130 @@ input[type="range"] { accent-color: var(--accent); padding: 0; background: trans
 .media-effect-row input { min-width: 0; width: 100%; padding: 4px; }
 .media-effect-row .icon-button { padding: 3px; }
 .effect-add { width: 100%; margin-top: 4px; }
+
+/* --- Magic Move section within Props --- */
+
+.magic-move-section {
+  border-top: 1px solid var(--line);
+  margin-top: 14px;
+  padding-top: 12px;
+}
+.magic-open { width: 100%; }
+.magic-summary { margin-bottom: 9px; }
+
+.magic-duration {
+  display: grid;
+  grid-template-columns: 1fr 76px 24px;
+  align-items: center;
+  gap: 5px;
+}
+.magic-duration input { min-width: 0; }
+.field-suffix { color: var(--muted); font-size: 10px; }
+.magic-instruction { min-height: 34px; }
+.magic-previews { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; margin: 10px 0 16px; }
+.magic-compact-previews { grid-template-columns: 1fr; gap: 10px; margin-bottom: 10px; }
+.magic-preview-wrap { width: 100%; min-width: 0; }
+.magic-preview-label { margin-bottom: 5px; color: var(--muted); font: 10px var(--mono); text-align: center; }
+.magic-preview {
+  position: relative;
+  width: 100%;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: white;
+  box-shadow: var(--shadow);
+}
+.magic-preview-surface { position: absolute; inset: 0 auto auto 0; transform-origin: top left; pointer-events: none; }
+.magic-object-hit {
+  position: absolute;
+  min-width: 6px;
+  min-height: 6px;
+  padding: 0;
+  border: 2px solid transparent;
+  border-radius: 2px;
+  background: transparent;
+}
+.magic-object-hit:hover { border-color: #f59e0b; background: rgb(245 158 11 / 6%); }
+.magic-object-hit-readonly { pointer-events: none; }
+.magic-object-hit.paired { border-color: var(--accent); background: rgb(59 130 246 / 4%); }
+.magic-object-hit.selected-source { border-color: #f59e0b; background: rgb(245 158 11 / 8%); box-shadow: 0 0 0 1px #f59e0b; }
+.magic-object-hit.paired::after {
+  content: attr(data-pair-label);
+  position: absolute;
+  top: -7px;
+  right: -7px;
+  display: grid;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  place-items: center;
+  background: var(--accent);
+  color: white;
+  font: 8px/1 system-ui, sans-serif;
+}
+.magic-actions { margin-bottom: 8px; }
+.magic-actions button { flex: 1; }
+.magic-message { color: var(--accent); }
+.magic-pairs-title { margin-top: 12px; }
+.magic-pair-row {
+  display: grid;
+  grid-template-columns: 18px 1fr 24px;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--line);
+}
+.magic-pair-row b {
+  display: grid;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  place-items: center;
+  background: var(--accent);
+  color: white;
+  font-size: 8px;
+}
+.magic-pair-row span { overflow: hidden; color: var(--text); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.magic-compact-preview { cursor: pointer; }
+.magic-compact-preview:hover,
+.magic-compact-preview:focus-visible { border-color: var(--accent); outline: none; }
+
+.magic-modal-backdrop {
+  position: fixed;
+  z-index: 10000;
+  inset: 0;
+  display: grid;
+  padding: 28px;
+  background: rgb(4 5 8 / 82%);
+  backdrop-filter: blur(8px);
+  place-items: center;
+}
+.magic-modal {
+  display: flex;
+  width: min(1500px, calc(100vw - 56px));
+  max-height: calc(100vh - 56px);
+  overflow: hidden;
+  flex-direction: column;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  box-shadow: 0 24px 90px rgb(0 0 0 / 65%);
+}
+.magic-modal > header {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+}
+.magic-modal > header h2 { margin: 0; font: 600 14px var(--mono); color: var(--accent); text-transform: uppercase; letter-spacing: .08em; }
+.magic-modal-content { overflow: auto; padding: 14px 18px 18px; }
+.magic-modal-content .magic-instruction { min-height: 0; text-align: center; }
+.magic-modal-content .magic-preview-label { font-size: 11px; text-align: left; }
+.magic-modal-content .magic-actions { justify-content: center; }
+.magic-modal-content .magic-actions button { flex: 0 0 140px; }
+.magic-modal-content .magic-pairs-title,
+.magic-modal-content .magic-pair-row { max-width: 720px; margin-right: auto; margin-left: auto; }
 
 /* ============================================================= */
 /* Final design layer: terminal-inspired. Monospace UI, hard      */
@@ -863,12 +999,15 @@ button.primary:hover:not(:disabled) { background: rgb(122 162 247 / 22%); }
   background: transparent;
 }
 .rail-item:hover { background: var(--panel-2); border-color: var(--line); }
+.rail-item.selected { background: rgb(122 162 247 / 7%); border-color: rgb(122 162 247 / 55%); }
 .rail-item.active { background: var(--accent-soft); border-color: var(--accent); }
 
 .rail-num { font: 10px var(--mono); color: var(--muted); }
+.rail-item.selected .rail-num { color: var(--accent); }
 .rail-item.active .rail-num { color: var(--accent); }
 
 .rail-thumb { border: 1px solid var(--line); box-shadow: none; }
+.rail-item.selected .rail-thumb { border-color: rgb(122 162 247 / 65%); }
 .rail-item.active .rail-thumb { border-color: var(--accent); }
 
 /* Canvas: flat, focused. */
@@ -1069,6 +1208,32 @@ input[type="range"] { accent-color: var(--accent); border: 0; background: transp
   font: 700 9px/1 var(--mono);
   letter-spacing: .08em;
   text-transform: uppercase;
+}
+
+#side-tabs button:disabled {
+  opacity: .3;
+  cursor: default;
+}
+
+/* Object hit areas are buttons, but must not inherit the opaque global button
+   hover. Keep the slide visible and express hover with a crisp outline. */
+button.magic-object-hit,
+button.magic-object-hit:hover:not(:disabled) {
+  border: 2px solid transparent;
+  background: transparent;
+}
+button.magic-object-hit:hover:not(:disabled) {
+  border-color: #f59e0b;
+  background: rgb(245 158 11 / 3%);
+}
+button.magic-object-hit.paired {
+  border-color: var(--accent);
+  background: rgb(59 130 246 / 3%);
+}
+button.magic-object-hit.selected-source,
+button.magic-object-hit.selected-source:hover:not(:disabled) {
+  border-color: #f59e0b;
+  background: rgb(245 158 11 / 5%);
 }
 
 /* The stage must not clip editor chrome: an element at the slide edge needs

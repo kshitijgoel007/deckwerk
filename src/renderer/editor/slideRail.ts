@@ -44,24 +44,28 @@ export class SlideRail {
    * change only needs the highlight moved.
    */
   private onStoreChange(): void {
-    const { deck, slideIndex } = this.store.get();
+    const { deck, slideIndex, slideSelection } = this.store.get();
     if (deck.slides === this.renderedSlides) {
-      this.highlight(slideIndex);
+      this.highlight(slideIndex, slideSelection);
       return;
     }
     this.render();
   }
 
-  private highlight(slideIndex: number): void {
+  private highlight(slideIndex: number, slideSelection: Set<string>): void {
     for (const item of this.host.querySelectorAll<HTMLElement>('.rail-item')) {
-      const active = Number(item.dataset.index) === slideIndex;
+      const index = Number(item.dataset.index);
+      const active = index === slideIndex;
+      const slide = this.store.get().deck.slides[index];
       item.classList.toggle('active', active);
+      item.classList.toggle('selected', Boolean(slide && slideSelection.has(slide.id)));
+      item.setAttribute('aria-selected', String(Boolean(slide && slideSelection.has(slide.id))));
       if (active) item.scrollIntoView({ block: 'nearest' });
     }
   }
 
   render(): void {
-    const { deck, slideIndex } = this.store.get();
+    const { deck, slideIndex, slideSelection } = this.store.get();
     this.renderedSlides = deck.slides;
     // Drop cache entries for slides that no longer exist in this deck version.
     const live = new Set<unknown>(deck.slides);
@@ -72,7 +76,8 @@ export class SlideRail {
 
     deck.slides.forEach((slide, i) => {
       const item = document.createElement('button');
-      item.className = `rail-item${i === slideIndex ? ' active' : ''}`;
+      item.className = `rail-item${slideSelection.has(slide.id) ? ' selected' : ''}${i === slideIndex ? ' active' : ''}`;
+      item.setAttribute('aria-selected', String(slideSelection.has(slide.id)));
       item.draggable = true;
       item.dataset.index = String(i);
       this.bindReorder(item, i);
@@ -107,7 +112,7 @@ export class SlideRail {
       }
 
       item.append(num, thumb);
-      item.addEventListener('click', () => this.store.selectSlide(i));
+      item.addEventListener('click', (event) => this.store.selectSlide(i, event.shiftKey));
       this.host.appendChild(item);
     });
 
@@ -238,10 +243,18 @@ export class SlideRail {
       // elements as well.
       const remap = new Map<string, string>();
       for (const el of copy.elements) {
+        // Preserve ancestry independently from the fresh deck id. Auto-pair
+        // can then recognize an edited duplicate without animating it until
+        // the author explicitly asks for suggestions.
+        el.lineageId = el.lineageId ?? el.id;
         const id = makeId(el.type);
         remap.set(el.id, id);
         el.id = id;
+        // A duplicated slide starts with no Magic Move decisions. Auto-pair is
+        // available in the dedicated panel when that is what the author wants.
+        el.magicMoveId = null;
       }
+      copy.magicMoveFromPrevious = false;
       for (const entry of copy.timeline) {
         entry.id = makeId('t');
         entry.action.target = remap.get(entry.action.target) ?? entry.action.target;

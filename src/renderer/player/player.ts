@@ -10,6 +10,7 @@ import {
   stepCount,
 } from '@shared/timeline.js';
 import { applyStageScale, renderSlide } from './render.js';
+import { explicitMagicMovePairs, unchangedMagicMovePairs } from '@shared/magicMove.js';
 
 /**
  * The runtime that owns navigation and turns timeline entries into DOM and
@@ -111,8 +112,11 @@ export class Player {
     const previousSlideIndex = this.cursor.slide;
     const slide = slides[Math.min(Math.max(cursor.slide, 0), slides.length - 1)];
     const previousSlide = slides[previousSlideIndex];
-    const magicMove = previousSlideIndex !== slides.indexOf(slide) &&
-      slide.transition?.type === 'magicMove';
+    const explicitPairs = previousSlide
+      ? explicitMagicMovePairs(previousSlide.elements, slide.elements)
+      : [];
+    const magicMoveEnabled = slide.magicMoveFromPrevious ?? explicitPairs.length > 0;
+    const magicMove = previousSlideIndex !== slides.indexOf(slide) && previousSlide && magicMoveEnabled;
     const steps = stepCount(slide);
     this.cursor = {
       slide: slides.indexOf(slide),
@@ -127,6 +131,15 @@ export class Player {
     for (const video of this.stage.querySelectorAll('video')) {
       if (!video.paused && video.currentTime > 0) {
         carry.set(video.getAttribute('src') ?? '', video.currentTime);
+      }
+    }
+    const previousNodes = new Map<string, HTMLElement>();
+    if (magicMove) {
+      for (const node of this.stage.querySelectorAll<HTMLElement>('[data-element-id]')) {
+        const id = node.dataset.elementId;
+        if (id && node.style.visibility !== 'hidden') {
+          previousNodes.set(id, node.cloneNode(true) as HTMLElement);
+        }
       }
     }
 
@@ -146,13 +159,29 @@ export class Player {
     this.rescale();
 
     this.applyState(slide, resolveState(slide, this.cursor.step));
-    if (magicMove && previousSlide) this.runMagicMove(previousSlide, slide);
+    if (magicMove && previousSlide) this.runMagicMove(previousSlide, slide, previousNodes);
     this.onCursor?.(this.getCursor(), steps);
   }
 
-  private runMagicMove(previous: Slide, next: Slide): void {
-    const duration = next.transition?.duration ?? 700;
-    for (const [from, to] of matchMagicMoveElements(previous.elements, next.elements)) {
+  private runMagicMove(
+    previous: Slide,
+    next: Slide,
+    previousNodes: Map<string, HTMLElement>,
+  ): void {
+    const duration = this.deck.magicMoveDuration;
+    const easing = 'cubic-bezier(.2,.8,.2,1)';
+    const pairs = matchMagicMoveElements(previous.elements, next.elements);
+    const pairedSources = new Set(pairs.map(([source]) => source.id));
+    const pairedTargets = new Set(pairs.map(([, target]) => target.id));
+    const unchanged = unchangedMagicMovePairs(
+      previous.elements.filter((element) => !pairedSources.has(element.id)),
+      next.elements.filter((element) => !pairedTargets.has(element.id)),
+    );
+    for (const [source, target] of unchanged) {
+      pairedSources.add(source.id);
+      pairedTargets.add(target.id);
+    }
+    for (const [from, to] of pairs) {
       const node = this.stage.querySelector<HTMLElement>(
         `[data-element-id="${CSS.escape(to.id)}"]`,
       );
@@ -161,15 +190,60 @@ export class Player {
       const dy = from.y - to.y;
       const sx = from.w / to.w;
       const sy = from.h / to.h;
-      const finalTransform = to.rot ? `rotate(${to.rot}deg)` : 'none';
-      node.style.transformOrigin = 'top left';
+      const finalTransform = to.style.transform ?? (to.rot ? `rotate(${to.rot}deg)` : 'none');
       node.animate([
         {
           transform: `translate(${dx}px, ${dy}px) scale(${sx}, ${sy})${from.rot ? ` rotate(${from.rot}deg)` : ''}`,
+          transformOrigin: 'top left',
           opacity: String(from.opacity),
         },
-        { transform: finalTransform, opacity: String(to.opacity) },
-      ], { duration, easing: 'cubic-bezier(.2,.8,.2,1)', fill: 'both' });
+        { transform: finalTransform, transformOrigin: 'top left', opacity: String(to.opacity) },
+      ], { duration, easing, fill: 'none' });
+    }
+
+    // Changed, unpaired objects switch discretely at the midpoint. Opacity
+    // fades made dense arrow diagrams look staggered under easing even though
+    // every animation had the same duration.
+    for (const target of next.elements) {
+      if (pairedTargets.has(target.id)) continue;
+      const node = this.stage.querySelector<HTMLElement>(
+        `[data-element-id="${CSS.escape(target.id)}"]`,
+      );
+      if (!node?.animate || node.style.visibility === 'hidden') continue;
+      node.animate([
+        { visibility: 'hidden', offset: 0 },
+        { visibility: 'hidden', offset: 0.499 },
+        { visibility: 'visible', offset: 0.5 },
+        { visibility: 'visible', offset: 1 },
+      ], { duration, easing: 'linear', fill: 'none' });
+    }
+
+    // Removed, unpaired source objects no longer exist in the target render.
+    // Animate exact clones of the visible old DOM, then remove them so the
+    // settled stage remains byte-for-byte the target slide.
+    const targetSlide = this.stage.querySelector<HTMLElement>('.slide');
+    if (!targetSlide) return;
+    for (const source of previous.elements) {
+      if (pairedSources.has(source.id)) continue;
+      const ghost = previousNodes.get(source.id);
+      if (!ghost) continue;
+      ghost.classList.add('magic-move-ghost');
+      ghost.dataset.magicMoveSourceId = source.id;
+      delete ghost.dataset.elementId;
+      ghost.style.pointerEvents = 'none';
+      ghost.style.visibility = 'visible';
+      targetSlide.appendChild(ghost);
+      if (!ghost.animate) {
+        ghost.remove();
+        continue;
+      }
+      const animation = ghost.animate([
+        { visibility: 'visible', offset: 0 },
+        { visibility: 'visible', offset: 0.499 },
+        { visibility: 'hidden', offset: 0.5 },
+        { visibility: 'hidden', offset: 1 },
+      ], { duration, easing: 'linear', fill: 'forwards' });
+      void animation.finished.then(() => ghost.remove(), () => ghost.remove());
     }
   }
 
@@ -347,36 +421,10 @@ export class Player {
   }
 }
 
-/** Match duplicated slide objects by identity first, then stable visible content. */
+/** Backwards-compatible export for tests and callers; runtime matching is explicit only. */
 export function matchMagicMoveElements(
   previous: SlideElement[],
   next: SlideElement[],
 ): Array<[SlideElement, SlideElement]> {
-  const unused = new Set(previous);
-  const pairs: Array<[SlideElement, SlideElement]> = [];
-  for (const target of next) {
-    let source = target.magicMoveId
-      ? [...unused].find((candidate) => candidate.magicMoveId === target.magicMoveId)
-      : undefined;
-    if (!source) source = [...unused].find((candidate) => candidate.id === target.id);
-    if (!source) {
-      const signature = magicSignature(target);
-      source = [...unused].find((candidate) => magicSignature(candidate) === signature);
-    }
-    if (!source) continue;
-    unused.delete(source);
-    pairs.push([source, target]);
-  }
-  return pairs;
-}
-
-function magicSignature(element: SlideElement): string {
-  switch (element.type) {
-    case 'text': return `text:${element.html}:${element.class.join('.')}`;
-    case 'image': return `image:${element.src}`;
-    case 'video': return `video:${element.src}`;
-    case 'shape': return `shape:${element.shape}:${element.fill}:${element.stroke}:${element.class.join('.')}`;
-    case 'html': return `html:${element.html}`;
-    case 'unsupported': return `unsupported:${element.originalType}:${element.note}`;
-  }
+  return explicitMagicMovePairs(previous, next);
 }

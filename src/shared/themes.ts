@@ -164,7 +164,7 @@ export function themeStyleCss(style: ThemeStyle, label = 'Custom deck defaults')
   ].join('\n');
 }
 
-export type ThemeScope = 'deck' | 'slide' | 'selection';
+export type ThemeScope = 'deck' | 'slide' | 'slides' | 'selection';
 export type ThemeTextRole = 'title' | 'heading' | 'body' | 'caption' | 'base';
 export interface ThemeAdoption {
   scope: ThemeScope;
@@ -191,10 +191,13 @@ export function adoptThemeStyles(
   options: ThemeAdoption,
   slideIndex: number,
   selection: Set<string>,
+  selectedSlideIds: Set<string> = new Set(),
 ): void {
   const source = themeStyleOf(theme);
   const slides = options.scope === 'deck'
     ? deck.slides
+    : options.scope === 'slides'
+      ? deck.slides.filter((slide) => selectedSlideIds.has(slide.id))
     : [deck.slides[slideIndex]].filter((slide): slide is Slide => Boolean(slide));
   const maxProse = deckProseMax(deck.slides.flatMap((slide) => slide.elements
     .filter((el) => el.type === 'text')

@@ -390,13 +390,30 @@ export class EditorCanvas {
       // Lines and arrows get endpoint handles instead of a resize box: what
       // you want to move is where the arrow starts and ends, not its bounding
       // rectangle.
-      if (
-        selection.size === 1 &&
-        el.type === 'shape' &&
-        (el.shape === 'line' || el.shape === 'arrow')
-      ) {
+      if (el.type === 'shape' && (el.shape === 'line' || el.shape === 'arrow')) {
         box.classList.add('line-sel');
         const pts = lineEndpoints(el);
+        if (selection.size > 1) {
+          box.classList.add('multi-line-sel');
+          const ns = 'http://www.w3.org/2000/svg';
+          const svg = document.createElementNS(ns, 'svg');
+          svg.classList.add('selection-line-preview');
+          svg.setAttribute('width', String(el.w));
+          svg.setAttribute('height', String(el.h));
+          svg.setAttribute('aria-hidden', 'true');
+          const path = document.createElementNS(ns, 'path');
+          const start = { x: pts.start.x - el.x, y: pts.start.y - el.y };
+          const end = { x: pts.end.x - el.x, y: pts.end.y - el.y };
+          path.setAttribute('d', el.control
+            ? `M ${start.x} ${start.y} Q ${el.control.x - el.x} ${el.control.y - el.y} ${end.x} ${end.y}`
+            : `M ${start.x} ${start.y} L ${end.x} ${end.y}`);
+          path.setAttribute('fill', 'none');
+          path.setAttribute('stroke-width', String(3 / this.scale));
+          svg.appendChild(path);
+          box.appendChild(svg);
+          frag.appendChild(box);
+          continue;
+        }
         for (const which of ['start', 'end'] as const) {
           const h = document.createElement('div');
           h.className = 'handle handle-endpoint';

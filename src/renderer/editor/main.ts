@@ -152,7 +152,7 @@ async function importKeynotePresentation(): Promise<void> {
  * always side-effect-free.
  */
 const themeAdoption: ThemeAdoption = {
-  scope: 'deck',
+  scope: 'slides',
   roles: ['title', 'heading', 'body', 'caption', 'base'],
   fontFamily: true,
   fontWeight: false,
@@ -167,6 +167,8 @@ const themeAdoption: ThemeAdoption = {
 /** The gallery selection can lead the installed deck theme until Apply/Install. */
 let selectedThemeId: string | null = null;
 let themeGallery: ThemeGallery | null = null;
+let themeScopeSelect: HTMLSelectElement | null = null;
+let themeApplyButton: HTMLButtonElement | null = null;
 
 function currentTheme(): ThemePreset | null {
   return themeById(selectedThemeId) ?? themeById(store.get().deck.themePreset) ?? null;
@@ -198,9 +200,10 @@ function themePicker(): HTMLElement {
   const scopeTitle = document.createElement('span');
   scopeTitle.textContent = 'Apply to';
   const scope = document.createElement('select');
+  themeScopeSelect = scope;
   for (const [value, label] of [
     ['deck', 'Deck defaults + all slides'],
-    ['slide', 'Current slide only'],
+    ['slides', 'Selected slides'],
     ['selection', 'Selected objects only'],
   ] as const) {
     const option = document.createElement('option');
@@ -211,6 +214,7 @@ function themePicker(): HTMLElement {
   scope.value = themeAdoption.scope;
   scope.addEventListener('change', () => {
     themeAdoption.scope = scope.value as ThemeAdoption['scope'];
+    syncSlideSelectionContext();
   });
   scopeLabel.append(scopeTitle, scope);
 
@@ -251,28 +255,30 @@ function themePicker(): HTMLElement {
 
   const actions = document.createElement('div');
   actions.className = 'theme-actions';
-  actions.append(
-    barButton('Use selected styles', () => {
+  themeApplyButton = barButton('Apply theme to selected slides', () => {
       const theme = currentTheme();
       if (!theme) return;
-      const { slideIndex, selection } = store.get();
+      const { slideIndex, slideSelection, selection } = store.get();
       store.commit((deck) => adoptThemeStyles(
         deck,
         theme,
         { ...themeAdoption, roles: [...themeAdoption.roles] },
         slideIndex,
         new Set(selection),
+        new Set(slideSelection),
       ));
       if (themeAdoption.scope === 'deck') refreshThemeCss(theme.name);
       refreshSwatches(theme);
-      themeGallery?.setInstalled(theme.id);
+      if (themeAdoption.scope === 'deck') themeGallery?.setInstalled(theme.id);
       void save();
       const scopeName = themeAdoption.scope === 'deck'
         ? 'deck defaults and existing slides'
-        : themeAdoption.scope === 'slide' ? 'current slide' : 'selection';
+        : themeAdoption.scope === 'slides'
+          ? `${slideSelection.size} selected slide${slideSelection.size === 1 ? '' : 's'}`
+          : themeAdoption.scope === 'slide' ? 'current slide' : 'selection';
       setStatusMessage(`Used selected “${theme.name}” styles for ${scopeName}.`);
-    }),
-  );
+    });
+  actions.append(themeApplyButton);
   wrap.append(intro, themeGallery.element, controls, actions);
   return wrap;
 }
@@ -314,7 +320,7 @@ function optionBox(text: string, checked: boolean): { label: HTMLElement; input:
   return { label, input };
 }
 
-function barButton(label: string, onClick: () => void, variant = ''): HTMLElement {
+function barButton(label: string, onClick: () => void, variant = ''): HTMLButtonElement {
   const b = document.createElement('button');
   b.textContent = label;
   if (variant) b.className = variant;
@@ -344,12 +350,44 @@ function buildTabs(): void {
   showPanel('inspector');
 }
 
+let activePanelId = 'inspector';
+let hadMultipleSlidesSelected = false;
+
 function showPanel(id: string): void {
+  if (store.get().slideSelection.size > 1 && id !== 'themePanel') return;
+  activePanelId = id;
   for (const panel of PANELS) {
     el(panel.id).hidden = panel.id !== id;
   }
   for (const b of el('side-tabs').querySelectorAll('button')) {
     b.classList.toggle('active', b.dataset.panel === id);
+  }
+  if (id === 'inspector') inspector.render();
+}
+
+/** Multi-slide selection is a deck-level editing context, so only Theme applies. */
+function syncSlideSelectionContext(): void {
+  const count = store.get().slideSelection.size;
+  const multiple = count > 1;
+  for (const button of el('side-tabs').querySelectorAll<HTMLButtonElement>('button')) {
+    button.disabled = multiple && button.dataset.panel !== 'themePanel';
+  }
+  const objectScope = themeScopeSelect?.querySelector<HTMLOptionElement>('option[value="selection"]');
+  if (objectScope) objectScope.disabled = multiple;
+  if (multiple && activePanelId !== 'themePanel') showPanel('themePanel');
+  if (multiple && !hadMultipleSlidesSelected) {
+    themeAdoption.scope = 'slides';
+    if (themeScopeSelect) themeScopeSelect.value = 'slides';
+  }
+  hadMultipleSlidesSelected = multiple;
+  if (themeApplyButton) {
+    themeApplyButton.textContent = themeAdoption.scope === 'deck'
+      ? 'Apply theme to deck'
+      : themeAdoption.scope === 'slides'
+        ? `Apply theme to ${count} selected slide${count === 1 ? '' : 's'}`
+        : themeAdoption.scope === 'selection'
+          ? 'Apply theme to selected objects'
+          : 'Apply theme to current slide';
   }
 }
 
@@ -500,6 +538,8 @@ function duplicateSelection(): void {
     const slide = deck.slides[store.get().slideIndex];
     for (const el of slide.elements.filter((e) => ids.has(e.id))) {
       const copy = structuredClone(el);
+      copy.lineageId = el.lineageId ?? el.id;
+      copy.magicMoveId = null;
       copy.id = makeId(el.type);
       copy.x += 24;
       copy.y += 24;
@@ -525,11 +565,12 @@ function setStatusMessage(text: string): void {
 }
 
 function renderStatus(): void {
-  const { dir, deck, slideIndex, selection, dirty } = store.get();
+  const { dir, deck, slideIndex, slideSelection, selection, dirty } = store.get();
   const bits = [
     dir ? dir.split('/').pop() : 'No deck open — use New, Open or Import Keynote',
     `slide ${slideIndex + 1}/${deck.slides.length}`,
   ];
+  if (slideSelection.size > 1) bits.push(`${slideSelection.size} slides selected`);
   if (selection.size > 0) bits.push(`${selection.size} selected`);
   if (dirty) bits.push('unsaved');
   if (statusMessage) bits.push(statusMessage);
@@ -545,9 +586,11 @@ el('themePanel').appendChild(themePicker());
 el('themePanel').classList.add('theme-panel');
 bindKeys();
 store.subscribe(() => {
+  syncSlideSelectionContext();
   renderStatus();
   scheduleSave();
 });
+syncSlideSelectionContext();
 renderStatus();
 
 // A trimmed file comes back from the trim window; relink the element that

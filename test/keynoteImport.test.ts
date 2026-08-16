@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest';
 import { parseDeck } from '../src/shared/deck.js';
 import { applySlideLayout } from '../src/renderer/editor/slideLayouts.js';
 import { EditorStore } from '../src/renderer/editor/store.js';
+import { suggestMagicMovePairs, unchangedMagicMovePairs } from '../src/shared/magicMove.js';
 
 /**
  * Import regression tests.
@@ -127,6 +128,25 @@ describe.skipIf(!ready)('keynote importer', () => {
     ].join(';')], { encoding: 'utf8', cwd: process.cwd(), maxBuffer: 64 * 1024 * 1024 });
     return parseDeck(JSON.parse(stdout));
   }
+
+  it.skipIf(!existsSync(bitterLessonDeck))(
+    'recognizes the unchanged image across Bitter Lesson slides 18 and 19',
+    () => {
+      const deck = importBitterLesson();
+      const previous = deck.slides[17].elements;
+      const next = deck.slides[18].elements;
+      const unchangedImages = unchangedMagicMovePairs(previous, next)
+        .filter(([source, target]) => source.type === 'image' && target.type === 'image');
+      expect(unchangedImages.map(([source, target]) => [
+        source.type === 'image' ? source.src : '',
+        target.type === 'image' ? target.src : '',
+      ])).toContainEqual(['assets/method-12913.png', 'assets/method-12913.png']);
+      expect(suggestMagicMovePairs(previous, next).some(([source, target]) =>
+        source.type === 'image' && target.type === 'image' &&
+        source.src === 'assets/method-12913.png' && target.src === source.src)).toBe(true);
+    },
+    60_000,
+  );
 
   it.skipIf(!existsSync(bitterLessonDeck))(
     'can insert and lay out a new slide after the real Bitter Lesson slide',

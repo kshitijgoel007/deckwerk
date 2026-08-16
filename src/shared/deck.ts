@@ -56,6 +56,8 @@ const BaseElement = z.object({
   style: z.record(z.string()).default({}),
   /** Explicit identity shared by elements manually paired for Magic Move. */
   magicMoveId: z.string().nullable().optional(),
+  /** Stable ancestry retained when an object is duplicated, for opt-in Auto-pair. */
+  lineageId: z.string().nullable().optional(),
 });
 
 const TextElement = BaseElement.extend({
@@ -230,10 +232,8 @@ export const SlideSchema = z.object({
   notes: z.string().default(''),
   /** Geometry preset; themes may decorate it but never own its positions. */
   layout: z.enum(['freeform', 'standard', 'title']).optional(),
-  transition: z.object({
-    type: z.enum(['none', 'magicMove']),
-    duration: z.number().min(100).max(5000),
-  }).optional(),
+  /** Animate the transition from the preceding slide, including unpaired fades. */
+  magicMoveFromPrevious: z.boolean().optional(),
   elements: z.array(ElementSchema).default([]),
   timeline: z.array(TimelineEntrySchema).default([]),
 });
@@ -250,6 +250,8 @@ export const DeckSchema = z.object({
   themePreset: z.string().nullable().default(null),
   /** Persistent deck defaults, composed property-by-property from theme presets. */
   themeStyle: ThemeStyleSchema.nullable().default(null),
+  /** Deck-wide duration for every explicitly paired Magic Move, in milliseconds. */
+  magicMoveDuration: z.number().min(100).max(5000).default(1000),
   slides: z.array(SlideSchema).default([]),
 });
 

@@ -15,6 +15,8 @@ export interface EditorState {
   dir: string | null;
   deck: Deck;
   slideIndex: number;
+  /** Slide ids selected in the rail. The current slide is always included. */
+  slideSelection: Set<string>;
   selection: Set<string>;
   dirty: boolean;
 }
@@ -46,6 +48,8 @@ export class EditorStore {
   private redoStack: UndoItem[] = [];
   private historyLog: DeckHistoryItem[] = [];
   private nextHistoryId = 1;
+  /** Fixed end of a Shift-click range; ordinary slide selection resets it. */
+  private slideSelectionAnchor = 0;
   /** Coalesces a drag into one undo entry instead of one per mousemove. */
   private txnBase: Deck | null = null;
   private txnLabel = 'Move or resize objects';
@@ -55,6 +59,7 @@ export class EditorStore {
       dir,
       deck,
       slideIndex: 0,
+      slideSelection: new Set(deck.slides[0] ? [deck.slides[0].id] : []),
       selection: new Set(),
       dirty: false,
     };
@@ -88,10 +93,12 @@ export class EditorStore {
     const slideIndex = opts.keepView
       ? Math.min(this.state.slideIndex, Math.max(0, deck.slides.length - 1))
       : 0;
+    this.slideSelectionAnchor = slideIndex;
     this.state = {
       dir,
       deck,
       slideIndex,
+      slideSelection: new Set(deck.slides[slideIndex] ? [deck.slides[slideIndex].id] : []),
       selection: new Set(),
       dirty: false,
     };
@@ -185,15 +192,23 @@ export class EditorStore {
   restoreHistory(id: number): boolean {
     const snapshot = this.historyLog.find((item) => item.id === id);
     if (!snapshot || snapshot.deck === this.state.deck) return false;
+    const slideIndex = Math.min(
+      snapshot.slideIndex,
+      Math.max(0, snapshot.deck.slides.length - 1),
+    );
     this.pushUndo(this.state.deck, `Revert to ${snapshot.label}`);
     this.redoStack = [];
     this.state = {
       ...this.state,
       deck: structuredClone(snapshot.deck),
-      slideIndex: Math.min(snapshot.slideIndex, Math.max(0, snapshot.deck.slides.length - 1)),
+      slideIndex,
+      slideSelection: new Set(snapshot.deck.slides[slideIndex]
+        ? [snapshot.deck.slides[slideIndex].id]
+        : []),
       selection: new Set(),
       dirty: true,
     };
+    this.slideSelectionAnchor = this.state.slideIndex;
     this.recordHistory(`Reverted to ${snapshot.label}`);
     this.emit();
     return true;
@@ -204,10 +219,30 @@ export class EditorStore {
     this.emit();
   }
 
-  selectSlide(index: number): void {
+  selectSlide(index: number, extendRange = false): void {
     const clamped = Math.min(Math.max(index, 0), this.state.deck.slides.length - 1);
-    if (clamped === this.state.slideIndex) return;
-    this.state = { ...this.state, slideIndex: clamped, selection: new Set() };
+    const slide = this.state.deck.slides[clamped];
+    if (!slide) return;
+    const slideSelection = extendRange
+      ? new Set(this.state.deck.slides
+        .slice(
+          Math.min(this.slideSelectionAnchor, clamped),
+          Math.max(this.slideSelectionAnchor, clamped) + 1,
+        )
+        .map((candidate) => candidate.id))
+      : new Set([slide.id]);
+    if (!extendRange) this.slideSelectionAnchor = clamped;
+    const unchanged = clamped === this.state.slideIndex
+      && this.state.selection.size === 0
+      && slideSelection.size === this.state.slideSelection.size
+      && [...slideSelection].every((id) => this.state.slideSelection.has(id));
+    if (unchanged) return;
+    this.state = {
+      ...this.state,
+      slideIndex: clamped,
+      slideSelection,
+      selection: new Set(),
+    };
     this.emit();
   }
 
@@ -217,7 +252,13 @@ export class EditorStore {
       if (additive && selection.has(id)) selection.delete(id);
       else selection.add(id);
     }
-    this.state = { ...this.state, selection };
+    const currentSlide = this.slide;
+    this.slideSelectionAnchor = this.state.slideIndex;
+    this.state = {
+      ...this.state,
+      slideSelection: new Set(currentSlide ? [currentSlide.id] : []),
+      selection,
+    };
     this.emit();
   }
 
@@ -231,6 +272,11 @@ export class EditorStore {
     const slide = this.slide;
     if (!slide) return [];
     return slide.elements.filter((e) => this.state.selection.has(e.id));
+  }
+
+  /** Slides selected in the rail, returned in deck order. */
+  selectedSlides(): Slide[] {
+    return this.state.deck.slides.filter((slide) => this.state.slideSelection.has(slide.id));
   }
 
   /** Mutate every selected element on the current slide in one commit. */
@@ -270,9 +316,17 @@ export class EditorStore {
     const live = new Set(
       (this.state.deck.slides[slideIndex]?.elements ?? []).map((e) => e.id),
     );
+    const liveSlideIds = new Set(this.state.deck.slides.map((slide) => slide.id));
+    const slideSelection = new Set(
+      [...this.state.slideSelection].filter((id) => liveSlideIds.has(id)),
+    );
+    const currentSlide = this.state.deck.slides[slideIndex];
+    if (slideSelection.size === 0 && currentSlide) slideSelection.add(currentSlide.id);
+    this.slideSelectionAnchor = slideIndex;
     this.state = {
       ...this.state,
       slideIndex,
+      slideSelection,
       selection: new Set([...this.state.selection].filter((id) => live.has(id))),
     };
   }
@@ -315,7 +369,13 @@ let elementClipboard: SlideElement[] = [];
 
 export function copySelectionToClipboard(store: EditorStore): number {
   const els = store.selectedElements();
-  if (els.length > 0) elementClipboard = structuredClone(els);
+  if (els.length > 0) {
+    elementClipboard = structuredClone(els).map((element) => ({
+      ...element,
+      lineageId: element.lineageId ?? element.id,
+      magicMoveId: null,
+    })) as SlideElement[];
+  }
   return els.length;
 }
 
@@ -334,6 +394,8 @@ export function pasteFromClipboard(store: EditorStore): string[] {
     const maxZ = slide.elements.reduce((m, e) => Math.max(m, e.z), 0);
     elementClipboard.forEach((el, i) => {
       const copy = structuredClone(el);
+      copy.lineageId = copy.lineageId ?? el.id;
+      copy.magicMoveId = null;
       copy.id = `${el.type}-${Math.random().toString(36).slice(2, 10)}`;
       copy.x += 24;
       copy.y += 24;
