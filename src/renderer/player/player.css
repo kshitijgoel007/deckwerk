@@ -1,0 +1,68 @@
+/*
+ * Structural styles only. Everything about how a deck *looks* — fonts, sizes,
+ * colours — belongs in the deck's own theme.css, which loads after this.
+ */
+
+.player-root {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #000;
+}
+
+.stage {
+  position: absolute;
+  overflow: hidden;
+  background: #fff;
+}
+
+.slide {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+
+.element {
+  position: absolute;
+  box-sizing: border-box;
+}
+
+.element img,
+.element video {
+  display: block;
+}
+
+.text-body {
+  box-sizing: border-box;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Import gaps are meant to be conspicuous: a placeholder you can see is a
+   placeholder you will fix. */
+.element-unsupported {
+  border: 2px dashed #e0463c;
+  background: rgb(224 70 60 / 8%);
+}
+
+.unsupported-body {
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  padding: 8px;
+  overflow: hidden;
+  color: #e0463c;
+  font: 500 20px/1.3 ui-monospace, monospace;
+}
+
+/* Bulleted lists inside text elements. theme.css can restyle the markers. */
+.text-body ul {
+  margin: 0;
+  padding-left: 1.1em;
+  text-align: left;
+}
+
+.text-body li {
+  margin: 0.15em 0;
+}

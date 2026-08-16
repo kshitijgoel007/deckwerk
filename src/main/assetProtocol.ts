@@ -1,0 +1,118 @@
+import { createReadStream, statSync } from 'node:fs';
+import { Readable } from 'node:stream';
+import { protocol } from 'electron';
+import { resolveAsset } from './deckStore.js';
+
+/**
+ * A custom `deck://` scheme for serving a deck's own assets to the renderer.
+ *
+ * Loading media over `file://` from a page that isn't itself a file URL is
+ * blocked, and relaxing web security to work around that would be a poor trade.
+ * More importantly, this route goes through `net.fetch`, which honours HTTP
+ * range requests — without those, seeking in a long video forces a full
+ * download and scrubbing in the trim window is unusable.
+ */
+
+let currentDeckDir: string | null = null;
+
+/** Must be called before `app.ready`. */
+export function registerAssetScheme(): void {
+  protocol.registerSchemesAsPrivileged([
+    {
+      privileges: {
+        standard: true,
+        secure: true,
+        supportFetchAPI: true,
+        stream: true,
+        bypassCSP: false,
+      },
+      scheme: 'deck',
+    },
+  ]);
+}
+
+/** Point the scheme at the deck folder whose assets should be served. */
+export function setDeckDir(dir: string | null): void {
+  currentDeckDir = dir;
+}
+
+/**
+ * Parse an HTTP Range header against a file size. Returns null for absent or
+ * unsatisfiable ranges. Only the single-range form is supported — it is the
+ * only one Chromium's media stack sends.
+ */
+export function parseRange(
+  header: string | null,
+  size: number,
+): { start: number; end: number } | null {
+  if (!header) return null;
+  const m = /^bytes=(\d*)-(\d*)$/.exec(header.trim());
+  if (!m) return null;
+  const [, rawStart, rawEnd] = m;
+  if (rawStart === '' && rawEnd === '') return null;
+  if (rawStart === '') {
+    // Suffix form: last N bytes.
+    const n = Number(rawEnd);
+    if (n <= 0) return null;
+    return { start: Math.max(0, size - n), end: size - 1 };
+  }
+  const start = Number(rawStart);
+  const end = rawEnd === '' ? size - 1 : Math.min(Number(rawEnd), size - 1);
+  if (start >= size || start > end) return null;
+  return { start, end };
+}
+
+const MIME: Record<string, string> = {
+  '.mp4': 'video/mp4', '.m4v': 'video/mp4', '.mov': 'video/quicktime',
+  '.webm': 'video/webm', '.mkv': 'video/x-matroska',
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml',
+  '.avif': 'image/avif', '.css': 'text/css',
+};
+
+/** Must be called after `app.ready`. */
+export function installAssetProtocol(): void {
+  protocol.handle('deck', async (request) => {
+    if (!currentDeckDir) return new Response('No deck open', { status: 404 });
+    try {
+      // deck://asset/<relative path>
+      const url = new URL(request.url);
+      const relative = decodeURIComponent(url.pathname).replace(/^\/+/, '');
+      if (!relative) return new Response('Not found', { status: 404 });
+      const absolute = resolveAsset(currentDeckDir, relative);
+      const size = statSync(absolute).size;
+      const ext = absolute.slice(absolute.lastIndexOf('.')).toLowerCase();
+      const type = MIME[ext] ?? 'application/octet-stream';
+
+      // Range support is not an optimisation here — it is what makes seeking
+      // work at all. Without 206 responses, setting `currentTime` on a video
+      // never completes, which presented as "trim scrubbing shows nothing".
+      const range = parseRange(request.headers.get('Range'), size);
+      const headers: Record<string, string> = {
+        'Content-Type': type,
+        'Accept-Ranges': 'bytes',
+      };
+
+      if (range) {
+        headers['Content-Range'] = `bytes ${range.start}-${range.end}/${size}`;
+        headers['Content-Length'] = String(range.end - range.start + 1);
+        const stream = Readable.toWeb(
+          createReadStream(absolute, { start: range.start, end: range.end }),
+        ) as ReadableStream;
+        return new Response(stream, { status: 206, headers });
+      }
+
+      headers['Content-Length'] = String(size);
+      const stream = Readable.toWeb(createReadStream(absolute)) as ReadableStream;
+      return new Response(stream, { status: 200, headers });
+    } catch (err) {
+      return new Response(String(err), { status: 403 });
+    }
+  });
+}
+
+/** Deck-relative path -> URL the renderer can load. */
+export function assetUrl(src: string): string {
+  const clean = src.replace(/^\/+/, '');
+  return `deck://asset/${clean.split('/').map(encodeURIComponent).join('/')}`;
+}

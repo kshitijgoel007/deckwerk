@@ -1,0 +1,64 @@
+import type { Player } from './player.js';
+
+/**
+ * The presenting key map, shared by the present window and the export bundle so
+ * the keys behave identically whether or not the app is installed.
+ */
+export interface KeyHandlers {
+  onExit?: () => void;
+  onOverview?: () => void;
+}
+
+export function bindPresentKeys(
+  target: Window | HTMLElement,
+  player: Player,
+  handlers: KeyHandlers = {},
+): () => void {
+  const onKey = (ev: Event) => {
+    const e = ev as KeyboardEvent;
+    // Never steal keys from a focused field; the editor preview shares this map.
+    const t = e.target as HTMLElement | null;
+    if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) {
+      return;
+    }
+
+    switch (e.key) {
+      case 'ArrowRight':
+      case 'ArrowDown':
+      case ' ':
+      case 'PageDown':
+      case 'Enter':
+        e.preventDefault();
+        player.next();
+        break;
+      case 'ArrowLeft':
+      case 'ArrowUp':
+      case 'PageUp':
+      case 'Backspace':
+        e.preventDefault();
+        player.prev();
+        break;
+      case 'Home':
+        e.preventDefault();
+        player.goToSlide(0);
+        break;
+      case 'b':
+      case 'B':
+        e.preventDefault();
+        player.toggleBlank();
+        break;
+      case 'Escape':
+        e.preventDefault();
+        handlers.onExit?.();
+        break;
+      case 'o':
+      case 'O':
+        e.preventDefault();
+        handlers.onOverview?.();
+        break;
+    }
+  };
+
+  target.addEventListener('keydown', onKey);
+  return () => target.removeEventListener('keydown', onKey);
+}

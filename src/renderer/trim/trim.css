@@ -1,0 +1,284 @@
+/* Trim & crop window. */
+
+:root {
+  --bg: #1c1c1e;
+  --panel: #252528;
+  --panel-2: #2e2e32;
+  --line: #3a3a3f;
+  --text: #e8e8ea;
+  --muted: #9a9aa2;
+  --accent: #3b82f6;
+  --danger: #e0463c;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font: 13px/1.4 system-ui, -apple-system, sans-serif;
+}
+
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+#app {
+  display: grid;
+  height: 100vh;
+  grid-template-rows: 1fr auto;
+}
+
+/*
+ * The viewer is a fixed frame that the video is fitted inside. It has to be
+ * positioned rather than merely flexed: `max-height: 100%` on the video needs a
+ * definite height to resolve against, and a content-sized flex chain gives it
+ * none — which lets the video render at natural size and spill over the
+ * controls below.
+ */
+#viewer {
+  position: relative;
+  min-height: 0;
+  overflow: hidden;
+  background: #0d0d0f;
+}
+
+#video-wrap {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  inset: 16px;
+  justify-content: center;
+}
+
+/*
+ * Fitted with max-width/max-height rather than object-fit, so the element's
+ * box is exactly the displayed image. The crop rectangle maps screen pixels to
+ * source pixels through this box, and letterbox padding inside it would put
+ * every crop coordinate out by the size of the bars.
+ */
+#video {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+}
+
+/* The overlay covers the wrapper; the rect inside is positioned onto the
+   rendered video, which may be letterboxed within it. */
+#crop-overlay {
+  position: absolute;
+  inset: 0;
+}
+
+#crop-rect {
+  position: absolute;
+  border: 1px solid var(--accent);
+  cursor: move;
+  /* A ring of shadow dims everything outside the crop without a second element. */
+  box-shadow: 0 0 0 9999px rgb(0 0 0 / 55%);
+}
+
+.crop-handle {
+  position: absolute;
+  width: 13px;
+  height: 13px;
+  border: 1px solid var(--accent);
+  border-radius: 2px;
+  background: #fff;
+}
+
+.crop-handle[data-handle="nw"] { top: -7px; left: -7px; cursor: nwse-resize; }
+.crop-handle[data-handle="n"]  { top: -7px; left: 50%; margin-left: -7px; cursor: ns-resize; }
+.crop-handle[data-handle="ne"] { top: -7px; right: -7px; cursor: nesw-resize; }
+.crop-handle[data-handle="e"]  { top: 50%; right: -7px; margin-top: -7px; cursor: ew-resize; }
+.crop-handle[data-handle="se"] { right: -7px; bottom: -7px; cursor: nwse-resize; }
+.crop-handle[data-handle="s"]  { bottom: -7px; left: 50%; margin-left: -7px; cursor: ns-resize; }
+.crop-handle[data-handle="sw"] { bottom: -7px; left: -7px; cursor: nesw-resize; }
+.crop-handle[data-handle="w"]  { top: 50%; left: -7px; margin-top: -7px; cursor: ew-resize; }
+
+/* Live output dimensions, pinned just under the rectangle. */
+.crop-size {
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  padding: 2px 7px;
+  border-radius: 4px;
+  margin-top: 8px;
+  background: var(--accent);
+  color: #fff;
+  font: 11px ui-monospace, monospace;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/* --- endpoint frame previews --- */
+
+#endpoints {
+  display: flex;
+  gap: 14px;
+  margin-bottom: 10px;
+}
+
+.endpoint {
+  margin: 0;
+  flex: 0 0 auto;
+}
+
+.endpoint canvas {
+  display: block;
+  width: 200px;
+  height: 112px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: #000;
+}
+
+.endpoint figcaption {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+#controls {
+  border-top: 1px solid var(--line);
+  padding: 12px 16px 16px;
+  background: var(--panel);
+}
+
+#transport {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+button {
+  padding: 5px 11px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) { background: #38383d; }
+button:disabled { opacity: 0.4; cursor: default; }
+
+button.primary {
+  border-color: transparent;
+  background: var(--accent);
+  color: #fff;
+}
+
+#scrub-wrap { padding: 10px 8px 16px; }
+
+#scrub {
+  position: relative;
+  height: 10px;
+  border-radius: 5px;
+  background: var(--panel-2);
+  cursor: pointer;
+}
+
+#range-fill {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  border-radius: 5px;
+  background: rgb(59 130 246 / 45%);
+}
+
+.scrub-handle {
+  position: absolute;
+  top: -5px;
+  width: 10px;
+  height: 20px;
+  border-radius: 3px;
+  margin-left: -5px;
+  background: var(--accent);
+  cursor: ew-resize;
+}
+
+#playhead {
+  position: absolute;
+  top: -3px;
+  width: 2px;
+  height: 16px;
+  margin-left: -1px;
+  background: #fff;
+  pointer-events: none;
+}
+
+#crop-controls, #options {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+#crop-controls label, #options label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted);
+}
+
+#crop-controls input[type="number"] {
+  width: 74px;
+  padding: 4px 6px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+}
+
+.note { color: var(--muted); font-size: 11px; }
+
+.group-label {
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+#command {
+  overflow-x: auto;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  margin: 0 0 10px;
+  background: #131316;
+  color: var(--muted);
+  font-size: 11px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+#actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+#progress {
+  overflow: hidden;
+  width: 160px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--panel-2);
+}
+
+#progress-bar {
+  width: 0;
+  height: 100%;
+  background: var(--accent);
+  transition: width 120ms linear;
+}
+
+#status { flex: 1; color: var(--muted); font-size: 11px; }
+#status.error { color: var(--danger); }

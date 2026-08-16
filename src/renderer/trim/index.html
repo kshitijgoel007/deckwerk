@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy"
+          content="default-src 'self'; img-src 'self' deck: data:; media-src 'self' deck:; style-src 'self' 'unsafe-inline'; script-src 'self'" />
+    <title>Trim &amp; Crop</title>
+  </head>
+  <body>
+    <div id="app">
+      <div id="viewer">
+        <div id="video-wrap">
+          <video id="video" playsinline></video>
+          <div id="crop-overlay" hidden>
+            <div id="crop-rect">
+              <div class="crop-handle" data-handle="nw"></div>
+              <div class="crop-handle" data-handle="n"></div>
+              <div class="crop-handle" data-handle="ne"></div>
+              <div class="crop-handle" data-handle="e"></div>
+              <div class="crop-handle" data-handle="se"></div>
+              <div class="crop-handle" data-handle="s"></div>
+              <div class="crop-handle" data-handle="sw"></div>
+              <div class="crop-handle" data-handle="w"></div>
+              <div class="crop-size"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="controls">
+        <div id="transport">
+          <button id="play">Play</button>
+          <span id="time" class="mono">0.00 / 0.00</span>
+          <button id="set-in">Set in</button>
+          <button id="set-out">Set out</button>
+          <button id="reset-range">Reset</button>
+        </div>
+
+        <div id="scrub-wrap">
+          <div id="scrub">
+            <div id="range-fill"></div>
+            <div id="handle-in" class="scrub-handle" title="Trim start"></div>
+            <div id="handle-out" class="scrub-handle" title="Trim end"></div>
+            <div id="playhead"></div>
+          </div>
+        </div>
+
+        <!-- Frames at the exact in and out points, so you can see what the cut
+             lands on without scrubbing the main preview off your crop. -->
+        <div id="endpoints">
+          <figure class="endpoint">
+            <canvas id="frame-in" width="320" height="180"></canvas>
+            <figcaption>In <span id="time-in" class="mono">0.00</span></figcaption>
+          </figure>
+          <figure class="endpoint">
+            <canvas id="frame-out" width="320" height="180"></canvas>
+            <figcaption>Out <span id="time-out" class="mono">0.00</span></figcaption>
+          </figure>
+        </div>
+
+        <div id="crop-controls">
+          <span class="group-label">Crop</span>
+          <label>X <input type="number" id="crop-x" step="1" /></label>
+          <label>Y <input type="number" id="crop-y" step="1" /></label>
+          <label>W <input type="number" id="crop-w" step="1" /></label>
+          <label>H <input type="number" id="crop-h" step="1" /></label>
+          <button id="crop-full">Full frame</button>
+        </div>
+
+        <div id="options">
+          <label>
+            <input type="checkbox" id="copy-mode" checked />
+            Fast trim (stream copy, no re-encode)
+          </label>
+          <span id="copy-note" class="note"></span>
+        </div>
+
+        <pre id="command" class="mono"></pre>
+
+        <div id="actions">
+          <div id="progress"><div id="progress-bar"></div></div>
+          <span id="status"></span>
+          <button id="cancel">Close</button>
+          <button id="apply" class="primary">Apply</button>
+        </div>
+      </div>
+    </div>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

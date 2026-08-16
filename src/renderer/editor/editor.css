@@ -1,0 +1,839 @@
+/* Editor chrome. The slide itself is styled by the deck's own theme.css. */
+
+:root {
+  --bg: #1c1c1e;
+  --panel: #252528;
+  --panel-2: #2e2e32;
+  --line: #3a3a3f;
+  --text: #e8e8ea;
+  --muted: #9a9aa2;
+  --accent: #3b82f6;
+  --danger: #e0463c;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font: 13px/1.4 system-ui, -apple-system, sans-serif;
+}
+
+#app {
+  display: grid;
+  grid-template-rows: 44px 1fr 24px;
+  height: 100vh;
+}
+
+/* --- toolbar --- */
+
+#toolbar {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+  /* Clears the macOS traffic lights under titleBarStyle: hiddenInset. */
+  padding-left: 84px;
+  -webkit-app-region: drag;
+}
+
+.bar-group {
+  display: flex;
+  gap: 6px;
+  -webkit-app-region: no-drag;
+}
+
+.bar-right { margin-left: auto; }
+
+button {
+  padding: 5px 11px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) { background: #38383d; }
+button:disabled { opacity: 0.4; cursor: default; }
+
+button.primary {
+  border-color: transparent;
+  background: var(--accent);
+  color: #fff;
+}
+
+/* --- layout --- */
+
+#body {
+  display: grid;
+  grid-template-columns: 220px 1fr 320px;
+  min-height: 0;
+}
+
+#rail, #side {
+  display: flex;
+  overflow-y: auto;
+  flex-direction: column;
+  background: var(--panel);
+}
+
+#rail { border-right: 1px solid var(--line); }
+#side { border-left: 1px solid var(--line); overflow: hidden; }
+
+/* --- slide rail --- */
+
+.rail-item {
+  display: grid;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  background: transparent;
+  gap: 1px 8px;
+  grid-template-areas: "num label" "num meta";
+  grid-template-columns: 24px 1fr;
+  padding: 10px 12px;
+  text-align: left;
+}
+
+.rail-item.active { background: #2f3f5c; }
+.rail-num { grid-area: num; color: var(--muted); font-variant-numeric: tabular-nums; }
+.rail-label { grid-area: label; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rail-meta { grid-area: meta; color: var(--muted); font-size: 11px; }
+
+.rail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 10px;
+}
+
+/* --- canvas --- */
+
+.canvas-host {
+  position: relative;
+  overflow: hidden;
+  background: #141416;
+}
+
+.canvas-host.drop-active { box-shadow: inset 0 0 0 3px var(--accent); }
+
+.canvas-host .stage {
+  position: absolute;
+  box-shadow: 0 8px 40px rgb(0 0 0 / 50%);
+}
+
+.slide-layer, .overlay-layer {
+  position: absolute;
+  inset: 0;
+}
+
+.slide-layer { overflow: hidden; background: #fff; }
+
+/* The overlay must never intercept pointer events meant for the slide;
+   only the handles opt back in. */
+.overlay-layer { pointer-events: none; }
+
+/* The element being typed into: a tinted ground so the edit region is obvious
+   even when the text is short or the slide background matches it. */
+.element.editing {
+  outline: 2px solid var(--accent);
+  background: rgb(59 130 246 / 8%);
+}
+
+.element.editing [contenteditable] {
+  cursor: text;
+  user-select: text;
+}
+
+.sel-box {
+  position: absolute;
+  /* --inv counteracts the stage scale so chrome is a constant on-screen size. */
+  outline: calc(1.5px * var(--inv)) solid var(--accent);
+  outline-offset: 0;
+}
+
+.handle {
+  position: absolute;
+  width: calc(9px * var(--inv));
+  height: calc(9px * var(--inv));
+  border: calc(1px * var(--inv)) solid var(--accent);
+  background: #fff;
+  pointer-events: auto;
+}
+
+.handle-nw { top: calc(-5px * var(--inv)); left: calc(-5px * var(--inv)); cursor: nwse-resize; }
+.handle-n  { top: calc(-5px * var(--inv)); left: 50%; margin-left: calc(-5px * var(--inv)); cursor: ns-resize; }
+.handle-ne { top: calc(-5px * var(--inv)); right: calc(-5px * var(--inv)); cursor: nesw-resize; }
+.handle-e  { top: 50%; right: calc(-5px * var(--inv)); margin-top: calc(-5px * var(--inv)); cursor: ew-resize; }
+.handle-se { bottom: calc(-5px * var(--inv)); right: calc(-5px * var(--inv)); cursor: nwse-resize; }
+.handle-s  { bottom: calc(-5px * var(--inv)); left: 50%; margin-left: calc(-5px * var(--inv)); cursor: ns-resize; }
+.handle-sw { bottom: calc(-5px * var(--inv)); left: calc(-5px * var(--inv)); cursor: nesw-resize; }
+.handle-w  { top: 50%; left: calc(-5px * var(--inv)); margin-top: calc(-5px * var(--inv)); cursor: ew-resize; }
+
+.guide {
+  position: absolute;
+  background: #ff2d55;
+}
+
+.guide-x { top: 0; width: calc(1px * var(--inv)); }
+.guide-y { left: 0; height: calc(1px * var(--inv)); }
+
+.marquee {
+  position: absolute;
+  border: 1px solid var(--accent);
+  background: rgb(59 130 246 / 15%);
+}
+
+/* --- side panels --- */
+
+#side-tabs {
+  display: flex;
+  border-bottom: 1px solid var(--line);
+}
+
+#side-tabs button {
+  flex: 1;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+  padding: 9px 4px;
+}
+
+#side-tabs button.active {
+  border-bottom: 2px solid var(--accent);
+  color: var(--text);
+}
+
+#side-panels {
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
+}
+
+.side-panel {
+  height: 100%;
+  overflow-y: auto;
+  padding: 12px;
+}
+
+/* CodeMirror manages its own scrolling; padding here would fight it. */
+#theme { padding: 0; }
+#theme .cm-editor { height: 100%; }
+
+.insp-group {
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 12px;
+  padding-bottom: 12px;
+}
+
+.insp-group h3 {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.insp-title {
+  margin-bottom: 10px;
+  font-size: 15px;
+  font-weight: 600;
+  text-transform: capitalize;
+}
+
+.insp-hint {
+  margin: 6px 0;
+  color: var(--muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 8px;
+  gap: 3px;
+}
+
+.field > span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.field input, .field select, .field textarea {
+  width: 100%;
+  padding: 5px 7px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+}
+
+.field textarea { resize: vertical; font-family: ui-monospace, monospace; }
+
+.field-check {
+  flex-direction: row;
+  align-items: center;
+  gap: 7px;
+}
+
+.field-check input { width: auto; }
+
+.field-grid {
+  display: grid;
+  gap: 6px;
+  grid-template-columns: repeat(4, 1fr);
+  margin-bottom: 8px;
+}
+
+.field-grid .field { margin-bottom: 0; }
+
+.button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+/* --- timeline panel --- */
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+  gap: 8px;
+}
+
+.panel-header h3 { margin: 0; font-size: 13px; }
+
+.step-block {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  margin-bottom: 8px;
+  padding: 8px;
+}
+
+.step-label {
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.step-empty { color: var(--muted); font-size: 11px; font-style: italic; }
+
+.timeline-row {
+  display: grid;
+  gap: 4px;
+  grid-template-columns: 1fr 1fr 1.4fr 52px 24px;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+.timeline-row select, .timeline-row input {
+  min-width: 0;
+  padding: 3px 4px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--panel-2);
+  color: var(--text);
+  font: 11px system-ui, sans-serif;
+}
+
+.icon-button {
+  padding: 2px 6px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1;
+}
+
+.icon-button:hover { color: var(--danger); background: transparent; }
+
+/* --- status bar --- */
+
+#status {
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  border-top: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 11px;
+}
+
+/* --- crop (mask) editing --- */
+
+/* The full frame, shown faintly outside the crop window so it is clear what is
+   being cut away rather than only what is kept. */
+.mask-ghost {
+  position: absolute;
+  border: 1px dashed rgb(255 255 255 / 60%);
+  background: rgb(59 130 246 / 12%);
+  pointer-events: none;
+}
+
+.sel-box.masking {
+  outline-color: #34d399;
+}
+
+.sel-box.masking .handle {
+  border-color: #34d399;
+}
+
+/* --- slide thumbnails and reordering --- */
+
+.rail-item {
+  grid-template-areas: "num thumb" "label label" "meta meta";
+  grid-template-columns: 20px 1fr;
+  cursor: grab;
+}
+
+.rail-item.dragging { opacity: 0.4; }
+.rail-item.drop-before { box-shadow: inset 0 2px 0 var(--accent); }
+.rail-item.drop-after { box-shadow: inset 0 -2px 0 var(--accent); }
+
+.rail-thumb {
+  position: relative;
+  overflow: hidden;
+  width: 168px;
+  height: 94.5px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  grid-area: thumb;
+  background: #fff;
+  /* The miniature is decorative; drags belong to the row. */
+  pointer-events: none;
+}
+
+.rail-thumb-inner {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: top left;
+}
+
+.bar-select {
+  padding: 5px 7px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+}
+
+/* Thumbnail-only rows: no title, no element count. */
+.rail-item {
+  grid-template-areas: "num thumb";
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+}
+
+#rail:focus { outline: none; }
+#rail:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+/* Dragging must not sweep-select slide text. Only an active edit opts back in. */
+.slide-layer { user-select: none; }
+.element.editing, .element.editing * { user-select: text; }
+
+/* ============================================================= */
+/* Visual refresh: calmer surfaces, clearer hierarchy, softer     */
+/* edges. Structure above is unchanged; this layer restyles it.   */
+/* ============================================================= */
+
+:root {
+  --bg: #161619;
+  --panel: #1d1d21;
+  --panel-2: #27272c;
+  --line: #313138;
+  --text: #ececf1;
+  --muted: #8f8f9c;
+  --accent: #4f8ef7;
+  --accent-soft: rgb(79 142 247 / 14%);
+  --danger: #e5544b;
+  --radius: 8px;
+  --shadow: 0 1px 2px rgb(0 0 0 / 40%);
+}
+
+html, body { font: 12.5px/1.45 -apple-system, "SF Pro Text", Inter, system-ui, sans-serif; }
+
+/* Toolbar: a quiet strip, buttons appear on hover intent. */
+#toolbar {
+  gap: 10px;
+  background: rgb(22 22 25 / 92%);
+  backdrop-filter: blur(14px);
+  border-bottom: 1px solid var(--line);
+}
+
+button {
+  padding: 5px 12px;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text);
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+button:hover:not(:disabled) { background: var(--panel-2); border-color: var(--line); }
+button:active:not(:disabled) { background: #313138; }
+
+button.primary {
+  background: var(--accent);
+  border-color: transparent;
+  font-weight: 600;
+}
+button.primary:hover:not(:disabled) { background: #659cf8; border-color: transparent; }
+
+.bar-select {
+  border-radius: var(--radius);
+  border-color: transparent;
+  background: transparent;
+}
+.bar-select:hover { background: var(--panel-2); border-color: var(--line); }
+
+/* Slide rail: floating thumbnail cards. */
+#rail { padding: 10px 0; gap: 2px; }
+
+.rail-item {
+  border: 0;
+  border-radius: 0;
+  margin: 0 10px;
+  padding: 6px;
+  border-radius: var(--radius);
+  transition: background 120ms ease;
+}
+.rail-item:hover { background: var(--panel-2); }
+.rail-item.active { background: var(--accent-soft); }
+
+.rail-num { font-size: 10.5px; }
+
+.rail-thumb {
+  border-color: rgb(255 255 255 / 8%);
+  border-radius: 6px;
+  box-shadow: var(--shadow);
+}
+.rail-item.active .rail-thumb { border-color: var(--accent); }
+
+.rail-actions { padding: 12px 14px; border-top: 1px solid var(--line); margin-top: 8px; }
+.rail-actions button { border-color: var(--line); }
+
+/* Canvas: deeper stage, softer slide shadow. */
+.canvas-host { background: #101013; }
+.canvas-host .stage { box-shadow: 0 12px 60px rgb(0 0 0 / 55%), 0 2px 8px rgb(0 0 0 / 40%); border-radius: 2px; }
+
+/* Side panel: tabs as pills, groups as cards. */
+#side-tabs { padding: 8px 8px 0; gap: 4px; border-bottom: 0; }
+
+#side-tabs button {
+  border-radius: var(--radius);
+  padding: 6px 4px;
+  font-weight: 500;
+}
+#side-tabs button.active {
+  border-bottom: 0;
+  background: var(--panel-2);
+  color: var(--text);
+}
+
+.side-panel { padding: 12px 14px; }
+
+.insp-group {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: rgb(255 255 255 / 1.5%);
+  padding: 12px;
+  margin-bottom: 10px;
+}
+
+.insp-group h3 { font-size: 10.5px; color: var(--muted); }
+.insp-title { font-size: 14px; letter-spacing: -0.01em; }
+
+.field input, .field select, .field textarea {
+  border-radius: 6px;
+  background: rgb(0 0 0 / 25%);
+  transition: border-color 120ms ease;
+}
+.field input:focus, .field select:focus, .field textarea:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+input[type="range"] { accent-color: var(--accent); padding: 0; background: transparent; border: 0; }
+
+.button-row button, .insp-group button { border-color: var(--line); font-size: 12px; }
+
+/* Selection chrome on the canvas. */
+.sel-box { outline-color: var(--accent); }
+.handle { border-radius: 2px; box-shadow: 0 1px 3px rgb(0 0 0 / 45%); }
+
+.handle-endpoint {
+  width: calc(13px * var(--inv));
+  height: calc(13px * var(--inv));
+  margin-left: calc(-7px * var(--inv));
+  margin-top: calc(-7px * var(--inv));
+  border-radius: 50%;
+  border: calc(2px * var(--inv)) solid var(--accent);
+  background: #fff;
+  cursor: move;
+  pointer-events: auto;
+}
+
+/* A selected line shows no outline box — just its endpoints. */
+.sel-box.line-sel { outline: none; }
+
+/* Status bar quieter. */
+#status { border-top: 1px solid var(--line); background: var(--bg); font-size: 10.5px; letter-spacing: 0.01em; }
+
+/* Timeline rows breathe a little. */
+.step-block { border-radius: var(--radius); background: rgb(255 255 255 / 1.5%); }
+.timeline-row select, .timeline-row input { border-radius: 5px; }
+
+/* ============================================================= */
+/* Final design layer: terminal-inspired. Monospace UI, hard      */
+/* right angles, muted pastel accents on a deep neutral ground.   */
+/* Later rules override the earlier refresh wholesale.            */
+/* ============================================================= */
+
+:root {
+  --bg: #16161e;
+  --panel: #1a1b26;
+  --panel-2: #20212e;
+  --line: #2c2e3d;
+  --text: #c0caf5;
+  --muted: #565f89;
+  --accent: #7aa2f7;      /* pastel blue */
+  --accent-soft: rgb(122 162 247 / 12%);
+  --green: #9ece6a;
+  --yellow: #e0af68;
+  --danger: #f7768e;      /* pastel red */
+  --radius: 0;
+  --mono: "JetBrains Mono", "SF Mono", "Fira Code", ui-monospace, Menlo, monospace;
+}
+
+html, body {
+  background: var(--bg);
+  color: var(--text);
+  font: 12px/1.5 var(--mono);
+}
+
+/* Right angles, everywhere. */
+button, .bar-select, .field input, .field select, .field textarea,
+.insp-group, .step-block, .rail-item, .rail-thumb, .handle, .timeline-row select,
+.timeline-row input, #side-tabs button, .crop-size {
+  border-radius: 0 !important;
+}
+
+/* Toolbar: a terminal statusline. */
+#toolbar {
+  background: var(--panel);
+  backdrop-filter: none;
+  border-bottom: 1px solid var(--line);
+  gap: 8px;
+}
+
+button {
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--text);
+  font: 11.5px var(--mono);
+  letter-spacing: 0.02em;
+  transition: none;
+}
+
+button:hover:not(:disabled) {
+  background: var(--panel-2);
+  border-color: var(--muted);
+}
+
+button.primary {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+button.primary:hover:not(:disabled) { background: rgb(122 162 247 / 22%); }
+
+.bar-select {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  font: 11.5px var(--mono);
+}
+
+/* Rail: numbered frames, like a buffer list. */
+#rail { background: var(--panel); padding: 8px 0; }
+
+.rail-item {
+  margin: 0 8px 4px;
+  padding: 4px;
+  border: 1px solid transparent;
+  background: transparent;
+}
+.rail-item:hover { background: var(--panel-2); border-color: var(--line); }
+.rail-item.active { background: var(--accent-soft); border-color: var(--accent); }
+
+.rail-num { font: 10px var(--mono); color: var(--muted); }
+.rail-item.active .rail-num { color: var(--accent); }
+
+.rail-thumb { border: 1px solid var(--line); box-shadow: none; }
+.rail-item.active .rail-thumb { border-color: var(--accent); }
+
+/* Canvas: flat, focused. */
+.canvas-host { background: #101017; }
+.canvas-host .stage { box-shadow: 0 0 0 1px var(--line), 0 18px 50px rgb(0 0 0 / 60%); border-radius: 0; }
+
+/* Panels read like a TUI: uppercase mono section headers, ruled groups. */
+#side { background: var(--panel); }
+#side-tabs { padding: 8px 10px 0; gap: 0; }
+
+#side-tabs button {
+  border: 1px solid transparent;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  font: 11px var(--mono);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+#side-tabs button.active {
+  border-color: var(--line);
+  border-bottom-color: var(--panel);
+  background: var(--panel);
+  color: var(--accent);
+}
+
+.insp-group {
+  border: 1px solid var(--line);
+  background: transparent;
+  padding: 10px;
+}
+
+.insp-group h3 {
+  font: 10px var(--mono);
+  color: var(--yellow);
+  letter-spacing: 0.12em;
+}
+
+.insp-title {
+  font: 600 12px var(--mono);
+  color: var(--green);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.insp-hint { color: var(--muted); font-size: 10.5px; }
+
+.field > span { font: 10px var(--mono); color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; }
+
+.field input, .field select, .field textarea {
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--text);
+  font: 11.5px var(--mono);
+}
+.field input:focus, .field select:focus, .field textarea:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+input[type="range"] { accent-color: var(--accent); border: 0; background: transparent; }
+
+/* Selection chrome: crisp hairlines. */
+.sel-box { outline-color: var(--accent); }
+.handle { border-color: var(--accent); box-shadow: none; }
+.handle-endpoint { border-radius: 50% !important; border-color: var(--green); }
+.mask-ghost { border-color: var(--green); background: rgb(158 206 106 / 8%); }
+.sel-box.masking { outline-color: var(--green); }
+.sel-box.masking .handle { border-color: var(--green); }
+.guide { background: var(--danger); }
+.marquee { border-color: var(--accent); background: var(--accent-soft); }
+
+/* Timeline + status. */
+.step-block { border: 1px solid var(--line); background: transparent; }
+.step-label { color: var(--yellow); font: 10px var(--mono); letter-spacing: 0.1em; }
+
+#status {
+  background: var(--panel);
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font: 10.5px var(--mono);
+}
+
+/* The element being typed into. */
+.element.editing { outline-color: var(--accent); background: var(--accent-soft); }
+
+/* Colour pickers and toolbar cast options. */
+.field-color { flex-direction: row; align-items: center; gap: 8px; }
+.field-color input[type="color"] {
+  width: 44px;
+  height: 22px;
+  padding: 1px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  cursor: pointer;
+}
+
+.bar-check {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--muted);
+  font: 10.5px var(--mono);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.bar-check input { accent-color: var(--accent); }
+
+/* Sidebar trim preview: the frame under the handle. */
+.trim-preview {
+  display: block;
+  width: 100%;
+  border: 1px solid var(--line);
+  margin-bottom: 8px;
+  background: #000;
+}
+
+/* Context menu. */
+#ctx-menu {
+  position: fixed;
+  z-index: 1000;
+  min-width: 180px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  box-shadow: 0 8px 30px rgb(0 0 0 / 45%);
+  padding: 4px;
+}
+#ctx-menu button {
+  display: block;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: 11.5px var(--mono);
+  padding: 6px 10px;
+  text-align: left;
+}
+#ctx-menu button:hover { background: var(--accent-soft); color: var(--accent); }
+.ctx-sep { border-top: 1px solid var(--line); margin: 4px 6px; }
+
+/* Theme tab: the toolbar cluster, stacked vertically. */
+.theme-panel .bar-group { display: flex; flex-direction: column; align-items: stretch; gap: 8px; }
+.theme-panel .bar-check { justify-content: flex-start; }
+
+/* The stage must not clip editor chrome: an element at the slide edge needs
+   its handles (and the mask ghost) drawn OUTSIDE the slide. The slide layer
+   still clips its own content. */
+.canvas-host .stage { overflow: visible; background: transparent; }
+.canvas-host .overlay-layer { overflow: visible; }

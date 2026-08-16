@@ -1,0 +1,17 @@
+node_modules/
+out/
+build/
+dist/
+.venv-import/
+.DS_Store
+__pycache__/
+*.py[cod]
+
+# Imported and exported decks are large and regenerable.
+examples/imported-*/
+examples/exported-*/
+
+# Local full-size import fixture. Keep its deck geometry, but not the source
+# presentation or media payload (both include files over GitHub's size limit).
+test_presentation.key
+examples/test-presentation/assets/

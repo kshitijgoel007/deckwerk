@@ -1,0 +1,1135 @@
+import type { Deck, Slide, SlideElement } from '@shared/deck.js';
+import { type Rect, fitScale, makeId } from '@shared/geometry.js';
+import { renderSlide } from '../player/render.js';
+import { HANDLES, type SnapLine, snapMove, snapResize } from './snapping.js';
+import type { EditorStore } from './store.js';
+
+/**
+ * The editing surface: the slide rendered by the player, with an interaction
+ * layer of selection outlines, resize handles and snap guides drawn on top.
+ *
+ * The rendered slide is deliberately the *same* DOM the player produces, so
+ * what you drag things onto is what the projector shows. The overlay is a
+ * sibling layer, never mixed into the slide itself.
+ */
+
+const SNAP_SCREEN_PX = 6;
+/** Screen-pixel movement before a press becomes a drag rather than a click. */
+const DRAG_THRESHOLD_PX = 3;
+const HANDLE_NAMES = Object.keys(HANDLES);
+
+type DragMode =
+  | { kind: 'none' }
+  | { kind: 'move'; startCanvas: { x: number; y: number }; origin: Map<string, Rect> }
+  | {
+      kind: 'resize';
+      handle: string;
+      startCanvas: { x: number; y: number };
+      origin: Rect;
+      elementId: string;
+      aspect: number;
+    }
+  | { kind: 'marquee'; startCanvas: { x: number; y: number } }
+  | { kind: 'endpoint'; which: 'start' | 'end'; elementId: string };
+
+export class EditorCanvas {
+  private store: EditorStore;
+  private host: HTMLElement;
+  private stage: HTMLElement;
+  private slideLayer: HTMLElement;
+  private overlay: HTMLElement;
+
+  private scale = 1;
+  private drag: DragMode = { kind: 'none' };
+  /**
+   * Whether the pointer has moved far enough to count as a drag.
+   *
+   * Below the threshold nothing is committed, so a click — including each half
+   * of a double-click — never mutates the deck and never triggers a redraw.
+   * That keeps the DOM stable long enough for the browser to deliver `click`
+   * and `dblclick`, and stops a stray pixel of hand movement from nudging an
+   * element every time you select it.
+   */
+  private dragStarted = false;
+  /** The slide object currently drawn, used to skip needless rebuilds. */
+  private renderedSlide: Slide | null = null;
+  private guides: SnapLine[] = [];
+  private marquee: Rect | null = null;
+
+  /** Called to open the trim window for a video. */
+  onTrimRequest?: (el: Extract<SlideElement, { type: 'video' }>) => void;
+
+  /** Id of the text element currently being edited in place, if any. */
+  private editingId: string | null = null;
+
+  /**
+   * Id of the element whose crop is being edited, if any.
+   *
+   * In mask mode the handles resize the *window* rather than the element, and
+   * the media behind stays put — which is exactly what cropping means. The
+   * whole frame is shown at reduced opacity outside the window so you can see
+   * what you are cutting away.
+   */
+  private maskingId: string | null = null;
+  /** The crop as it was when the current mask drag began. */
+  private maskOrigin: { x: number; y: number; w: number; h: number } | null = null;
+
+  /** Notified when mask mode turns on or off, so the inspector can relabel. */
+  onMaskModeChange?: (elementId: string | null) => void;
+
+  /**
+   * Context-menu actions, supplied by the shell so the menu can reach
+   * clipboard, trim and z-order without the canvas owning any of them.
+   */
+  contextActions?: (el: SlideElement | null) => Array<
+    { label: string; action: () => void } | 'separator'
+  >;
+
+  constructor(host: HTMLElement, store: EditorStore) {
+    this.host = host;
+    this.store = store;
+
+    this.host.classList.add('canvas-host');
+    this.stage = document.createElement('div');
+    this.stage.className = 'stage';
+    this.slideLayer = document.createElement('div');
+    this.slideLayer.className = 'slide-layer';
+    this.overlay = document.createElement('div');
+    this.overlay.className = 'overlay-layer';
+    this.stage.append(this.slideLayer, this.overlay);
+    this.host.replaceChildren(this.stage);
+
+    new ResizeObserver(() => this.rescale()).observe(this.host);
+    this.bindPointer();
+    this.bindDrop();
+
+    store.subscribe(() => this.render());
+    this.render();
+  }
+
+  /**
+   * Redraw.
+   *
+   * The slide layer is rebuilt only when the slide's content actually changed;
+   * a selection change redraws the overlay alone. Two reasons this matters
+   * beyond speed: rebuilding replaces `<video>` elements, which would reload
+   * and restart every clip each time you clicked something, and it detaches the
+   * node under the pointer, which stops the browser delivering `click` and
+   * `dblclick`.
+   *
+   * The store deep-clones on every mutation, so object identity is an exact
+   * test for "did the content change".
+   */
+  render(): void {
+    const { deck, slideIndex, selection } = this.store.get();
+    const slide = deck.slides[slideIndex];
+    if (!slide) {
+      this.slideLayer.replaceChildren();
+      this.overlay.replaceChildren();
+      this.renderedSlide = null;
+      return;
+    }
+
+    if (slide === this.renderedSlide) {
+      this.rescale();
+      this.drawOverlay(deck, slide.elements, selection);
+      return;
+    }
+
+    // Geometry-only changes — which is every frame of a drag or resize — are
+    // applied to the existing nodes instead of rebuilding them. Rebuilding
+    // recreates each <video>, which reloads the media and makes clips flicker
+    // continuously while you drag anything on the slide.
+    if (this.renderedSlide && sameStructure(this.renderedSlide, slide)) {
+      const previous = this.renderedSlide;
+      this.renderedSlide = slide;
+      this.applyGeometry(slide, previous);
+      this.rescale();
+      this.drawOverlay(deck, slide.elements, selection);
+      return;
+    }
+
+    this.renderedSlide = slide;
+
+    // Re-rendering under an active text edit would destroy the node the caret
+    // lives in, so the edit is committed first.
+    if (this.editingId) this.commitTextEdit();
+
+    // Which videos were playing before the redraw, so playback survives an
+    // unrelated edit elsewhere on the slide.
+    const playing = new Set<string>();
+    for (const node of this.slideLayer.querySelectorAll<HTMLElement>('[data-element-id]')) {
+      const video = node.querySelector('video');
+      if (video && !video.paused) playing.add(node.dataset.elementId!);
+    }
+
+    this.slideLayer.replaceChildren(
+      renderSlide(slide, { resolveSrc: (src) => window.api.assetUrl(src) }),
+    );
+
+    // Videos hold on their first frame while editing: a wall of looping clips
+    // makes the canvas unreadable and burns CPU. Playback is opt-in per video.
+    for (const node of this.slideLayer.querySelectorAll<HTMLElement>('[data-element-id]')) {
+      const video = node.querySelector('video');
+      if (!video) continue;
+      video.removeAttribute('autoplay');
+      video.controls = false;
+      if (playing.has(node.dataset.elementId!)) void video.play().catch(() => {});
+      else video.pause();
+    }
+
+    this.rescale();
+    this.drawOverlay(deck, slide.elements, selection);
+  }
+
+  /** Reposition and restyle existing nodes for a non-structural change. */
+  private applyGeometry(slide: Slide, previous?: Slide): void {
+    for (const el of slide.elements) {
+      const node = this.slideLayer.querySelector<HTMLElement>(
+        `[data-element-id="${CSS.escape(el.id)}"]`,
+      );
+      if (!node) continue;
+
+      // Inline styles (colour above all) change without changing structure and
+      // must land here — before this, picking a text colour updated the deck
+      // but never the pixels. Keys removed since the last render are cleared.
+      const before = previous?.elements.find((e) => e.id === el.id);
+      if (before) {
+        for (const key of Object.keys(before.style)) {
+          if (!(key in el.style)) node.style.removeProperty(key);
+        }
+      }
+      for (const [key, value] of Object.entries(el.style)) {
+        node.style.setProperty(key, value);
+      }
+
+      node.style.left = `${el.x}px`;
+      node.style.top = `${el.y}px`;
+      node.style.width = `${el.w}px`;
+      node.style.height = `${el.h}px`;
+      node.style.opacity = String(el.opacity);
+      node.style.transform = el.rot ? `rotate(${el.rot}deg)` : '';
+
+      // Cropped media: the inner tag is positioned in the window's coordinates
+      // and has to follow crop changes here, since they no longer rebuild.
+      if ((el.type === 'image' || el.type === 'video') && el.sourceBox) {
+        const media = node.querySelector<HTMLElement>('img, video');
+        if (media) {
+          media.style.left = `${el.sourceBox.x}px`;
+          media.style.top = `${el.sourceBox.y}px`;
+          media.style.width = `${el.sourceBox.w}px`;
+          media.style.height = `${el.sourceBox.h}px`;
+        }
+      }
+    }
+  }
+
+  /** Is a video currently playing on the canvas? */
+  isPlaying(elementId: string): boolean {
+    const video = this.videoNode(elementId);
+    return video !== null && !video.paused;
+  }
+
+  /**
+   * Play or pause a video in place on the editing canvas, so a clip can be
+   * checked without leaving the editor or entering presentation mode.
+   */
+  toggleVideo(elementId: string): boolean {
+    const video = this.videoNode(elementId);
+    if (!video) return false;
+    if (video.paused) {
+      // The editor preview honours the trim exactly as the player does:
+      // start at the in point, loop back to it at the out point.
+      const el = this.store.slide?.elements.find((e) => e.id === elementId);
+      if (el?.type === 'video' && (el.start > 0 || el.end !== null)) {
+        if (video.currentTime < el.start || (el.end !== null && video.currentTime >= el.end)) {
+          video.currentTime = el.start;
+        }
+        if (!video.dataset.trimWatch) {
+          video.dataset.trimWatch = '1';
+          video.addEventListener('timeupdate', () => {
+            const cur = this.store.slide?.elements.find((e) => e.id === elementId);
+            if (cur?.type !== 'video' || video.paused) return;
+            const end = cur.end ?? Number.POSITIVE_INFINITY;
+            if (video.currentTime >= end - 0.03) {
+              if (cur.loop) video.currentTime = cur.start;
+              else video.pause();
+            }
+          });
+        }
+      }
+      void video.play().catch(() => {});
+      return true;
+    }
+    video.pause();
+    return false;
+  }
+
+  /** Clip length as known to the canvas video element, if metadata is in. */
+  videoDuration(elementId: string): number | null {
+    const video = this.videoNode(elementId);
+    const d = video?.duration;
+    return d && Number.isFinite(d) && d > 0 ? d : null;
+  }
+
+  /** Show the frame at `time` on the canvas, for live trim scrubbing. */
+  seekVideo(elementId: string, time: number): void {
+    const video = this.videoNode(elementId);
+    if (!video) return;
+    video.pause();
+    const t = Math.max(0, time);
+    // Seeking before metadata arrives is silently ignored by the browser, so
+    // the preview would show nothing at all on a not-yet-touched clip.
+    if (video.readyState >= HTMLMediaElement.HAVE_METADATA) {
+      video.currentTime = t;
+    } else {
+      video.addEventListener('loadedmetadata', () => (video.currentTime = t), {
+        once: true,
+      });
+    }
+  }
+
+  private videoNode(elementId: string): HTMLVideoElement | null {
+    const node = this.slideLayer.querySelector<HTMLElement>(
+      `[data-element-id="${CSS.escape(elementId)}"]`,
+    );
+    return node?.querySelector('video') ?? null;
+  }
+
+  private rescale(): void {
+    const { deck } = this.store.get();
+    const r = this.host.getBoundingClientRect();
+    if (r.width === 0 || r.height === 0) return;
+    // Leave a margin so handles on the outer edge stay grabbable.
+    const scale = fitScale(deck.canvas, { w: r.width - 64, h: r.height - 64 });
+    this.scale = scale;
+
+    for (const layer of [this.slideLayer, this.overlay]) {
+      layer.style.width = `${deck.canvas.w}px`;
+      layer.style.height = `${deck.canvas.h}px`;
+    }
+    this.stage.style.width = `${deck.canvas.w}px`;
+    this.stage.style.height = `${deck.canvas.h}px`;
+    this.stage.style.transform = `scale(${scale})`;
+    this.stage.style.transformOrigin = 'top left';
+    this.stage.style.left = `${(r.width - deck.canvas.w * scale) / 2}px`;
+    this.stage.style.top = `${(r.height - deck.canvas.h * scale) / 2}px`;
+  }
+
+  /** Selection outlines, handles, snap guides and the marquee. */
+  private drawOverlay(
+    deck: Deck,
+    elements: SlideElement[],
+    selection: Set<string>,
+  ): void {
+    const frag = document.createDocumentFragment();
+
+    // In mask mode, show the full frame faintly outside the crop window so it
+    // is clear what is being cut away rather than merely what is kept.
+    if (this.maskingId) {
+      const el = elements.find((e) => e.id === this.maskingId);
+      if (el && (el.type === 'image' || el.type === 'video') && el.sourceBox) {
+        const ghost = document.createElement('div');
+        ghost.className = 'mask-ghost';
+        ghost.style.left = `${el.x + el.sourceBox.x}px`;
+        ghost.style.top = `${el.y + el.sourceBox.y}px`;
+        ghost.style.width = `${el.sourceBox.w}px`;
+        ghost.style.height = `${el.sourceBox.h}px`;
+        frag.appendChild(ghost);
+      }
+    }
+
+    for (const el of elements) {
+      if (!selection.has(el.id)) continue;
+      const box = document.createElement('div');
+      box.className = `sel-box${this.maskingId === el.id ? ' masking' : ''}`;
+      box.style.left = `${el.x}px`;
+      box.style.top = `${el.y}px`;
+      box.style.width = `${el.w}px`;
+      box.style.height = `${el.h}px`;
+      // Counter-scale so outlines and handles stay one visual size at any zoom.
+      box.style.setProperty('--inv', String(1 / this.scale));
+
+      // Lines and arrows get endpoint handles instead of a resize box: what
+      // you want to move is where the arrow starts and ends, not its bounding
+      // rectangle.
+      if (
+        selection.size === 1 &&
+        el.type === 'shape' &&
+        (el.shape === 'line' || el.shape === 'arrow')
+      ) {
+        box.classList.add('line-sel');
+        const pts = lineEndpoints(el);
+        for (const which of ['start', 'end'] as const) {
+          const h = document.createElement('div');
+          h.className = 'handle handle-endpoint';
+          h.dataset.endpoint = which;
+          h.dataset.elementId = el.id;
+          const p = pts[which];
+          h.style.left = `${p.x - el.x}px`;
+          h.style.top = `${p.y - el.y}px`;
+          box.appendChild(h);
+        }
+        frag.appendChild(box);
+        continue;
+      }
+
+      // Handles only on a single selection: resizing a multi-selection needs a
+      // group transform, which v1 doesn't model.
+      if (selection.size === 1) {
+        for (const name of HANDLE_NAMES) {
+          const h = document.createElement('div');
+          h.className = `handle handle-${name}`;
+          h.dataset.handle = name;
+          h.dataset.elementId = el.id;
+          box.appendChild(h);
+        }
+      }
+      frag.appendChild(box);
+    }
+
+    for (const g of this.guides) {
+      const line = document.createElement('div');
+      line.className = `guide guide-${g.axis}`;
+      if (g.axis === 'x') {
+        line.style.left = `${g.at}px`;
+        line.style.height = `${deck.canvas.h}px`;
+      } else {
+        line.style.top = `${g.at}px`;
+        line.style.width = `${deck.canvas.w}px`;
+      }
+      line.style.setProperty('--inv', String(1 / this.scale));
+      frag.appendChild(line);
+    }
+
+    if (this.marquee) {
+      const m = document.createElement('div');
+      m.className = 'marquee';
+      m.style.left = `${this.marquee.x}px`;
+      m.style.top = `${this.marquee.y}px`;
+      m.style.width = `${this.marquee.w}px`;
+      m.style.height = `${this.marquee.h}px`;
+      frag.appendChild(m);
+    }
+
+    this.overlay.replaceChildren(frag);
+  }
+
+  /** Screen point -> canvas point. */
+  private toCanvas(ev: PointerEvent): { x: number; y: number } {
+    const r = this.stage.getBoundingClientRect();
+    return { x: (ev.clientX - r.left) / this.scale, y: (ev.clientY - r.top) / this.scale };
+  }
+
+  private bindPointer(): void {
+    this.host.addEventListener('pointerdown', (ev) => this.onPointerDown(ev));
+    this.host.addEventListener('pointermove', (ev) => this.onPointerMove(ev));
+    this.host.addEventListener('pointerup', (ev) => this.onPointerUp(ev));
+    this.host.addEventListener('pointercancel', () => this.endDrag());
+    this.host.addEventListener('dblclick', (ev) => this.onDoubleClick(ev));
+    this.host.addEventListener('contextmenu', (ev) => this.onContextMenu(ev));
+  }
+
+  private onPointerDown(ev: PointerEvent): void {
+    if (ev.button !== 0) return;
+    const slide = this.store.slide;
+    if (!slide) return;
+
+    const target = ev.target as HTMLElement;
+
+    // Suppress the browser's own text selection: dragging across a slide would
+    // otherwise sweep-select the text of every element it crossed.
+    if (!this.editingId) ev.preventDefault();
+
+    // Clicks inside an active text edit belong to the caret, not to dragging.
+    if (this.editingId) {
+      if (target.closest('.editing')) return;
+      this.commitTextEdit();
+    }
+    const point = this.toCanvas(ev);
+    this.host.setPointerCapture(ev.pointerId);
+
+    // Endpoint handle on a line or arrow.
+    const endpoint = target.dataset?.endpoint;
+    if (endpoint && target.dataset.elementId) {
+      this.store.beginTransaction();
+      this.drag = {
+        kind: 'endpoint',
+        which: endpoint as 'start' | 'end',
+        elementId: target.dataset.elementId,
+      };
+      return;
+    }
+
+    // Resize handle.
+    const handle = target.dataset?.handle;
+    if (handle && target.dataset.elementId) {
+      const el = slide.elements.find((e) => e.id === target.dataset.elementId);
+      if (el) {
+        this.store.beginTransaction();
+        if (el.type === 'image' || el.type === 'video') {
+          // Captured once per drag: mask mode shifts this window, a plain
+          // resize scales it with the box.
+          this.maskOrigin = el.sourceBox ? { ...el.sourceBox } : null;
+        }
+        this.drag = {
+          kind: 'resize',
+          handle,
+          startCanvas: point,
+          origin: { x: el.x, y: el.y, w: el.w, h: el.h },
+          elementId: el.id,
+          aspect: el.w / el.h,
+        };
+        return;
+      }
+    }
+
+    // Topmost element under the cursor wins, matching what you see.
+    const hit = this.hitTest(point);
+    if (hit) {
+      const selection = this.store.get().selection;
+      if (!selection.has(hit.id)) {
+        this.store.select([hit.id], ev.shiftKey);
+      } else if (ev.shiftKey) {
+        this.store.select([hit.id], true);
+        return;
+      }
+      const origin = new Map<string, Rect>();
+      for (const el of this.store.selectedElements()) {
+        origin.set(el.id, { x: el.x, y: el.y, w: el.w, h: el.h });
+      }
+      this.store.beginTransaction();
+      this.drag = { kind: 'move', startCanvas: point, origin };
+      return;
+    }
+
+    if (!ev.shiftKey) this.store.clearSelection();
+    this.drag = { kind: 'marquee', startCanvas: point };
+  }
+
+  private onPointerMove(ev: PointerEvent): void {
+    if (this.drag.kind === 'none') return;
+    const slide = this.store.slide;
+    if (!slide) return;
+
+    const point = this.toCanvas(ev);
+    const { deck } = this.store.get();
+    const threshold = SNAP_SCREEN_PX / this.scale;
+
+    // Ignore movement until it clears the threshold, in screen pixels so it
+    // feels the same at any zoom. The marquee is exempt: it is always a drag.
+    if (
+      !this.dragStarted &&
+      this.drag.kind !== 'marquee' &&
+      this.drag.kind !== 'endpoint'
+    ) {
+      const start = this.drag.startCanvas;
+      const moved =
+        Math.hypot(point.x - start.x, point.y - start.y) * this.scale;
+      if (moved < DRAG_THRESHOLD_PX) return;
+      this.dragStarted = true;
+    }
+
+    switch (this.drag.kind) {
+      case 'move': {
+        const drag = this.drag;
+        let dx = point.x - drag.startCanvas.x;
+        let dy = point.y - drag.startCanvas.y;
+        // Shift constrains to the dominant axis, the usual straight-line drag.
+        if (ev.shiftKey) {
+          if (Math.abs(dx) > Math.abs(dy)) dy = 0;
+          else dx = 0;
+        }
+
+        const ids = new Set(drag.origin.keys());
+        const others = slide.elements
+          .filter((e) => !ids.has(e.id))
+          .map((e) => ({ x: e.x, y: e.y, w: e.w, h: e.h }));
+
+        // Snap the group by its bounding box, then apply one delta to all
+        // members, so relative positions inside a multi-selection are preserved.
+        const bounds = unionRect([...drag.origin.values()]);
+        const moved = { ...bounds, x: bounds.x + dx, y: bounds.y + dy };
+        const snapped = ev.altKey
+          ? { rect: moved, guides: [] } // Alt suspends snapping for fine placement.
+          : snapMove(moved, deck.canvas, others, threshold);
+        this.guides = snapped.guides;
+
+        const finalDx = snapped.rect.x - bounds.x;
+        const finalDy = snapped.rect.y - bounds.y;
+        this.store.updateSelected((el) => {
+          const o = drag.origin.get(el.id);
+          if (!o) return;
+          el.x = Math.round(o.x + finalDx);
+          el.y = Math.round(o.y + finalDy);
+        });
+        break;
+      }
+
+      case 'resize': {
+        const drag = this.drag;
+        const edges = HANDLES[drag.handle];
+        const dx = point.x - drag.startCanvas.x;
+        const dy = point.y - drag.startCanvas.y;
+        const o = drag.origin;
+
+        let rect: Rect = { ...o };
+        if (edges.left) {
+          rect.x = o.x + dx;
+          rect.w = o.w - dx;
+        }
+        if (edges.right) rect.w = o.w + dx;
+        if (edges.top) {
+          rect.y = o.y + dy;
+          rect.h = o.h - dy;
+        }
+        if (edges.bottom) rect.h = o.h + dy;
+
+        // Shift constrains, and so does "Keep aspect ratio" on media — with it
+        // off (fit: fill) a resize genuinely stretches the picture.
+        const target = slide.elements.find((e) => e.id === drag.elementId);
+        const keepAspect =
+          (target?.type === 'image' || target?.type === 'video') &&
+          target.fit !== 'fill' &&
+          !target.sourceBox;
+        if (ev.shiftKey || keepAspect) rect = constrainAspect(rect, o, edges, drag.aspect);
+
+        const others = slide.elements
+          .filter((e) => e.id !== drag.elementId)
+          .map((e) => ({ x: e.x, y: e.y, w: e.w, h: e.h }));
+        const snapped = ev.altKey
+          ? { rect, guides: [] }
+          : snapResize(rect, edges, deck.canvas, others, threshold);
+        this.guides = snapped.guides;
+
+        const r = snapped.rect;
+        if (this.maskingId === drag.elementId) {
+          // Cropping, not scaling: the window moves, the picture stays put.
+          this.applyMaskResize(drag.elementId, r, drag.origin);
+          break;
+        }
+        const cropBase = this.maskOrigin;
+        this.store.updateSelected((el) => {
+          if (el.id !== drag.elementId) return;
+          el.x = Math.round(r.x);
+          el.y = Math.round(r.y);
+          el.w = Math.max(8, Math.round(r.w));
+          el.h = Math.max(8, Math.round(r.h));
+          // Resizing a cropped element scales the whole picture with its
+          // window, so the crop composition is preserved — without this, a
+          // resize silently re-crops instead of scaling.
+          if ((el.type === 'image' || el.type === 'video') && cropBase) {
+            const fx = el.w / Math.max(1, drag.origin.w);
+            const fy = el.h / Math.max(1, drag.origin.h);
+            el.sourceBox = {
+              x: Math.round(cropBase.x * fx),
+              y: Math.round(cropBase.y * fy),
+              w: Math.max(1, Math.round(cropBase.w * fx)),
+              h: Math.max(1, Math.round(cropBase.h * fy)),
+            };
+          }
+        });
+        break;
+      }
+
+      case 'endpoint': {
+        const drag = this.drag;
+        const el = slide.elements.find((e) => e.id === drag.elementId);
+        if (!el || el.type !== 'shape') break;
+        const pts = lineEndpoints(el);
+        const moved = { ...pts, [drag.which]: point };
+        const geo = lineFromEndpoints(moved.start, moved.end, el.h);
+        this.store.updateSelected((target) => {
+          if (target.id !== drag.elementId) return;
+          target.x = Math.round(geo.x);
+          target.y = Math.round(geo.y);
+          target.w = Math.round(geo.w);
+          target.rot = Math.round(geo.rot * 10) / 10;
+        });
+        break;
+      }
+
+      case 'marquee': {
+        const s = this.drag.startCanvas;
+        this.marquee = {
+          x: Math.min(s.x, point.x),
+          y: Math.min(s.y, point.y),
+          w: Math.abs(point.x - s.x),
+          h: Math.abs(point.y - s.y),
+        };
+        this.drawOverlay(deck, slide.elements, this.store.get().selection);
+        break;
+      }
+    }
+  }
+
+  private onPointerUp(ev: PointerEvent): void {
+    if (this.drag.kind === 'marquee' && this.marquee) {
+      const slide = this.store.slide;
+      if (slide) {
+        const box = this.marquee;
+        const hits = slide.elements
+          .filter((e) => intersects({ x: e.x, y: e.y, w: e.w, h: e.h }, box))
+          .map((e) => e.id);
+        if (hits.length > 0) this.store.select(hits, ev.shiftKey);
+      }
+    }
+    this.host.releasePointerCapture?.(ev.pointerId);
+    this.endDrag();
+  }
+
+  private endDrag(): void {
+    this.store.endTransaction();
+    this.drag = { kind: 'none' };
+    this.dragStarted = false;
+    this.maskOrigin = null;
+    this.guides = [];
+    this.marquee = null;
+
+    // Deliberately *not* a full render. Redrawing the slide layer here would
+    // replace the node the pointer went down on, and a browser cannot
+    // synthesise `click` — and therefore `dblclick` — when the original target
+    // has left the document. That is what stopped double-click-to-edit from
+    // working at all. Guides and the marquee live in the overlay, so redrawing
+    // just the overlay is both sufficient and safe.
+    const { deck, slideIndex, selection } = this.store.get();
+    const slide = deck.slides[slideIndex];
+    if (slide) this.drawOverlay(deck, slide.elements, selection);
+  }
+
+  /** Custom context menu: right-click selects the element and offers actions. */
+  private onContextMenu(ev: MouseEvent): void {
+    ev.preventDefault();
+    document.getElementById('ctx-menu')?.remove();
+    if (!this.contextActions) return;
+
+    const hit = this.hitTest(this.toCanvas(ev as PointerEvent));
+    if (hit && !this.store.get().selection.has(hit.id)) this.store.select([hit.id]);
+
+    const items = this.contextActions(hit);
+    if (items.length === 0) return;
+
+    const menu = document.createElement('div');
+    menu.id = 'ctx-menu';
+    menu.style.left = `${ev.clientX}px`;
+    menu.style.top = `${ev.clientY}px`;
+    for (const item of items) {
+      if (item === 'separator') {
+        const hr = document.createElement('div');
+        hr.className = 'ctx-sep';
+        menu.appendChild(hr);
+        continue;
+      }
+      const row = document.createElement('button');
+      row.textContent = item.label;
+      row.addEventListener('click', () => {
+        menu.remove();
+        item.action();
+      });
+      menu.appendChild(row);
+    }
+    document.body.appendChild(menu);
+    const close = () => menu.remove();
+    setTimeout(() => document.addEventListener('pointerdown', close, { once: true }), 0);
+  }
+
+  /**
+   * Double-click means "get into" the thing under the cursor: edit a text box,
+   * play a video, open the trim window for nothing else.
+   */
+  private onDoubleClick(ev: PointerEvent | MouseEvent): void {
+    const slide = this.store.slide;
+    if (!slide) return;
+    const hit = this.hitTest(this.toCanvas(ev as PointerEvent));
+    if (!hit) return;
+
+    if (hit.type === 'text' || hit.type === 'html') {
+      this.beginTextEdit(hit.id);
+    } else if (hit.type === 'video') {
+      this.toggleVideo(hit.id);
+    }
+  }
+
+  /**
+   * Edit a text element in place.
+   *
+   * The rendered node itself is made editable rather than overlaying an input,
+   * so the text is styled by theme.css while you type and what you see is what
+   * the slide will show.
+   */
+  beginTextEdit(elementId: string): void {
+    const slide = this.store.slide;
+    const el = slide?.elements.find((e) => e.id === elementId);
+    if (!el || (el.type !== 'text' && el.type !== 'html')) return;
+
+    const node = this.slideLayer.querySelector<HTMLElement>(
+      `[data-element-id="${CSS.escape(elementId)}"]`,
+    );
+    const body = node?.firstElementChild as HTMLElement | null;
+    if (!body) return;
+
+    this.editingId = elementId;
+    node!.classList.add('editing');
+    body.contentEditable = 'true';
+    body.spellcheck = false;
+    body.style.outline = 'none';
+    body.style.cursor = 'text';
+    body.focus();
+
+    // Select everything: double-clicking a placeholder should let you type over
+    // it, which is the common case for a freshly added text box.
+    const range = document.createRange();
+    range.selectNodeContents(body);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+
+    const finish = (commit: boolean) => {
+      body.removeEventListener('blur', onBlur);
+      body.removeEventListener('keydown', onKey);
+      if (commit) this.commitTextEdit();
+      else {
+        this.editingId = null;
+        this.render();
+      }
+    };
+
+    const onBlur = () => finish(true);
+    const onKey = (e: KeyboardEvent) => {
+      // Editing keys must not reach the canvas shortcuts (Delete would remove
+      // the element you are typing into).
+      e.stopPropagation();
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        finish(false);
+      } else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        finish(true);
+      }
+    };
+
+    body.addEventListener('blur', onBlur);
+    body.addEventListener('keydown', onKey);
+  }
+
+  /** Write the edited markup back to the deck as a single undoable change. */
+  private commitTextEdit(): void {
+    const elementId = this.editingId;
+    if (!elementId) return;
+    this.editingId = null;
+
+    const node = this.slideLayer.querySelector<HTMLElement>(
+      `[data-element-id="${CSS.escape(elementId)}"]`,
+    );
+    const body = node?.firstElementChild as HTMLElement | null;
+    if (!body) return;
+
+    const html = body.innerHTML;
+    body.contentEditable = 'false';
+    node!.classList.remove('editing');
+
+    const current = this.store.slide?.elements.find((e) => e.id === elementId);
+    if (!current || (current.type !== 'text' && current.type !== 'html')) return;
+    if (current.html === html) return;
+
+    this.store.commit((deck) => {
+      const el = deck.slides[this.store.get().slideIndex].elements.find(
+        (e) => e.id === elementId,
+      );
+      if (el && (el.type === 'text' || el.type === 'html')) el.html = html;
+    });
+  }
+
+  /** True while a text element is being edited, so callers can defer redraws. */
+  isEditing(): boolean {
+    return this.editingId !== null;
+  }
+
+  /** The element whose mask is being edited, if any. */
+  maskingElement(): string | null {
+    return this.maskingId;
+  }
+
+  /**
+   * Turn mask editing on or off for an element.
+   *
+   * Entering mask mode seeds a full-frame crop if the element has none, so the
+   * handles have something to grab — the same lesson as the trim window, where
+   * a crop hidden behind a checkbox meant there was nothing on screen to drag.
+   */
+  toggleMaskMode(elementId: string | null): void {
+    if (elementId === null || this.maskingId === elementId) {
+      this.maskingId = null;
+      this.onMaskModeChange?.(null);
+      this.render();
+      return;
+    }
+
+    const el = this.store.slide?.elements.find((e) => e.id === elementId);
+    if (!el || (el.type !== 'image' && el.type !== 'video')) return;
+
+    if (!el.sourceBox) {
+      this.store.commit((deck) => {
+        const target = deck.slides[this.store.get().slideIndex].elements.find(
+          (e) => e.id === elementId,
+        );
+        if (target && (target.type === 'image' || target.type === 'video')) {
+          // The media currently fills the box exactly, so a full-frame crop is
+          // the identity transform and nothing moves on screen.
+          target.sourceBox = { x: 0, y: 0, w: target.w, h: target.h };
+        }
+      });
+    }
+
+    this.maskingId = elementId;
+    this.store.select([elementId]);
+    this.onMaskModeChange?.(elementId);
+    this.render();
+  }
+
+  /**
+   * Resize the crop window while keeping the media fixed on the slide.
+   *
+   * Moving an edge changes the element box, and `sourceBox` is shifted by the
+   * same amount in the opposite direction so the visible picture does not slide
+   * around under the cursor. That is the difference between cropping and
+   * scaling.
+   */
+  private applyMaskResize(elementId: string, rect: Rect, origin: Rect): void {
+    // The offset is measured from where the drag began, so it must be applied
+    // to the crop as it was at that moment. Applying it to the *current* crop
+    // would re-add the whole delta on every pointermove, and the media would
+    // shoot out of its window within a few frames.
+    const base = this.maskOrigin;
+    if (!base) return;
+
+    this.store.commit((deck) => {
+      const el = deck.slides[this.store.get().slideIndex].elements.find(
+        (e) => e.id === elementId,
+      );
+      if (!el || (el.type !== 'image' && el.type !== 'video')) return;
+
+      const dx = rect.x - origin.x;
+      const dy = rect.y - origin.y;
+      el.x = Math.round(rect.x);
+      el.y = Math.round(rect.y);
+      el.w = Math.max(8, Math.round(rect.w));
+      el.h = Math.max(8, Math.round(rect.h));
+      el.sourceBox = {
+        w: base.w,
+        h: base.h,
+        x: Math.round(base.x - dx),
+        y: Math.round(base.y - dy),
+      };
+    });
+  }
+
+  /** Topmost element containing a canvas point. */
+  private hitTest(point: { x: number; y: number }): SlideElement | null {
+    const slide = this.store.slide;
+    if (!slide) return null;
+    const ordered = [...slide.elements].sort((a, b) => b.z - a.z);
+    for (const el of ordered) {
+      if (
+        point.x >= el.x &&
+        point.x <= el.x + el.w &&
+        point.y >= el.y &&
+        point.y <= el.y + el.h
+      ) {
+        return el;
+      }
+    }
+    return null;
+  }
+
+  /** Drop media from Finder/Nautilus straight onto the slide. */
+  private bindDrop(): void {
+    const stop = (e: DragEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+    };
+    this.host.addEventListener('dragover', (e) => {
+      stop(e);
+      this.host.classList.add('drop-active');
+    });
+    this.host.addEventListener('dragleave', () => this.host.classList.remove('drop-active'));
+
+    this.host.addEventListener('drop', async (e) => {
+      stop(e);
+      this.host.classList.remove('drop-active');
+      const files = [...(e.dataTransfer?.files ?? [])];
+      if (files.length === 0) return;
+
+      const paths = files.map((f) => window.api.pathForFile(f)).filter(Boolean);
+      const assets = await window.api.importAssets(paths);
+      if (assets.length === 0) return;
+
+      const { deck } = this.store.get();
+      const r = this.stage.getBoundingClientRect();
+      const dropPoint = {
+        x: (e.clientX - r.left) / this.scale,
+        y: (e.clientY - r.top) / this.scale,
+      };
+
+      const created: string[] = [];
+      this.store.commit((d) => {
+        const slide = d.slides[this.store.get().slideIndex];
+        const maxZ = slide.elements.reduce((m, el) => Math.max(m, el.z), 0);
+
+        assets.forEach((asset, i) => {
+          // Fall back to 16:9 when probing failed, so a drop always lands with
+          // sane proportions rather than a square.
+          const natural = {
+            w: asset.width ?? 1600,
+            h: asset.height ?? 900,
+          };
+          const maxW = deck.canvas.w * 0.6;
+          const scale = Math.min(1, maxW / natural.w);
+          const w = Math.round(natural.w * scale);
+          const h = Math.round(natural.h * scale);
+          // Centre on the cursor, cascading multi-file drops so they don't stack.
+          const offset = i * 40;
+          const id = makeId(asset.kind);
+          created.push(id);
+
+          const base = {
+            id,
+            x: Math.round(dropPoint.x - w / 2 + offset),
+            y: Math.round(dropPoint.y - h / 2 + offset),
+            w,
+            h,
+            rot: 0,
+            z: maxZ + 1 + i,
+            opacity: 1,
+            class: [],
+            style: {},
+          };
+
+          slide.elements.push(
+            asset.kind === 'video'
+              ? {
+                  ...base,
+                  type: 'video',
+                  src: asset.src,
+                  fit: 'contain',
+                  autoplay: true,
+                  loop: true,
+                  muted: true,
+                  controls: false,
+                  start: 0,
+                  end: null,
+                  poster: null,
+                  sourceBox: null,
+                }
+              : {
+                  ...base,
+                  type: 'image',
+                  src: asset.src,
+                  fit: 'contain',
+                  alt: '',
+                  sourceBox: null,
+                },
+          );
+        });
+      });
+      this.store.select(created);
+    });
+  }
+}
+
+/**
+ * Whether two versions of a slide differ only in geometry.
+ *
+ * Same elements, same order, same media and same content — so the existing DOM
+ * can be repositioned rather than rebuilt.
+ */
+function sameStructure(a: Slide, b: Slide): boolean {
+  if (a.elements.length !== b.elements.length) return false;
+  for (let i = 0; i < a.elements.length; i++) {
+    const x = a.elements[i];
+    const y = b.elements[i];
+    if (x.id !== y.id || x.type !== y.type || x.z !== y.z) return false;
+    if ('src' in x && 'src' in y && x.src !== y.src) return false;
+    if ('html' in x && 'html' in y && x.html !== y.html) return false;
+    if (x.class.join(' ') !== y.class.join(' ')) return false;
+    // The crop VALUE is geometry (applyGeometry moves the inner media), but a
+    // crop appearing or vanishing changes the DOM shape (wrapper vs bare tag).
+    // Treating value changes as structural rebuilt the <video> on every frame
+    // of a resize, which leaked media elements until the app crashed.
+    const ac = 'sourceBox' in x ? x.sourceBox !== null : false;
+    const bc = 'sourceBox' in y ? y.sourceBox !== null : false;
+    if (ac !== bc) return false;
+  }
+  return true;
+}
+
+/**
+ * The two endpoints of a line/arrow element in canvas coordinates. The shape
+ * renders from the box's left-centre to right-centre, rotated about the
+ * box centre — so endpoints are derived, not stored.
+ */
+export function lineEndpoints(el: {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  rot: number;
+}): { start: { x: number; y: number }; end: { x: number; y: number } } {
+  const cx = el.x + el.w / 2;
+  const cy = el.y + el.h / 2;
+  const rad = (el.rot * Math.PI) / 180;
+  const dx = (Math.cos(rad) * el.w) / 2;
+  const dy = (Math.sin(rad) * el.w) / 2;
+  return {
+    start: { x: cx - dx, y: cy - dy },
+    end: { x: cx + dx, y: cy + dy },
+  };
+}
+
+/** Rebuild a line element's box+rotation from two endpoints. */
+export function lineFromEndpoints(
+  start: { x: number; y: number },
+  end: { x: number; y: number },
+  h: number,
+): { x: number; y: number; w: number; h: number; rot: number } {
+  const w = Math.max(8, Math.hypot(end.x - start.x, end.y - start.y));
+  const rot = (Math.atan2(end.y - start.y, end.x - start.x) * 180) / Math.PI;
+  const cx = (start.x + end.x) / 2;
+  const cy = (start.y + end.y) / 2;
+  return { x: cx - w / 2, y: cy - h / 2, w, h, rot };
+}
+
+function unionRect(rects: Rect[]): Rect {
+  const x = Math.min(...rects.map((r) => r.x));
+  const y = Math.min(...rects.map((r) => r.y));
+  const right = Math.max(...rects.map((r) => r.x + r.w));
+  const bottom = Math.max(...rects.map((r) => r.y + r.h));
+  return { x, y, w: right - x, h: bottom - y };
+}
+
+function intersects(a: Rect, b: Rect): boolean {
+  return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+}
+
+/**
+ * Force a resize back onto the original aspect ratio, keeping the anchor corner
+ * (the one opposite the handle) fixed.
+ */
+function constrainAspect(
+  rect: Rect,
+  origin: Rect,
+  edges: { left: boolean; right: boolean; top: boolean; bottom: boolean },
+  aspect: number,
+): Rect {
+  const out = { ...rect };
+  // Drive from whichever dimension the handle changed more, so the box tracks
+  // the cursor rather than snapping to one axis.
+  const dw = Math.abs(rect.w - origin.w);
+  const dh = Math.abs(rect.h - origin.h);
+  if (dw >= dh) out.h = out.w / aspect;
+  else out.w = out.h * aspect;
+
+  if (edges.left) out.x = origin.x + origin.w - out.w;
+  if (edges.top) out.y = origin.y + origin.h - out.h;
+  return out;
+}

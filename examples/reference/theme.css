@@ -1,0 +1,18 @@
+/*
+ * Imported from Keynote. Fonts and colours were deliberately NOT carried over —
+ * set them here.
+ *
+ * Imported text carries the class .kn-text and an inline font-size fitted to the
+ * box it occupied in Keynote. Delete those inline sizes once you have styled
+ * .kn-text the way you want.
+ */
+
+.slide {
+  background: #ffffff;
+  color: #111111;
+  font-family: "Helvetica Neue", Inter, system-ui, sans-serif;
+}
+
+.kn-text {
+  line-height: 1.2;
+}
