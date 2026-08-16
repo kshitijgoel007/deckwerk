@@ -820,6 +820,9 @@ export class EditorCanvas {
 
     this.editingId = elementId;
     node!.classList.add('editing');
+    // The player replaces TeX delimiters with KaTeX DOM. Editing must expose
+    // the authored source, otherwise a save would persist generated markup.
+    body.innerHTML = el.html;
     body.contentEditable = 'true';
     body.spellcheck = false;
     body.style.outline = 'none';

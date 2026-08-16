@@ -57,6 +57,7 @@
     "codemirror": "^6.0.2",
     "ffmpeg-static": "^5.2.0",
     "ffprobe-static": "^3.1.0",
+    "katex": "^0.18.4",
     "zod": "^3.23.8"
   },
   "devDependencies": {
@@ -68,7 +69,7 @@
     "jsdom": "^25.0.1",
     "typescript": "^5.6.2",
     "vite": "^5.4.8",
-    "vitest": "^2.1.1",
-    "vite-node": "^2.1.1"
+    "vite-node": "^2.1.1",
+    "vitest": "^2.1.1"
   }
 }

@@ -155,6 +155,20 @@ describe('inline text editing', () => {
     expect(canvas.isEditing()).toBe(true);
   });
 
+  it('renders TeX but restores editable source before typing', () => {
+    const { store, canvas, host } = setup();
+    const text = store.slide!.elements.find((el) => el.id === 'text-1')!;
+    if (text.type !== 'text') throw new Error('expected text');
+    store.select(['text-1']);
+    store.updateSelected((el) => {
+      if (el.type === 'text') el.html = 'Energy: $E=mc^2$';
+    });
+    expect(bodyOf(host, 'text-1').querySelector('.katex')).not.toBeNull();
+
+    canvas.beginTextEdit('text-1');
+    expect(bodyOf(host, 'text-1').innerHTML).toBe('Energy: $E=mc^2$');
+  });
+
   it('writes edited content back to the deck', () => {
     const { store, canvas, host } = setup();
     canvas.beginTextEdit('text-1');

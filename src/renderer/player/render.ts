@@ -1,5 +1,7 @@
 import type { Deck, Slide, SlideElement } from '@shared/deck.js';
 import { fitScale } from '@shared/geometry.js';
+import renderMathInElement from 'katex/contrib/auto-render';
+import 'katex/dist/katex.min.css';
 
 /**
  * deck.json -> DOM.
@@ -77,7 +79,27 @@ function renderBody(el: SlideElement, opts: RenderOptions): HTMLElement | SVGEle
             : 'center';
       div.style.width = '100%';
       div.style.height = '100%';
-      div.innerHTML = el.html;
+      // KaTeX auto-render does not exclude escaped delimiter characters before
+      // pairing `$...$`. Protect literal dollars, render, then restore them.
+      const escapedDollar = '\uE000';
+      div.innerHTML = el.html.replace(/\\\$/g, escapedDollar);
+      renderMathInElement(div, {
+        // Standard TeX convention: display math first so $$ is not consumed
+        // as two empty inline expressions. A literal dollar is written as \$.
+        delimiters: [
+          { left: '$$', right: '$$', display: true },
+          { left: '$', right: '$', display: false },
+        ],
+        throwOnError: false,
+        strict: 'ignore',
+      });
+      const walker = document.createTreeWalker(div, NodeFilter.SHOW_TEXT);
+      while (walker.nextNode()) {
+        const text = walker.currentNode as Text;
+        if (text.data.includes(escapedDollar)) {
+          text.data = text.data.replaceAll(escapedDollar, '$');
+        }
+      }
       return div;
     }
 
