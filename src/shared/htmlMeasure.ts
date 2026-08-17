@@ -558,6 +558,73 @@ export function measureSlides(doc: Document): MeasuredSlide[] {
   });
 }
 
+/** One text element whose content no longer fits its box, even after auto-fit. */
+export interface TextOverflow {
+  slideId: string | null;
+  elementId: string | null;
+  overflowX: boolean;
+  overflowY: boolean;
+  /** How far past the box the content reaches, in canvas pixels. */
+  beyond: { x: number; y: number };
+  /** The size auto-fit settled on, when the element opts in. */
+  fittedFontSize: number | null;
+}
+
+/**
+ * Find text that spills out of its box in a *built* page — the export
+ * `slidesToHtml` produces, where every element already sits in the player's
+ * own markup and the page carries the auto-fit script.
+ *
+ * This is the check the compile walk cannot make: the walk measures the
+ * author's free-flowing markup, but whether a text box clips is a fact about
+ * the built slide, after its box is fixed and auto-fit has settled. Auto-fit
+ * is re-run here synchronously (the page's own pass runs on a later animation
+ * frame), so a box that stays overflowing did so at the fit's minimum size.
+ *
+ * Self-contained for the same reason as `measureSlides`: it is serialised
+ * into a bare offscreen window.
+ */
+export function measureTextOverflows(doc: Document): TextOverflow[] {
+  const view = doc.defaultView;
+  if (!view) throw new Error('The document being measured has no window');
+  const fit = (view as unknown as {
+    fitAutoTextElement?: (node: HTMLElement) => number | null;
+  }).fitAutoTextElement;
+
+  const found: TextOverflow[] = [];
+  for (const root of doc.querySelectorAll<HTMLElement>('section.slide')) {
+    for (const node of root.querySelectorAll<HTMLElement>('.element-text')) {
+      const body = node.querySelector<HTMLElement>(':scope > .text-body');
+      const content = body?.querySelector<HTMLElement>(':scope > .text-content');
+      if (!body || !content) continue;
+      if (node.dataset.autofit === 'true' && fit) fit(node);
+      const x = Math.round((content.scrollWidth - body.clientWidth) * 10) / 10;
+      const y = Math.round((content.scrollHeight - body.clientHeight) * 10) / 10;
+      // One pixel of grace, not auto-fit's half: scroll and client sizes are
+      // integer-quantised, and the fitted size is rounded to a tenth of a
+      // pixel after a fit that itself tolerates half a pixel — so a correctly
+      // fitted element can measure a pixel over. Real clipping (a wrapped
+      // line, a cut descender row) is an order of magnitude larger.
+      if (x <= 1 && y <= 1) continue;
+      const fitted = content.dataset.fittedFontSize;
+      found.push({
+        slideId: root.dataset.slideId ?? null,
+        elementId: node.dataset.elementId ?? null,
+        overflowX: x > 1,
+        overflowY: y > 1,
+        beyond: { x: Math.max(0, x), y: Math.max(0, y) },
+        fittedFontSize: fitted ? Number(fitted) : null,
+      });
+    }
+  }
+  return found;
+}
+
+/** `measureTextOverflows` as an expression a bare browser window can evaluate. */
+export function measureTextOverflowsSource(): string {
+  return `(${measureTextOverflows.toString()})(document)`;
+}
+
 /**
  * `measureSlides` as an expression a bare browser window can evaluate.
  *

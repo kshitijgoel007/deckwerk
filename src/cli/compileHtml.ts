@@ -6,9 +6,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { Deck, Slide } from '@shared/deck.js';
-import { authoringPageHtml, measureSlidesSource } from '@shared/htmlMeasure.js';
+import {
+  authoringPageHtml,
+  measureSlidesSource,
+  measureTextOverflowsSource,
+  type TextOverflow,
+} from '@shared/htmlMeasure.js';
 import { PLAYER_TYPE_CSS } from '@shared/playerTypeCss.js';
-import { slidesFromMeasured, type MeasuredSlide } from '@shared/htmlSlides.js';
+import { slidesFromMeasured, slidesToHtml, type MeasuredSlide } from '@shared/htmlSlides.js';
 import { loadTheme } from '../main/deckStore.js';
 
 /**
@@ -59,6 +64,39 @@ export async function compileHtmlToSlides(request: CompileRequest): Promise<Comp
     slides: slidesFromMeasured(request.deck, measured),
     warnings: measured.flatMap((slide) => slide.warnings ?? []),
   };
+}
+
+/**
+ * Whether each compiled slide's text still fits once it is *built*.
+ *
+ * The compile above measures the author's markup; this renders what the deck
+ * will actually show — the same export `inspect --html` produces, boxes fixed
+ * and the auto-fit script aboard — and reports every text element whose
+ * content spills past its box. That is the difference an agent cannot see in
+ * the transaction itself: a fitted box that a theme or font change has pushed
+ * into clipping.
+ */
+export async function measureBuiltTextOverflows(
+  deckDir: string,
+  deck: Deck,
+  slides: Slide[],
+): Promise<TextOverflow[]> {
+  if (slides.length === 0) return [];
+  const work = await mkdtemp(join(tmpdir(), 'slide-agent-overflow-'));
+  const pagePath = join(work, 'built.html');
+  await writeFile(
+    pagePath,
+    slidesToHtml(slides, deck.canvas, {
+      typeCss: PLAYER_TYPE_CSS,
+      // The page sits in a temp folder, so assets and theme.css resolve
+      // against the deck itself.
+      base: pathToFileURL(`${deckDir}/`).href,
+      theme: deck.theme,
+    }),
+    'utf8',
+  );
+  const [overflows] = await runPages([pagePath], deck.canvas, measureTextOverflowsSource());
+  return overflows as TextOverflow[];
 }
 
 /**

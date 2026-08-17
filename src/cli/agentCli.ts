@@ -27,6 +27,7 @@ import {
 } from '../main/agentRuntime.js';
 import { adoptAuthoredIds } from '@shared/htmlSlides.js';
 import { DECK_FILE, importAsset, loadDeck } from '../main/deckStore.js';
+import { measureBuiltTextOverflows } from './compileHtml.js';
 import { htmlEditTransaction } from '../main/htmlAuthoring.js';
 import { renderSlidesToPng } from './renderSlides.js';
 
@@ -185,7 +186,15 @@ async function applyCommand(argv: string[], io: CliIo): Promise<number> {
     { after: options.get('after') ?? null, label: options.get('label') },
   );
 
+  // The compile fixed every box; whether the text inside still fits is only
+  // knowable from the *built* slides, after auto-fit has settled. Measured
+  // here, in the same headless browser, because a deck-wide style change can
+  // push a previously fitted box into clipping and nothing else on this path
+  // would ever say so.
+  const overflows = await measureBuiltTextOverflows(deckDir, deck, slides);
+
   const code = await applyTransaction(deckDir, transaction, io, {
+    overflows,
     slides: slides.map((slide) => ({
       id: slide.id,
       elements: slide.elements.map((element) => ({
