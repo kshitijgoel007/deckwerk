@@ -9,6 +9,14 @@ import { applySlideLayout } from '../src/renderer/editor/slideLayouts.js';
 import { EditorStore } from '../src/renderer/editor/store.js';
 import { renderSlide } from '../src/renderer/player/render.js';
 
+/** player.css with its @import inlined, the way the bundler would ship it. */
+function readPlayerCss(): string {
+  const dir = join(process.cwd(), 'src/renderer/player');
+  const css = readFileSync(join(dir, 'player.css'), 'utf8');
+  return css.replace(/@import\s+['"]\.\/([\w.-]+)['"];/g, (_match, name: string) =>
+    readFileSync(join(dir, name), 'utf8'));
+}
+
 describe('slide layouts', () => {
   beforeEach(() => document.body.replaceChildren());
 
@@ -70,10 +78,11 @@ describe('slide layouts', () => {
   });
 
   it('gives semantic layout text readable fallback sizes in an imported deck', () => {
-    const playerCss = readFileSync(
-      join(process.cwd(), 'src/renderer/player/player.css'),
-      'utf8',
-    );
+    // The player's semantic type rules live in type.css, which the compile
+    // page also loads. Vite inlines the @import when it bundles; jsdom does
+    // not follow it, so resolve it here or the role sizes under test simply
+    // are not present.
+    const playerCss = readPlayerCss();
     const styles = document.createElement('style');
     styles.textContent = `${playerCss}\n.slide { font-family: sans-serif; }\n.kn-text { line-height: 1.2; }`;
     document.head.appendChild(styles);

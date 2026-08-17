@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { z } from 'zod';
 import { existsSync } from 'node:fs';
 import { mkdtemp, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -12,7 +13,9 @@ import {
   type ComputedSlideScene,
 } from '@shared/agent.js';
 import { deckOutline, deckStyleDigest } from '@shared/deckDigest.js';
+import { slidesToHtml } from '@shared/htmlSlides.js';
 import { capabilities } from '@shared/capabilities.js';
+import { PLAYER_TYPE_CSS } from '@shared/playerTypeCss.js';
 import type { Deck } from '@shared/deck.js';
 import { RevisionConflict, applyTransactionOffline, validateDeckFolder } from '../main/agentDeck.js';
 import {
@@ -23,6 +26,7 @@ import {
   writeAgentRequest,
 } from '../main/agentRuntime.js';
 import { DECK_FILE, importAsset, loadDeck } from '../main/deckStore.js';
+import { htmlEditTransaction } from '../main/htmlAuthoring.js';
 import { renderSlidesToPng } from './renderSlides.js';
 
 /**
@@ -46,18 +50,38 @@ export const EXIT_ERROR = 1;
 export const EXIT_USAGE = 2;
 export const EXIT_CONFLICT = 3;
 
+/**
+ * A transaction as an agent may write it: the revision is optional, because
+ * the CLI can resolve it far more reliably than a caller juggling hashes.
+ */
+const DraftTransactionSchema = AgentTransactionSchema.extend({
+  expectedRevision: AgentTransactionSchema.shape.expectedRevision.optional(),
+});
+type DraftTransaction = z.infer<typeof DraftTransactionSchema>;
+
 const USAGE = `usage: slide-agent <command> [options]
+
+The loop — edit HTML, the editor syncs it back:
+
+  context   [deck]                        the outline, and is the editor live
+  inspect   [deck] --html [--selected|--slide id|--all]
+                                          export slides as an editable page
+  # then edit edit/<file>.html and save it; with the editor open the deck
+  # follows within ~200ms. With it closed, apply the same file explicitly:
+  apply     [deck] --html <file> [--after <slideId>] [--label <text>]
+
+Everything else:
 
   docs                                    the full agent guide, as markdown
   capabilities                            every feature, with copyable JSON
-  context   [deck]                        selection, revision, outline, house style
-  inspect   [deck] [--selected|--slide id|--all] [--dom]
-  render    [deck] [--selected|--slide id|--all] --output <dir> [--annotate] [--built]
   validate  [deck]                        schema, ids, references, assets
   asset import <deck> <paths...>          copy media into assets/, probed
-  transaction apply <deck> <file.json>    one atomic, named change
+  inspect   [deck] [--dom]                computed scenes, for questions
+  render    [deck] [--selected|--slide id|--all] --output <dir> [--annotate] [--built]
+  transaction apply <deck> <file.json>    JSON fallback, for tooling with no
+                                          browser — not how slides are authored
 
-Coordinates are absolute pixels on the deck canvas, origin top-left.
+Do not hand-compute geometry: write CSS and let the browser measure.
 `;
 
 export async function runAgentCli(argv: string[], io: CliIo): Promise<number> {
@@ -77,6 +101,8 @@ export async function runAgentCli(argv: string[], io: CliIo): Promise<number> {
         return EXIT_OK;
       case 'context':
         return await contextCommand(rest, io);
+      case 'apply':
+        return await applyCommand(rest, io);
       case 'inspect':
         return await inspectCommand(rest, io);
       case 'render':
@@ -115,9 +141,70 @@ async function contextCommand(argv: string[], io: CliIo): Promise<number> {
   return EXIT_OK;
 }
 
+/**
+ * Author slides in HTML and CSS.
+ *
+ * The browser lays the markup out; what lands in the deck is ordinary objects
+ * with the geometry it computed. Slides whose `data-slide-id` already exists
+ * are replaced, so the same file can be edited and recompiled; new ones are
+ * inserted after `--after`, or appended.
+ */
+async function applyCommand(argv: string[], io: CliIo): Promise<number> {
+  // `--html` takes a filename here, while `inspect --html` is a bare flag, so
+  // the value-taking flags are named per command rather than globally.
+  const { options, positional } = parseFlags(argv, ['html', 'after', 'label']);
+  const deckDir = resolveDeckDir(positional[0], io);
+  const htmlPath = options.get('html');
+  if (!htmlPath) {
+    io.err('apply needs --html <file>');
+    return EXIT_USAGE;
+  }
+
+  const deck = await loadDeck(deckDir);
+  // The same compile the editor performs on a watched save, in a headless
+  // window because this path is the one taken with the editor closed.
+  const { transaction, slides } = await htmlEditTransaction(
+    deckDir,
+    deck,
+    resolve(io.cwd, htmlPath),
+    { after: options.get('after') ?? null, label: options.get('label') },
+  );
+
+  return applyTransaction(deckDir, transaction, io, {
+    slides: slides.map((slide) => ({
+      id: slide.id,
+      elements: slide.elements.map((element) => ({
+        id: element.id, type: element.type,
+        box: { x: element.x, y: element.y, w: element.w, h: element.h },
+      })),
+    })),
+  });
+}
+
 async function inspectCommand(argv: string[], io: CliIo): Promise<number> {
   const { flags, positional } = parseFlags(argv);
   const deckDir = resolveDeckDir(positional[0], io);
+
+  if (flags.has('html')) {
+    const deck = await loadDeck(deckDir);
+    const context = await currentContext(deckDir, { scenes: false });
+    const wanted = selectionFilter(flags);
+    const chosen = deck.slides.filter((slide, index) => !wanted || wanted({
+      id: slide.id,
+      index,
+      selected: context.selectedSlideIds.includes(slide.id),
+      active: slide.id === context.activeSlideId,
+    }));
+    // Written to a file the agent opens in a browser, so it has to be a page
+    // and not a fragment: the deck's stylesheet, the type rules, and a base
+    // that assumes the conventional home of `edit/` inside the deck.
+    io.out(slidesToHtml(chosen, deck.canvas, {
+      typeCss: PLAYER_TYPE_CSS,
+      base: '../',
+      theme: deck.theme,
+    }));
+    return EXIT_OK;
+  }
 
   if (flags.has('dom')) {
     const live = await readLiveAgentContext(deckDir);
@@ -151,6 +238,7 @@ async function inspectCommand(argv: string[], io: CliIo): Promise<number> {
   }));
   return EXIT_OK;
 }
+
 
 async function renderCommand(argv: string[], io: CliIo): Promise<number> {
   const { flags, options, positional } = parseFlags(argv);
@@ -194,7 +282,23 @@ async function validateCommand(argv: string[], io: CliIo): Promise<number> {
   const { positional } = parseFlags(argv);
   const deckDir = resolveDeckDir(positional[0], io);
   const errors = await validateDeckFolder(deckDir);
-  io.out(json({ valid: errors.length === 0, deckPath: deckDir, errors }));
+  let importGaps: Array<{
+    slideId: string; elementId: string; originalType: string; note: string;
+  }> = [];
+  try {
+    const deck = await loadDeck(deckDir);
+    importGaps = deck.slides.flatMap((slide) => slide.elements
+      .filter((element) => element.type === 'unsupported')
+      .map((element) => ({
+        slideId: slide.id,
+        elementId: element.id,
+        originalType: element.originalType,
+        note: element.note,
+      })));
+  } catch {
+    // The parse failure is already represented in `errors`.
+  }
+  io.out(json({ valid: errors.length === 0, deckPath: deckDir, errors, importGaps }));
   return errors.length === 0 ? EXIT_OK : EXIT_ERROR;
 }
 
@@ -240,14 +344,37 @@ async function transactionCommand(argv: string[], io: CliIo): Promise<number> {
     return EXIT_USAGE;
   }
 
-  const transaction = AgentTransactionSchema.parse(
+  const draft = DraftTransactionSchema.parse(
     JSON.parse(await readFile(resolve(io.cwd, file), 'utf8')),
   );
+  return applyTransaction(deckDir, draft, io);
+}
+
+/**
+ * Send one transaction, resolving the revision on the agent's behalf.
+ *
+ * Quoting a hash is ceremony an agent should not have to perform: the CLI
+ * knows the current revision, and reading it here narrows the conflict window
+ * to changes that land *during* the call — which is the only case where a
+ * conflict was ever protecting anything. An explicit `expectedRevision` is
+ * still honoured, for a caller that prepared its change earlier and wants the
+ * check.
+ */
+async function applyTransaction(
+  deckDir: string,
+  draft: DraftTransaction,
+  io: CliIo,
+  extra: Record<string, unknown> = {},
+): Promise<number> {
+  const live = await readLiveAgentContext(deckDir);
+  const expectedRevision = draft.expectedRevision
+    ?? live?.deckRevision
+    ?? deckRevision(await loadDeck(deckDir));
+  const transaction = AgentTransactionSchema.parse({ ...draft, expectedRevision });
 
   // With the editor up, the transaction must go through it: its in-memory deck
   // is the real document, and routing through it is what makes the change one
   // undo entry rather than a surprise reload.
-  const live = await readLiveAgentContext(deckDir);
   if (live) {
     const response = await request(deckDir, {
       version: AGENT_PROTOCOL_VERSION,
@@ -261,13 +388,16 @@ async function transactionCommand(argv: string[], io: CliIo): Promise<number> {
       applied: response.status === 'applied',
       live: true,
       ...(response.message ? { message: response.message } : {}),
+      ...extra,
     }));
     if (response.status === 'conflict') return EXIT_CONFLICT;
     return response.status === 'error' ? EXIT_ERROR : EXIT_OK;
   }
 
   const result = await applyTransactionOffline(deckDir, transaction);
-  io.out(json({ status: 'applied', revision: result.revision, applied: true, live: false }));
+  io.out(json({
+    status: 'applied', revision: result.revision, applied: true, live: false, ...extra,
+  }));
   return EXIT_OK;
 }
 
@@ -425,7 +555,7 @@ export function resolveDeckDir(candidate: string | undefined, io: CliIo): string
 }
 
 /** `--flag`, `--key value` and bare positionals, with no dependency to install. */
-export function parseFlags(argv: string[]): {
+export function parseFlags(argv: string[], valuedFlags: string[] = ['output']): {
   flags: Set<string>;
   options: Map<string, string>;
   positional: string[];
@@ -433,7 +563,7 @@ export function parseFlags(argv: string[]): {
   const flags = new Set<string>();
   const options = new Map<string, string>();
   const positional: string[] = [];
-  const valued = new Set(['output']);
+  const valued = new Set(valuedFlags);
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];

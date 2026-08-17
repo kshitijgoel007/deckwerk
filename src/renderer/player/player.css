@@ -1,9 +1,9 @@
 /*
- * Structural styles plus a conservative semantic type fallback. A deck's own
- * theme.css loads after this and overrides the fallback. Imported decks often
- * only style `.kn-text`; without these defaults, title/body placeholders added
- * later render at the browser default 16px.
+ * Structural styles. The semantic type fallback lives in `type.css`, which the
+ * HTML slide compiler also loads so that what it measures matches what the
+ * player renders; a deck's own theme.css loads after both and overrides them.
  */
+@import './type.css';
 
 .player-root {
   position: relative;
@@ -24,12 +24,6 @@
   inset: 0;
   overflow: hidden;
 }
-
-.element-text { font-size: 44px; line-height: 1.25; }
-.role-title { font-size: 92px; font-weight: 700; line-height: 1.08; letter-spacing: -0.02em; }
-.role-heading { font-size: 58px; font-weight: 600; line-height: 1.15; }
-.role-body { font-size: 44px; line-height: 1.3; }
-.role-caption { font-size: 28px; line-height: 1.3; }
 
 /* Title-only is non-destructive: body placeholders/content remain in the deck
    and return when switching back to Standard. */
@@ -54,47 +48,7 @@
   pointer-events: none;
 }
 
-.text-body {
-  box-sizing: border-box;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
 
-/* Auto-fit has a 6px readability floor. Pathologically long unbroken content
-   is clipped at that floor rather than painting over neighbouring objects. */
-.element-text[data-auto-fit="true"] .text-body { overflow: hidden; }
 
-/* Empty imported Keynote text boxes are authoring affordances, not slide
-   content. The editor makes them faintly visible again; presentations and web
-   exports must never show a literal "Text" placeholder. */
-.element.placeholder .text-body {
-  visibility: hidden;
-}
 
-/* Import gaps are meant to be conspicuous: a placeholder you can see is a
-   placeholder you will fix. */
-.element-unsupported {
-  border: 2px dashed #e0463c;
-  background: rgb(224 70 60 / 8%);
-}
 
-.unsupported-body {
-  box-sizing: border-box;
-  width: 100%;
-  height: 100%;
-  padding: 8px;
-  overflow: hidden;
-  color: #e0463c;
-  font: 500 20px/1.3 ui-monospace, monospace;
-}
-
-/* Bulleted lists inside text elements. theme.css can restyle the markers. */
-.text-body ul {
-  margin: 0;
-  padding-left: 1.1em;
-  text-align: left;
-}
-
-.text-body li {
-  margin: 0.15em 0;
-}

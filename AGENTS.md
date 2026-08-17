@@ -1,52 +1,78 @@
 # Working on a deck as an agent
 
-An agent never talks to the Electron app directly. The contract is **files on
-disk**: `deck.json` and `theme.css` are the document, and everything an agent
-needs to read the editor's mind or change the deck safely goes through the
-`slide-agent` CLI, which is itself only files.
+An agent never talks to the Electron app directly, and should almost never
+touch `deck.json`. **You edit an HTML file; the editor watches it and syncs
+what you saved into the presentation.**
 
-## Start here: two commands, then author
-
-You do **not** need to read `deck.json`, `theme.css`, or every slide before you
-can act. Reading the whole deck is slow, fills your context with noise, and
-still leaves you guessing about conventions. Two commands answer everything:
+## The loop
 
 ```bash
-slide-agent capabilities   # what this editor can do, with copyable JSON
-slide-agent context        # this deck: outline, house style, revision
+slide-agent context                                    # 1. the outline
+slide-agent inspect --html --selected > edit/work.html # 2. export a range
+#                                                        3. edit and save it
 ```
 
-`capabilities` is the one to read **before authoring anything**. It is where you
-learn that maths is written `$E = mc^2$` and rendered by KaTeX (never laid out
-by hand), that a crop is a `sourceBox` and never a re-export, that video carries
-a non-destructive trim, and what builds and Magic Move look like. Each entry
-carries a working element, plus a path to a screenshot of it and to the markup
-it renders to.
+That is the whole thing. There is no fourth step: with the editor open, saving
+`edit/work.html` updates exactly those slides about 200 ms later, as one named,
+undoable change. Keep editing and keep saving.
 
-`context` is the one to read **before placing anything**. It gives you:
+**1. `context` — the map.** Every slide in order with its id and its title, the
+text roles this deck actually uses, and whether the editor is live. This is how
+you find "the middle of the talk" without reading the talk.
 
-- `outline` — every slide in order with its id, its title and what is on it.
-  This is how you find "the middle of the talk" without reading the talk.
-- `style.roles` — the text classes this deck actually uses and the geometry
-  they actually occupy, so a new slide looks like it belongs.
-- `style.slideTemplate` — a slide in this deck's conventions. Copy it, replace
-  the placeholder ids, fill in the text.
-- `deckRevision` — the value your transaction must quote.
+**2. `inspect --html` — the export.** A complete web page: **open it in a
+browser and it is the slide**, at its true 1920×1080, with the deck's own
+`theme.css` and its real assets. Use that. Reload to see a change, save to put
+it in the deck. It is the same document the editor measures, so what the
+browser shows you is what the deck gets — that is checked, slide by slide,
+against the projector's own renderer.
 
-Then write the transaction and send it. Only reach for `inspect --slide <id>`
-when you need the details of a *specific* slide you are editing — and for
-`inspect --dom` or `render` only when something looks wrong.
+**3. Edit it as a web page.** Flexbox, grid, semantic HTML; the browser
+computes the geometry and the editor bakes it into ordinary draggable objects.
+Add, delete and reorder `<section>`s and the deck gains, loses and reorders
+those slides — the file *is* the document for the range it was exported with.
+Slides outside that range are never touched.
 
-A whole task, start to finish:
+Two rules about the file itself:
+
+- **Keep it in `edit/`.** Its `<base href="../">` is what makes
+  `assets/figure.png` and `theme.css` resolve; move it and the page stops
+  looking like the slide.
+- **Save it as often as you like.** A file keeps the range it was exported
+  with plus any slides it has added. (A slide it added is not deleted by
+  dropping its section again — export a fresh file to hand a range back.)
+
+With the editor **closed** there is no watcher, so apply the same file
+explicitly, which does the identical thing:
 
 ```bash
-slide-agent capabilities | head -100        # once, if you have not seen it
-slide-agent context                         # outline + style + revision
-# pick the insertion point from the outline, copy style.slideTemplate,
-# fill in text, mint unique ids, quote deckRevision
-slide-agent transaction apply . /tmp/txn.json
-slide-agent validate
+slide-agent apply . --html edit/work.html
 ```
+
+Use `slide-agent capabilities` for the data attributes that carry builds, Magic
+Move, crops, video trim and KaTeX. Use `render` only when you want a PNG to
+look at.
+
+## What not to do any more
+
+The JSON transaction API below still works, and everything still lands through
+it — but it is **no longer the way to author slides**, and reaching for it is
+usually a mistake:
+
+- **Do not compute geometry.** Absolute pixel arithmetic is the one thing a
+  model is reliably bad at, and hand-placed boxes were the reason this
+  interface was replaced. Write CSS and let the browser measure.
+- **Do not read `deck.json`** to find out what is on a slide. `context` gives
+  you the outline; `inspect --html` gives you the slide itself, in a form you
+  can edit.
+- **Do not write `deck.json`.**
+- **Do not build `insertSlides` / `replaceElement` transactions** for ordinary
+  authoring. Everything they do — insert, delete, reorder, restyle — is a
+  section added, removed, moved or edited in the HTML file.
+
+Keep the JSON path for what HTML genuinely cannot say: a deck-wide setting via
+`updateDeck`, or tooling of your own that has no browser to lay a page out in.
+`style.slideTemplate` from `context` exists for that case.
 
 ## The contract
 
@@ -56,18 +82,22 @@ A deck is a folder:
 my-talk/
   deck.json    content, geometry, builds — schema: src/shared/deck.ts (zod)
   theme.css    typography and colour; a marked block is theme-generated
+  edit/        watched HTML authoring files
   assets/      media, referenced by deck-relative path
 ```
 
-- **Write `deck.json` or `theme.css` → the running app reloads itself** within
-  ~200ms (main process watches both; its own saves are ignored by content
-  comparison). An external rewrite of the open deck becomes one undoable
-  "External edit" entry, and the user stays on the slide they were on.
-- Prefer `slide-agent transaction apply` over writing `deck.json` yourself: it
-  is revision-checked, validated and atomic, and with the app running it lands
-  in the undo history under your own label.
-- If you do write by hand, write **atomically** (temp file, rename) and
-  validate against the schema first.
+- **Save `edit/*.html` → the editor syncs that slide range into the deck**
+  within ~200 ms, as one undoable entry named after your file. The file records
+  its original ordered scope, so removing and moving sections is structural
+  editing, not merely content replacement.
+- The editor lays the page out itself, in the same engine that draws the
+  slides, so the geometry comes from your CSS and the deck's `theme.css` — not
+  from an approximation of them.
+- `theme.css` is yours to edit directly; the running app reloads it.
+- **Never write `deck.json` by hand.** If some tool of yours must change the
+  deck without a browser, go through `slide-agent transaction apply`: it is
+  revision-checked, validated and atomic, and with the app running it lands in
+  the undo history under your own label.
 - Geometry is absolute pixels on the deck's `canvas` (usually 1920×1080),
   origin top-left, width before height. `rot` is clockwise degrees about the
   element's centre; `z` is paint order.
@@ -99,8 +129,8 @@ not yours.
 slide-agent <command> [options]
 ```
 
-Everything on stdout is JSON — except `docs` and `help`, which are prose for
-you to read. Diagnostics go to stderr. Exit codes are `0` ok, `1` error,
+Everything on stdout is JSON except `docs`, `help`, and `inspect --html`.
+Diagnostics go to stderr. Exit codes are `0` ok, `1` error,
 `2` usage, `3` revision conflict.
 
 | Command | What it answers |
@@ -108,13 +138,22 @@ you to read. Diagnostics go to stderr. Exit codes are `0` ok, `1` error,
 | `docs` | This guide |
 | `capabilities [ids...]` | Every feature (or just the named ones), with a working example, screenshot and markup |
 | `context [deck]` | What is selected, what revision is the deck, is the editor live |
-| `inspect [deck] [--selected\|--slide id\|--all] [--dom]` | What is actually on those slides |
+| `inspect [deck] [--selected\|--slide id\|--all] [--html\|--dom]` | Editable HTML, or computed inspection data |
+| `apply [deck] --html <file>` | Explicitly compile and sync an HTML range |
 | `render [deck] [--selected\|--slide id\|--all] --output <dir> [--annotate] [--built]` | Optional PNGs |
 | `validate [deck]` | Schema, duplicate ids, timeline references, missing assets |
 | `asset import <deck> <paths...>` | Media copied into `assets/`, deduped, probed, transcoded |
 | `transaction apply <deck> <file.json>` | One atomic, named change |
 
 The deck argument defaults to the current directory.
+
+### Repair import gaps
+
+`slide-agent validate` reports `importGaps` separately from structural errors.
+For each gap, export its slide with `inspect --html --slide <id>`, replace the
+conspicuous `data-element="unsupported"` placeholder with real HTML, and save.
+The replacement becomes an editable text, media, shape, or HTML object on the
+way back; a clean `importGaps: []` confirms that the repair loop is complete.
 
 ### Start with `context`
 
@@ -165,10 +204,12 @@ The sidecar lives in `~/.slide-editor/runtime/<deck>-<hash>/`, never in the
 deck folder — it is ephemeral state, not part of the document, and it stays out
 of git.
 
-### Prefer computed scenes
+### Computed scenes, for inspection rather than authoring
 
-`inspect` returns a computed scene per slide: what the renderer actually
-produced, not what the JSON says.
+Bare `inspect` (without `--html`) returns a computed scene per slide: what the
+renderer actually produced, not what the JSON says. It is for *answering
+questions* — does this text overflow, what size did auto-fit settle on — not
+for authoring, which is the HTML file's job.
 
 ```bash
 slide-agent inspect ~/talks/millivid --selected
@@ -207,7 +248,13 @@ the selection in red. `--built` fires every build so the finished slide is
 captured rather than its opening state. Renders go through the same player the
 projector runs, and need `npm run build:export` once.
 
-### Change the deck with a transaction
+### Change the deck with a transaction — the fallback path
+
+**Reach for this only when HTML cannot express what you need**: a deck-wide
+setting, or tooling with no browser. Authoring slides this way means computing
+geometry by hand, which is exactly what the HTML loop exists to avoid. Note
+that saving an `edit/*.html` file becomes one of these transactions anyway —
+you are not gaining atomicity by writing it yourself, only losing the browser.
 
 A transaction is all-or-nothing, named, and refuses to run if the deck moved
 after you read it:

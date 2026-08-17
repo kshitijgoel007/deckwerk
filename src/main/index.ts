@@ -1,6 +1,6 @@
-import { type FSWatcher, existsSync, watch } from 'node:fs';
+import { type FSWatcher, existsSync, mkdirSync, watch } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
-import { BrowserWindow, app, dialog, ipcMain } from 'electron';
+import { BrowserWindow, app, dialog, ipcMain, shell } from 'electron';
 import type { Deck } from '@shared/deck.js';
 import { IPC } from '@shared/ipc.js';
 import type {
@@ -30,6 +30,7 @@ import {
 import { exportDeck } from './exportDeck.js';
 import { probeMedia, runTrim } from './ffmpeg.js';
 import { importKeynote } from './keynoteImport.js';
+import { HTML_EDIT_DIR, writeHtmlScope } from './htmlAuthoring.js';
 import {
   createEditorWindow, createPresentWindow, createPresenterWindow, createTrimWindow,
 } from './windows.js';
@@ -60,6 +61,8 @@ function requireSession(): DeckSession {
 let watchers: FSWatcher[] = [];
 /** Exactly what we last wrote, so the watcher can tell an echo from an edit. */
 let lastSavedDeckJson: string | null = null;
+/** HTML the editor itself just exported; its watcher event is an echo, not an edit. */
+const lastWrittenHtml = new Map<string, string>();
 
 function setSession(dir: string, deck: Deck): DeckSession {
   session = { dir, deck };
@@ -83,7 +86,10 @@ function watchDeck(dir: string, themeFile: string): void {
   watchers = [];
   let deckTimer: NodeJS.Timeout | null = null;
   let themeTimer: NodeJS.Timeout | null = null;
+  const htmlTimers = new Map<string, NodeJS.Timeout>();
   try {
+    const editDir = join(dir, HTML_EDIT_DIR);
+    mkdirSync(editDir, { recursive: true });
     watchers.push(
       watch(join(dir, 'deck.json'), () => {
         // Debounced: editors and agents often write in bursts.
@@ -115,6 +121,32 @@ function watchDeck(dir: string, themeFile: string): void {
             if (!win.isDestroyed()) win.webContents.send(IPC.themeCss, css);
           }
         }, 200);
+      }),
+      // Saving an authoring file is the everyday way slides change, so it must
+      // be cheap: the contents go straight to the editor's renderer, which is
+      // already a browser and lays them out in an offscreen iframe. Nothing is
+      // spawned, and the compile is measured by the engine that will draw it.
+      watch(editDir, (_event, filename) => {
+        if (!filename || !String(filename).endsWith('.html')) return;
+        const path = join(editDir, String(filename));
+        const previous = htmlTimers.get(path);
+        if (previous) clearTimeout(previous);
+        htmlTimers.set(path, setTimeout(async () => {
+          htmlTimers.delete(path);
+          try {
+            const { readFile } = await import('node:fs/promises');
+            const contents = await readFile(path, 'utf8');
+            // The editor's own export lands here too; that event is an echo.
+            if (lastWrittenHtml.get(path) === contents) {
+              lastWrittenHtml.delete(path);
+              return;
+            }
+            if (!session || session.dir !== dir || !editorWindow || editorWindow.isDestroyed()) return;
+            editorWindow.webContents.send(IPC.htmlEdit, { path, contents });
+          } catch (error) {
+            console.error(`Could not read HTML edit ${path}:`, error);
+          }
+        }, 200));
       }),
     );
   } catch {
@@ -229,6 +261,17 @@ function registerHandlers(): void {
   ipcMain.handle(IPC.deckSaveTheme, async (_e, css: string): Promise<void> => {
     const s = requireSession();
     await saveTheme(s.dir, s.deck.theme, css);
+  });
+
+  ipcMain.handle(IPC.htmlExport, async (_e, slideIds: string[]): Promise<string> => {
+    const s = requireSession();
+    const written = await writeHtmlScope(s.dir, s.deck, slideIds);
+    lastWrittenHtml.set(written.path, written.contents);
+    const openError = await shell.openPath(written.path);
+    if (openError) {
+      throw new Error(`HTML was written to ${written.path}, but could not be opened: ${openError}`);
+    }
+    return written.path;
   });
 
   ipcMain.handle(

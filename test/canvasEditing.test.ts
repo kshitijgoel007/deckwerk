@@ -913,8 +913,11 @@ describe('object creation and manipulation', () => {
     expect(Number.parseFloat(drawn.style.left) + changed.x).toBeCloseTo(end.x, 1);
     expect(Number.parseFloat(drawn.style.top) + changed.y).toBeCloseTo(end.y, 1);
     expect(drawn.style.transform).toBe('translate(-50%, -50%)');
-    expect(host.querySelector(`[data-element-id="${line.id}"] svg`)!.getAttribute('style'))
-      .toContain('display: block');
+    // Block, not inline: an inline SVG sits on a text baseline, which pushes a
+    // 1px rule ~14px below its own endpoints. Asserted as the resolved value
+    // rather than as attribute text, which only reflects who serialised it.
+    const svg = host.querySelector<SVGElement>(`[data-element-id="${line.id}"] svg`)!;
+    expect(getComputedStyle(svg).display).toBe('block');
   });
 
   it('deletes a selected text box and clears its selection', () => {

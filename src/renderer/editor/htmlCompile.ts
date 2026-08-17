@@ -1,0 +1,131 @@
+import { AGENT_PROTOCOL_VERSION, type AgentTransaction } from '@shared/agent.js';
+import type { Deck, Slide } from '@shared/deck.js';
+import type { AuthoredHtmlFile } from '@shared/ipc.js';
+import renderMathInElement from 'katex/contrib/auto-render';
+import { authoringPageHtml, measureSlides } from '@shared/htmlMeasure.js';
+import { htmlSlideScope, htmlSyncOperations, renderAuthoredMath, slidesFromMeasured } from '@shared/htmlSlides.js';
+import { PLAYER_TYPE_CSS } from '@shared/playerTypeCss.js';
+import { browserDeckRevision } from './agentBridge.js';
+
+/**
+ * Compiling authored HTML inside the editor itself.
+ *
+ * The editor is already a browser, so when it is open there is no reason to
+ * start a second one: the page goes into an offscreen iframe at canvas size,
+ * and the same walk the offline compiler runs measures it here. That removes a
+ * whole Electron process from the save-and-watch loop — the file is saved and
+ * the slides move, with no spawn in between — and it means the geometry is
+ * measured by the very engine that will draw it.
+ *
+ * The iframe is not a nicety: the authoring page carries the deck's `theme.css`
+ * without the player's positioning rules, which would wreck the editor's own
+ * layout if it were mounted in this document.
+ */
+
+/** Lay authored markup out at canvas size and report it as ordinary slides. */
+export async function compileAuthoredHtml(
+  deck: Deck,
+  authored: string,
+  theme: string,
+): Promise<Slide[]> {
+  const frame = document.createElement('iframe');
+  frame.setAttribute('aria-hidden', 'true');
+  Object.assign(frame.style, {
+    position: 'fixed', left: '-100000px', top: '0', border: '0', opacity: '0',
+    pointerEvents: 'none', width: `${deck.canvas.w}px`, height: `${deck.canvas.h}px`,
+  });
+  document.body.appendChild(frame);
+
+  try {
+    const doc = frame.contentDocument;
+    if (!doc) throw new Error('The authoring page has no document');
+    // Written rather than handed over as `srcdoc`, because the frame's own load
+    // event is not a reliable signal here: a blank frame fires one the moment
+    // it is appended. What the measurement actually depends on is waited for
+    // explicitly below.
+    //
+    // Deck-relative asset paths must resolve the way the player resolves them,
+    // which in this window is the deck: scheme rather than a file URL.
+    doc.open();
+    doc.write(authoringPageHtml({
+      authored,
+      typeCss: PLAYER_TYPE_CSS,
+      theme,
+      themeHref: deck.theme,
+      canvas: deck.canvas,
+      base: 'deck://asset/',
+    }));
+    doc.close();
+
+    // This frame's policy blocks the page's own scripts, including the KaTeX
+    // it carries — so the maths pass runs here, with the editor's bundled
+    // KaTeX, against the frame's document. The page's inlined KaTeX *style*
+    // still applies (its fonts are data: URIs), which is what makes the
+    // rendered maths measure the same here as in any other browser.
+    renderAuthoredMath(doc, renderMathInElement as (el: Element, opts: unknown) => void);
+
+    // An image that has not arrived measures as nothing and a font that has
+    // not arrived measures as the fallback — either one bakes wrong geometry
+    // into the deck, silently. (The theme is not in this list: it was resolved
+    // into the page above rather than left as a fetch to wait on.)
+    await imagesSettled(doc);
+    await doc.fonts?.ready;
+    await nextFrame();
+    return slidesFromMeasured(deck, measureSlides(doc));
+  } finally {
+    frame.remove();
+  }
+}
+
+/** Resolve once every image has loaded or failed; a broken asset must not hang a save. */
+function imagesSettled(doc: Document): Promise<unknown> {
+  return Promise.all([...doc.images].map((image) => image.complete
+    ? Promise.resolve()
+    : new Promise<void>((resolve) => {
+      image.addEventListener('load', () => resolve(), { once: true });
+      image.addEventListener('error', () => resolve(), { once: true });
+    })));
+}
+
+function nextFrame(): Promise<void> {
+  if (typeof requestAnimationFrame !== 'function') return Promise.resolve();
+  return new Promise((resolve) => requestAnimationFrame(() => resolve()));
+}
+
+/**
+ * The transaction a saved authoring file implies, or null when it implies none.
+ *
+ * The exported range is authoritative: slides in the file are replaced or
+ * inserted, slides that were exported but are now absent are deleted, and the
+ * file's order is applied — one transaction, so one undo entry.
+ */
+export async function authoredHtmlTransaction(
+  deck: Deck,
+  file: AuthoredHtmlFile,
+  theme: string,
+): Promise<AgentTransaction | null> {
+  const scope = htmlSlideScope(file.contents);
+  const slides = await compileAuthoredHtml(deck, file.contents, theme);
+  if (slides.length === 0 && scope === null) {
+    throw new Error(`No slides found in ${fileName(file.path)}`);
+  }
+  const operations = htmlSyncOperations(
+    deck,
+    slides,
+    scope,
+    deck.slides[deck.slides.length - 1]?.id ?? null,
+  );
+  // A file that asks for nothing at all — no slides of its own and none to
+  // delete — is a save to sit out, not an error to put in front of the user.
+  if (operations.length === 0) return null;
+  return {
+    version: AGENT_PROTOCOL_VERSION,
+    expectedRevision: await browserDeckRevision(deck),
+    label: `Update slides from ${fileName(file.path)}`,
+    operations,
+  };
+}
+
+export function fileName(path: string): string {
+  return path.split('/').pop() ?? path;
+}

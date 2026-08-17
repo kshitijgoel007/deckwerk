@@ -5,6 +5,7 @@ import type {
   AgentContextDraft,
   AgentRequest,
   AgentResponse,
+  AuthoredHtmlFile,
   DeckSession,
   ImportedAsset,
   KeynoteImportResult,
@@ -46,6 +47,7 @@ const api = {
   importKeynote: (): Promise<KeynoteImportResult | null> =>
     ipcRenderer.invoke(IPC.keynoteImport),
   exportBundle: (): Promise<string | null> => ipcRenderer.invoke(IPC.exportBundle),
+  exportHtml: (slideIds: string[]): Promise<string> => ipcRenderer.invoke(IPC.htmlExport, slideIds),
   publishAgentContext: (context: AgentContextDraft): Promise<void> =>
     ipcRenderer.invoke(IPC.agentContextPublish, context),
   respondAgentRequest: (response: AgentResponse): void =>
@@ -76,6 +78,9 @@ const api = {
   onThemeCss: (fn: (css: string) => void): (() => void) => on(IPC.themeCss, fn),
   onAgentRequest: (fn: (request: AgentRequest) => void): (() => void) =>
     on(IPC.agentRequest, fn),
+  /** A file under the deck's `edit/` folder was saved and wants compiling. */
+  onHtmlEdit: (fn: (file: AuthoredHtmlFile) => void): (() => void) =>
+    on(IPC.htmlEdit, fn),
   onTrimTarget: (fn: (p: { src: string; elementId: string }) => void): (() => void) =>
     on(IPC.trimOpen, fn),
   onTrimProgress: (fn: (p: TrimProgress) => void): (() => void) =>

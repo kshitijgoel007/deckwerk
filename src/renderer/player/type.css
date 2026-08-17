@@ -1,0 +1,75 @@
+/*
+ * The semantic type fallback, split out from the structural styles.
+ *
+ * A deck's own theme.css loads after this and overrides it. Imported decks
+ * often only style `.kn-text`; without these defaults, title and body content
+ * added later would render at the browser default 16px.
+ *
+ * This lives in its own file because two things need it and only one of them
+ * wants the rest of player.css: the player, and the HTML slide compiler, which
+ * must reproduce the deck's typography exactly while *not* inheriting the
+ * absolute positioning the player applies. If these rules were duplicated, a
+ * compiled slide would measure one size and render at another.
+ */
+
+.element-text { font-size: 44px; line-height: 1.25; }
+.role-title { font-size: 92px; font-weight: 700; line-height: 1.08; letter-spacing: -0.02em; }
+.role-heading { font-size: 58px; font-weight: 600; line-height: 1.15; }
+.role-body { font-size: 44px; line-height: 1.3; }
+.role-caption { font-size: 28px; line-height: 1.3; }
+
+/*
+ * Text rules that are presentation, not positioning.
+ *
+ * They live here rather than in player.css because two DOMs need them: the
+ * player's (`.text-body` inside an element wrapper) and the HTML export's,
+ * where the element *is* the text box and carries `data-valign`. A rule that
+ * only knew about the first is why an exported file showed the literal word
+ * "Text" for every empty imported Keynote box, and broke lines where the
+ * player would not.
+ */
+.text-body {
+  box-sizing: border-box;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Auto-fit has a 6px readability floor. Pathologically long unbroken content
+   is clipped at that floor rather than painting over neighbouring objects. */
+.element-text[data-auto-fit="true"] .text-body,
+.element-text[data-autofit="true"] .text-body { overflow: hidden; }
+
+/* Empty imported Keynote text boxes are authoring affordances, not slide
+   content. The editor makes them faintly visible again; presentations, web
+   exports and authoring files must never show a literal "Text" placeholder. */
+.element.placeholder .text-body {
+  visibility: hidden;
+}
+
+/* Import gaps are meant to be conspicuous: a placeholder you can see is a
+   placeholder you will fix. */
+.element-unsupported,
+[data-element="unsupported"] {
+  border: 2px dashed #e0463c;
+  background: rgb(224 70 60 / 8%);
+}
+
+.unsupported-body,
+[data-element="unsupported"] {
+  box-sizing: border-box;
+  padding: 8px;
+  overflow: hidden;
+  color: #e0463c;
+  font: 500 20px/1.3 ui-monospace, monospace;
+}
+
+/* Bulleted lists inside text elements. theme.css can restyle the markers. */
+.text-body ul {
+  margin: 0;
+  padding-left: 1.1em;
+  text-align: left;
+}
+
+.text-body li {
+  margin: 0.15em 0;
+}

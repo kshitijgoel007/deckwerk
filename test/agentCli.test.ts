@@ -9,6 +9,8 @@ import { type Deck, type Slide, emptyDeck, parseDeck } from '../src/shared/deck.
 import {
   EXIT_CONFLICT, EXIT_ERROR, EXIT_OK, EXIT_USAGE, agentGuidePath, runAgentCli,
 } from '../src/cli/agentCli.js';
+import { applyAgentTransaction } from '../src/shared/agent.js';
+import { htmlSyncOperations } from '../src/shared/htmlSlides.js';
 import { agentRuntimePaths, deckRevision } from '../src/main/agentRuntime.js';
 import { createDeck, ensureAgentGuide } from '../src/main/deckStore.js';
 import { getFfmpegPath } from '../src/main/ffmpeg.js';
@@ -157,7 +159,7 @@ describe('slide-agent CLI', () => {
   it('validates a deck folder and fails loudly on a dangling reference', async () => {
     const clean = await parsed('validate');
     expect(clean.code).toBe(EXIT_OK);
-    expect(clean.json).toMatchObject({ valid: true, errors: [] });
+    expect(clean.json).toMatchObject({ valid: true, errors: [], importGaps: [] });
 
     const deck = await onDisk();
     deck.slides[0].timeline = [{
@@ -171,6 +173,24 @@ describe('slide-agent CLI', () => {
     expect(broken.code).toBe(EXIT_ERROR);
     expect(broken.json.valid).toBe(false);
     expect(broken.json.errors[0]).toMatch(/targets missing element not-here/);
+  });
+
+  it('surfaces import gaps without making an otherwise sound deck invalid', async () => {
+    const deck = await onDisk();
+    deck.slides[0].elements.push({
+      id: 'chart-gap', type: 'unsupported', x: 20, y: 30, w: 400, h: 300,
+      rot: 0, z: 2, opacity: 1, class: [], style: {},
+      originalType: 'TSD.ChartArchive', note: 'bar chart',
+    });
+    await writeDeck(deck);
+
+    const checked = await parsed('validate');
+    expect(checked.code).toBe(EXIT_OK);
+    expect(checked.json.valid).toBe(true);
+    expect(checked.json.importGaps).toEqual([{
+      slideId: 'slide-1', elementId: 'chart-gap',
+      originalType: 'TSD.ChartArchive', note: 'bar chart',
+    }]);
   });
 
   it('applies a transaction offline and refuses the same one twice', async () => {
@@ -201,6 +221,41 @@ describe('slide-agent CLI', () => {
     expect((await onDisk()).slides).toHaveLength(3);
   });
 
+  it('syncs an exported HTML scope including deletes, inserts and reorder', async () => {
+    const deck = await onDisk();
+    deck.slides.push(
+      slideOf('slide-3', [text('title-3', 'Third')]),
+      slideOf('slide-4', [text('title-4', 'Fourth')]),
+    );
+    const authored = [
+      slideOf('slide-3', [text('title-3', 'Third, edited')]),
+      slideOf('new-slide', [text('new-title', 'New')]),
+      slideOf('slide-2', [text('title-2', 'Second, edited')]),
+    ];
+    const operations = htmlSyncOperations(deck, authored, ['slide-2', 'slide-3'], 'slide-4');
+    const next = applyAgentTransaction(deck, {
+      version: 1,
+      expectedRevision: deckRevision(deck),
+      label: 'Sync HTML',
+      operations,
+    });
+
+    expect(next.slides.map((slide) => slide.id))
+      .toEqual(['slide-1', 'slide-3', 'new-slide', 'slide-2', 'slide-4']);
+    expect(next.slides.find((slide) => slide.id === 'slide-3')?.elements[0])
+      .toMatchObject({ html: 'Third, edited' });
+  });
+
+  it('deletes slides missing from an HTML scope without touching slides outside it', async () => {
+    const deck = await onDisk();
+    deck.slides.push(slideOf('slide-3'));
+    const operations = htmlSyncOperations(deck, [], ['slide-1', 'slide-2'], null);
+    const next = applyAgentTransaction(deck, {
+      version: 1, expectedRevision: deckRevision(deck), label: 'Delete HTML range', operations,
+    });
+    expect(next.slides.map((slide) => slide.id)).toEqual(['slide-3']);
+  });
+
   it('fails a render before launching anything when the request cannot be met', async () => {
     const missingOutput = await cli('render', '--all');
     expect(missingOutput.code).toBe(EXIT_USAGE);
@@ -226,13 +281,16 @@ describe('slide-agent CLI', () => {
       await createDeck(fresh, 'New talk');
 
       const brief = await readFile(join(fresh, 'AGENTS.md'), 'utf8');
-      expect(brief).toContain('slide-agent capabilities');
       expect(brief).toContain('slide-agent context');
+      expect(brief).toContain('slide-agent inspect --html');
+      expect(brief).toContain('slide-agent apply');
       expect(brief).toContain('slide-agent docs');
-      // The stub exists to stop two failure modes: hand-editing the document,
+      // The stub exists to stop two failure modes: hand-authoring geometry,
       // and reading the whole deck before doing anything.
-      expect(brief).toMatch(/never hand-edit/);
-      expect(brief).toMatch(/Do not read deck\.json/);
+      expect(brief).toMatch(/do not compute slide geometry/i);
+      expect(brief).toMatch(/Do not read\s+.?deck\.json/);
+      // And to say what replaced them: save the file, the editor syncs it.
+      expect(brief).toMatch(/the editor syncs it back/i);
       // And to name the one convention an agent reliably gets wrong.
       expect(brief).toContain('KaTeX');
     });

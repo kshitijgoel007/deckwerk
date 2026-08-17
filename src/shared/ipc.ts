@@ -28,6 +28,8 @@ export const IPC = {
   trimDone: 'trim:done',
   keynoteImport: 'keynote:import',
   exportBundle: 'export:bundle',
+  htmlExport: 'html:export',
+  htmlEdit: 'html:edit',
   agentContextPublish: 'agent:contextPublish',
   agentRequest: 'agent:request',
   agentResponse: 'agent:response',
@@ -43,6 +45,18 @@ export interface PresentationState {
   cursor: { slide: number; step: number };
   steps: number;
   startedAt: number;
+}
+
+/**
+ * A saved file from the deck's `edit/` folder, on its way to being compiled.
+ *
+ * The main process watches; the editor's renderer is what lays the markup out,
+ * so the contents travel rather than the reader.
+ */
+export interface AuthoredHtmlFile {
+  /** Absolute path, used to name the resulting change. */
+  path: string;
+  contents: string;
 }
 
 /** An open deck: its folder on disk plus the parsed document. */

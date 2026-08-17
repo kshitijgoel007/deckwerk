@@ -11,5 +11,10 @@ export default defineConfig({
   },
   test: {
     include: ['test/**/*.test.ts'],
+    // Vitest stubs CSS imports to an empty string, `?raw` included — which
+    // would quietly hand the HTML exporter no type rules and let a test pass
+    // on a page the app would never produce. Only `type.css` is exempted, so
+    // stylesheets the editor imports for effect stay stubbed as before.
+    css: { include: [/type\.css/] },
   },
 });

@@ -1,5 +1,7 @@
 import type { Deck, Slide, SlideElement } from '@shared/deck.js';
 import { fitScale } from '@shared/geometry.js';
+import { fitAutoTextElement } from '@shared/autoFit.js';
+import { quadraticPath, shapeSvg } from '@shared/shapeSvg.js';
 import renderMathInElement from 'katex/contrib/auto-render';
 import 'katex/dist/katex.min.css';
 
@@ -17,6 +19,9 @@ import 'katex/dist/katex.min.css';
 export interface RenderOptions {
   resolveSrc: (src: string) => string;
 }
+
+export { quadraticPath };
+export { fitAutoTextElement };
 
 /** Build the `<div class="slide">` for a slide, with elements absolutely placed. */
 export function renderSlide(slide: Slide, opts: RenderOptions): HTMLElement {
@@ -130,48 +135,6 @@ export function fitAutoText(root: ParentNode): void {
   for (const node of root.querySelectorAll<HTMLElement>('.element-text[data-auto-fit="true"]')) {
     fitAutoTextElement(node);
   }
-}
-
-/**
- * Shrink one text element until both its width and height fit its box.
- *
- * The wrapper retains the authored/theme font size. Only `.text-content` gets
- * a fitted override, so shortening the text or enlarging the box can grow it
- * back up to that original ceiling on the next pass.
- */
-export function fitAutoTextElement(node: HTMLElement, minimum = 6): number | null {
-  const body = node.querySelector<HTMLElement>(':scope > .text-body');
-  const content = body?.querySelector<HTMLElement>(':scope > .text-content');
-  if (!body || !content || body.clientWidth <= 0 || body.clientHeight <= 0) return null;
-
-  content.style.removeProperty('font-size');
-  const ceiling = Number.parseFloat(getComputedStyle(node).fontSize);
-  if (!Number.isFinite(ceiling) || ceiling <= 0) return null;
-
-  const fits = (size: number): boolean => {
-    content.style.fontSize = `${size}px`;
-    return content.scrollWidth <= body.clientWidth + 0.5 &&
-      content.scrollHeight <= body.clientHeight + 0.5;
-  };
-
-  if (fits(ceiling)) {
-    content.dataset.fittedFontSize = String(ceiling);
-    return ceiling;
-  }
-
-  let low = Math.min(minimum, ceiling);
-  let high = ceiling;
-  // A sub-pixel binary search is stable and takes far fewer layouts than
-  // decrementing one pixel at a time for 100pt imported display type.
-  for (let i = 0; i < 10; i++) {
-    const middle = (low + high) / 2;
-    if (fits(middle)) low = middle;
-    else high = middle;
-  }
-  const fitted = Math.round(low * 10) / 10;
-  content.style.fontSize = `${fitted}px`;
-  content.dataset.fittedFontSize = String(fitted);
-  return fitted;
 }
 
 /** Defer until the rendered node has been attached and therefore has layout. */
@@ -364,127 +327,18 @@ function renderVideo(
   return video;
 }
 
+/**
+ * The shape's own drawing, parsed from the one implementation in
+ * `@shared/shapeSvg`. The exporter writes the same markup into the authoring
+ * file, so a shape looks the same in the browser as it does on the projector.
+ */
 function renderShape(el: Extract<SlideElement, { type: 'shape' }>): SVGElement {
-  const ns = 'http://www.w3.org/2000/svg';
-  const svg = document.createElementNS(ns, 'svg');
-  svg.setAttribute('width', '100%');
-  svg.setAttribute('height', '100%');
-  // A path carries its own coordinate space; everything else is drawn directly
-  // in element pixels.
-  const view = el.shape === 'path' && el.pathSize ? el.pathSize : { w: el.w, h: el.h };
-  svg.setAttribute('viewBox', `0 0 ${view.w} ${view.h}`);
-  svg.setAttribute('preserveAspectRatio', 'none');
-  // Inline SVG participates in a text baseline. That adds a ~14px line box
-  // offset when the wrapper is only 1-2px tall, making a correctly positioned
-  // line render below its numeric endpoints. Shapes are graphics, so block
-  // layout is the exact coordinate model we need.
-  svg.style.display = 'block';
-  svg.style.overflow = 'visible';
-
-  const fill = el.fill ?? 'none';
-  const stroke = el.stroke ?? 'none';
-  const sw = String(el.strokeWidth);
-  // Insets keep a centred stroke from being clipped at the element's edge.
-  const inset = el.strokeWidth / 2;
-
-  let node: SVGElement;
-  switch (el.shape) {
-    case 'rect': {
-      node = document.createElementNS(ns, 'rect');
-      node.setAttribute('x', String(inset));
-      node.setAttribute('y', String(inset));
-      node.setAttribute('width', String(Math.max(0, el.w - el.strokeWidth)));
-      node.setAttribute('height', String(Math.max(0, el.h - el.strokeWidth)));
-      if (el.radius) node.setAttribute('rx', String(el.radius));
-      break;
-    }
-    case 'ellipse': {
-      node = document.createElementNS(ns, 'ellipse');
-      node.setAttribute('cx', String(el.w / 2));
-      node.setAttribute('cy', String(el.h / 2));
-      node.setAttribute('rx', String(Math.max(0, el.w / 2 - inset)));
-      node.setAttribute('ry', String(Math.max(0, el.h / 2 - inset)));
-      break;
-    }
-    case 'line':
-    case 'arrow': {
-      if (el.control) {
-        node = document.createElementNS(ns, 'path');
-        node.setAttribute('d', quadraticPath(el));
-        node.setAttribute('stroke-linecap', 'round');
-        node.setAttribute('stroke-linejoin', 'round');
-      } else {
-        node = document.createElementNS(ns, 'line');
-        node.setAttribute('x1', '0');
-        node.setAttribute('y1', String(el.h / 2));
-        node.setAttribute('x2', String(el.w));
-        node.setAttribute('y2', String(el.h / 2));
-      }
-      if (el.shape === 'arrow' || el.arrowEnd || el.arrowStart) {
-        const markerId = `arrowhead-${el.id}`;
-        svg.appendChild(arrowMarker(ns, markerId, stroke));
-        // An imported arrow says which end carries the head; a hand-drawn
-        // 'arrow' shape defaults to the end.
-        if (el.arrowStart) node.setAttribute('marker-start', `url(#${markerId})`);
-        if (el.arrowEnd || (!el.arrowStart && el.shape === 'arrow')) {
-          node.setAttribute('marker-end', `url(#${markerId})`);
-        }
-      }
-      break;
-    }
-    case 'path': {
-      node = document.createElementNS(ns, 'path');
-      node.setAttribute('d', el.path ?? '');
-      node.setAttribute('stroke-linecap', 'round');
-      node.setAttribute('stroke-linejoin', 'round');
-      if (el.arrowEnd || el.arrowStart) {
-        const markerId = `arrowhead-${el.id}`;
-        svg.appendChild(arrowMarker(ns, markerId, stroke));
-        if (el.arrowEnd) node.setAttribute('marker-end', `url(#${markerId})`);
-        if (el.arrowStart) node.setAttribute('marker-start', `url(#${markerId})`);
-      }
-      break;
-    }
-  }
-
-  // Open strokes must not be flood-filled; closed shapes take their fill.
-  const unfilled = el.shape === 'line' || el.shape === 'arrow';
-  node.setAttribute('fill', unfilled ? 'none' : fill);
-  node.setAttribute('stroke', stroke);
-  node.setAttribute('stroke-width', sw);
-  svg.appendChild(node);
-  return svg;
+  const template = document.createElement('template');
+  template.innerHTML = shapeSvg(el);
+  return template.content.firstElementChild as SVGElement;
 }
 
-/** Quadratic Bézier path in the rotated line element's local coordinates. */
-export function quadraticPath(el: Extract<SlideElement, { type: 'shape' }>): string {
-  if (!el.control) return '';
-  const cx = el.x + el.w / 2;
-  const cy = el.y + el.h / 2;
-  const radians = (el.rot * Math.PI) / 180;
-  const dx = el.control.x - cx;
-  const dy = el.control.y - cy;
-  const localX = dx * Math.cos(radians) + dy * Math.sin(radians) + el.w / 2;
-  const localY = -dx * Math.sin(radians) + dy * Math.cos(radians) + el.h / 2;
-  return `M 0 ${el.h / 2} Q ${localX} ${localY} ${el.w} ${el.h / 2}`;
-}
 
-function arrowMarker(ns: string, id: string, color: string): SVGDefsElement {
-  const defs = document.createElementNS(ns, 'defs') as SVGDefsElement;
-  const marker = document.createElementNS(ns, 'marker');
-  marker.setAttribute('id', id);
-  marker.setAttribute('markerWidth', '6');
-  marker.setAttribute('markerHeight', '6');
-  marker.setAttribute('refX', '5');
-  marker.setAttribute('refY', '3');
-  marker.setAttribute('orient', 'auto');
-  const path = document.createElementNS(ns, 'path');
-  path.setAttribute('d', 'M0,0 L6,3 L0,6 Z');
-  path.setAttribute('fill', color);
-  marker.appendChild(path);
-  defs.appendChild(marker);
-  return defs;
-}
 
 /**
  * Size the stage so the fixed canvas fills the viewport without cropping.

@@ -1,7 +1,9 @@
 import '../player/player.css';
 import './editor.css';
+import { applyAgentTransaction } from '@shared/agent.js';
 import type { SlideElement } from '@shared/deck.js';
 import { emptyDeck } from '@shared/deck.js';
+import type { AuthoredHtmlFile } from '@shared/ipc.js';
 import { makeId } from '@shared/geometry.js';
 import {
   THEMES,
@@ -18,6 +20,7 @@ import { EditorCanvas } from './canvas.js';
 import { CssEditor } from './cssEditor.js';
 import { Inspector } from './inspector.js';
 import { HistoryPanel } from './historyPanel.js';
+import { authoredHtmlTransaction, fileName } from './htmlCompile.js';
 import { createShapeInsertPicker, insertText } from './elementCreation.js';
 import { createThemeGallery, type ThemeGallery } from './themeGallery.js';
 import { SlideRail } from './slideRail.js';
@@ -87,6 +90,49 @@ const agent = new AgentBridge(store, {
 });
 window.api.onAgentRequest?.((request) => void agent.handle(request));
 
+/**
+ * Saving a file in the deck's `edit/` folder is the agent's everyday edit.
+ *
+ * It is compiled here rather than in a spawned browser: this window already is
+ * one, it holds the live deck, and applying the result in place is what makes
+ * the change a single labelled undo entry instead of a file landing underneath
+ * the user. The theme comes from the editor rather than from disk, so slides
+ * are measured against the typography currently on screen.
+ */
+window.api.onHtmlEdit?.((file) => void applyHtmlEdit(file));
+
+let htmlEditQueue: Promise<void> = Promise.resolve();
+
+function applyHtmlEdit(file: AuthoredHtmlFile): Promise<void> {
+  // Serialised: two saves in flight would compile against the same deck and
+  // the second would apply operations built from a deck that no longer exists.
+  htmlEditQueue = htmlEditQueue.then(async () => {
+    const name = fileName(file.path);
+    try {
+      // Compiling takes a moment, and the user may edit during it. The
+      // operations address slides by id in a deck that has since been replaced,
+      // so compile again rather than apply them to a document that moved.
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const deck = store.get().deck;
+        const transaction = await authoredHtmlTransaction(deck, file, cssEditor.getValue());
+        if (store.get().deck !== deck) continue;
+        if (!transaction) {
+          setStatusMessage(`${name} asks for no change`);
+          return;
+        }
+        store.replaceWithHistory(applyAgentTransaction(deck, transaction), transaction.label);
+        await save();
+        setStatusMessage(`Applied ${name}`);
+        return;
+      }
+      setStatusMessage(`${name}: the deck kept changing while it compiled — save it again`);
+    } catch (err) {
+      setStatusMessage(`${name}: ${err instanceof Error ? err.message : err}`);
+    }
+  });
+  return htmlEditQueue;
+}
+
 /* --- toolbar --- */
 
 function buildToolbar(): void {
@@ -118,6 +164,17 @@ function buildToolbar(): void {
   const right = document.createElement('div');
   right.className = 'bar-group bar-right deck-only';
   right.append(
+    barButton('Edit HTML', async () => {
+      try {
+        const ids = store.get().deck.slides
+          .filter((slide) => store.get().slideSelection.has(slide.id))
+          .map((slide) => slide.id);
+        const path = await window.api.exportHtml(ids);
+        setStatusMessage(`HTML ready at ${path}`);
+      } catch (err) {
+        setStatusMessage(`HTML export failed: ${err instanceof Error ? err.message : err}`);
+      }
+    }),
     barButton('Present', async () => {
       // Flush before presenting: the projector must not show a stale theme.
       await cssEditor.flush();

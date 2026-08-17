@@ -113,36 +113,35 @@ function agentGuideStub(): string {
 
 This folder is a slide-editor deck:
 
-    deck.json   content, geometry and builds
-    theme.css   typography and colour
-    assets/     media, referenced by deck-relative path
+	deck.json   content, geometry and builds — do not edit by hand
+	theme.css   typography and colour
+	edit/       HTML authoring files, watched by the editor
+	assets/     media, referenced by deck-relative path
 
-**Do not read deck.json or theme.css to get started, and never hand-edit
-them.** Two commands tell you everything you need, and are far smaller than the
-deck:
+**You edit HTML; the editor syncs it back into the presentation.** Do not read
+\`deck.json\` and do not compute slide geometry — that is what this loop exists
+to avoid.
 
-    slide-agent capabilities   # what the editor can do, with copyable JSON
-    slide-agent context        # this deck: outline, house style, revision
+    slide-agent context                                    # the outline
+    slide-agent inspect --html --selected > edit/work.html # export a range
+    # edit edit/work.html and save it
 
-\`capabilities\` before you author: maths is \`$E = mc^2$\` and renders through
-KaTeX, cropping is a \`sourceBox\`, video carries a non-destructive trim, and
-builds and Magic Move are declarative. Each feature comes with a working
-example, a screenshot of it and the markup it produces.
+Open that file in a browser: it *is* the slide, full size, with this deck's
+theme and assets. Edit it like a web page — flexbox, grid, semantic HTML — and
+the browser computes the geometry. While the editor is open, saving the file
+updates exactly those slides about 200 ms later, as one undoable change. Adding,
+removing or reordering \`<section>\`s adds, removes or reorders slides. Keep the
+file in \`edit/\`: its \`<base>\` is what makes assets and the theme resolve.
 
-\`context\` before you place anything: it returns the slide outline (to find
-where a new section belongs), the text roles and geometry this deck actually
-uses, a \`slideTemplate\` in those conventions to copy, and the \`deckRevision\`
-your change must quote.
+With the editor closed there is no watcher, so apply it explicitly:
 
-Then send one transaction — revision-checked, validated and atomic. While the
-editor is open it lands in its undo history as one labelled entry, with the
-author's selection left where it was:
-
-    slide-agent transaction apply . change.json
+    slide-agent apply . --html edit/work.html
     slide-agent validate
 
-\`slide-agent docs\` has the full guide; \`slide-agent inspect --slide <id>\`
-has the details of one slide when you actually need them.
+\`slide-agent capabilities\` documents builds, Magic Move, crops, video trim
+and KaTeX. \`slide-agent docs\` has the full guide. The older JSON transaction
+API is still there for tooling with no browser, but it is not how slides are
+authored any more.
 ${fallback}
 This file was generated when the deck was opened. It is yours now — add notes
 about the talk to it if you like; the editor never rewrites it.

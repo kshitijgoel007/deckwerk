@@ -1,0 +1,288 @@
+// @vitest-environment jsdom
+import { describe, expect, it } from 'vitest';
+import { applyAgentTransaction } from '../src/shared/agent.js';
+import { emptyDeck } from '../src/shared/deck.js';
+import { authoringPageHtml, measureSlides, measureSlidesSource } from '../src/shared/htmlMeasure.js';
+import { htmlSlideScope, slidesFromMeasured, slidesToHtml, type MeasuredSlide } from '../src/shared/htmlSlides.js';
+import { applySlideLayout } from '../src/renderer/editor/slideLayouts.js';
+import { authoredHtmlTransaction, compileAuthoredHtml } from '../src/renderer/editor/htmlCompile.js';
+
+/**
+ * The one walk, shared by two browsers.
+ *
+ * The editor compiles a saved authoring file in an offscreen iframe of its own
+ * renderer; `slide-agent apply --html` compiles it in a headless Electron
+ * window, which has no bundler and so is handed the function's own source.
+ * Those two must stay the same code — a copy would drift and slides would move
+ * depending on who compiled them — so what is asserted here is that both
+ * routes exist and agree on the page they measure.
+ *
+ * Whether the browser measured the *right* geometry is a different question,
+ * answered by the round-trip test against a real deck.
+ */
+
+function pageHtml(body: string): string {
+  return authoringPageHtml({
+    authored: body,
+    typeCss: '.role-title { font-size: 92px; }',
+    theme: '.slide { background: #ffffff; }',
+    canvas: emptyDeck().canvas,
+    base: 'deck://asset/',
+  });
+}
+
+function pageDocument(body: string): Document {
+  return new DOMParser().parseFromString(pageHtml(body), 'text/html');
+}
+
+/**
+ * The page in a frame of its own, which is how the editor compiles: the walk
+ * runs from this realm against another document. A parsed document would not
+ * exercise that, and has no window to ask for computed styles besides.
+ */
+function pageFrame(body: string): Document {
+  const frame = document.createElement('iframe');
+  document.body.appendChild(frame);
+  const doc = frame.contentDocument;
+  if (!doc) throw new Error('the frame has no document');
+  doc.open();
+  doc.write(pageHtml(body));
+  doc.close();
+  return doc;
+}
+
+describe('the authoring page', () => {
+  it('declares the deck as its base so assets resolve as the player resolves them', () => {
+    const doc = pageDocument('<section class="slide" data-slide-id="a"></section>');
+    expect(doc.querySelector('base')?.getAttribute('href')).toBe('deck://asset/');
+  });
+
+  it('sizes the canvas and omits the player\'s absolute positioning', () => {
+    const css = [...pageDocument('').querySelectorAll('style')]
+      .map((tag) => tag.textContent ?? '').join('\n');
+    expect(css).toContain('width: 1920px');
+    expect(css).toContain('height: 1080px');
+    // The author's own flexbox and grid must be what lays the slide out.
+    expect(css).not.toContain('.element { position: absolute');
+  });
+
+  it('wraps a bare fragment but leaves a whole document alone', () => {
+    const bare = pageDocument('<section class="slide" data-slide-id="a"></section>');
+    expect(bare.querySelector('section')).not.toBeNull();
+    expect(bare.querySelectorAll('html').length).toBe(1);
+  });
+});
+
+/**
+ * The cheap half of the browser-fidelity check, so a machine without Electron
+ * still notices if the export stops being a page. `htmlBrowserFidelity` is the
+ * one that actually opens the file.
+ */
+describe('the exported document', () => {
+  const exported = (): string => slidesToHtml(emptyDeck().slides, emptyDeck().canvas, {
+    typeCss: '.role-title { font-size: 92px; }',
+    base: '../',
+    theme: 'theme.css',
+  });
+
+  it('opens with a doctype, or the browser lays it out in quirks mode', () => {
+    expect(exported().startsWith('<!doctype html>')).toBe(true);
+  });
+
+  it('carries what makes it look like the slide', () => {
+    const html = exported();
+    // Assets and the stylesheet are relative to `edit/`, where the file lives.
+    expect(html).toContain('<base href="../">');
+    expect(html).toContain('<link rel="stylesheet" href="theme.css">');
+    expect(html).toContain('.role-title { font-size: 92px; }');
+    expect(html).toContain('width: 1920px');
+  });
+
+  it('still declares its scope, now that the marker is not the first line', () => {
+    expect(htmlSlideScope(exported())).toEqual(['slide-1']);
+  });
+
+  it('is measured as itself, with only the base retargeted', () => {
+    const page = authoringPageHtml({
+      authored: exported(),
+      typeCss: 'ignored',
+      theme: '.slide { color: red; }',
+      themeHref: 'theme.css',
+      canvas: emptyDeck().canvas,
+      base: 'deck://asset/',
+    });
+    // One document, not the author's wrapped inside a fresh one. Tag matches
+    // only: the inlined KaTeX library mentions "<HtmlDomNode>" in an error
+    // message, which is a string, not a document.
+    expect(page.match(/<html[\s>]/gi)).toHaveLength(1);
+    expect(page).toContain('<base href="deck://asset/">');
+    expect(page).not.toContain('<base href="../">');
+    // The link becomes the stylesheet itself: measuring must not wait on a fetch.
+    expect(page).toContain('<style>.slide { color: red; }</style>');
+    expect(page).not.toContain('<link rel="stylesheet"');
+    expect(page).toContain('.role-title { font-size: 92px; }');
+  });
+});
+
+describe('the walk', () => {
+  it('reads each slide\'s identity from the markup, in another document', () => {
+    // Cross-document is the interesting part: in the editor this function is
+    // called from the host realm against an iframe's document.
+    const doc = pageFrame(`
+      <section class="slide" data-slide-id="intro" data-name="Intro"
+               data-notes="Say hello" style="background:#101014">
+        <h1 class="role-title">Hello</h1>
+      </section>
+      <section class="slide" data-slide-id="next" data-magic-move-from-previous="true"></section>
+    `);
+    const slides = measureSlides(doc);
+
+    expect(slides.map((slide) => slide.id)).toEqual(['intro', 'next']);
+    expect(slides[0]).toMatchObject({
+      name: 'Intro',
+      notes: 'Say hello',
+      background: { color: '#101014', image: null },
+      magicMoveFromPrevious: false,
+    });
+    expect(slides[1].magicMoveFromPrevious).toBe(true);
+  });
+
+  it('treats a page with no slide sections as one slide', () => {
+    expect(measureSlides(pageFrame('<h1>Just markup</h1>')).length).toBe(1);
+  });
+
+  it('refuses a document it cannot measure rather than guessing', () => {
+    const detached = document.implementation.createHTMLDocument('detached');
+    expect(() => measureSlides(detached)).toThrow(/no window/);
+  });
+
+  it('serialises to something a bundler-less browser can evaluate', () => {
+    const source = measureSlidesSource();
+    // Parse it the way `executeJavaScript` will, without running it: a stray
+    // reference to module scope or a syntax slip here wedged the CLI for five
+    // minutes once, and only showed up as a timeout.
+    expect(() => new Function(`return ${source}`)).not.toThrow();
+    expect(source).toContain('data-slide-id');
+    expect(source.endsWith('(document)')).toBe(true);
+  });
+});
+
+/**
+ * The live path: a saved file compiles inside the editor, with no second
+ * browser started for it. jsdom lays nothing out, so geometry is not what is
+ * under test here — the structural half is: which slides the file claims, and
+ * what a save therefore does to the deck.
+ */
+describe('compiling a saved authoring file in the editor', () => {
+  const theme = '.slide { background: #ffffff; }';
+
+  /** An export of `exportedWith`, with the author's own slides in its body. */
+  const edited = (exportedWith: Parameters<typeof slidesToHtml>[0], body: string): string =>
+    slidesToHtml(exportedWith, emptyDeck().canvas)
+      .replace(/<body>[\s\S]*<\/body>/, `<body>${body}</body>`);
+
+  it('reads the slides out of the markup with no compiler process', async () => {
+    const deck = emptyDeck();
+    const slides = await compileAuthoredHtml(deck, `
+      <section class="slide" data-slide-id="slide-1" data-name="Opening"></section>
+      <section class="slide" data-slide-id="added" data-name="Added"></section>
+    `, theme);
+    expect(slides.map((slide) => slide.id)).toEqual(['slide-1', 'added']);
+    expect(slides[1].name).toBe('Added');
+  });
+
+  it('turns the exported range into one transaction that also deletes and reorders', async () => {
+    const deck = emptyDeck();
+    deck.slides.push(
+      { ...structuredClone(deck.slides[0]), id: 'middle' },
+      { ...structuredClone(deck.slides[0]), id: 'closing' },
+    );
+    // Exported with a recorded scope, then edited: one slide dropped, one new
+    // one added, and the order changed.
+    const transaction = await authoredHtmlTransaction(deck, {
+      path: '/deck/edit/slide-1-middle.html',
+      contents: edited(deck.slides.filter((slide) => slide.id !== 'closing'), `
+        <section class="slide" data-slide-id="fresh"></section>
+        <section class="slide" data-slide-id="slide-1"></section>`),
+    }, theme);
+
+    expect(transaction?.label).toBe('Update slides from slide-1-middle.html');
+    const ops = transaction!.operations.map((operation) => operation.op);
+    expect(ops).toContain('insertSlides');
+    expect(ops).toContain('deleteSlide');
+    expect(ops).toContain('moveSlide');
+  });
+
+  it('can be saved again after it has added a slide', async () => {
+    // Iterating means saving the same file repeatedly. A file that inserted a
+    // slide governs it from then on, or the second save reads as an attempt to
+    // steal a slide from outside its range and the loop stops after one edit.
+    const deck = emptyDeck();
+    const file = {
+      path: 'edit/slide-1.html',
+      contents: edited(deck.slides, `
+        <section class="slide" data-slide-id="slide-1"></section>
+        <section class="slide" data-slide-id="added"></section>`),
+    };
+
+    const first = await authoredHtmlTransaction(deck, file, theme);
+    const afterFirst = applyAgentTransaction(deck, first!);
+    expect(afterFirst.slides.map((slide) => slide.id)).toEqual(['slide-1', 'added']);
+
+    const second = await authoredHtmlTransaction(afterFirst, file, theme);
+    const afterSecond = applyAgentTransaction(afterFirst, second!);
+    expect(afterSecond.slides.map((slide) => slide.id)).toEqual(['slide-1', 'added']);
+  });
+
+  it('leaves the deck\'s shape alone when the file still holds the same slides', async () => {
+    const deck = emptyDeck();
+    deck.slides.push({ ...structuredClone(deck.slides[0]), id: 'closing' });
+    const transaction = await authoredHtmlTransaction(deck, {
+      path: 'edit/slide-1-closing.html',
+      contents: slidesToHtml(deck.slides, deck.canvas),
+    }, theme);
+
+    // Content is replaced — that is the point of a save — but nothing is
+    // inserted, deleted or moved, so slides keep their places.
+    expect(transaction?.operations.map((operation) => operation.op))
+      .toEqual(['replaceSlide', 'replaceSlide']);
+  });
+});
+
+describe('minting ids for compiled slides', () => {
+  const measured = (over: Partial<MeasuredSlide> = {}): MeasuredSlide => ({
+    id: null,
+    name: '',
+    notes: '',
+    background: { color: null, image: null },
+    magicMoveFromPrevious: false,
+    nodes: [],
+    ...over,
+  });
+
+  it('names unidentified slides without colliding with the deck', () => {
+    const deck = emptyDeck();
+    const slides = slidesFromMeasured(deck, [measured(), measured()]);
+    expect(slides.map((slide) => slide.id)).not.toContain(deck.slides[0].id);
+    expect(new Set(slides.map((slide) => slide.id)).size).toBe(2);
+  });
+
+  it('lets a slide keep its own element ids when it is re-authored', () => {
+    // Without freeing the ids of the slides being replaced, every round trip
+    // would rename every element it touched.
+    const deck = emptyDeck();
+    const slide = deck.slides[0];
+    applySlideLayout(slide, 'standard');
+    slide.elements[0].id = `${slide.id}-title`;
+    const [rebuilt] = slidesFromMeasured(deck, [measured({
+      id: slide.id,
+      nodes: [{
+        tag: 'h1', elementId: `${slide.id}-title`, classes: [], dataset: {},
+        rect: { x: 0, y: 0, w: 100, h: 50 }, rotation: 0, opacity: 1,
+        style: {}, html: 'Title', attrs: {},
+      }],
+    })]);
+    expect(rebuilt.id).toBe(slide.id);
+    expect(rebuilt.elements[0].id).toBe(`${slide.id}-title`);
+  });
+});
