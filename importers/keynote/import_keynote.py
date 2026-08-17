@@ -615,6 +615,110 @@ def text_to_html(text: str) -> str:
     return "<br>".join(paragraphs)
 
 
+def _char_run_css(
+    objects: dict[int, Any], style_id: int | None, base: TextStyle
+) -> dict[str, str]:
+    """CSS for one character-style run, as a delta against the box's base style.
+
+    Only the leaf style's own fields are read: a run's character style names
+    exactly what differs from the paragraph (Keynote styles are thin
+    variations), and walking the parent chain here would re-state box-level
+    defaults on every run. Values that merely repeat what the element already
+    carries inline are dropped, so an unstyled deck still imports with no
+    spans at all.
+    """
+    css: dict[str, str] = {}
+    style = objects.get(style_id) if style_id else None
+    if style is None or not _has(style, "char_properties"):
+        return css
+    chars = style.char_properties
+
+    if chars.HasField("bold") and bool(chars.bold) != bool(base.bold):
+        css["font-weight"] = "700" if chars.bold else "400"
+    # The element never carries font-style inline, so only true is a delta.
+    if chars.HasField("italic") and chars.italic:
+        css["font-style"] = "italic"
+    if chars.HasField("underline") and int(chars.underline) != 0:
+        css["text-decoration"] = "underline"
+    if chars.HasField("font_name"):
+        name = str(chars.font_name)
+        if name and name != base.font_name:
+            css["font-family"] = _font_family_css(name)
+    if chars.HasField("font_size"):
+        size = float(chars.font_size)
+        if size > 0 and size != base.font_size:
+            css["font-size"] = f"{size:.0f}px"
+    # A colour span inside gradient-clipped text would punch through the clip,
+    # so runs keep their colour only on solid-colour boxes.
+    if base.gradient is None and chars.HasField("font_color"):
+        run_color = color_to_hex(chars.font_color)
+        if run_color and run_color != base.color:
+            css["color"] = run_color
+    return css
+
+
+def styled_text_to_html(
+    objects: dict[int, Any], shape: Any, base: TextStyle
+) -> str | None:
+    """HTML for a shape's text with `<span>` runs for within-box styling.
+
+    Slices the storage text at the `table_char_style` run boundaries and wraps
+    each styled run. Returns None when the box has no run-level deltas (or the
+    run table can't be trusted), letting the caller fall back to the plain
+    single-style path.
+    """
+    for field_name in ("owned_storage", "deprecated_storage"):
+        reference = find_in_super_chain(shape, field_name)
+        if reference is None:
+            continue
+        storage = objects.get(int(reference.identifier) if reference.identifier else -1)
+        if storage is None or not _has(storage, "table_char_style"):
+            continue
+        if not _has(storage, "text"):
+            continue
+        chunks = [t for t in storage.text if t]
+        # Run indices address one contiguous text stream; with more than one
+        # chunk the mapping is ambiguous, so styling is dropped rather than
+        # misplaced.
+        if len(chunks) != 1:
+            return None
+        text = _normalise_breaks(chunks[0]).rstrip()
+        if not text:
+            return None
+
+        entries = sorted(
+            storage.table_char_style.entries, key=lambda e: int(e.character_index)
+        )
+        runs: list[tuple[str, dict[str, str]]] = []
+        for pos, entry in enumerate(entries):
+            start = int(entry.character_index)
+            end = (
+                int(entries[pos + 1].character_index)
+                if pos + 1 < len(entries)
+                else len(text)
+            )
+            if start > len(text):
+                return None
+            if start >= end:
+                continue
+            style_id = int(entry.object.identifier) if entry.object.identifier else None
+            runs.append((text[start:end], _char_run_css(objects, style_id, base)))
+
+        if not runs or not any(css for _, css in runs):
+            return None
+
+        parts: list[str] = []
+        for run_text, css in runs:
+            escaped = html.escape(run_text).replace("\n", "<br>")
+            if css:
+                style_attr = "; ".join(f"{k}: {v}" for k, v in css.items())
+                parts.append(f'<span style="{style_attr}">{escaped}</span>')
+            else:
+                parts.append(escaped)
+        return "".join(parts)
+    return None
+
+
 def _font_family_css(font_name: str) -> str:
     """CSS fallback list for a Keynote PostScript font name."""
     escaped = font_name.replace("\\", "\\\\").replace('"', '\\"')
@@ -1145,7 +1249,8 @@ class Importer:
             element = self._base(box, z, "text")
             element.update(
                 {
-                    "html": text_to_html(text),
+                    "html": styled_text_to_html(self.objects, obj, style)
+                    or text_to_html(text),
                     "autoFit": True,
                     "align": style.align,
                     "valign": style.valign,
