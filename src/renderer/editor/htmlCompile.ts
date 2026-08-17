@@ -22,12 +22,18 @@ import { browserDeckRevision } from './agentBridge.js';
  * layout if it were mounted in this document.
  */
 
+export interface CompiledAuthoredHtml {
+  slides: Slide[];
+  /** Inline style the browser silently dropped; see `MeasuredSlide.warnings`. */
+  warnings: string[];
+}
+
 /** Lay authored markup out at canvas size and report it as ordinary slides. */
 export async function compileAuthoredHtml(
   deck: Deck,
   authored: string,
   theme: string,
-): Promise<Slide[]> {
+): Promise<CompiledAuthoredHtml> {
   const frame = document.createElement('iframe');
   frame.setAttribute('aria-hidden', 'true');
   Object.assign(frame.style, {
@@ -71,7 +77,11 @@ export async function compileAuthoredHtml(
     await imagesSettled(doc);
     await doc.fonts?.ready;
     await nextFrame();
-    return slidesFromMeasured(deck, measureSlides(doc));
+    const measured = measureSlides(doc);
+    return {
+      slides: slidesFromMeasured(deck, measured),
+      warnings: measured.flatMap((slide) => slide.warnings ?? []),
+    };
   } finally {
     frame.remove();
   }
@@ -103,22 +113,24 @@ export async function authoredHtmlTransaction(
   deck: Deck,
   file: AuthoredHtmlFile,
   theme: string,
-): Promise<AgentTransaction | null> {
-  return (await authoredHtmlSync(deck, file, theme)).transaction;
+): Promise<{ transaction: AgentTransaction | null; warnings: string[] }> {
+  const { transaction, warnings } = await authoredHtmlSync(deck, file, theme);
+  return { transaction, warnings };
 }
 
 /**
  * The transaction plus the compiled slides themselves — the caller needs the
  * slides to stamp their assigned ids back into the authoring file, which is
- * what makes saving the same file twice idempotent.
+ * what makes saving the same file twice idempotent — and any inline style the
+ * browser silently dropped, so the save toast can say so.
  */
 export async function authoredHtmlSync(
   deck: Deck,
   file: AuthoredHtmlFile,
   theme: string,
-): Promise<{ transaction: AgentTransaction | null; slides: Slide[] }> {
+): Promise<{ transaction: AgentTransaction | null; slides: Slide[]; warnings: string[] }> {
   const scope = htmlSlideScope(file.contents);
-  const slides = await compileAuthoredHtml(deck, file.contents, theme);
+  const { slides, warnings } = await compileAuthoredHtml(deck, file.contents, theme);
   if (slides.length === 0 && scope === null) {
     throw new Error(`No slides found in ${fileName(file.path)}`);
   }
@@ -130,7 +142,7 @@ export async function authoredHtmlSync(
   );
   // A file that asks for nothing at all — no slides of its own and none to
   // delete — is a save to sit out, not an error to put in front of the user.
-  if (operations.length === 0) return { transaction: null, slides };
+  if (operations.length === 0) return { transaction: null, slides, warnings };
   return {
     transaction: {
       version: AGENT_PROTOCOL_VERSION,
@@ -139,6 +151,7 @@ export async function authoredHtmlSync(
       operations,
     },
     slides,
+    warnings,
   };
 }
 

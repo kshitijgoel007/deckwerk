@@ -29,7 +29,13 @@ export interface CompileRequest {
   htmlPath: string;
 }
 
-export async function compileHtmlToSlides(request: CompileRequest): Promise<Slide[]> {
+export interface CompiledHtml {
+  slides: Slide[];
+  /** Inline style the browser silently dropped; see `MeasuredSlide.warnings`. */
+  warnings: string[];
+}
+
+export async function compileHtmlToSlides(request: CompileRequest): Promise<CompiledHtml> {
   const authored = await readFile(request.htmlPath, 'utf8');
   const work = await mkdtemp(join(tmpdir(), 'slide-agent-compile-'));
   const pagePath = join(work, 'page.html');
@@ -49,7 +55,10 @@ export async function compileHtmlToSlides(request: CompileRequest): Promise<Slid
   );
 
   const [measured] = await runPages([pagePath], request.deck.canvas) as MeasuredSlide[][];
-  return slidesFromMeasured(request.deck, measured);
+  return {
+    slides: slidesFromMeasured(request.deck, measured),
+    warnings: measured.flatMap((slide) => slide.warnings ?? []),
+  };
 }
 
 /**

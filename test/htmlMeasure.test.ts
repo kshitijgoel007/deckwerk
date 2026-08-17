@@ -206,12 +206,43 @@ describe('compiling a saved authoring file in the editor', () => {
 
   it('reads the slides out of the markup with no compiler process', async () => {
     const deck = emptyDeck();
-    const slides = await compileAuthoredHtml(deck, `
+    const { slides } = await compileAuthoredHtml(deck, `
       <section class="slide" data-slide-id="slide-1" data-name="Opening"></section>
       <section class="slide" data-slide-id="added" data-name="Added"></section>
     `, theme);
     expect(slides.map((slide) => slide.id)).toEqual(['slide-1', 'added']);
     expect(slides[1].name).toBe('Added');
+  });
+
+  it('warns when the browser drops inline declarations the compile still reads', async () => {
+    // The all_HANDS regression: a regex edit truncated an entity-escaped font
+    // stack, leaving an unterminated quote. The browser then swallowed every
+    // later declaration — the page measured left-aligned — while the compile,
+    // reading the raw attribute, kept text-align and reported a clean apply.
+    const deck = emptyDeck();
+    const { slides, warnings } = await compileAuthoredHtml(deck, `
+      <section class="slide" data-slide-id="slide-1">
+        <h1 style='font-family:&quot;Inter; text-align:center; color:red'>Title</h1>
+      </section>
+    `, theme);
+    expect(slides).toHaveLength(1);
+    expect(warnings.some((warning) => warning.includes('unterminated'))).toBe(true);
+    expect(warnings.some((warning) => warning.includes('text-align'))).toBe(true);
+    expect(warnings.some((warning) => warning.includes('color:red'))).toBe(true);
+  });
+
+  it('warns about a style segment with no colon, and stays quiet on clean styles', async () => {
+    const deck = emptyDeck();
+    const { warnings } = await compileAuthoredHtml(deck, `
+      <section class="slide" data-slide-id="slide-1">
+        <h1 style="text-align center; color: blue">Broken</h1>
+        <p style='font-family: "Fira Sans", sans-serif; background-image: url("a;b.png")'>Fine</p>
+      </section>
+    `, theme);
+    expect(warnings.some((warning) => warning.includes('text-align center'))).toBe(true);
+    // The well-formed style — quoted font stack, a semicolon inside url() —
+    // must not warn: noise here would teach everyone to ignore the channel.
+    expect(warnings.filter((warning) => warning.startsWith('<p'))).toEqual([]);
   });
 
   it('turns the exported range into one transaction that also deletes and reorders', async () => {
@@ -222,7 +253,7 @@ describe('compiling a saved authoring file in the editor', () => {
     );
     // Exported with a recorded scope, then edited: one slide dropped, one new
     // one added, and the order changed.
-    const transaction = await authoredHtmlTransaction(deck, {
+    const { transaction } = await authoredHtmlTransaction(deck, {
       path: '/deck/edit/slide-1-middle.html',
       contents: edited(deck.slides.filter((slide) => slide.id !== 'closing'), `
         <section class="slide" data-slide-id="fresh"></section>
@@ -249,18 +280,18 @@ describe('compiling a saved authoring file in the editor', () => {
     };
 
     const first = await authoredHtmlTransaction(deck, file, theme);
-    const afterFirst = applyAgentTransaction(deck, first!);
+    const afterFirst = applyAgentTransaction(deck, first.transaction!);
     expect(afterFirst.slides.map((slide) => slide.id)).toEqual(['slide-1', 'added']);
 
     const second = await authoredHtmlTransaction(afterFirst, file, theme);
-    const afterSecond = applyAgentTransaction(afterFirst, second!);
+    const afterSecond = applyAgentTransaction(afterFirst, second.transaction!);
     expect(afterSecond.slides.map((slide) => slide.id)).toEqual(['slide-1', 'added']);
   });
 
   it('deletes the exported range when its sections are removed from the file', async () => {
     const deck = emptyDeck();
     deck.slides.push({ ...structuredClone(deck.slides[0]), id: 'closing' });
-    const transaction = await authoredHtmlTransaction(deck, {
+    const { transaction } = await authoredHtmlTransaction(deck, {
       path: 'edit/slide-1.html',
       contents: edited([deck.slides[0]], ''),
     }, theme);
@@ -300,7 +331,7 @@ describe('compiling a saved authoring file in the editor', () => {
   it('leaves the deck\'s shape alone when the file still holds the same slides', async () => {
     const deck = emptyDeck();
     deck.slides.push({ ...structuredClone(deck.slides[0]), id: 'closing' });
-    const transaction = await authoredHtmlTransaction(deck, {
+    const { transaction } = await authoredHtmlTransaction(deck, {
       path: 'edit/slide-1-closing.html',
       contents: slidesToHtml(deck.slides, deck.canvas),
     }, theme);

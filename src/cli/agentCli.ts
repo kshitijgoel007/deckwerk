@@ -178,7 +178,7 @@ async function applyCommand(argv: string[], io: CliIo): Promise<number> {
   const authoredBefore = await readFile(filePath, 'utf8');
   // The same compile the editor performs on a watched save, in a headless
   // window because this path is the one taken with the editor closed.
-  const { transaction, slides } = await htmlEditTransaction(
+  const { transaction, slides, warnings } = await htmlEditTransaction(
     deckDir,
     deck,
     filePath,
@@ -193,6 +193,9 @@ async function applyCommand(argv: string[], io: CliIo): Promise<number> {
         box: { x: element.x, y: element.y, w: element.w, h: element.h },
       })),
     })),
+    // Inline style the browser's parser silently dropped: without this the
+    // apply reports success while the page laid out without the declaration.
+    ...(warnings.length > 0 ? { warnings } : {}),
   });
 
   // Stamp the assigned ids back into the file so applying it again replaces

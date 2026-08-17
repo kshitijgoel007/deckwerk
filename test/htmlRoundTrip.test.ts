@@ -93,7 +93,7 @@ describe.skipIf(!runnable)('HTML round trip', () => {
     const htmlPath = join(dir, 'slides.html');
     await import('node:fs/promises').then((fs) => fs.writeFile(htmlPath, html, 'utf8'));
 
-    rebuilt = await compileHtmlToSlides({ deckDir: dir, deck: before, htmlPath });
+    rebuilt = (await compileHtmlToSlides({ deckDir: dir, deck: before, htmlPath })).slides;
   }, 180_000);
 
   afterAll(async () => {

@@ -285,6 +285,77 @@ export function measureSlides(doc: Document): MeasuredSlide[] {
     return kept;
   };
 
+  /**
+   * Inline style the browser silently threw away.
+   *
+   * The compile reads declarations out of the raw `style` attribute, but the
+   * browser lays the page out from its *parsed* CSSOM — and CSS error recovery
+   * is silent. One unterminated quote (a regex edit truncating
+   * `font-family:&quot;…&quot;` is how this was first hit) swallows every
+   * declaration after it: the page measures left-aligned, the compile keeps
+   * the authored `text-align`, and the apply reports success. So every styled
+   * node is checked both ways — a segment that does not parse as a
+   * declaration, and a declaration the CSSOM does not hold — and the mismatch
+   * is reported instead of baked in.
+   */
+  const styleWarnings = (root: HTMLElement): string[] => {
+    const describeNode = (node: Element): string => {
+      const id = node.getAttribute('data-element-id') ?? node.id;
+      const classes = [...node.classList].slice(0, 2).map((name) => `.${name}`).join('');
+      return `<${node.tagName.toLowerCase()}${id ? `#${id}` : ''}${classes}>`;
+    };
+    const clip = (text: string): string => (text.length > 90 ? `${text.slice(0, 87)}…` : text);
+    const out: string[] = [];
+    for (const node of [root, ...root.querySelectorAll('[style]')]) {
+      const raw = node.getAttribute('style');
+      if (!raw || !raw.trim()) continue;
+      // Split on semicolons outside quotes and parens — a data: URI or a
+      // quoted font name may hold semicolons of its own — and notice a quote
+      // that never closes: from there on the parser is inside a string, and
+      // every later declaration is silently part of it.
+      const segments: string[] = [];
+      let buffer = '';
+      let quote: string | null = null;
+      let depth = 0;
+      for (const char of raw) {
+        if (quote) {
+          if (char === quote) quote = null;
+          buffer += char;
+        } else if (char === '"' || char === "'") {
+          quote = char;
+          buffer += char;
+        } else if (char === ';' && depth === 0) {
+          segments.push(buffer);
+          buffer = '';
+        } else {
+          if (char === '(') depth += 1;
+          else if (char === ')') depth = Math.max(0, depth - 1);
+          buffer += char;
+        }
+      }
+      segments.push(buffer);
+      if (quote) {
+        out.push(`${describeNode(node)}: the inline style has an unterminated ${quote} quote — `
+          + 'the browser ignores everything after it');
+      }
+      const style = (node as HTMLElement).style;
+      for (const segment of segments) {
+        const text = segment.trim();
+        if (!text) continue;
+        const colon = text.indexOf(':');
+        if (colon <= 0) {
+          out.push(`${describeNode(node)}: unparseable inline style segment "${clip(text)}"`);
+          continue;
+        }
+        const property = text.slice(0, colon).trim().toLowerCase();
+        if (!style || style.getPropertyValue(property)) continue;
+        out.push(`${describeNode(node)}: inline declaration "${clip(text)}" was dropped by the `
+          + 'browser\'s CSS parser and is not applied');
+      }
+    }
+    return out;
+  };
+
   const angleOf = (node: HTMLElement): number => {
     const transform = computed(node).transform;
     if (!transform || transform === 'none') return 0;
@@ -364,6 +435,10 @@ export function measureSlides(doc: Document): MeasuredSlide[] {
   };
 
   return roots.map((root) => {
+    // Checked before anything below touches a node: assigning through
+    // node.style re-serialises the attribute from the CSSOM, which would
+    // repair the very breakage this is meant to catch.
+    const warnings = styleWarnings(root);
     // Collect first, then style, then measure. The player wraps every object
     // in an element wrapper carrying the type class, and the deck's type
     // sizes hang off those classes -- so without this pass the compiler would
@@ -478,6 +553,7 @@ export function measureSlides(doc: Document): MeasuredSlide[] {
       background: { color: background, image: image ? image[1] : null },
       magicMoveFromPrevious: root.dataset.magicMoveFromPrevious === 'true',
       nodes,
+      warnings,
     };
   });
 }

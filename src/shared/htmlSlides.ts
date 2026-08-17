@@ -57,6 +57,13 @@ export interface MeasuredSlide {
   background: { color: string | null; image: string | null };
   magicMoveFromPrevious: boolean;
   nodes: MeasuredNode[];
+  /**
+   * Inline style the browser silently refused: a segment with no colon, or a
+   * declaration the CSS parser dropped (an unterminated quote earlier in the
+   * attribute swallows everything after it). Optional so measured JSON from
+   * older compilers still loads.
+   */
+  warnings?: string[];
 }
 
 const SCOPE_MARKER = 'slide-editor-scope:';

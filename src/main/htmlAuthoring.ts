@@ -54,10 +54,10 @@ export async function htmlEditTransaction(
   deck: Deck,
   htmlPath: string,
   options: HtmlEditOptions = {},
-): Promise<{ transaction: AgentTransaction; slides: Slide[] }> {
+): Promise<{ transaction: AgentTransaction; slides: Slide[]; warnings: string[] }> {
   const authored = await readFile(htmlPath, 'utf8');
   const scope = htmlSlideScope(authored);
-  const slides = await compileHtmlToSlides({ deckDir, deck, htmlPath });
+  const { slides, warnings } = await compileHtmlToSlides({ deckDir, deck, htmlPath });
   if (slides.length === 0 && scope === null) {
     throw new Error(`No slides found in ${basename(htmlPath)}.`
       + ' Wrap each slide in <section class="slide" data-slide-id="…">.');
@@ -79,6 +79,7 @@ export async function htmlEditTransaction(
       operations,
     },
     slides,
+    warnings,
   };
 }
 
