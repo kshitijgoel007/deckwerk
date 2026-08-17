@@ -22,12 +22,18 @@ import { browserDeckRevision } from './agentBridge.js';
  * layout if it were mounted in this document.
  */
 
+export interface CompiledAuthoredHtml {
+  slides: Slide[];
+  /** Inline style the browser silently dropped; see `MeasuredSlide.warnings`. */
+  warnings: string[];
+}
+
 /** Lay authored markup out at canvas size and report it as ordinary slides. */
 export async function compileAuthoredHtml(
   deck: Deck,
   authored: string,
   theme: string,
-): Promise<Slide[]> {
+): Promise<CompiledAuthoredHtml> {
   const frame = document.createElement('iframe');
   frame.setAttribute('aria-hidden', 'true');
   Object.assign(frame.style, {
@@ -71,7 +77,11 @@ export async function compileAuthoredHtml(
     await imagesSettled(doc);
     await doc.fonts?.ready;
     await nextFrame();
-    return slidesFromMeasured(deck, measureSlides(doc));
+    const measured = measureSlides(doc);
+    return {
+      slides: slidesFromMeasured(deck, measured),
+      warnings: measured.flatMap((slide) => slide.warnings ?? []),
+    };
   } finally {
     frame.remove();
   }
@@ -103,9 +113,9 @@ export async function authoredHtmlTransaction(
   deck: Deck,
   file: AuthoredHtmlFile,
   theme: string,
-): Promise<AgentTransaction | null> {
+): Promise<{ transaction: AgentTransaction | null; warnings: string[] }> {
   const scope = htmlSlideScope(file.contents);
-  const slides = await compileAuthoredHtml(deck, file.contents, theme);
+  const { slides, warnings } = await compileAuthoredHtml(deck, file.contents, theme);
   if (slides.length === 0 && scope === null) {
     throw new Error(`No slides found in ${fileName(file.path)}`);
   }
@@ -117,12 +127,15 @@ export async function authoredHtmlTransaction(
   );
   // A file that asks for nothing at all — no slides of its own and none to
   // delete — is a save to sit out, not an error to put in front of the user.
-  if (operations.length === 0) return null;
+  if (operations.length === 0) return { transaction: null, warnings };
   return {
-    version: AGENT_PROTOCOL_VERSION,
-    expectedRevision: await browserDeckRevision(deck),
-    label: `Update slides from ${fileName(file.path)}`,
-    operations,
+    transaction: {
+      version: AGENT_PROTOCOL_VERSION,
+      expectedRevision: await browserDeckRevision(deck),
+      label: `Update slides from ${fileName(file.path)}`,
+      operations,
+    },
+    warnings,
   };
 }
 

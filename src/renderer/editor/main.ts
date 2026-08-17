@@ -114,15 +114,19 @@ function applyHtmlEdit(file: AuthoredHtmlFile): Promise<void> {
       // so compile again rather than apply them to a document that moved.
       for (let attempt = 0; attempt < 3; attempt++) {
         const deck = store.get().deck;
-        const transaction = await authoredHtmlTransaction(deck, file, cssEditor.getValue());
+        const { transaction, warnings } = await authoredHtmlTransaction(deck, file, cssEditor.getValue());
         if (store.get().deck !== deck) continue;
+        // Inline style the browser's parser dropped would otherwise vanish
+        // silently: the page measured without it, yet the apply reads as clean.
+        const warned = warnings.length === 0 ? ''
+          : ` — ${warnings.length} style warning${warnings.length === 1 ? '' : 's'}: ${warnings[0]}`;
         if (!transaction) {
-          setStatusMessage(`${name} asks for no change`);
+          setStatusMessage(`${name} asks for no change${warned}`);
           return;
         }
         store.replaceWithHistory(applyAgentTransaction(deck, transaction), transaction.label);
         await save();
-        setStatusMessage(`Applied ${name}`);
+        setStatusMessage(`Applied ${name}${warned}`);
         return;
       }
       setStatusMessage(`${name}: the deck kept changing while it compiled — save it again`);
