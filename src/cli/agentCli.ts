@@ -11,6 +11,8 @@ import {
   type AgentContext,
   type ComputedSlideScene,
 } from '@shared/agent.js';
+import { deckOutline, deckStyleDigest } from '@shared/deckDigest.js';
+import { capabilities } from '@shared/capabilities.js';
 import type { Deck } from '@shared/deck.js';
 import { RevisionConflict, applyTransactionOffline, validateDeckFolder } from '../main/agentDeck.js';
 import {
@@ -47,7 +49,8 @@ export const EXIT_CONFLICT = 3;
 const USAGE = `usage: slide-agent <command> [options]
 
   docs                                    the full agent guide, as markdown
-  context   [deck]                        current selection, revision, liveness
+  capabilities                            every feature, with copyable JSON
+  context   [deck]                        selection, revision, outline, house style
   inspect   [deck] [--selected|--slide id|--all] [--dom]
   render    [deck] [--selected|--slide id|--all] --output <dir> [--annotate] [--built]
   validate  [deck]                        schema, ids, references, assets
@@ -66,6 +69,11 @@ export async function runAgentCli(argv: string[], io: CliIo): Promise<number> {
         // an agent working in a deck folder finds the format documentation
         // without knowing where the editor is installed.
         io.out(await readFile(agentGuidePath(), 'utf8'));
+        return EXIT_OK;
+      case 'capabilities':
+        // Bare, it is the whole cookbook; named, just the features asked for,
+        // for when an agent only needs to check how cropping works.
+        io.out(json(capabilitiesReport(parseFlags(rest).positional)));
         return EXIT_OK;
       case 'context':
         return await contextCommand(rest, io);
@@ -103,7 +111,7 @@ export async function runAgentCli(argv: string[], io: CliIo): Promise<number> {
 async function contextCommand(argv: string[], io: CliIo): Promise<number> {
   const { positional } = parseFlags(argv);
   const deckDir = resolveDeckDir(positional[0], io);
-  io.out(json(await currentContext(deckDir, { scenes: false })));
+  io.out(json(await currentContext(deckDir, { scenes: false, digest: true })));
   return EXIT_OK;
 }
 
@@ -275,14 +283,21 @@ async function transactionCommand(argv: string[], io: CliIo): Promise<number> {
  */
 export async function currentContext(
   deckDir: string,
-  opts: { scenes: boolean },
+  opts: { scenes: boolean; digest?: boolean },
 ): Promise<AgentContext & { diskRevision: string; stale: boolean }> {
   const deck = await loadDeck(deckDir);
   const diskRevision = deckRevision(deck);
+  // The outline and the house style are what an agent needs before it can
+  // place anything, and deriving them here is what saves it from reading every
+  // slide to work them out.
+  const digest = opts.digest
+    ? { outline: deckOutline(deck), style: deckStyleDigest(deck) }
+    : {};
   const live = await readLiveAgentContext(deckDir);
   if (live) {
     return {
       ...live,
+      ...digest,
       scenes: opts.scenes ? live.scenes : [],
       diskRevision,
       stale: live.deckRevision !== diskRevision,
@@ -306,6 +321,7 @@ export async function currentContext(
   const activeSlideId = deck.slides[activeIndex]?.id ?? null;
 
   return {
+    ...digest,
     version: AGENT_PROTOCOL_VERSION,
     live: false,
     sessionId: remembered?.sessionId ?? '',
@@ -354,6 +370,45 @@ async function request(deckDir: string, payload: Parameters<typeof writeAgentReq
 
 function requestId(): string {
   return `req-${randomUUID()}`;
+}
+
+/**
+ * Every feature, with a working example of each.
+ *
+ * Read this before authoring anything: an agent that does not know KaTeX is
+ * built in will lay an equation out by hand, and one that does not know about
+ * `sourceBox` will ask for a figure to be re-exported to crop it. The examples
+ * are the same declarations the reference deck is generated from, so each one
+ * can also be looked at as a rendered slide or as real markup.
+ */
+export function capabilitiesReport(only: string[] = []): unknown {
+  const deck = referenceDeckPath();
+  const wanted = new Set(only);
+  const artifact = (kind: 'preview' | 'html', id: string, extension: string) => {
+    const path = join(deck, kind, `${id}.${extension}`);
+    return existsSync(path) ? path : null;
+  };
+
+  return {
+    referenceDeck: existsSync(deck) ? deck : null,
+    howToUse: [
+      'Copy an element from `elements` and change the ids, geometry and text.',
+      'Element ids must be unique across the whole deck.',
+      'Open `screenshot` to see what the feature looks like, `html` for the markup it renders to.',
+      'Sizes and colours belong in theme.css via the class, not in inline style.',
+    ],
+    capabilities: capabilities()
+      .filter((capability) => wanted.size === 0 || wanted.has(capability.id))
+      .map((capability) => ({
+        ...capability,
+        screenshot: artifact('preview', capability.id, 'png'),
+        html: artifact('html', capability.id, 'html'),
+      })),
+  };
+}
+
+export function referenceDeckPath(): string {
+  return fileURLToPath(new URL('../../examples/agent-reference', import.meta.url));
 }
 
 /** The guide ships with the editor, so it is found relative to this module. */

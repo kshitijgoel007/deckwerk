@@ -226,11 +226,15 @@ describe('slide-agent CLI', () => {
       await createDeck(fresh, 'New talk');
 
       const brief = await readFile(join(fresh, 'AGENTS.md'), 'utf8');
-      expect(brief).toContain('slide-agent docs');
+      expect(brief).toContain('slide-agent capabilities');
       expect(brief).toContain('slide-agent context');
-      expect(brief).toContain('deck.json');
-      // The point of the stub is to stop an agent hand-editing the document.
-      expect(brief).toMatch(/Do not hand-edit/);
+      expect(brief).toContain('slide-agent docs');
+      // The stub exists to stop two failure modes: hand-editing the document,
+      // and reading the whole deck before doing anything.
+      expect(brief).toMatch(/never hand-edit/);
+      expect(brief).toMatch(/Do not read deck\.json/);
+      // And to name the one convention an agent reliably gets wrong.
+      expect(brief).toContain('KaTeX');
     });
 
     it('is written for a deck that does not have one yet', async () => {

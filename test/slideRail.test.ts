@@ -25,6 +25,67 @@ function setup() {
   return { store, host };
 }
 
+describe('deleting slides from the rail', () => {
+  beforeEach(() => document.body.replaceChildren());
+
+  const push = (store: ReturnType<typeof setup>['store'], ...ids: string[]) =>
+    store.commit((deck) => {
+      for (const id of ids) {
+        deck.slides.push({
+          id, name: id, background: { color: null, image: null }, notes: '',
+          elements: [], timeline: [],
+        });
+      }
+    }, { history: false });
+
+  it('deletes every slide in a Shift-click range as one undo entry', () => {
+    const { store, host } = setup();
+    push(store, 'slide-3', 'slide-4', 'slide-5');
+
+    const items = () => host.querySelectorAll<HTMLElement>('.rail-item');
+    items()[1].click();
+    items()[3].dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true }));
+    expect([...store.get().slideSelection]).toEqual(['slide-2', 'slide-3', 'slide-4']);
+
+    host.dispatchEvent(new KeyboardEvent('keydown', { key: 'Backspace', bubbles: true }));
+
+    expect(store.get().deck.slides.map((slide) => slide.id)).toEqual(['slide-1', 'slide-5']);
+    expect(store.history()[0].label).toBe('Delete 3 slides');
+    // The cursor lands just before the range that was removed.
+    expect(store.get().slideIndex).toBe(0);
+
+    store.undo();
+    expect(store.get().deck.slides).toHaveLength(5);
+  });
+
+  it('takes focus when a slide is clicked, so Backspace is a slide command', () => {
+    const { store, host } = setup();
+    host.querySelectorAll<HTMLElement>('.rail-item')[1].click();
+    expect(document.activeElement).toBe(host);
+    expect(store.get().slideIndex).toBe(1);
+  });
+
+  it('deletes only the current slide when just one is selected', () => {
+    const { store, host } = setup();
+    push(store, 'slide-3');
+    host.querySelectorAll<HTMLElement>('.rail-item')[1].click();
+    host.dispatchEvent(new KeyboardEvent('keydown', { key: 'Backspace', bubbles: true }));
+
+    expect(store.get().deck.slides.map((slide) => slide.id)).toEqual(['slide-1', 'slide-3']);
+    expect(store.history()[0].label).toBe('Delete slide');
+  });
+
+  it('refuses to empty the deck', () => {
+    const { store, host } = setup();
+    const items = () => host.querySelectorAll<HTMLElement>('.rail-item');
+    items()[0].click();
+    items()[1].dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true }));
+
+    host.dispatchEvent(new KeyboardEvent('keydown', { key: 'Backspace', bubbles: true }));
+    expect(store.get().deck.slides).toHaveLength(2);
+  });
+});
+
 describe('slide rail keyboard insertion', () => {
   beforeEach(() => document.body.replaceChildren());
 

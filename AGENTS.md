@@ -5,6 +5,49 @@ disk**: `deck.json` and `theme.css` are the document, and everything an agent
 needs to read the editor's mind or change the deck safely goes through the
 `slide-agent` CLI, which is itself only files.
 
+## Start here: two commands, then author
+
+You do **not** need to read `deck.json`, `theme.css`, or every slide before you
+can act. Reading the whole deck is slow, fills your context with noise, and
+still leaves you guessing about conventions. Two commands answer everything:
+
+```bash
+slide-agent capabilities   # what this editor can do, with copyable JSON
+slide-agent context        # this deck: outline, house style, revision
+```
+
+`capabilities` is the one to read **before authoring anything**. It is where you
+learn that maths is written `$E = mc^2$` and rendered by KaTeX (never laid out
+by hand), that a crop is a `sourceBox` and never a re-export, that video carries
+a non-destructive trim, and what builds and Magic Move look like. Each entry
+carries a working element, plus a path to a screenshot of it and to the markup
+it renders to.
+
+`context` is the one to read **before placing anything**. It gives you:
+
+- `outline` — every slide in order with its id, its title and what is on it.
+  This is how you find "the middle of the talk" without reading the talk.
+- `style.roles` — the text classes this deck actually uses and the geometry
+  they actually occupy, so a new slide looks like it belongs.
+- `style.slideTemplate` — a slide in this deck's conventions. Copy it, replace
+  the placeholder ids, fill in the text.
+- `deckRevision` — the value your transaction must quote.
+
+Then write the transaction and send it. Only reach for `inspect --slide <id>`
+when you need the details of a *specific* slide you are editing — and for
+`inspect --dom` or `render` only when something looks wrong.
+
+A whole task, start to finish:
+
+```bash
+slide-agent capabilities | head -100        # once, if you have not seen it
+slide-agent context                         # outline + style + revision
+# pick the insertion point from the outline, copy style.slideTemplate,
+# fill in text, mint unique ids, quote deckRevision
+slide-agent transaction apply . /tmp/txn.json
+slide-agent validate
+```
+
 ## The contract
 
 A deck is a folder:
@@ -63,6 +106,7 @@ you to read. Diagnostics go to stderr. Exit codes are `0` ok, `1` error,
 | Command | What it answers |
 | --- | --- |
 | `docs` | This guide |
+| `capabilities [ids...]` | Every feature (or just the named ones), with a working example, screenshot and markup |
 | `context [deck]` | What is selected, what revision is the deck, is the editor live |
 | `inspect [deck] [--selected\|--slide id\|--all] [--dom]` | What is actually on those slides |
 | `render [deck] [--selected\|--slide id\|--all] --output <dir> [--annotate] [--built]` | Optional PNGs |
@@ -85,9 +129,27 @@ slide-agent context ~/talks/millivid
   "activeSlideId": "slide-18",
   "selectedSlideIds": ["slide-18", "slide-19", "slide-20", "slide-21"],
   "selectedElementIds": ["equation-18"],
-  "stale": false
+  "stale": false,
+  "outline": [
+    { "index": 17, "id": "slide-18", "title": "Scaling is the bitter lesson",
+      "elements": { "text": 2, "image": 1 }, "builds": 1,
+      "magicMoveFromPrevious": false }
+  ],
+  "style": {
+    "canvas": { "w": 1920, "h": 1080 },
+    "roles": [
+      { "class": "role-title", "count": 42,
+        "box": { "x": 160, "y": 120, "w": 1600, "h": 200 }, "align": "left" }
+    ],
+    "slideTemplate": { "…": "a slide in this deck's conventions" }
+  }
 }
 ```
+
+The outline is the map: slide ids in order, each with the text that identifies
+it. "Add three slides about MilliVid around the middle" is answered by scanning
+it and picking the `afterSlideId` to insert after — no slide-by-slide reading
+required.
 
 `live` tells you which world you are in:
 

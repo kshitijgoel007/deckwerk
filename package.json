@@ -21,7 +21,8 @@
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "export": "npm run build:export >/dev/null && vite-node --config vitest.config.ts scripts/export-deck.mts --",
-    "agent": "vite-node --config vitest.config.ts scripts/slide-agent.mts --"
+    "agent": "vite-node --config vitest.config.ts scripts/slide-agent.mts --",
+    "build:reference": "vite-node --config vitest.config.ts scripts/build-agent-reference.mts"
   },
   "build": {
     "appId": "com.scenerepresentations.slide-editor",

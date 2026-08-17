@@ -117,13 +117,32 @@ This folder is a slide-editor deck:
     theme.css   typography and colour
     assets/     media, referenced by deck-relative path
 
-Do not hand-edit \`deck.json\`. Use the \`slide-agent\` CLI instead: it is
-revision-checked, validated and atomic, and while the editor is open your
-changes land in its undo history as one labelled entry, with the author's
-selection left where it was.
+**Do not read deck.json or theme.css to get started, and never hand-edit
+them.** Two commands tell you everything you need, and are far smaller than the
+deck:
 
-    slide-agent docs      # the full format and workflow guide — read this first
-    slide-agent context   # what is selected right now, and the deck revision
+    slide-agent capabilities   # what the editor can do, with copyable JSON
+    slide-agent context        # this deck: outline, house style, revision
+
+\`capabilities\` before you author: maths is \`$E = mc^2$\` and renders through
+KaTeX, cropping is a \`sourceBox\`, video carries a non-destructive trim, and
+builds and Magic Move are declarative. Each feature comes with a working
+example, a screenshot of it and the markup it produces.
+
+\`context\` before you place anything: it returns the slide outline (to find
+where a new section belongs), the text roles and geometry this deck actually
+uses, a \`slideTemplate\` in those conventions to copy, and the \`deckRevision\`
+your change must quote.
+
+Then send one transaction — revision-checked, validated and atomic. While the
+editor is open it lands in its undo history as one labelled entry, with the
+author's selection left where it was:
+
+    slide-agent transaction apply . change.json
+    slide-agent validate
+
+\`slide-agent docs\` has the full guide; \`slide-agent inspect --slide <id>\`
+has the details of one slide when you actually need them.
 ${fallback}
 This file was generated when the deck was opened. It is yours now — add notes
 about the talk to it if you like; the editor never rewrites it.

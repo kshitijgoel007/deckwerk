@@ -1,0 +1,805 @@
+{
+  "version": 1,
+  "title": "Slide editor capabilities",
+  "canvas": {
+    "w": 1920,
+    "h": 1080
+  },
+  "theme": "theme.css",
+  "themePreset": null,
+  "themeStyle": null,
+  "magicMoveDuration": 1000,
+  "slides": [
+    {
+      "id": "text-roles",
+      "name": "Text styled by theme class, never by inline font sizes.",
+      "background": {
+        "color": null,
+        "image": null
+      },
+      "notes": "Text styled by theme class, never by inline font sizes.\n\nWhen: Every piece of text. Pick the role; let theme.css size it.\n- role-title, role-heading, role-body, role-caption are the vocabulary.\n- An inline `style` overrides the theme and should be a deliberate one-off.\n- html may contain inline markup: <b>, <i>, <br>, <span>.",
+      "elements": [
+        {
+          "id": "cap-roles-title",
+          "x": 160,
+          "y": 90,
+          "w": 1600,
+          "h": 150,
+          "rot": 0,
+          "z": 1,
+          "opacity": 1,
+          "class": [
+            "role-title"
+          ],
+          "style": {},
+          "type": "text",
+          "html": "A title in the deck’s own type",
+          "align": "left",
+          "valign": "top"
+        },
+        {
+          "id": "cap-roles-body",
+          "x": 160,
+          "y": 300,
+          "w": 1600,
+          "h": 200,
+          "rot": 0,
+          "z": 1,
+          "opacity": 1,
+          "class": [
+            "role-body"
+          ],
+          "style": {},
+          "type": "text",
+          "html": "Body text carries <b>bold</b> and <i>italic</i> inline.",
+          "align": "left",
+          "valign": "top"
+        },
+        {
+          "id": "cap-roles-caption",
+          "x": 160,
+          "y": 900,
+          "w": 1600,
+          "h": 90,
+          "rot": 0,
+          "z": 1,
+          "opacity": 1,
+          "class": [
+            "role-caption"
+          ],
+          "style": {},
+          "type": "text",
+          "html": "A caption, for figure credits and asides.",
+          "align": "left",
+          "valign": "top"
+        }
+      ],
+      "timeline": []
+    },
+    {
+      "id": "latex",
+      "name": "LaTeX maths, rendered by KaTeX at present time.",
+      "background": {
+        "color": null,
+        "image": null
+      },
+      "notes": "LaTeX maths, rendered by KaTeX at present time.\n\nWhen: Any equation. Never hand-build maths out of positioned text.\n- $…$ is inline and stays in the sentence flow; $$…$$ is display.\n- A literal dollar sign is written \\$.\n- The equation is part of the text element’s html — not a separate element.",
+      "elements": [
+        {
+          "id": "cap-latex-title",
+          "x": 160,
+          "y": 90,
+          "w": 1600,
+          "h": 150,
+          "rot": 0,
+          "z": 1,
+          "opacity": 1,
+          "class": [
+            "role-title"
+          ],
+          "style": {},
+          "type": "text",
+          "html": "Maths is text, not layout",
+          "align": "left",
+          "valign": "top"
+        },
+        {
+          "id": "cap-latex-inline",
+          "x": 160,
+          "y": 320,
+          "w": 1600,
+          "h": 120,
+          "rot": 0,
+          "z": 1,
+          "opacity": 1,
+          "class": [
+            "role-body"
+          ],
+          "style": {},
+          "type": "text",
+          "html": "A rendering is a function $f_\\theta(\\mathbf{x}) \\rightarrow (\\mathbf{c}, \\sigma)$ of position.",
+          "align": "left",
+          "valign": "top"
+        },
+        {
+          "id": "cap-latex-display",
+          "x": 160,
+          "y": 470,
+          "w": 1600,
+          "h": 300,
+          "rot": 0,
+          "z": 1,
+          "opacity": 1,
+          "class": [
+            "role-body"
+          ],
+          "style": {},
+          "type": "text",
+          "html": "Volume rendering integrates along the ray: $$C(\\mathbf{r}) = \\int_{t_n}^{t_f} T(t)\\,\\sigma(\\mathbf{r}(t))\\,\\mathbf{c}(t)\\,dt$$",
+          "align": "left",
+          "valign": "top"
+        }
+      ],
+      "timeline": []
+    },
+    {
+      "id": "auto-fit",
+      "name": "Text that shrinks to stay inside its box.",
+      "background": {
+        "color": null,
+        "image": null
+      },
+      "notes": "Text that shrinks to stay inside its box.\n\nWhen: Titles and quotes whose length you cannot predict.\n- autoFit never grows text past its authored size; it only shrinks.\n- inspect reports the size it settled on as text.fittedFontSize.",
+      "elements": [
+        {
+          "id": "cap-fit-title",
+          "x": 160,
+          "y": 90,
+          "w": 1600,
+          "h": 150,
+          "rot": 0,
+          "z": 1,
+          "opacity": 1,
+          "class": [
+            "role-title"
+          ],
+          "style": {},
+          "type": "text",
+          "html": "Auto-fit",
+          "align": "left",
+          "valign": "top"
+        },
+        {
+          "id": "cap-fit-body",
+          "x": 160,
+          "y": 320,
+          "w": 1600,
+          "h": 200,
+          "rot": 0,
+          "z": 1,
+          "opacity": 1,
+          "class": [
+            "role-title"
+          ],
+          "style": {},
+          "type": "text",
+          "html": "This sentence is far longer than its box would normally allow, and is shrunk to fit rather than spilling over the edge of the slide.",
+          "autoFit": true,
+          "align": "left",
+          "valign": "top"
+        }
+      ],
+      "timeline": []
+    },
+    {
+      "id": "image",
+      "name": "An image, fitted inside its box.",
+      "background": {
+        "color": null,
+        "image": null
+      },
+      "notes": "An image, fitted inside its box.\n\nWhen: Figures, screenshots, diagrams. PDFs and SVGs stay vector.\n- fit: contain preserves the whole figure; cover fills the box and clips.\n- Import media with `slide-agent asset import` — never reference a path outside the deck.",
+      "elements": [
+        {
+          "id": "cap-image-title",
+          "x": 160,
+          "y": 90,
+          "w": 1600,
+          "h": 150,
+          "rot": 0,
+          "z": 1,
+          "opacity": 1,
+          "class": [
+            "role-title"
+          ],
+          "style": {},
+          "type": "text",
+          "html": "Images",
+          "align": "left",
+          "valign": "top"
+        },
+        {
+          "id": "cap-image",
+          "x": 560,
+          "y": 300,
+          "w": 800,
+          "h": 500,
+          "rot": 0,
+          "z": 2,
+          "opacity": 1,
+          "class": [],
+          "style": {},
+          "type": "image",
+          "src": "assets/swatch.png",
+          "fit": "contain",
+          "alt": "A figure",
+          "sourceBox": null
+        }
+      ],
+      "timeline": []
+    },
+    {
+      "id": "crop",
+      "name": "A non-destructive crop, on images and video alike.",
+      "background": {
+        "color": null,
+        "image": null
+      },
+      "notes": "A non-destructive crop, on images and video alike.\n\nWhen: Showing part of a figure. Never re-encode or re-export to crop.\n- The element box is the window; sourceBox places the *whole* image relative to it.\n- A sourceBox larger than the box, with negative x/y, is a zoom-in on the middle.\n- Reversible and editable later: the original file is untouched.",
+      "elements": [
+        {
+          "id": "cap-crop-title",
+          "x": 160,
+          "y": 90,
+          "w": 1600,
+          "h": 150,
+          "rot": 0,
+          "z": 1,
+          "opacity": 1,
+          "class": [
+            "role-title"
+          ],
+          "style": {},
+          "type": "text",
+          "html": "Cropping with sourceBox",
+          "align": "left",
+          "valign": "top"
+        },
+        {
+          "id": "cap-crop",
+          "x": 660,
+          "y": 300,
+          "w": 600,
+          "h": 400,
+          "rot": 0,
+          "z": 2,
+          "opacity": 1,
+          "class": [],
+          "style": {},
+          "type": "image",
+          "src": "assets/swatch.png",
+          "fit": "cover",
+          "alt": "A cropped figure",
+          "sourceBox": {
+            "x": -300,
+            "y": -200,
+            "w": 1200,
+            "h": 800
+          }
+        },
+        {
+          "id": "cap-crop-caption",
+          "x": 160,
+          "y": 900,
+          "w": 1600,
+          "h": 90,
+          "rot": 0,
+          "z": 1,
+          "opacity": 1,
+          "class": [
+            "role-caption"
+          ],
+          "style": {},
+          "type": "text",
+          "html": "The box is the window; the source is placed behind it.",
+          "align": "left",
+          "valign": "top"
+        }
+      ],
+      "timeline": []
+    },
+    {
+      "id": "media-frame",
+      "name": "Borders, rounded corners and visual effects on media.",
+      "background": {
+        "color": null,
+        "image": null
+      },
+      "notes": "Borders, rounded corners and visual effects on media.\n\nWhen: Setting a figure off from the background, or de-emphasising it.\n- effects apply in array order: blur, posterize, grayscale.\n- borderWidth/borderColor/borderRadius work on both images and video.",
+      "elements": [
+        {
+          "id": "cap-frame-title",
+          "x": 160,
+          "y": 90,
+          "w": 1600,
+          "h": 150,
+          "rot": 0,
+          "z": 1,
+          "opacity": 1,
+          "class": [
+            "role-title"
+          ],
+          "style": {},
+          "type": "text",
+          "html": "Framed and filtered media",
+          "align": "left",
+          "valign": "top"
+        },
+        {
+          "id": "cap-frame-plain",
+          "x": 200,
+          "y": 320,
+          "w": 700,
+          "h": 440,
+          "rot": 0,
+          "z": 2,
+          "opacity": 1,
+          "class": [],
+          "style": {},
+          "type": "image",
+          "src": "assets/swatch.png",
+          "fit": "cover",
+          "alt": "",
+          "borderColor": "#ff3366",
+          "borderWidth": 10,
+          "borderRadius": 18,
+          "sourceBox": null
+        },
+        {
+          "id": "cap-frame-effect",
+          "x": 1020,
+          "y": 320,
+          "w": 700,
+          "h": 440,
+          "rot": 0,
+          "z": 2,
+          "opacity": 1,
+          "class": [],
+          "style": {},
+          "type": "image",
+          "src": "assets/swatch.png",
+          "fit": "cover",
+          "alt": "",
+          "effects": [
+            {
+              "type": "blur",
+              "radius": 6
+            },
+            {
+              "type": "grayscale",
+              "amount": 0.8
+            }
+          ],
+          "sourceBox": null
+        }
+      ],
+      "timeline": []
+    },
+    {
+      "id": "video",
+      "name": "Video as a first-class object, with a non-destructive trim.",
+      "background": {
+        "color": null,
+        "image": null
+      },
+      "notes": "Video as a first-class object, with a non-destructive trim.\n\nWhen: Any result clip. This editor exists for this.\n- start/end are seconds; end: null means the end of the file. Looping honours them.\n- autoplay/loop/muted default to true — a slide video normally plays itself.\n- Only H.264/VP8/VP9/AV1 decode; `asset import` transcodes anything else.\n- A video can be cropped and framed exactly like an image.",
+      "elements": [
+        {
+          "id": "cap-video-title",
+          "x": 160,
+          "y": 90,
+          "w": 1600,
+          "h": 150,
+          "rot": 0,
+          "z": 1,
+          "opacity": 1,
+          "class": [
+            "role-title"
+          ],
+          "style": {},
+          "type": "text",
+          "html": "Video, trimmed and framed",
+          "align": "left",
+          "valign": "top"
+        },
+        {
+          "id": "cap-video",
+          "x": 460,
+          "y": 300,
+          "w": 1000,
+          "h": 500,
+          "rot": 0,
+          "z": 2,
+          "opacity": 1,
+          "class": [],
+          "style": {},
+          "type": "video",
+          "src": "assets/testclip.mp4",
+          "fit": "contain",
+          "autoplay": true,
+          "loop": true,
+          "muted": true,
+          "controls": false,
+          "borderColor": "#111111",
+          "borderWidth": 6,
+          "borderRadius": 12,
+          "start": 1,
+          "end": 5,
+          "poster": null,
+          "sourceBox": null
+        },
+        {
+          "id": "cap-video-caption",
+          "x": 160,
+          "y": 900,
+          "w": 1600,
+          "h": 90,
+          "rot": 0,
+          "z": 1,
+          "opacity": 1,
+          "class": [
+            "role-caption"
+          ],
+          "style": {},
+          "type": "text",
+          "html": "Seconds 1–5 of the source, looping, untouched on disk.",
+          "align": "left",
+          "valign": "top"
+        }
+      ],
+      "timeline": []
+    },
+    {
+      "id": "shapes",
+      "name": "Rectangles, ellipses, lines and arrows, including curved ones.",
+      "background": {
+        "color": null,
+        "image": null
+      },
+      "notes": "Rectangles, ellipses, lines and arrows, including curved ones.\n\nWhen: Callouts, connectors, emphasis boxes.\n- An arrow’s `control` is an absolute canvas-space point making it a quadratic curve.\n- shape: \"path\" carries real SVG path data, scaled from pathSize to the element box.",
+      "elements": [
+        {
+          "id": "cap-shape-title",
+          "x": 160,
+          "y": 90,
+          "w": 1600,
+          "h": 150,
+          "rot": 0,
+          "z": 1,
+          "opacity": 1,
+          "class": [
+            "role-title"
+          ],
+          "style": {},
+          "type": "text",
+          "html": "Shapes and connectors",
+          "align": "left",
+          "valign": "top"
+        },
+        {
+          "id": "cap-shape-box",
+          "x": 200,
+          "y": 380,
+          "w": 460,
+          "h": 260,
+          "rot": 0,
+          "z": 2,
+          "opacity": 1,
+          "class": [],
+          "style": {},
+          "type": "shape",
+          "shape": "rect",
+          "fill": null,
+          "stroke": "#2563eb",
+          "strokeWidth": 4,
+          "radius": 16,
+          "path": null,
+          "pathSize": null,
+          "arrowStart": false,
+          "arrowEnd": false
+        },
+        {
+          "id": "cap-shape-arrow",
+          "x": 700,
+          "y": 380,
+          "w": 500,
+          "h": 260,
+          "rot": 0,
+          "z": 2,
+          "opacity": 1,
+          "class": [],
+          "style": {},
+          "type": "shape",
+          "shape": "arrow",
+          "fill": null,
+          "stroke": "#111111",
+          "strokeWidth": 6,
+          "radius": 0,
+          "path": null,
+          "pathSize": null,
+          "arrowStart": false,
+          "arrowEnd": true,
+          "control": {
+            "x": 950,
+            "y": 300
+          }
+        },
+        {
+          "id": "cap-shape-ellipse",
+          "x": 1260,
+          "y": 380,
+          "w": 460,
+          "h": 260,
+          "rot": 0,
+          "z": 2,
+          "opacity": 1,
+          "class": [],
+          "style": {},
+          "type": "shape",
+          "shape": "ellipse",
+          "fill": "#fde68a",
+          "stroke": null,
+          "strokeWidth": 2,
+          "radius": 0,
+          "path": null,
+          "pathSize": null,
+          "arrowStart": false,
+          "arrowEnd": false
+        }
+      ],
+      "timeline": []
+    },
+    {
+      "id": "builds",
+      "name": "Timeline builds: reveal objects on click or after the previous step.",
+      "background": {
+        "color": null,
+        "image": null
+      },
+      "notes": "Timeline builds: reveal objects on click or after the previous step.\n\nWhen: Walking an audience through a slide one point at a time.\n- An entry is a trigger (click / afterPrev / withPrev / mediaEnd) plus an action.\n- Every timeline entry must target an element id on the same slide.\n- Objects with no build are visible from the start.",
+      "elements": [
+        {
+          "id": "cap-build-title",
+          "x": 160,
+          "y": 90,
+          "w": 1600,
+          "h": 150,
+          "rot": 0,
+          "z": 1,
+          "opacity": 1,
+          "class": [
+            "role-title"
+          ],
+          "style": {},
+          "type": "text",
+          "html": "Builds",
+          "align": "left",
+          "valign": "top"
+        },
+        {
+          "id": "cap-build-1",
+          "x": 160,
+          "y": 340,
+          "w": 1600,
+          "h": 100,
+          "rot": 0,
+          "z": 1,
+          "opacity": 1,
+          "class": [
+            "role-body"
+          ],
+          "style": {},
+          "type": "text",
+          "html": "First this appears with the slide.",
+          "align": "left",
+          "valign": "top"
+        },
+        {
+          "id": "cap-build-2",
+          "x": 160,
+          "y": 470,
+          "w": 1600,
+          "h": 100,
+          "rot": 0,
+          "z": 1,
+          "opacity": 1,
+          "class": [
+            "role-body"
+          ],
+          "style": {},
+          "type": "text",
+          "html": "Then this, on a click.",
+          "align": "left",
+          "valign": "top"
+        },
+        {
+          "id": "cap-build-3",
+          "x": 160,
+          "y": 600,
+          "w": 1600,
+          "h": 100,
+          "rot": 0,
+          "z": 1,
+          "opacity": 1,
+          "class": [
+            "role-body"
+          ],
+          "style": {},
+          "type": "text",
+          "html": "And this, half a second later.",
+          "align": "left",
+          "valign": "top"
+        }
+      ],
+      "timeline": [
+        {
+          "id": "cap-build-t1",
+          "trigger": {
+            "on": "click",
+            "ref": null,
+            "delay": 0
+          },
+          "action": {
+            "type": "appear",
+            "target": "cap-build-2",
+            "value": null
+          }
+        },
+        {
+          "id": "cap-build-t2",
+          "trigger": {
+            "on": "afterPrev",
+            "ref": null,
+            "delay": 500
+          },
+          "action": {
+            "type": "appear",
+            "target": "cap-build-3",
+            "value": null
+          }
+        }
+      ]
+    },
+    {
+      "id": "magic-move",
+      "name": "Animated transitions between slides, pairing objects by identity.",
+      "background": {
+        "color": null,
+        "image": null
+      },
+      "notes": "Animated transitions between slides, pairing objects by identity.\n\nWhen: A derivation, a growing diagram, a figure that moves and scales.\n- Give the same magicMoveId to the objects that are \"the same thing\" on both slides.\n- Set magicMoveFromPrevious: true on the *later* slide.\n- Unpaired objects cross-fade; deck.magicMoveDuration sets the timing.",
+      "elements": [
+        {
+          "id": "cap-magic-title",
+          "x": 160,
+          "y": 90,
+          "w": 1600,
+          "h": 150,
+          "rot": 0,
+          "z": 1,
+          "opacity": 1,
+          "class": [
+            "role-title"
+          ],
+          "style": {},
+          "type": "text",
+          "html": "Magic Move",
+          "align": "left",
+          "valign": "top"
+        },
+        {
+          "id": "cap-magic-term",
+          "x": 260,
+          "y": 420,
+          "w": 700,
+          "h": 200,
+          "rot": 0,
+          "z": 1,
+          "opacity": 1,
+          "class": [
+            "role-title"
+          ],
+          "style": {},
+          "magicMoveId": "cap-magic-equation",
+          "type": "text",
+          "html": "$E = mc^2$",
+          "align": "left",
+          "valign": "top"
+        }
+      ],
+      "timeline": []
+    },
+    {
+      "id": "magic-move-target",
+      "name": "The second half of the pair: same identity, new position.",
+      "background": {
+        "color": null,
+        "image": null
+      },
+      "notes": "The second half of the pair: same identity, new position.\n\nWhen: Always authored together with the slide before it.\n- This slide carries magicMoveFromPrevious: true.",
+      "magicMoveFromPrevious": true,
+      "elements": [
+        {
+          "id": "cap-magic2-title",
+          "x": 160,
+          "y": 90,
+          "w": 1600,
+          "h": 150,
+          "rot": 0,
+          "z": 1,
+          "opacity": 1,
+          "class": [
+            "role-title"
+          ],
+          "style": {},
+          "type": "text",
+          "html": "The same object, moved",
+          "align": "left",
+          "valign": "top"
+        },
+        {
+          "id": "cap-magic2-term",
+          "x": 1000,
+          "y": 640,
+          "w": 700,
+          "h": 200,
+          "rot": 0,
+          "z": 1,
+          "opacity": 1,
+          "class": [
+            "role-title"
+          ],
+          "style": {},
+          "magicMoveId": "cap-magic-equation",
+          "type": "text",
+          "html": "$E = mc^2$",
+          "align": "left",
+          "valign": "top"
+        }
+      ],
+      "timeline": []
+    },
+    {
+      "id": "background",
+      "name": "A slide background colour or full-bleed image.",
+      "background": {
+        "color": "#0f172a",
+        "image": null
+      },
+      "notes": "A slide background colour or full-bleed image.\n\nWhen: Section dividers and full-bleed figures.\n- A background image covers the canvas; text on it needs contrast.",
+      "elements": [
+        {
+          "id": "cap-bg-title",
+          "x": 160,
+          "y": 90,
+          "w": 1600,
+          "h": 150,
+          "rot": 0,
+          "z": 1,
+          "opacity": 1,
+          "class": [
+            "role-title"
+          ],
+          "style": {
+            "color": "#f8fafc"
+          },
+          "type": "text",
+          "html": "Section divider",
+          "align": "left",
+          "valign": "top"
+        }
+      ],
+      "timeline": []
+    }
+  ]
+}

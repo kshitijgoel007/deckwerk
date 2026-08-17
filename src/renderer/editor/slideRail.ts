@@ -112,7 +112,14 @@ export class SlideRail {
       }
 
       item.append(num, thumb);
-      item.addEventListener('click', (event) => this.store.selectSlide(i, event.shiftKey));
+      item.addEventListener('click', (event) => {
+        this.store.selectSlide(i, event.shiftKey);
+        // Picking slides makes the rail the active surface, so Backspace is a
+        // slide command from here on. Without this the keystroke reaches the
+        // window handler, which only knows about canvas objects, and selecting
+        // slides then pressing Backspace appears to do nothing at all.
+        this.host.focus({ preventScroll: true });
+      });
       this.host.appendChild(item);
     });
 
@@ -267,13 +274,26 @@ export class SlideRail {
     this.store.selectSlide(slideIndex + 1);
   }
 
+  /**
+   * Delete every slide selected in the rail, not just the current one.
+   *
+   * A Shift-click range is a single unit as far as the user is concerned, so
+   * deleting it is one undo entry. A deck must keep at least one slide, so a
+   * selection covering the whole deck is refused rather than half-applied.
+   */
   deleteSlide(): void {
-    const { deck, slideIndex } = this.store.get();
-    if (deck.slides.length <= 1) return;
+    const { deck, slideIndex, slideSelection } = this.store.get();
+    const doomed = deck.slides
+      .map((slide, index) => ({ slide, index }))
+      .filter(({ slide }) => slideSelection.has(slide.id));
+    if (doomed.length === 0 || doomed.length >= deck.slides.length) return;
+
+    const ids = new Set(doomed.map(({ slide }) => slide.id));
+    const first = Math.min(...doomed.map(({ index }) => index), slideIndex);
     this.store.commit((d) => {
-      d.slides.splice(slideIndex, 1);
-    }, { label: 'Delete slide' });
-    this.store.selectSlide(Math.max(0, slideIndex - 1));
+      d.slides = d.slides.filter((slide) => !ids.has(slide.id));
+    }, { label: ids.size === 1 ? 'Delete slide' : `Delete ${ids.size} slides` });
+    this.store.selectSlide(Math.max(0, first - 1));
   }
 }
 
