@@ -147,13 +147,18 @@ export interface Cursor {
   step: number;
 }
 
-/** Advance one step, rolling onto the next slide at the end. Clamps at the end of the deck. */
+/**
+ * Advance one step, rolling onto the next presentable slide at the end.
+ * Skipped slides are stepped over entirely; clamps at the end of the deck.
+ */
 export function nextCursor(slides: Slide[], cur: Cursor): Cursor {
   const slide = slides[cur.slide];
   if (slide && cur.step < stepCount(slide) - 1) {
     return { slide: cur.slide, step: cur.step + 1 };
   }
-  if (cur.slide < slides.length - 1) return { slide: cur.slide + 1, step: 0 };
+  for (let i = cur.slide + 1; i < slides.length; i++) {
+    if (!slides[i].skipped) return { slide: i, step: 0 };
+  }
   return cur;
 }
 
@@ -164,9 +169,9 @@ export function nextCursor(slides: Slide[], cur: Cursor): Cursor {
  */
 export function prevCursor(slides: Slide[], cur: Cursor): Cursor {
   if (cur.step > 0) return { slide: cur.slide, step: cur.step - 1 };
-  if (cur.slide > 0) {
-    const prev = slides[cur.slide - 1];
-    return { slide: cur.slide - 1, step: stepCount(prev) - 1 };
+  for (let i = cur.slide - 1; i >= 0; i--) {
+    if (slides[i].skipped) continue;
+    return { slide: i, step: stepCount(slides[i]) - 1 };
   }
   return cur;
 }

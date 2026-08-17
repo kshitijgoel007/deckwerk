@@ -86,6 +86,32 @@ describe('deleting slides from the rail', () => {
   });
 });
 
+describe('hiding slides from the rail', () => {
+  beforeEach(() => document.body.replaceChildren());
+
+  it('toggles skipped for the whole selection, driven by the current slide', () => {
+    const { store, host } = setup();
+    const items = () => host.querySelectorAll<HTMLElement>('.rail-item');
+    items()[0].click();
+    items()[1].dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true }));
+
+    const hide = [...host.querySelectorAll<HTMLElement>('.rail-actions button')]
+      .find((b) => b.textContent === 'Hide');
+    hide!.click();
+    expect(store.get().deck.slides.map((s) => s.skipped ?? false)).toEqual([true, true]);
+    expect(host.querySelectorAll('.rail-item.skipped')).toHaveLength(2);
+    expect(host.querySelectorAll('.rail-skipped-badge')).toHaveLength(2);
+
+    const show = [...host.querySelectorAll<HTMLElement>('.rail-actions button')]
+      .find((b) => b.textContent === 'Show');
+    show!.click();
+    expect(store.get().deck.slides.some((s) => s.skipped)).toBe(false);
+
+    store.undo();
+    expect(store.get().deck.slides.map((s) => s.skipped ?? false)).toEqual([true, true]);
+  });
+});
+
 describe('slide rail keyboard insertion', () => {
   beforeEach(() => document.body.replaceChildren());
 

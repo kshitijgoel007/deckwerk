@@ -38,9 +38,49 @@ Two rules about the file itself:
 - **Keep it in `edit/`.** Its `<base href="../">` is what makes
   `assets/figure.png` and `theme.css` resolve; move it and the page stops
   looking like the slide.
-- **Save it as often as you like.** A file keeps the range it was exported
-  with plus any slides it has added. (A slide it added is not deleted by
-  dropping its section again — export a fresh file to hand a range back.)
+- **Save it as often as you like.** After every successful sync the file is
+  rewritten in place: each new `<section>` gets the `data-slide-id` the compile
+  assigned, and the scope marker is updated to what the file now governs. That
+  is what makes the loop idempotent — saving or applying the same file again
+  replaces those slides rather than inserting them a second time — and it means
+  dropping a section (its id now recorded) deletes that slide on the next save.
+  Re-read the file after a sync rather than editing a stale copy of it.
+
+If `apply` times out, **do not apply again**: the editor may still land the
+change. Check `slide-agent context` for the outline first — the id write-back
+makes an accidental double-apply harmless only once the file has been stamped.
+
+**Appending needs no export.** A new file in `edit/` holding only new
+`<section class="slide">`s (no `data-slide-id`) appends at the end of the deck
+— on save, or via `apply` (`--after <slideId>` to place it elsewhere). Export a
+range only to change it; exporting a slide purely as an "anchor" risks the
+slide for nothing.
+
+`slide-agent validate` also reports `overflows`: every element whose authored
+box extends past the canvas, from geometry alone. Deliberate bleeds show up
+there too — the list is a checklist, not an error. Scope it to the slides you
+are actually editing with `--slide <id>` (repeatable, or comma-separated) or
+`--selected`; structural `errors` stay deck-wide either way.
+
+**Write semantic markup; put reusable classes in `theme.css`.** The walk bakes
+layout from any CSS, keeps a dissolving container's paint (background, border,
+radius) wherever it was styled, keeps a `<ul>`/`<ol>` as one list object, and
+preserves a container that mixes prose with blocks verbatim rather than losing
+the prose. What it cannot do is carry a file-local `<style>` block into the
+deck: text colour and fonts from such classes affect only the preview, so
+define them in `theme.css`, which the deck actually loads.
+
+**Edit style attributes as attributes, not as text.** The export entity-escapes
+quotes inside `style="…"` — a font stack reads
+`font-family:&quot;Avenir&quot;, sans-serif`. A regex that scans for `;` will
+stop inside `&quot;` and leave a truncated declaration behind, and the failure
+is silent and worse than it looks: the browser's CSS parser treats the dangling
+quote as an unterminated string and swallows every declaration after it
+(`text-align`, `color`, …), so the compile quietly bakes defaults for
+properties you never meant to touch. Parse the file with a real HTML parser, or
+at minimum treat `&quot;`/`&#39;` as atoms in any pattern that edits a style
+attribute. Deck-wide restyles rarely need this at all: delete the inline
+declaration entirely and put the replacement in `theme.css`.
 
 With the editor **closed** there is no watcher, so apply the same file
 explicitly, which does the identical thing:
@@ -172,7 +212,7 @@ slide-agent context ~/talks/millivid
   "outline": [
     { "index": 17, "id": "slide-18", "title": "Scaling is the bitter lesson",
       "elements": { "text": 2, "image": 1 }, "builds": 1,
-      "magicMoveFromPrevious": false }
+      "magicMoveFromPrevious": false, "skipped": false }
   ],
   "style": {
     "canvas": { "w": 1920, "h": 1080 },

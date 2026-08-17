@@ -244,13 +244,15 @@ describe('align and distribute', () => {
 });
 
 describe('element clipboard', () => {
-  it('copies and pastes with fresh ids and an offset', () => {
+  it('copies and pastes with fresh ids and an offset', async () => {
     const store = new EditorStore(sampleDeck(), '/tmp/x');
     store.select(['t1', 's1']);
-    expect(copySelectionToClipboard(store)).toBe(2);
+    expect(await copySelectionToClipboard(store)).toBe(2);
 
     store.selectSlide(0);
-    const created = pasteFromClipboard(store);
+    const result = await pasteFromClipboard(store);
+    expect(result).toEqual({ kind: 'elements', count: 2 });
+    const created = [...store.get().selection];
     expect(created).toHaveLength(2);
 
     const slide = store.slide!;
@@ -262,7 +264,7 @@ describe('element clipboard', () => {
     expect(pasted.magicMoveId).toBeNull();
   });
 
-  it('pastes onto a different slide', () => {
+  it('pastes onto a different slide', async () => {
     const deck = sampleDeck();
     deck.slides.push({
       id: 'slide-2', name: '', background: { color: null, image: null },
@@ -270,9 +272,10 @@ describe('element clipboard', () => {
     });
     const store = new EditorStore(deck, '/tmp/x');
     store.select(['s1']);
-    copySelectionToClipboard(store);
+    await copySelectionToClipboard(store);
     store.selectSlide(1);
-    const [pastedId] = pasteFromClipboard(store);
+    await pasteFromClipboard(store);
+    const [pastedId] = [...store.get().selection];
     expect(store.get().deck.slides[1].elements).toHaveLength(1);
     expect(store.get().deck.slides[1].elements[0]).toMatchObject({
       id: pastedId,
@@ -281,7 +284,7 @@ describe('element clipboard', () => {
     });
   });
 
-  it('offsets a curved arrow control point together with its endpoints', () => {
+  it('offsets a curved arrow control point together with its endpoints', async () => {
     const deck = sampleDeck();
     const shape = deck.slides[0].elements.find((el) => el.id === 's1')!;
     if (shape.type !== 'shape') throw new Error('expected shape');
@@ -289,8 +292,9 @@ describe('element clipboard', () => {
     shape.control = { x: 250, y: 320 };
     const store = new EditorStore(deck, '/tmp/x');
     store.select(['s1']);
-    copySelectionToClipboard(store);
-    const [id] = pasteFromClipboard(store);
+    await copySelectionToClipboard(store);
+    await pasteFromClipboard(store);
+    const [id] = [...store.get().selection];
     const pasted = store.slide!.elements.find((el) => el.id === id)!;
     expect(pasted.type === 'shape' && pasted.control).toEqual({ x: 274, y: 344 });
   });

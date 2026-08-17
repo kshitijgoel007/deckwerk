@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type { Deck } from '@shared/deck.js';
+import type { ClipboardPayload, ClipboardWriteRequest } from '@shared/clipboard.js';
 import { IPC } from '@shared/ipc.js';
 import type {
   AgentContextDraft,
@@ -31,6 +32,16 @@ const api = {
 
   loadTheme: (): Promise<string> => ipcRenderer.invoke(IPC.deckLoadTheme),
   saveTheme: (css: string): Promise<void> => ipcRenderer.invoke(IPC.deckSaveTheme, css),
+
+  /**
+   * The element/slide clipboard rides the OS pasteboard under a private
+   * format, which is what lets copy/paste cross into another running instance
+   * of this app. Write attaches asset paths; read re-imports them.
+   */
+  writeClipboard: (request: ClipboardWriteRequest): Promise<void> =>
+    ipcRenderer.invoke(IPC.clipboardWrite, request),
+  readClipboard: (): Promise<ClipboardPayload | null> =>
+    ipcRenderer.invoke(IPC.clipboardRead),
 
   importAssets: (paths: string[]): Promise<ImportedAsset[]> =>
     ipcRenderer.invoke(IPC.assetImport, paths),
@@ -81,6 +92,13 @@ const api = {
   /** A file under the deck's `edit/` folder was saved and wants compiling. */
   onHtmlEdit: (fn: (file: AuthoredHtmlFile) => void): (() => void) =>
     on(IPC.htmlEdit, fn),
+  /**
+   * Write compile-assigned slide ids back into an authoring file — but only
+   * if the file still holds `expected`, so a save that raced the compile is
+   * never overwritten with a stamped copy of older contents.
+   */
+  htmlAdopt: (path: string, contents: string, expected: string): Promise<void> =>
+    ipcRenderer.invoke(IPC.htmlAdopt, path, contents, expected),
   onTrimTarget: (fn: (p: { src: string; elementId: string }) => void): (() => void) =>
     on(IPC.trimOpen, fn),
   onTrimProgress: (fn: (p: TrimProgress) => void): (() => void) =>

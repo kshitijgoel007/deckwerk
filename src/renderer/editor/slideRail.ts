@@ -76,7 +76,7 @@ export class SlideRail {
 
     deck.slides.forEach((slide, i) => {
       const item = document.createElement('button');
-      item.className = `rail-item${slideSelection.has(slide.id) ? ' selected' : ''}${i === slideIndex ? ' active' : ''}`;
+      item.className = `rail-item${slideSelection.has(slide.id) ? ' selected' : ''}${i === slideIndex ? ' active' : ''}${slide.skipped ? ' skipped' : ''}`;
       item.setAttribute('aria-selected', String(slideSelection.has(slide.id)));
       item.draggable = true;
       item.dataset.index = String(i);
@@ -112,6 +112,12 @@ export class SlideRail {
       }
 
       item.append(num, thumb);
+      if (slide.skipped) {
+        const badge = document.createElement('span');
+        badge.className = 'rail-skipped-badge';
+        badge.textContent = 'Hidden';
+        item.appendChild(badge);
+      }
       item.addEventListener('click', (event) => {
         this.store.selectSlide(i, event.shiftKey);
         // Picking slides makes the rail the active surface, so Backspace is a
@@ -128,6 +134,10 @@ export class SlideRail {
     actions.append(
       railButton('+ Slide', () => this.addSlide()),
       railButton('Duplicate', () => this.duplicateSlide()),
+      railButton(
+        deck.slides[slideIndex]?.skipped ? 'Show' : 'Hide',
+        () => this.toggleHidden(),
+      ),
       railButton('Delete', () => this.deleteSlide()),
     );
     this.host.appendChild(actions);
@@ -272,6 +282,29 @@ export class SlideRail {
       deck.slides.splice(slideIndex + 1, 0, copy);
     });
     this.store.selectSlide(slideIndex + 1);
+  }
+
+  /**
+   * Toggle "skipped" for every slide selected in the rail.
+   *
+   * Hidden slides stay in the deck and remain editable; the player steps over
+   * them when presenting. The current slide decides the direction, so a mixed
+   * selection lands in one consistent state rather than inverting each slide.
+   */
+  toggleHidden(): void {
+    const { deck, slideIndex, slideSelection } = this.store.get();
+    const current = deck.slides[slideIndex];
+    if (!current) return;
+    const hide = !current.skipped;
+    const ids = new Set(
+      deck.slides.filter((s) => slideSelection.has(s.id)).map((s) => s.id),
+    );
+    if (ids.size === 0) ids.add(current.id);
+    this.store.commit((d) => {
+      for (const slide of d.slides) {
+        if (ids.has(slide.id)) slide.skipped = hide ? true : undefined;
+      }
+    }, { label: hide ? 'Hide slide' : 'Show slide' });
   }
 
   /**

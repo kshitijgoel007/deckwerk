@@ -104,6 +104,19 @@ export async function authoredHtmlTransaction(
   file: AuthoredHtmlFile,
   theme: string,
 ): Promise<AgentTransaction | null> {
+  return (await authoredHtmlSync(deck, file, theme)).transaction;
+}
+
+/**
+ * The transaction plus the compiled slides themselves — the caller needs the
+ * slides to stamp their assigned ids back into the authoring file, which is
+ * what makes saving the same file twice idempotent.
+ */
+export async function authoredHtmlSync(
+  deck: Deck,
+  file: AuthoredHtmlFile,
+  theme: string,
+): Promise<{ transaction: AgentTransaction | null; slides: Slide[] }> {
   const scope = htmlSlideScope(file.contents);
   const slides = await compileAuthoredHtml(deck, file.contents, theme);
   if (slides.length === 0 && scope === null) {
@@ -117,12 +130,15 @@ export async function authoredHtmlTransaction(
   );
   // A file that asks for nothing at all — no slides of its own and none to
   // delete — is a save to sit out, not an error to put in front of the user.
-  if (operations.length === 0) return null;
+  if (operations.length === 0) return { transaction: null, slides };
   return {
-    version: AGENT_PROTOCOL_VERSION,
-    expectedRevision: await browserDeckRevision(deck),
-    label: `Update slides from ${fileName(file.path)}`,
-    operations,
+    transaction: {
+      version: AGENT_PROTOCOL_VERSION,
+      expectedRevision: await browserDeckRevision(deck),
+      label: `Update slides from ${fileName(file.path)}`,
+      operations,
+    },
+    slides,
   };
 }
 

@@ -5,6 +5,7 @@ import type { SlideElement } from '@shared/deck.js';
 import { emptyDeck } from '@shared/deck.js';
 import type { AuthoredHtmlFile } from '@shared/ipc.js';
 import { makeId } from '@shared/geometry.js';
+import { adoptAuthoredIds } from '@shared/htmlSlides.js';
 import {
   THEMES,
   type ThemeAdoption,
@@ -20,11 +21,17 @@ import { EditorCanvas } from './canvas.js';
 import { CssEditor } from './cssEditor.js';
 import { Inspector } from './inspector.js';
 import { HistoryPanel } from './historyPanel.js';
-import { authoredHtmlTransaction, fileName } from './htmlCompile.js';
+import { authoredHtmlSync, fileName } from './htmlCompile.js';
 import { createShapeInsertPicker, insertText } from './elementCreation.js';
 import { createThemeGallery, type ThemeGallery } from './themeGallery.js';
 import { SlideRail } from './slideRail.js';
-import { EditorStore, copySelectionToClipboard, cutSelectionToClipboard, pasteFromClipboard } from './store.js';
+import {
+  EditorStore,
+  copySelectionToClipboard,
+  copySlidesToClipboard,
+  cutSelectionToClipboard,
+  pasteFromClipboard,
+} from './store.js';
 import { TimelinePanel } from './timelinePanel.js';
 import { WelcomeScreen } from './welcomeScreen.js';
 
@@ -114,7 +121,7 @@ function applyHtmlEdit(file: AuthoredHtmlFile): Promise<void> {
       // so compile again rather than apply them to a document that moved.
       for (let attempt = 0; attempt < 3; attempt++) {
         const deck = store.get().deck;
-        const transaction = await authoredHtmlTransaction(deck, file, cssEditor.getValue());
+        const { transaction, slides } = await authoredHtmlSync(deck, file, cssEditor.getValue());
         if (store.get().deck !== deck) continue;
         if (!transaction) {
           setStatusMessage(`${name} asks for no change`);
@@ -122,6 +129,10 @@ function applyHtmlEdit(file: AuthoredHtmlFile): Promise<void> {
         }
         store.replaceWithHistory(applyAgentTransaction(deck, transaction), transaction.label);
         await save();
+        // Stamp the ids this compile assigned back into the file, so saving it
+        // again replaces these slides rather than inserting them a second time.
+        const adopted = adoptAuthoredIds(file.contents, slides);
+        if (adopted) await window.api.htmlAdopt?.(file.path, adopted, file.contents);
         setStatusMessage(`Applied ${name}`);
         return;
       }
@@ -350,6 +361,7 @@ function themePicker(): HTMLElement {
           : themeAdoption.scope === 'slide' ? 'current slide' : 'selection';
       setStatusMessage(`Used selected “${theme.name}” styles for ${scopeName}.`);
     });
+  themeApplyButton.className = 'primary panel-action';
   actions.append(themeApplyButton);
   wrap.append(intro, themeGallery.element, controls, actions);
   return wrap;
@@ -435,6 +447,7 @@ function showPanel(id: string): void {
     b.classList.toggle('active', b.dataset.panel === id);
   }
   if (id === 'inspector') inspector.render();
+  canvas.setBuildBadgesVisible(id === 'timeline');
 }
 
 /** Multi-slide selection is a deck-level editing context, so only Theme applies. */
@@ -546,19 +559,17 @@ function bindKeys(): void {
     }
     if (mod && e.key.toLowerCase() === 'c') {
       e.preventDefault();
-      const n = copySelectionToClipboard(store);
-      if (n) setStatusMessage(`Copied ${n} element${n > 1 ? 's' : ''}.`);
+      void copyToClipboard('Copied');
       return;
     }
     if (mod && e.key.toLowerCase() === 'x') {
       e.preventDefault();
-      const n = cutSelectionToClipboard(store);
-      if (n) setStatusMessage(`Cut ${n} element${n > 1 ? 's' : ''}.`);
+      void cutToClipboard();
       return;
     }
     if (mod && e.key.toLowerCase() === 'v') {
       e.preventDefault();
-      pasteFromClipboard(store);
+      void pasteClipboard();
       return;
     }
 
@@ -600,6 +611,38 @@ function bindKeys(): void {
 
 function deleteSelection(): void {
   store.deleteSelection();
+}
+
+/* --- clipboard ---
+ *
+ * Copy targets whatever the user has selected: canvas elements when any are
+ * selected, otherwise the slides picked in the rail. The payload crosses the
+ * OS clipboard, so it pastes into another running instance of the app too.
+ */
+
+async function copyToClipboard(verb: 'Copied' | 'Cut'): Promise<'elements' | 'slides' | null> {
+  if (store.get().selection.size > 0) {
+    const n = await copySelectionToClipboard(store);
+    if (n) setStatusMessage(`${verb} ${n} element${n > 1 ? 's' : ''}.`);
+    return n ? 'elements' : null;
+  }
+  const n = await copySlidesToClipboard(store);
+  if (n) setStatusMessage(`${verb} ${n} slide${n > 1 ? 's' : ''}.`);
+  return n ? 'slides' : null;
+}
+
+async function cutToClipboard(): Promise<void> {
+  const copied = await copyToClipboard('Cut');
+  if (copied === 'elements') store.deleteSelection();
+  else if (copied === 'slides') rail.deleteSlide();
+}
+
+async function pasteClipboard(): Promise<void> {
+  const pasted = await pasteFromClipboard(store);
+  if (pasted) {
+    const noun = pasted.kind === 'slides' ? 'slide' : 'element';
+    setStatusMessage(`Pasted ${pasted.count} ${noun}${pasted.count > 1 ? 's' : ''}.`);
+  }
 }
 
 function duplicateSelection(): void {
@@ -700,7 +743,7 @@ canvas.contextActions = (el) => {
       { label: 'Copy', action: () => void copySelectionToClipboard(store) },
     );
   }
-  items.push({ label: 'Paste', action: () => void pasteFromClipboard(store) });
+  items.push({ label: 'Paste', action: () => void pasteClipboard() });
   if (el) {
     items.push(
       { label: 'Duplicate', action: () => duplicateSelection() },

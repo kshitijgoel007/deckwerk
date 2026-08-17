@@ -124,7 +124,7 @@ export class MagicMovePanel {
       ? `${pairCount} paired; every other object will fade out or in.`
       : `Disabled · ${pairCount} object${pairCount === 1 ? '' : 's'} paired.`;
     const edit = document.createElement('button');
-    edit.className = 'primary magic-open';
+    edit.className = 'primary panel-action magic-open';
     edit.textContent = 'Open Magic Move editor…';
     edit.addEventListener('click', () => this.openModal());
     this.host.append(previews, summary, edit);
@@ -227,24 +227,79 @@ export class MagicMovePanel {
       status.textContent = this.message;
       content.appendChild(status);
     }
-    const listTitle = document.createElement('div');
-    listTitle.className = 'step-label magic-pairs-title';
-    listTitle.textContent = pairs.length === 0 ? 'No objects paired' : `${pairs.length} paired object${pairs.length === 1 ? '' : 's'}`;
-    content.appendChild(listTitle);
+    const unpairTargets = new Map<string, string>();
     for (const [source, target] of pairs) {
+      unpairTargets.set(source.id, target.id);
+      unpairTargets.set(target.id, target.id);
+    }
+    const lists = document.createElement('div');
+    lists.className = 'magic-lists';
+    lists.append(
+      this.elementList(current, 'source', pairNumbers, unpairTargets),
+      this.elementList(next, 'target', pairNumbers, unpairTargets),
+    );
+    content.appendChild(lists);
+  }
+
+  /** Scrollable list of every object on one slide; paired objects float to the top. */
+  private elementList(
+    slide: Slide,
+    side: 'source' | 'target',
+    pairNumbers: Map<string, number>,
+    unpairTargets: Map<string, string>,
+  ): HTMLElement {
+    const list = document.createElement('div');
+    list.className = 'magic-list';
+    list.dataset.side = side;
+    const ordered = [...slide.elements].sort((a, b) => {
+      const pairA = pairNumbers.get(a.id) ?? Infinity;
+      const pairB = pairNumbers.get(b.id) ?? Infinity;
+      if (pairA !== pairB) return pairA - pairB;
+      return slide.elements.indexOf(a) - slide.elements.indexOf(b);
+    });
+    for (const element of ordered) {
       const row = document.createElement('div');
-      row.className = 'magic-pair-row';
+      row.className = 'magic-list-item';
+      const pair = pairNumbers.get(element.id);
+      if (pair) row.classList.add('paired');
+      if (side === 'source' && element.id === this.selectedSourceId) {
+        row.classList.add('selected-source');
+      }
+      const pick = document.createElement('button');
+      pick.className = 'magic-list-pick';
+      pick.dataset.elementId = element.id;
+      pick.dataset.side = side;
       const badge = document.createElement('b');
-      badge.textContent = String(pairNumbers.get(source.id)!);
+      badge.className = 'magic-list-badge';
+      badge.textContent = pair ? String(pair) : '';
       const label = document.createElement('span');
-      label.textContent = `${describe(source)} → ${describe(target)}`;
-      const remove = document.createElement('button');
-      remove.className = 'icon-button';
-      remove.textContent = '×';
-      remove.title = 'Unpair these objects';
-      remove.addEventListener('click', () => this.unpair(target.id));
-      row.append(badge, label, remove);
-      content.appendChild(row);
+      label.textContent = describe(element);
+      pick.append(badge, label);
+      pick.addEventListener('click', () => this.handleObjectClick(side, element.id));
+      row.appendChild(pick);
+      if (pair) {
+        const remove = document.createElement('button');
+        remove.className = 'icon-button';
+        remove.textContent = '×';
+        remove.title = 'Unpair these objects';
+        remove.addEventListener('click', () => this.unpair(unpairTargets.get(element.id)!));
+        row.appendChild(remove);
+      }
+      list.appendChild(row);
+    }
+    return list;
+  }
+
+  private handleObjectClick(side: 'source' | 'target', elementId: string): void {
+    if (side === 'source') {
+      this.selectedSourceId = this.selectedSourceId === elementId ? null : elementId;
+      this.message = '';
+      this.render();
+    } else if (this.selectedSourceId) {
+      this.pair(this.selectedSourceId, elementId);
+    } else {
+      this.message = 'Choose an object on the first slide before choosing its partner.';
+      this.render();
     }
   }
 
@@ -315,18 +370,7 @@ export class MagicMovePanel {
       if (side === 'source' && element.id === this.selectedSourceId) {
         hit.classList.add('selected-source');
       }
-      if (interactive) hit.addEventListener('click', () => {
-        if (side === 'source') {
-          this.selectedSourceId = this.selectedSourceId === element.id ? null : element.id;
-          this.message = '';
-          this.render();
-        } else if (this.selectedSourceId) {
-          this.pair(this.selectedSourceId, element.id);
-        } else {
-          this.message = 'Choose an object on the first slide before choosing its partner.';
-          this.render();
-        }
-      });
+      if (interactive) hit.addEventListener('click', () => this.handleObjectClick(side, element.id));
       frame.appendChild(hit);
     }
     wrap.append(label, frame);

@@ -193,6 +193,7 @@ export async function buildComputedScenes(
       background: slide.background,
       layout: slide.layout ?? 'freeform',
       magicMoveFromPrevious: slide.magicMoveFromPrevious ?? false,
+      skipped: slide.skipped ?? false,
       timeline: structuredClone(slide.timeline),
       elements: slide.elements.map((element) => computedElement(
         element,

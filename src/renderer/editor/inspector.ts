@@ -160,7 +160,7 @@ export class Inspector {
       button(
         active ? 'Done editing mask' : 'Edit mask',
         () => this.onToggleMask?.(elementId),
-        active ? 'primary' : '',
+        'primary panel-action',
       ),
     );
     wrap.appendChild(
@@ -180,6 +180,7 @@ export class Inspector {
           this.store.updateSelected((e) => {
             if (e.type === 'image' || e.type === 'video') e.sourceBox = null;
           }),
+          'primary panel-action',
         ),
       );
     }
@@ -287,6 +288,7 @@ export class Inspector {
           e.start = 0;
           e.end = null;
         }),
+        'primary panel-action',
       ),
     );
     return wrap;
@@ -685,6 +687,7 @@ export class Inspector {
         // Preview in place. Double-clicking the video on the canvas does the
         // same thing; this is the discoverable version.
         const play = document.createElement('button');
+        play.className = 'primary panel-action';
         const setLabel = (playing: boolean) => {
           play.textContent = playing ? '❚❚ Pause preview' : '▶ Play preview';
         };
@@ -721,7 +724,7 @@ export class Inspector {
 
         // Last resort: the destructive ffmpeg editor. Writes a new file and
         // relinks — for when the non-destructive CSS path is not enough.
-        wrap.appendChild(button('Edit w/ ffmpeg…', () => this.onTrimRequest?.(el)));
+        wrap.appendChild(button('Edit w/ ffmpeg…', () => this.onTrimRequest?.(el), 'primary panel-action'));
         wrap.appendChild(hint('Re-encodes to a new file. The original is kept.'));
         return wrap;
       }
@@ -729,7 +732,6 @@ export class Inspector {
       case 'image': {
         const wrap = group('Image');
         wrap.appendChild(hint(el.src));
-        wrap.appendChild(this.maskButton(el.id));
         wrap.appendChild(
           checkboxField('Keep aspect ratio', el.fit !== 'fill', (on) =>
             this.store.updateSelected((e) => {
@@ -739,6 +741,8 @@ export class Inspector {
         );
         wrap.appendChild(this.mediaBorderControls());
         wrap.appendChild(this.mediaEffectsControls());
+        // Same order as the video section: options, border, effects, then crop.
+        wrap.appendChild(this.maskButton(el.id));
         return wrap;
       }
 
@@ -1079,7 +1083,7 @@ export class Inspector {
     }
 
     const add = document.createElement('select');
-    add.className = 'effect-add';
+    add.className = 'effect-add panel-action-select';
     for (const [value, label] of [
       ['', '+ Add effect'], ['blur', 'Blur'], ['posterize', 'Posterize'], ['grayscale', 'Greyscale'],
     ]) {

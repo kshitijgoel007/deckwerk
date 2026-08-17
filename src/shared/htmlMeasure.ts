@@ -41,7 +41,11 @@ export interface AuthoringPage {
  */
 export function authoringPageHtml(page: AuthoringPage): string {
   if (/<html[\s>]/i.test(page.authored)) {
-    return withKatex(inlineTheme(withBase(page.authored, page.base), page.themeHref, page.theme));
+    return withKatex(inlineTheme(
+      withStructuralCss(withBase(page.authored, page.base), page),
+      page.themeHref,
+      page.theme,
+    ));
   }
   // Same order as the player: structural defaults, then the semantic type
   // fallback, then the deck's own theme, which wins.
@@ -69,7 +73,29 @@ ${page.authored}
  */
 function withKatex(html: string): string {
   if (html.includes('data-katex-inline')) return html;
-  if (/<\/head>/i.test(html)) return html.replace(/<\/head>/i, `${KATEX_PAGE_HTML}\n</head>`);
+  // Function-form replacement, and not as a nicety: the KaTeX bundle is full
+  // of `$$`/`$&` sequences, which a *string* replacement would interpret as
+  // replacement patterns and quietly corrupt the injected script — the maths
+  // then simply never rendered, and every equation in a hand-authored full
+  // document was measured at its raw-text height.
+  if (/<\/head>/i.test(html)) return html.replace(/<\/head>/i, () => `${KATEX_PAGE_HTML}\n</head>`);
+  return html;
+}
+
+/**
+ * The structural rules a page cannot look like a slide without: the canvas
+ * box, `box-sizing`, the semantic type fallback. An exported file carries them
+ * already; a full document an author wrote from scratch does not, and without
+ * them its slides measure against browser defaults — visibly, as boxes a few
+ * pixels off and text at the wrong size.
+ */
+function withStructuralCss(html: string, page: AuthoringPage): string {
+  // The selector below only ever appears inside the authoring CSS itself.
+  if (html.includes('section.slide, [data-slide-id]')) return html;
+  const style = `<style>${authoringCss(page.canvas)}</style>\n<style>${page.typeCss}</style>`;
+  if (/<head[\s>]/i.test(html)) {
+    return html.replace(/<head\b[^>]*>/i, (open) => `${open}\n${style}`);
+  }
   return html;
 }
 
@@ -84,13 +110,15 @@ function withKatex(html: string): string {
  * so it resolves the link itself and measures something deterministic.
  */
 function inlineTheme(html: string, href: string | undefined, theme: string): string {
+  // Function-form replacements: theme CSS may legitimately contain `$`
+  // sequences, which a string replacement would treat as patterns.
   const style = `<style>${theme}</style>`;
   const name = (href ?? 'theme.css').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const link = new RegExp(`<link\\b[^>]*href=["']\\.?/?${name}["'][^>]*>`, 'i');
-  if (link.test(html)) return html.replace(link, style);
+  if (link.test(html)) return html.replace(link, () => style);
   // No link to resolve — the deck's theme still governs the deck, so it goes
   // in last, where the author's own rules can still be more specific than it.
-  if (/<\/head>/i.test(html)) return html.replace(/<\/head>/i, `${style}\n</head>`);
+  if (/<\/head>/i.test(html)) return html.replace(/<\/head>/i, () => `${style}\n</head>`);
   return html;
 }
 
@@ -131,7 +159,13 @@ export function measureSlides(doc: Document): MeasuredSlide[] {
   const CONTENT_TAGS = new Set(['img', 'video', 'svg', 'canvas', 'table', 'iframe']);
 
   const found = doc.querySelectorAll<HTMLElement>('section.slide, [data-slide-id]');
-  const roots: HTMLElement[] = found.length > 0 ? [...found] : [doc.body];
+  // The body fallback exists for hand-written fragments. A page with no slide
+  // roots *and* nothing in its body — a scoped export whose sections were all
+  // deleted — must compile to no slides, not to one empty slide made from the
+  // body itself: with a scope recorded, "no sections" means "delete the range".
+  const bodyHasContent = [...doc.body.children]
+    .some((child) => !/^(script|style|link|template)$/i.test(child.tagName));
+  const roots: HTMLElement[] = found.length > 0 ? [...found] : bodyHasContent ? [doc.body] : [];
 
   const isBlock = (node: HTMLElement): boolean => {
     const display = computed(node).display;
@@ -161,28 +195,65 @@ export function measureSlides(doc: Document): MeasuredSlide[] {
     // Any declared element — html, shape, image, video, unsupported — is one
     // object no matter what markup it carries inside.
     if (node.dataset.element) return true;
-    if (CONTENT_TAGS.has(node.tagName.toLowerCase())) return true;
+    const tag = node.tagName.toLowerCase();
+    if (CONTENT_TAGS.has(tag)) return true;
+    // A list is one object, bullets and all — splitting it into per-item text
+    // boxes loses the markers and the semantics.
+    if (tag === 'ul' || tag === 'ol') return true;
     if (!isBlock(node)) return false;
+    // A container holding its own prose *and* block children cannot dissolve —
+    // the loose text nodes would simply vanish. Kept whole, verbatim.
+    if (containsContent(node)
+      && [...node.childNodes].some((child) => child.nodeType === 3 && child.textContent!.trim() !== '')) {
+      node.dataset.element = 'html';
+      return true;
+    }
     // An exported text element carries the player's own wrappers (.text-body,
     // .text-content), which are block children; the wrapper is still the object.
-    if (node.classList.contains('element')) return true;
+    // But a hand-written wrapper *around media* — `<div class="element
+    // element-video"><video …></video></div>`, copied from an export — must
+    // dissolve so the media inside becomes the object; claiming the wrapper
+    // would bake the video into a text element and lose it.
+    if (node.classList.contains('element')) {
+      return !node.querySelector(':scope > img, :scope > video');
+    }
     return !containsContent(node);
   };
 
-  /** Inline paint that would be lost if this node dissolved as layout. */
+  /**
+   * Paint that would be lost if this node dissolved as layout.
+   *
+   * Inline declarations are read as authored; where there are none, the
+   * *computed* style answers instead, so a card styled through a class — the
+   * way a front-end author actually writes one — keeps its background, border
+   * and radius too. Computed values are safe here precisely because this
+   * becomes a fresh synthetic shape each compile, not a stored element whose
+   * literal styles must round-trip.
+   */
   const boxPaint = (node: HTMLElement): Record<string, string> | null => {
     const declared = inlineDeclarationsOf(node.getAttribute('style') ?? '');
+    const style = computed(node);
+    const painted = (color: string | undefined): string | undefined =>
+      color && color !== 'transparent' && !/^rgba\(\s*0\s*,\s*0\s*,\s*0\s*,\s*0\s*\)$/.test(color)
+        ? color : undefined;
     const fill = declared['background-color']
-      ?? (declared['background']?.match(/^(#[0-9a-fA-F]{3,8}|rgba?\([^)]*\)|[a-zA-Z]+)$/) ? declared['background'] : undefined);
-    const border = declared['border']?.match(/^([\d.]+)px\s+\w+\s+(.+)$/);
-    const radius = parseFloat(declared['border-radius'] ?? '');
+      ?? (declared['background']?.match(/^(#[0-9a-fA-F]{3,8}|rgba?\([^)]*\)|[a-zA-Z]+)$/) ? declared['background'] : undefined)
+      ?? painted(style.backgroundColor);
+    const inlineBorder = declared['border']?.match(/^([\d.]+)px\s+\w+\s+(.+)$/);
+    const computedBorderWidth = parseFloat(style.borderTopWidth || '');
+    const border = inlineBorder
+      ? { width: inlineBorder[1], color: inlineBorder[2] }
+      : computedBorderWidth > 0 && style.borderTopStyle !== 'none' && painted(style.borderTopColor)
+        ? { width: String(computedBorderWidth), color: style.borderTopColor }
+        : null;
+    const radius = parseFloat(declared['border-radius'] ?? style.borderTopLeftRadius ?? '');
     if (!fill && !border) return null;
     return {
       element: 'shape',
       shape: 'rect',
       ...(fill ? { fill } : {}),
-      ...(border ? { stroke: border[2], strokeWidth: border[1] } : { strokeWidth: '0' }),
-      ...(Number.isFinite(radius) ? { radius: String(radius) } : {}),
+      ...(border ? { stroke: border.color, strokeWidth: border.width } : { strokeWidth: '0' }),
+      ...(Number.isFinite(radius) && radius > 0 ? { radius: String(radius) } : {}),
     };
   };
 

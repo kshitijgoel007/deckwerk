@@ -271,6 +271,50 @@ export function htmlSlideScope(html: string): string[] | null {
 }
 
 /**
+ * Write the ids a compile assigned back into the authored document.
+ *
+ * A section without a `data-slide-id` is minted a fresh id on *every* compile,
+ * so a file that is saved twice — or applied once, timed out, and applied
+ * again — would insert its new slides twice. Stamping the assigned ids into
+ * the file after a successful sync is what makes the loop idempotent: from
+ * then on the same sections replace the same slides, however many times the
+ * file lands. The scope marker is rewritten to the file's current slides for
+ * the same reason — it is the record of what this file now governs.
+ *
+ * Returns null when there is nothing to change or when the document cannot be
+ * matched against the compiled slides (better to leave a strange file alone
+ * than to stamp ids onto the wrong sections).
+ */
+export function adoptAuthoredIds(html: string, slides: Slide[]): string | null {
+  // Only the body can hold slide roots, and the head carries inlined KaTeX
+  // whose script text must not be mistaken for markup.
+  const bodyAt = html.search(/<body[\s>]/i);
+  const from = bodyAt >= 0 ? bodyAt : 0;
+  const roots = [...html.slice(from).matchAll(/<[a-zA-Z][^>]*>/g)]
+    .map((match) => ({ tag: match[0], at: from + (match.index ?? 0) }))
+    .filter(({ tag }) => /\bdata-slide-id\s*=/.test(tag)
+      || (/^<section\b/i.test(tag) && /\bclass\s*=\s*["'][^"']*\bslide\b/.test(tag)));
+  if (roots.length !== slides.length) return null;
+
+  let out = html;
+  for (let i = roots.length - 1; i >= 0; i--) {
+    const { tag, at } = roots[i];
+    if (/\bdata-slide-id\s*=/.test(tag)) continue;
+    const stamped = tag.replace(/^<section\b/i,
+      (open) => `${open} data-slide-id="${escape(slides[i].id)}"`);
+    out = out.slice(0, at) + stamped + out.slice(at + tag.length);
+  }
+
+  const scope = `<!-- ${SCOPE_MARKER}${encodeURIComponent(JSON.stringify(slides.map((slide) => slide.id)))} -->`;
+  const marker = /<!--\s*slide-editor-scope:[^\s]+\s*-->/;
+  if (marker.test(out)) out = out.replace(marker, scope);
+  else if (/<head[\s>]/i.test(out)) out = out.replace(/<head\b[^>]*>/i, (open) => `${open}\n${scope}`);
+  else out = `${scope}\n${out}`;
+
+  return out === html ? null : out;
+}
+
+/**
  * Build the ordinary transaction that makes an exported HTML scope authoritative.
  * Files without a scope marker retain replace-or-append behaviour, so older
  * exports and hand-authored snippets remain valid.
@@ -371,7 +415,7 @@ export const PRESENTATIONAL_STYLE = new Set([
   'padding-top', 'padding-right', 'padding-bottom', 'padding-left',
 ]);
 
-const TEXT_TAGS = new Set(['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'blockquote', 'li', 'span', 'div', 'figcaption', 'pre', 'code']);
+const TEXT_TAGS = new Set(['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'blockquote', 'li', 'span', 'div', 'figcaption', 'pre', 'code', 'ul', 'ol']);
 
 /**
  * Turn a measured page into deck slides, against the deck they are destined for.
@@ -549,7 +593,11 @@ export function elementFromNode(
   return {
     ...base,
     type: 'text',
-    html: node.html.trim(),
+    // A list is one text object; without its own tag around the items the
+    // markers and indentation would not survive into the deck.
+    html: node.tag === 'ul' || node.tag === 'ol'
+      ? `<${node.tag}>${node.html.trim()}</${node.tag}>`
+      : node.html.trim(),
     align: alignFrom(node.attrs.textAlign),
     valign: valignFrom(node.dataset.valign),
     ...(node.dataset.autofit !== undefined ? { autoFit: node.dataset.autofit !== 'false' } : {}),

@@ -141,6 +141,17 @@ describe('deck navigation', () => {
   it('stops at the start of the deck', () => {
     expect(prevCursor(slides, { slide: 0, step: 0 })).toEqual({ slide: 0, step: 0 });
   });
+
+  it('steps over skipped slides in both directions', () => {
+    const deck = [slideWith([reveal('a')]), { ...slideWith([]), skipped: true }, slideWith([])];
+    expect(nextCursor(deck, { slide: 0, step: 1 })).toEqual({ slide: 2, step: 0 });
+    expect(prevCursor(deck, { slide: 2, step: 0 })).toEqual({ slide: 0, step: 1 });
+  });
+
+  it('clamps rather than landing on a trailing skipped slide', () => {
+    const deck = [slideWith([]), { ...slideWith([]), skipped: true }];
+    expect(nextCursor(deck, { slide: 0, step: 0 })).toEqual({ slide: 0, step: 0 });
+  });
 });
 
 describe('build authoring order', () => {

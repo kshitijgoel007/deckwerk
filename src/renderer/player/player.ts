@@ -9,7 +9,7 @@ import {
   resolveState,
   stepCount,
 } from '@shared/timeline.js';
-import { applyStageScale, renderSlide } from './render.js';
+import { applyStageScale, fitAutoTextElement, renderSlide } from './render.js';
 import { explicitMagicMovePairs, unchangedMagicMovePairs } from '@shared/magicMove.js';
 
 /**
@@ -170,6 +170,8 @@ export class Player {
   ): void {
     const duration = this.deck.magicMoveDuration;
     const easing = 'cubic-bezier(.2,.8,.2,1)';
+    const targetSlide = this.stage.querySelector<HTMLElement>('.slide');
+    if (!targetSlide) return;
     const pairs = matchMagicMoveElements(previous.elements, next.elements);
     const pairedSources = new Set(pairs.map(([source]) => source.id));
     const pairedTargets = new Set(pairs.map(([, target]) => target.id));
@@ -181,24 +183,89 @@ export class Player {
       pairedSources.add(source.id);
       pairedTargets.add(target.id);
     }
+
+    // Stacking during the transition. Paint order is normally DOM order (the
+    // slide renders its elements z-sorted), but ghosts have to be appended
+    // last, which would paint every removed object — a near-opaque backdrop
+    // included — over objects it sat *below* on the source slide. So while the
+    // transition runs, each participant carries an explicit z-index: the
+    // source slide's z rank for the first half, the target's DOM rank for the
+    // second, switching discretely at the same midpoint as the content. The
+    // keyframes use fill 'none', so the settled stage keeps no trace of it.
+    const sourceRank = new Map(
+      [...previous.elements].sort((a, b) => a.z - b.z).map((element, i) => [element.id, i]),
+    );
+    const domRank = new Map<string, number>();
+    [...targetSlide.children].forEach((child, i) => {
+      const id = (child as HTMLElement).dataset.elementId;
+      if (id) domRank.set(id, i);
+    });
+    const sourceOf = new Map<string, string>(
+      [...pairs, ...unchanged].map(([source, target]) => [target.id, source.id]),
+    );
+    const stackingFrames = (targetId: string): Keyframe[] | null => {
+      const src = sourceRank.get(sourceOf.get(targetId) ?? '');
+      const dom = domRank.get(targetId);
+      if (src === undefined || dom === undefined) return null;
+      return [
+        { zIndex: String(src), offset: 0 },
+        { zIndex: String(src), offset: 0.499 },
+        { zIndex: String(dom), offset: 0.5 },
+        { zIndex: String(dom), offset: 1 },
+      ];
+    };
+
     for (const [from, to] of pairs) {
       const node = this.stage.querySelector<HTMLElement>(
         `[data-element-id="${CSS.escape(to.id)}"]`,
       );
       if (!node?.animate) continue;
-      const dx = from.x - to.x;
-      const dy = from.y - to.y;
-      const sx = from.w / to.w;
-      const sy = from.h / to.h;
+      let dx = from.x - to.x;
+      let dy = from.y - to.y;
+      let sx = from.w / to.w;
+      let sy = from.h / to.h;
+      let origin = 'top left';
+      if (from.type === 'text' && to.type === 'text') {
+        // A text box is a layout container, not the glyphs: its width can
+        // change without the rendered text changing at all, and scaling by the
+        // box ratio would smear the glyphs. Scale by the rendered font size
+        // instead, anchored at the alignment point so the text tracks the spot
+        // it is aligned to within each box.
+        const scale = textFontScale(from, to, previousNodes.get(from.id), node);
+        const ax = { left: 0, center: 0.5, right: 1, justify: 0 }[to.align] ?? 0;
+        const ay = { top: 0, middle: 0.5, bottom: 1 }[to.valign] ?? 0;
+        const axFrom = { left: 0, center: 0.5, right: 1, justify: 0 }[from.align] ?? 0;
+        const ayFrom = { top: 0, middle: 0.5, bottom: 1 }[from.valign] ?? 0;
+        dx = from.x + axFrom * from.w - (to.x + ax * to.w);
+        dy = from.y + ayFrom * from.h - (to.y + ay * to.h);
+        sx = scale;
+        sy = scale;
+        origin = `${ax * 100}% ${ay * 100}%`;
+      }
       const finalTransform = to.style.transform ?? (to.rot ? `rotate(${to.rot}deg)` : 'none');
+      const stacking = stackingFrames(to.id) ?? [];
+      // The ease lives on the first keyframe, not the timing options: keyframe
+      // easing applies per property segment, so the motion still eases across
+      // the whole duration while the stacking offsets below stay in wall time,
+      // flipping at the same real midpoint as every discrete switch.
       node.animate([
         {
           transform: `translate(${dx}px, ${dy}px) scale(${sx}, ${sy})${from.rot ? ` rotate(${from.rot}deg)` : ''}`,
-          transformOrigin: 'top left',
+          transformOrigin: origin,
           opacity: String(from.opacity),
+          offset: 0,
+          easing,
+          ...(stacking.length ? { zIndex: stacking[0].zIndex } : {}),
         },
-        { transform: finalTransform, transformOrigin: 'top left', opacity: String(to.opacity) },
-      ], { duration, easing, fill: 'none' });
+        ...stacking.slice(1, 3),
+        {
+          transform: finalTransform,
+          transformOrigin: origin,
+          opacity: String(to.opacity),
+          offset: 1,
+          ...(stacking.length ? { zIndex: stacking[3].zIndex } : {}),
+        },
+      ], { duration, easing: 'linear', fill: 'none' });
     }
 
     // Changed, unpaired objects switch discretely at the midpoint. Opacity
@@ -210,19 +277,20 @@ export class Player {
         `[data-element-id="${CSS.escape(target.id)}"]`,
       );
       if (!node?.animate || node.style.visibility === 'hidden') continue;
+      const dom = domRank.get(target.id);
+      const zIndex = dom === undefined ? {} : { zIndex: String(dom) };
       node.animate([
-        { visibility: 'hidden', offset: 0 },
-        { visibility: 'hidden', offset: 0.499 },
-        { visibility: 'visible', offset: 0.5 },
-        { visibility: 'visible', offset: 1 },
+        { visibility: 'hidden', offset: 0, ...zIndex },
+        { visibility: 'hidden', offset: 0.499, ...zIndex },
+        { visibility: 'visible', offset: 0.5, ...zIndex },
+        { visibility: 'visible', offset: 1, ...zIndex },
       ], { duration, easing: 'linear', fill: 'none' });
     }
 
     // Removed, unpaired source objects no longer exist in the target render.
     // Animate exact clones of the visible old DOM, then remove them so the
     // settled stage remains byte-for-byte the target slide.
-    const targetSlide = this.stage.querySelector<HTMLElement>('.slide');
-    if (!targetSlide) return;
+    let hasGhosts = false;
     for (const source of previous.elements) {
       if (pairedSources.has(source.id)) continue;
       const ghost = previousNodes.get(source.id);
@@ -237,13 +305,30 @@ export class Player {
         ghost.remove();
         continue;
       }
+      hasGhosts = true;
+      const zIndex = String(sourceRank.get(source.id) ?? 0);
       const animation = ghost.animate([
-        { visibility: 'visible', offset: 0 },
-        { visibility: 'visible', offset: 0.499 },
-        { visibility: 'hidden', offset: 0.5 },
-        { visibility: 'hidden', offset: 1 },
+        { visibility: 'visible', offset: 0, zIndex },
+        { visibility: 'visible', offset: 0.499, zIndex },
+        { visibility: 'hidden', offset: 0.5, zIndex },
+        { visibility: 'hidden', offset: 1, zIndex },
       ], { duration, easing: 'linear', fill: 'forwards' });
       void animation.finished.then(() => ghost.remove(), () => ghost.remove());
+    }
+
+    // Ghosts only stack correctly against the rest of the source content if
+    // that content is ranked on the same scale, so visually-unchanged pairs
+    // join the stacking timeline — but only when there is a ghost to order
+    // against, keeping ghost-free transitions free of animations entirely.
+    if (hasGhosts) {
+      for (const [, target] of unchanged) {
+        const node = this.stage.querySelector<HTMLElement>(
+          `[data-element-id="${CSS.escape(target.id)}"]`,
+        );
+        const frames = stackingFrames(target.id);
+        if (!node?.animate || !frames || node.style.visibility === 'hidden') continue;
+        node.animate(frames, { duration, easing: 'linear', fill: 'none' });
+      }
     }
   }
 
@@ -419,6 +504,34 @@ export class Player {
     if (r.width === 0 || r.height === 0) return;
     applyStageScale(this.stage, this.deck, { w: r.width, h: r.height });
   }
+}
+
+/**
+ * The visual scale between two renders of a paired text element: the ratio of
+ * rendered font sizes, not of box sizes. Auto-fitted text reports the size it
+ * actually settled on; otherwise the authored size decides. The target is
+ * fitted synchronously here because its scheduled fit only lands on the next
+ * frame, after the animation has already read the geometry.
+ */
+function textFontScale(
+  from: Extract<SlideElement, { type: 'text' }>,
+  to: Extract<SlideElement, { type: 'text' }>,
+  sourceClone: HTMLElement | undefined,
+  targetNode: HTMLElement,
+): number {
+  const fitted = (root: HTMLElement | undefined): number | undefined => {
+    const raw = root?.querySelector<HTMLElement>('.text-content')?.dataset.fittedFontSize;
+    const value = raw ? Number.parseFloat(raw) : NaN;
+    return Number.isFinite(value) && value > 0 ? value : undefined;
+  };
+  const authored = (style: Record<string, string>): number | undefined => {
+    const value = Number.parseFloat(style['font-size'] ?? '');
+    return Number.isFinite(value) && value > 0 ? value : undefined;
+  };
+  const toSize = (to.autoFit ? fitAutoTextElement(targetNode) ?? undefined : undefined)
+    ?? fitted(targetNode) ?? authored(to.style);
+  const fromSize = fitted(sourceClone) ?? authored(from.style);
+  return fromSize !== undefined && toSize !== undefined && toSize > 0 ? fromSize / toSize : 1;
 }
 
 /** Backwards-compatible export for tests and callers; runtime matching is explicit only. */

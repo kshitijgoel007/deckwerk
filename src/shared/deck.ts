@@ -234,6 +234,8 @@ export const SlideSchema = z.object({
   layout: z.enum(['freeform', 'standard', 'title']).optional(),
   /** Animate the transition from the preceding slide, including unpaired fades. */
   magicMoveFromPrevious: z.boolean().optional(),
+  /** Kept in the deck and editable, but stepped over when presenting. */
+  skipped: z.boolean().optional(),
   elements: z.array(ElementSchema).default([]),
   timeline: z.array(TimelineEntrySchema).default([]),
 });

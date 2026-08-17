@@ -24,6 +24,8 @@ export interface SlideOutline {
   elements: Record<string, number>;
   builds: number;
   magicMoveFromPrevious: boolean;
+  /** Kept in the deck but stepped over when presenting. */
+  skipped: boolean;
 }
 
 export interface RoleUsage {
@@ -64,6 +66,7 @@ export function deckOutline(deck: Deck): SlideOutline[] {
     elements: Object.fromEntries(countBy(slide.elements.map((element) => element.type))),
     builds: slide.timeline.length,
     magicMoveFromPrevious: slide.magicMoveFromPrevious ?? false,
+    skipped: slide.skipped ?? false,
   }));
 }
 

@@ -111,7 +111,30 @@ describe('Magic Move matching', () => {
     expect(source.magicMoveId).toBeTruthy();
     expect(target.magicMoveId).toBe(source.magicMoveId);
     expect(store.get().deck.slides[1].magicMoveFromPrevious).toBe(true);
-    expect(document.querySelector('.magic-modal')!.textContent).toContain('1 paired object');
+    const lists = document.querySelectorAll<HTMLElement>('.magic-modal .magic-list');
+    expect(lists).toHaveLength(2);
+    const firstRow = lists[0].querySelector('.magic-list-item')!;
+    expect(firstRow.classList.contains('paired')).toBe(true);
+    expect(firstRow.querySelector('.magic-list-badge')!.textContent).toBe('1');
+    document.querySelector<HTMLButtonElement>('.magic-modal-close')!.click();
+  });
+
+  it('pairs objects by clicking the element lists below the previews', () => {
+    const store = new EditorStore(twoSlideDeck(), '/tmp/magic');
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    new MagicMovePanel(host, store);
+    host.querySelector<HTMLButtonElement>('.magic-open')!.click();
+
+    const pick = (side: string, id: string) => document
+      .querySelector<HTMLButtonElement>(`.magic-modal .magic-list-pick[data-side="${side}"][data-element-id="${id}"]`)!;
+    pick('source', 'source').click();
+    expect(document.querySelector('.magic-modal .magic-list-item.selected-source')).not.toBeNull();
+    pick('target', 'target').click();
+
+    const source = store.get().deck.slides[0].elements[0];
+    expect(source.magicMoveId).toBeTruthy();
+    expect(store.get().deck.slides[1].elements[0].magicMoveId).toBe(source.magicMoveId);
     document.querySelector<HTMLButtonElement>('.magic-modal-close')!.click();
   });
 
@@ -210,6 +233,96 @@ describe('Magic Move matching', () => {
     await Promise.resolve();
     await Promise.resolve();
     expect(host.querySelector('.magic-move-ghost')).toBeNull();
+    player.destroy();
+  });
+
+  it('translates same-size text between different-width boxes without stretching it', () => {
+    const deck = twoSlideDeck();
+    const source = deck.slides[0].elements[0] as Extract<SlideElement, { type: 'text' }>;
+    const target = deck.slides[1].elements[0] as Extract<SlideElement, { type: 'text' }>;
+    source.magicMoveId = 'pair';
+    target.magicMoveId = 'pair';
+    source.style = { 'font-size': '48px' };
+    target.style = { 'font-size': '48px' };
+    source.w = 949.55;
+    target.w = 344.79;
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const animate = vi.fn((
+      _keyframes: Keyframe[] | PropertyIndexedKeyframes | null,
+      _options?: number | KeyframeAnimationOptions,
+    ) => ({ finished: Promise.resolve() }));
+    HTMLElement.prototype.animate = animate as unknown as typeof HTMLElement.prototype.animate;
+    const player = new Player({ deck, container: host, resolveSrc: (src) => src });
+
+    player.goToSlide(1);
+
+    const frames = animate.mock.calls[0][0] as unknown as Keyframe[];
+    expect(frames[0].transform).toBe('translate(-600px, 0px) scale(1, 1)');
+    player.destroy();
+  });
+
+  it('scales paired text by its font size ratio, anchored at its alignment', () => {
+    const deck = twoSlideDeck();
+    const source = deck.slides[0].elements[0] as Extract<SlideElement, { type: 'text' }>;
+    const target = deck.slides[1].elements[0] as Extract<SlideElement, { type: 'text' }>;
+    source.magicMoveId = 'pair';
+    target.magicMoveId = 'pair';
+    source.style = { 'font-size': '80px' };
+    target.style = { 'font-size': '40px' };
+    source.align = 'center';
+    target.align = 'center';
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const animate = vi.fn((
+      _keyframes: Keyframe[] | PropertyIndexedKeyframes | null,
+      _options?: number | KeyframeAnimationOptions,
+    ) => ({ finished: Promise.resolve() }));
+    HTMLElement.prototype.animate = animate as unknown as typeof HTMLElement.prototype.animate;
+    const player = new Player({ deck, container: host, resolveSrc: (src) => src });
+
+    player.goToSlide(1);
+
+    const frames = animate.mock.calls[0][0] as unknown as Keyframe[];
+    // Anchors: centers of the two boxes (x 0 w 300 vs x 600 w 300), scale 80/40.
+    expect(frames[0].transform).toBe('translate(-600px, 0px) scale(2, 2)');
+    expect(frames[0].transformOrigin).toBe('50% 0%');
+    player.destroy();
+  });
+
+  it('keeps a mover above a removed backdrop it outranked on the source slide', () => {
+    const deck = twoSlideDeck();
+    deck.slides[0].elements[0].magicMoveId = 'pair';
+    deck.slides[1].elements[0].magicMoveId = 'pair';
+    deck.slides[0].elements[0].z = 5;
+    const backdrop: SlideElement = {
+      id: 'backdrop', type: 'shape', shape: 'rect', x: 0, y: 0, w: 1920, h: 1080,
+      rot: 0, z: 4, opacity: 1, class: [], style: {}, fill: '#ffffff', stroke: null,
+      strokeWidth: 1, radius: 0, path: null, pathSize: null,
+      arrowStart: false, arrowEnd: false,
+    };
+    deck.slides[0].elements.unshift(backdrop);
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const animate = vi.fn((
+      _keyframes: Keyframe[] | PropertyIndexedKeyframes | null,
+      _options?: number | KeyframeAnimationOptions,
+    ) => ({ finished: Promise.resolve() }));
+    HTMLElement.prototype.animate = animate as unknown as typeof HTMLElement.prototype.animate;
+    const player = new Player({ deck, container: host, resolveSrc: (src) => src });
+
+    player.goToSlide(1);
+
+    const calls = animate.mock.calls.map((call) => call[0] as unknown as Keyframe[]);
+    // The mover ranks above the backdrop for the eased first half, then drops
+    // to its target DOM rank at the same wall-time midpoint as every discrete
+    // switch — which requires linear overall timing with the ease on frame 0.
+    const mover = calls.find((frames) => frames[0].transform !== undefined)!;
+    expect(mover.map((frame) => frame.zIndex)).toEqual(['1', '1', '0', '0']);
+    expect(mover[0].easing).toBe('cubic-bezier(.2,.8,.2,1)');
+    expect((animate.mock.calls[0][1] as KeyframeAnimationOptions).easing).toBe('linear');
+    const ghost = calls.find((frames) => frames[0].visibility === 'visible')!;
+    expect(ghost.every((frame) => frame.zIndex === '0')).toBe(true);
     player.destroy();
   });
 

@@ -3,9 +3,9 @@ import { describe, expect, it } from 'vitest';
 import { applyAgentTransaction } from '../src/shared/agent.js';
 import { emptyDeck } from '../src/shared/deck.js';
 import { authoringPageHtml, measureSlides, measureSlidesSource } from '../src/shared/htmlMeasure.js';
-import { htmlSlideScope, slidesFromMeasured, slidesToHtml, type MeasuredSlide } from '../src/shared/htmlSlides.js';
+import { adoptAuthoredIds, htmlSlideScope, slidesFromMeasured, slidesToHtml, type MeasuredSlide } from '../src/shared/htmlSlides.js';
 import { applySlideLayout } from '../src/renderer/editor/slideLayouts.js';
-import { authoredHtmlTransaction, compileAuthoredHtml } from '../src/renderer/editor/htmlCompile.js';
+import { authoredHtmlSync, authoredHtmlTransaction, compileAuthoredHtml } from '../src/renderer/editor/htmlCompile.js';
 
 /**
  * The one walk, shared by two browsers.
@@ -151,6 +151,29 @@ describe('the walk', () => {
     expect(measureSlides(pageFrame('<h1>Just markup</h1>')).length).toBe(1);
   });
 
+  it('compiles a page with no sections and an empty body to no slides at all', () => {
+    // A scoped export whose sections were all removed asks for a deletion; the
+    // body fallback must not turn that request into one fresh empty slide.
+    expect(measureSlides(pageFrame(''))).toEqual([]);
+  });
+
+  it('dissolves a hand-copied element wrapper so the video inside stays a video', () => {
+    // Agents copy `class="element element-video"` wrappers from exports around
+    // their own <video>. Claiming the wrapper as the object baked the video
+    // into a text element and lost it.
+    const doc = pageFrame(`
+      <section class="slide" data-slide-id="a">
+        <div class="element element-video"
+             style="position:absolute; left:280px; top:180px; width:1360px; height:720px;">
+          <video src="assets/results.mp4"></video>
+        </div>
+      </section>
+    `);
+    const [slide] = measureSlides(doc);
+    expect(slide.nodes.map((node) => node.tag)).toEqual(['video']);
+    expect(slide.nodes[0].attrs.src).toBe('assets/results.mp4');
+  });
+
   it('refuses a document it cannot measure rather than guessing', () => {
     const detached = document.implementation.createHTMLDocument('detached');
     expect(() => measureSlides(detached)).toThrow(/no window/);
@@ -232,6 +255,46 @@ describe('compiling a saved authoring file in the editor', () => {
     const second = await authoredHtmlTransaction(afterFirst, file, theme);
     const afterSecond = applyAgentTransaction(afterFirst, second!);
     expect(afterSecond.slides.map((slide) => slide.id)).toEqual(['slide-1', 'added']);
+  });
+
+  it('deletes the exported range when its sections are removed from the file', async () => {
+    const deck = emptyDeck();
+    deck.slides.push({ ...structuredClone(deck.slides[0]), id: 'closing' });
+    const transaction = await authoredHtmlTransaction(deck, {
+      path: 'edit/slide-1.html',
+      contents: edited([deck.slides[0]], ''),
+    }, theme);
+    expect(transaction!.operations).toEqual([{ op: 'deleteSlide', slideId: 'slide-1' }]);
+  });
+
+  it('stamps assigned ids into the file so applying it twice does not duplicate', async () => {
+    // The disaster this prevents: apply, time out, apply again — and every
+    // id-less section lands in the deck a second time under a fresh id.
+    const deck = emptyDeck();
+    const file = {
+      path: 'edit/slide-1.html',
+      contents: edited(deck.slides, `
+        <section class="slide" data-slide-id="slide-1"></section>
+        <section class="slide" data-name="New"></section>`),
+    };
+
+    const { transaction, slides } = await authoredHtmlSync(deck, file, theme);
+    const after = applyAgentTransaction(deck, transaction!);
+    expect(after.slides.length).toBe(2);
+
+    const adopted = adoptAuthoredIds(file.contents, slides)!;
+    expect(adopted).toContain(`data-slide-id="${slides[1].id}"`);
+    expect(htmlSlideScope(adopted)).toEqual(slides.map((slide) => slide.id));
+
+    const second = await authoredHtmlSync(after, { path: file.path, contents: adopted }, theme);
+    const afterSecond = second.transaction
+      ? applyAgentTransaction(after, second.transaction) : after;
+    expect(afterSecond.slides.map((slide) => slide.id))
+      .toEqual(after.slides.map((slide) => slide.id));
+  });
+
+  it('adopts nothing when the document cannot be matched to the compiled slides', () => {
+    expect(adoptAuthoredIds('<p>not a slide document</p>', [emptyDeck().slides[0]])).toBeNull();
   });
 
   it('leaves the deck\'s shape alone when the file still holds the same slides', async () => {

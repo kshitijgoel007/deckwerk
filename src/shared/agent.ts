@@ -61,6 +61,7 @@ export const ComputedSlideSceneSchema = z.object({
   background: z.unknown(),
   layout: z.string(),
   magicMoveFromPrevious: z.boolean(),
+  skipped: z.boolean(),
   timeline: z.array(z.unknown()),
   elements: z.array(ComputedElementSceneSchema),
 });
@@ -321,6 +322,7 @@ export function authoredScene(
     background: slide.background,
     layout: slide.layout ?? 'freeform',
     magicMoveFromPrevious: slide.magicMoveFromPrevious ?? false,
+    skipped: slide.skipped ?? false,
     timeline: slide.timeline,
     elements: slide.elements.map((element) => authoredElementScene(element, selectedElementIds)),
   };

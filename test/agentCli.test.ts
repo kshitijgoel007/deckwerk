@@ -256,14 +256,67 @@ describe('slide-agent CLI', () => {
     expect(next.slides.map((slide) => slide.id)).toEqual(['slide-3']);
   });
 
+  it('reports elements that extend past the canvas without failing the deck', async () => {
+    const deck = await onDisk();
+    deck.slides[0].elements.push(text('runaway', 'Off the edge', { y: 1000, h: 300 }) as never);
+    await writeDeck(deck);
+
+    const { code, json } = await parsed('validate');
+    expect(code).toBe(EXIT_OK);
+    expect(json.valid).toBe(true);
+    expect(json.overflows).toEqual([{
+      slideId: 'slide-1', elementId: 'runaway', type: 'text', beyond: { bottom: 220 },
+    }]);
+
+    // Scoped to another slide, the pre-existing overflow is someone else's.
+    const scoped = await parsed('validate', '--slide', 'slide-2');
+    expect(scoped.json.overflows).toEqual([]);
+    expect(scoped.json.scope).toEqual(['slide-2']);
+
+    const stale = await cli('validate', '--slide', 'slide-999');
+    expect(stale.code).toBe(EXIT_USAGE);
+  });
+
+  it('refuses a misspelt flag instead of quietly doing something else', async () => {
+    // `--slides` once fell through to the current selection and exported a
+    // different slide than the one named — silent wrongness, not an error.
+    const result = await cli('inspect', '--html', '--slides', 'slide-1');
+    expect(result.code).toBe(EXIT_USAGE);
+    expect(result.stderr).toMatch(/--slides/);
+    expect(result.stderr).toMatch(/--slide <id>/);
+  });
+
+  it('refuses a slide id that does not exist instead of falling back', async () => {
+    const result = await cli('inspect', '--html', '--slide', 'slide-999');
+    expect(result.code).toBe(EXIT_USAGE);
+    expect(result.stderr).toMatch(/No such slide: slide-999/);
+  });
+
+  it('exports several named slides into one file', async () => {
+    const repeated = await cli('inspect', '--html', '--slide', 'slide-1', '--slide', 'slide-2');
+    expect(repeated.code).toBe(EXIT_OK);
+    expect(repeated.stdout.match(/<section/g)?.length).toBe(2);
+
+    const listed = await cli('inspect', '--html', '--slide', 'slide-1,slide-2');
+    expect(listed.stdout).toBe(repeated.stdout);
+  });
+
+  it('prints the slide count before the outline, for callers that truncate', async () => {
+    const { json } = await parsed('context');
+    expect(json.slideCount).toBe(2);
+    expect(Object.keys(json)[0]).toBe('slideCount');
+  });
+
   it('fails a render before launching anything when the request cannot be met', async () => {
     const missingOutput = await cli('render', '--all');
     expect(missingOutput.code).toBe(EXIT_USAGE);
     expect(missingOutput.stderr).toMatch(/needs --output/);
 
+    // A stale id is a usage error naming the id, not an empty render: the
+    // caller must learn to re-read `context`, not to shrug at a silent miss.
     const noSuchSlide = await cli('render', '--slide', 'not-a-slide', '--output', join(dir, 'shots'));
-    expect(noSuchSlide.code).toBe(EXIT_ERROR);
-    expect(noSuchSlide.stderr).toMatch(/no slide matched/);
+    expect(noSuchSlide.code).toBe(EXIT_USAGE);
+    expect(noSuchSlide.stderr).toMatch(/No such slide: not-a-slide/);
   });
 
   it('hands an agent the format guide without needing to know where the editor lives', async () => {
@@ -282,15 +335,15 @@ describe('slide-agent CLI', () => {
 
       const brief = await readFile(join(fresh, 'AGENTS.md'), 'utf8');
       expect(brief).toContain('slide-agent context');
-      expect(brief).toContain('slide-agent inspect --html');
+      expect(brief).toContain('slide-agent inspect . --html');
       expect(brief).toContain('slide-agent apply');
       expect(brief).toContain('slide-agent docs');
       // The stub exists to stop two failure modes: hand-authoring geometry,
       // and reading the whole deck before doing anything.
-      expect(brief).toMatch(/do not compute slide geometry/i);
+      expect(brief).toMatch(/do not compute pixel geometry/i);
       expect(brief).toMatch(/Do not read\s+.?deck\.json/);
       // And to say what replaced them: save the file, the editor syncs it.
-      expect(brief).toMatch(/the editor syncs it back/i);
+      expect(brief).toMatch(/the editor bakes the result into the presentation/i);
       // And to name the one convention an agent reliably gets wrong.
       expect(brief).toContain('KaTeX');
     });

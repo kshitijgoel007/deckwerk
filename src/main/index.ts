@@ -1,7 +1,15 @@
 import { type FSWatcher, existsSync, mkdirSync, watch } from 'node:fs';
-import { basename, join, resolve } from 'node:path';
-import { BrowserWindow, app, dialog, ipcMain, shell } from 'electron';
+import { basename, join, resolve, sep } from 'node:path';
+import { BrowserWindow, app, clipboard, dialog, ipcMain, shell } from 'electron';
 import type { Deck } from '@shared/deck.js';
+import {
+  CLIPBOARD_FORMAT,
+  type ClipboardPayload,
+  type ClipboardWriteRequest,
+  collectAssetSrcs,
+  parseClipboardPayload,
+  rewriteAssetSrcs,
+} from '@shared/clipboard.js';
 import { IPC } from '@shared/ipc.js';
 import type {
   AgentContextDraft,
@@ -135,7 +143,16 @@ function watchDeck(dir: string, themeFile: string): void {
           htmlTimers.delete(path);
           try {
             const { readFile } = await import('node:fs/promises');
+            const first = await readFile(path, 'utf8');
+            // A save is not necessarily atomic: reading during a large write
+            // hands back a truncated document, which once compiled into an
+            // empty slide. Read twice with a pause — a file still growing
+            // differs between the reads — and skip a document that is visibly
+            // cut off; the write's own final event will retry it complete.
+            await new Promise((settle) => setTimeout(settle, 150));
             const contents = await readFile(path, 'utf8');
+            if (contents !== first) return;
+            if (/<html[\s>]/i.test(contents) && !/<\/html>/i.test(contents)) return;
             // The editor's own export lands here too; that event is an echo.
             if (lastWrittenHtml.get(path) === contents) {
               lastWrittenHtml.delete(path);
@@ -274,6 +291,27 @@ function registerHandlers(): void {
     return written.path;
   });
 
+  ipcMain.handle(IPC.htmlAdopt, async (
+    _e, path: string, contents: string, expected: string,
+  ): Promise<void> => {
+    const s = requireSession();
+    const editDir = join(s.dir, HTML_EDIT_DIR);
+    const target = resolve(String(path));
+    // Only files inside this deck's edit/ folder; the renderer holds no other
+    // write access to the filesystem and must not gain one through this.
+    if (target !== editDir && !target.startsWith(editDir + sep)) {
+      throw new Error(`Refusing to write outside ${editDir}: ${target}`);
+    }
+    const { readFile, writeFile } = await import('node:fs/promises');
+    // The author may have saved again while the compile ran; stamping ids onto
+    // *those* contents is the next compile's job, not a reason to lose them.
+    const current = await readFile(target, 'utf8').catch(() => null);
+    if (current !== expected) return;
+    // Our own write; the watcher event it fires is an echo, not an edit.
+    lastWrittenHtml.set(target, contents);
+    await writeFile(target, contents, 'utf8');
+  });
+
   ipcMain.handle(
     IPC.assetImport,
     async (_e, paths: string[]): Promise<ImportedAsset[]> => {
@@ -290,6 +328,64 @@ function registerHandlers(): void {
       return out;
     },
   );
+
+  // Copy: serialise the fragment onto the OS pasteboard under a private
+  // format, with absolute asset paths attached, so any instance of this app —
+  // including a different process with a different deck open — can paste it.
+  ipcMain.handle(IPC.clipboardWrite, (_e, request: ClipboardWriteRequest): void => {
+    const assets: ClipboardPayload['assets'] = [];
+    if (session) {
+      for (const src of collectAssetSrcs(request)) {
+        try {
+          const absPath = resolveAsset(session.dir, src);
+          if (existsSync(absPath)) assets.push({ src, absPath });
+        } catch {
+          // A src that escapes the deck folder simply doesn't travel.
+        }
+      }
+    }
+    const payload = { format: CLIPBOARD_FORMAT, version: 1, ...request, assets };
+    clipboard.writeBuffer(CLIPBOARD_FORMAT, Buffer.from(JSON.stringify(payload), 'utf8'));
+  });
+
+  // Paste: validate whatever is on the pasteboard, then re-import each
+  // referenced asset into *this* deck. Import names files by content hash, so
+  // pasting back into the source deck (or pasting twice) copies nothing.
+  ipcMain.handle(IPC.clipboardRead, async (): Promise<ClipboardPayload | null> => {
+    const buf = clipboard.readBuffer(CLIPBOARD_FORMAT);
+    if (!buf || buf.length === 0) return null;
+    let payload: ClipboardPayload | null = null;
+    try {
+      payload = parseClipboardPayload(JSON.parse(buf.toString('utf8')));
+    } catch {
+      return null;
+    }
+    if (!payload) return null;
+
+    const s = requireSession();
+    const map = new Map<string, string>();
+    for (const asset of payload.assets) {
+      try {
+        // Fast path: the src already resolves in this deck (same-deck paste).
+        if (existsSync(resolveAsset(s.dir, asset.src))) {
+          map.set(asset.src, asset.src);
+          continue;
+        }
+      } catch {
+        // Foreign-shaped src; fall through to import.
+      }
+      try {
+        const imported = await importAsset(s.dir, asset.absPath);
+        map.set(asset.src, imported.src);
+      } catch (err) {
+        // Source deck gone since the copy. The element still pastes; its
+        // media renders broken rather than vanishing.
+        console.error(`Could not import pasted asset ${asset.absPath}:`, err);
+      }
+    }
+    rewriteAssetSrcs(payload, map);
+    return payload;
+  });
 
   ipcMain.handle(IPC.assetProbe, async (_e, src: string) => {
     const s = requireSession();

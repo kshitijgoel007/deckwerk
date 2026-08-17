@@ -40,7 +40,21 @@ function start(session: DeckSession): void {
     resolveSrc: (src) => window.api.assetUrl(src),
     onCursor: (cursor, steps) => window.api.publishPresentState({ cursor, steps, startedAt }),
   });
-  player.goToSlide(Number.isFinite(startSlide) ? startSlide : 0);
+  // Presenting from a skipped slide would put it on the projector anyway;
+  // land on the nearest slide that is actually part of the talk.
+  let first = Number.isFinite(startSlide) ? startSlide : 0;
+  const slides = session.deck.slides;
+  if (slides[first]?.skipped) {
+    const forward = slides.findIndex((s, i) => i > first && !s.skipped);
+    if (forward >= 0) {
+      first = forward;
+    } else {
+      for (let i = slides.length - 1; i >= 0; i--) {
+        if (!slides[i].skipped) { first = i; break; }
+      }
+    }
+  }
+  player.goToSlide(first);
 
   bindPresentKeys(window, player, { onExit: () => window.close() });
 

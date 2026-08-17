@@ -9,6 +9,7 @@
   --muted: #9a9aa2;
   --accent: #3b82f6;
   --danger: #e0463c;
+  --build-orange: #f59e0b;
 }
 
 * { box-sizing: border-box; }
@@ -67,6 +68,31 @@ button.primary {
   border-color: transparent;
   background: var(--accent);
   color: #fff;
+}
+
+/* The one style for a side-panel's block action ("Open Magic Move editor…",
+   "Add animation", "Edit mask", "Reset trim", …). Pair with `primary` for the
+   accent look: class="primary panel-action". */
+button.panel-action {
+  display: block;
+  width: 100%;
+  margin: 10px 0;
+  padding: 6px 11px;
+  font-weight: 600;
+}
+
+/* The "+ Add effect" picker sits where a panel action would; give it the same
+   footprint so the media sections keep one rhythm. */
+select.panel-action-select {
+  display: block;
+  width: 100%;
+  margin: 10px 0;
+  padding: 5px 11px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
 }
 
 body.welcome-mode .deck-only { display: none; }
@@ -449,24 +475,47 @@ body.welcome-mode .deck-only { display: none; }
 .step-empty { color: var(--muted); font-size: 11px; font-style: italic; }
 
 .timeline-row {
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 4px;
-  grid-template-areas:
-    "grip action target remove"
-    "grip trigger delay remove";
-  grid-template-columns: 22px 1fr 1.35fr 24px;
-  align-items: center;
+  align-items: stretch;
   margin-bottom: 7px;
   padding: 4px;
   border-radius: 5px;
 }
 
-.build-drag-handle { grid-area: grip; align-self: stretch; padding: 0; cursor: grab; color: var(--muted); }
-.build-action { grid-area: action; }
-.build-target { grid-area: target; }
-.build-trigger { grid-area: trigger; }
-.build-delay { grid-area: delay; }
-.timeline-row > .icon-button { grid-area: remove; }
+.build-card-head, .build-card-body {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  min-width: 0;
+}
+
+.build-card-body { padding-left: 20px; }
+.build-drag-handle { padding: 0 2px; cursor: grab; color: var(--muted); }
+.build-delay { width: 58px; flex: none; }
+
+.build-num {
+  flex: none;
+  display: grid;
+  place-items: center;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 4px;
+  border-radius: 9px;
+  background: var(--build-orange);
+  color: #fff;
+  font: 700 10.5px/1 system-ui, sans-serif;
+}
+
+.build-target-name {
+  flex: 1;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 .timeline-row select, .timeline-row input {
   min-width: 0;
@@ -476,6 +525,31 @@ body.welcome-mode .deck-only { display: none; }
   background: var(--panel-2);
   color: var(--text);
   font: 11px system-ui, sans-serif;
+}
+
+/* The trigger is the card's headline: what makes this step fire. */
+.timeline-row select.build-trigger {
+  flex: 1;
+  border-color: color-mix(in srgb, var(--build-orange) 55%, transparent);
+  color: var(--build-orange);
+  font-weight: 650;
+}
+
+/* Numbered marker on the canvas for elements a build entry animates. */
+.build-badge {
+  position: absolute;
+  z-index: 6;
+  display: grid;
+  place-items: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--build-orange);
+  box-shadow: 0 0 0 calc(1.5px * var(--inv, 1)) rgb(255 255 255 / 85%);
+  color: #fff;
+  font: 700 11px/1 system-ui, sans-serif;
+  transform: translate(-55%, -45%) scale(var(--inv, 1));
 }
 
 .icon-button {
@@ -526,9 +600,27 @@ body.welcome-mode .deck-only { display: none; }
   grid-template-areas: "num thumb" "label label" "meta meta";
   grid-template-columns: 20px 1fr;
   cursor: grab;
+  position: relative;
 }
 
 .rail-item.dragging { opacity: 0.4; }
+
+/* Hidden (skipped) slides stay editable but are visibly out of the talk. */
+.rail-item.skipped .rail-thumb { opacity: 0.35; }
+.rail-item.skipped .rail-num { text-decoration: line-through; }
+.rail-skipped-badge {
+  position: absolute;
+  right: 12px;
+  top: 10px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.65);
+  color: #ddd;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  pointer-events: none;
+}
 .rail-item.drop-before { box-shadow: inset 0 2px 0 var(--accent); }
 .rail-item.drop-after { box-shadow: inset 0 -2px 0 var(--accent); }
 
@@ -764,17 +856,37 @@ input[type="range"] { accent-color: var(--accent); padding: 0; background: trans
 .text-selection-style > span { color: var(--muted); font-size: 10.5px; }
 .text-selection-style .button-row { display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; }
 .text-selection-style button { padding: 5px 2px; font-size: 10px; }
-.build-element-row {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  min-width: 0;
-  padding: 5px 4px;
-  color: var(--text);
-  font-size: 10px;
+.build-element-list {
+  max-height: 180px;
+  overflow-y: auto;
+  margin-bottom: 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-2);
 }
-.build-element-row span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.build-element-row input { accent-color: var(--accent); }
+
+.build-element-row {
+  display: block;
+  overflow: hidden;
+  width: 100%;
+  padding: 5px 8px;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font-size: 11px;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.build-element-row:hover { background: rgb(255 255 255 / 6%); }
+
+.build-element-row.selected {
+  background: var(--accent-soft, rgb(59 130 246 / 22%));
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
 .timeline-row.dragging { opacity: .4; }
 .timeline-row[data-drop-mode="before"] { box-shadow: inset 0 3px 0 var(--accent); }
 .timeline-row[data-drop-mode="after"] { box-shadow: inset 0 -3px 0 var(--accent); }
@@ -800,7 +912,6 @@ input[type="range"] { accent-color: var(--accent); padding: 0; background: trans
   margin-top: 14px;
   padding-top: 12px;
 }
-.magic-open { width: 100%; }
 .magic-summary { margin-bottom: 9px; }
 
 .magic-duration {
@@ -856,26 +967,59 @@ input[type="range"] { accent-color: var(--accent); padding: 0; background: trans
 .magic-actions { margin-bottom: 8px; }
 .magic-actions button { flex: 1; }
 .magic-message { color: var(--accent); }
-.magic-pairs-title { margin-top: 12px; }
-.magic-pair-row {
+.magic-lists {
   display: grid;
-  grid-template-columns: 18px 1fr 24px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+  margin-top: 12px;
+}
+.magic-list {
+  overflow-y: auto;
+  max-height: 220px;
+  border: 1px solid var(--line);
+}
+.magic-list-item {
+  display: flex;
   align-items: center;
-  gap: 5px;
-  padding: 5px 0;
   border-bottom: 1px solid var(--line);
 }
-.magic-pair-row b {
+.magic-list-item:last-child { border-bottom: none; }
+.magic-list-pick {
+  display: grid;
+  overflow: hidden;
+  flex: 1;
+  grid-template-columns: 18px 1fr;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  padding: 5px 6px;
+  border: none;
+  background: none;
+  color: var(--text);
+  font-size: 10px;
+  text-align: left;
+  cursor: pointer;
+}
+.magic-list-pick:hover { background: rgb(245 158 11 / 8%); }
+.magic-list-pick span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.magic-list-badge {
   display: grid;
   width: 16px;
   height: 16px;
-  border-radius: 50%;
   place-items: center;
-  background: var(--accent);
-  color: white;
   font-size: 8px;
 }
-.magic-pair-row span { overflow: hidden; color: var(--text); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.magic-list-item.paired .magic-list-badge {
+  border-radius: 50%;
+  background: var(--accent);
+  color: white;
+}
+.magic-list-item.paired .magic-list-pick { color: var(--accent); }
+.magic-list-item.selected-source {
+  background: rgb(245 158 11 / 10%);
+  box-shadow: inset 0 0 0 1px #f59e0b;
+}
+.magic-list-item .icon-button { flex: none; margin-right: 4px; }
 .magic-compact-preview { cursor: pointer; }
 .magic-compact-preview:hover,
 .magic-compact-preview:focus-visible { border-color: var(--accent); outline: none; }
@@ -914,8 +1058,6 @@ input[type="range"] { accent-color: var(--accent); padding: 0; background: trans
 .magic-modal-content .magic-preview-label { font-size: 11px; text-align: left; }
 .magic-modal-content .magic-actions { justify-content: center; }
 .magic-modal-content .magic-actions button { flex: 0 0 140px; }
-.magic-modal-content .magic-pairs-title,
-.magic-modal-content .magic-pair-row { max-width: 720px; margin-right: auto; margin-left: auto; }
 
 /* ============================================================= */
 /* Final design layer: terminal-inspired. Monospace UI, hard      */

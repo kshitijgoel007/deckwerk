@@ -1,5 +1,10 @@
 import type { Deck, Slide, SlideElement } from '@shared/deck.js';
 import { parseDeck } from '@shared/deck.js';
+import {
+  type ClipboardWriteRequest,
+  remapElementIds,
+  remapSlideIds,
+} from '@shared/clipboard.js';
 
 /**
  * Editor state: the deck, the selection, and an undo history.
@@ -407,54 +412,109 @@ function shareUnchangedSlides(previous: Deck, next: Deck): void {
 }
 
 /**
- * App-wide element clipboard. Module-level so it survives slide switches and
- * deck swaps; new ids are minted on paste so timelines never cross-wire.
+ * Copy and paste, backed by the OS pasteboard.
+ *
+ * The payload crosses the system clipboard (via the main process) so that a
+ * second running instance of the app can paste it into another deck; assets
+ * are re-imported and ids re-minted on the way in. The module-level fallback
+ * keeps copy/paste working when no system clipboard is reachable — a deck
+ * that isn't open as a session yet, or tests without a preload bridge.
  */
-let elementClipboard: SlideElement[] = [];
+let fallbackClipboard: ClipboardWriteRequest | null = null;
 
-export function copySelectionToClipboard(store: EditorStore): number {
-  const els = store.selectedElements();
-  if (els.length > 0) {
-    elementClipboard = structuredClone(els).map((element) => ({
-      ...element,
-      lineageId: element.lineageId ?? element.id,
-      magicMoveId: null,
-    })) as SlideElement[];
+async function writeSystemClipboard(request: ClipboardWriteRequest): Promise<void> {
+  fallbackClipboard = request;
+  try {
+    await window.api?.writeClipboard?.(request);
+  } catch (err) {
+    console.error('Could not write the system clipboard:', err);
   }
+}
+
+async function readSystemClipboard(): Promise<ClipboardWriteRequest | null> {
+  try {
+    const payload = await window.api?.readClipboard?.();
+    if (payload) return payload;
+  } catch (err) {
+    console.error('Could not read the system clipboard:', err);
+  }
+  return fallbackClipboard;
+}
+
+export async function copySelectionToClipboard(store: EditorStore): Promise<number> {
+  const els = store.selectedElements();
+  if (els.length === 0) return 0;
+  const ids = new Set(els.map((e) => e.id));
+  // Builds ride along: an element that appears on click should still appear
+  // on click after the paste. Entries triggered by elements staying behind
+  // keep their action; the dangling ref is nulled during id remapping.
+  const timeline = (store.slide?.timeline ?? []).filter((t) => ids.has(t.action.target));
+  await writeSystemClipboard({
+    kind: 'elements',
+    elements: structuredClone(els),
+    timeline: structuredClone(timeline),
+  });
   return els.length;
 }
 
-export function cutSelectionToClipboard(store: EditorStore): number {
-  const n = copySelectionToClipboard(store);
+export async function cutSelectionToClipboard(store: EditorStore): Promise<number> {
+  const n = await copySelectionToClipboard(store);
   if (n > 0) store.deleteSelection();
   return n;
 }
 
-export function pasteFromClipboard(store: EditorStore): string[] {
-  if (elementClipboard.length === 0) return [];
-  const created: string[] = [];
+/** Copy whole slides (the rail selection, in deck order). */
+export async function copySlidesToClipboard(store: EditorStore): Promise<number> {
+  const slides = store.selectedSlides();
+  if (slides.length === 0) return 0;
+  await writeSystemClipboard({ kind: 'slides', slides: structuredClone(slides) });
+  return slides.length;
+}
+
+/**
+ * Paste whatever fragment is on the clipboard: elements land on the current
+ * slide, slides land after it. Returns a summary for the status bar, or null
+ * when the clipboard holds nothing of ours.
+ */
+export async function pasteFromClipboard(
+  store: EditorStore,
+): Promise<{ kind: 'elements' | 'slides'; count: number } | null> {
+  const payload = await readSystemClipboard();
+  if (!payload) return null;
+
+  if (payload.kind === 'slides') {
+    const slides = structuredClone(payload.slides);
+    for (const slide of slides) remapSlideIds(slide);
+    const at = store.get().slideIndex + 1;
+    store.commit((deck) => {
+      deck.slides.splice(at, 0, ...slides);
+    }, { label: slides.length === 1 ? 'Paste slide' : `Paste ${slides.length} slides` });
+    store.selectSlide(at + slides.length - 1);
+    return { kind: 'slides', count: slides.length };
+  }
+
+  const elements = structuredClone(payload.elements);
+  const timeline = structuredClone(payload.timeline);
+  remapElementIds(elements, timeline);
+  const created = elements.map((el) => el.id);
   store.commit((deck) => {
     const slide = deck.slides[store.get().slideIndex];
     if (!slide) return;
     const maxZ = slide.elements.reduce((m, e) => Math.max(m, e.z), 0);
-    elementClipboard.forEach((el, i) => {
-      const copy = structuredClone(el);
-      copy.lineageId = copy.lineageId ?? el.id;
-      copy.magicMoveId = null;
-      copy.id = `${el.type}-${Math.random().toString(36).slice(2, 10)}`;
-      copy.x += 24;
-      copy.y += 24;
-      if (copy.type === 'shape' && copy.control) {
-        copy.control.x += 24;
-        copy.control.y += 24;
+    elements.forEach((el, i) => {
+      el.x += 24;
+      el.y += 24;
+      if (el.type === 'shape' && el.control) {
+        el.control.x += 24;
+        el.control.y += 24;
       }
-      copy.z = maxZ + 1 + i;
-      created.push(copy.id);
-      slide.elements.push(copy);
+      el.z = maxZ + 1 + i;
+      slide.elements.push(el);
     });
-  });
+    slide.timeline.push(...timeline);
+  }, { label: elements.length === 1 ? 'Paste object' : `Paste ${elements.length} objects` });
   store.select(created);
-  return created;
+  return { kind: 'elements', count: elements.length };
 }
 
 export function deckFrom(raw: unknown): Deck {

@@ -34,8 +34,10 @@ describe('text auto-fit', () => {
       },
     });
 
-    expect(fitAutoTextElement(node)).toBeCloseTo(20.1, 1);
-    expect(content.style.fontSize).toBe('20.1px');
+    // The fitter measures against a content box narrowed by 1% so the settled
+    // size clears every wrap boundary with slack: 99px / widthFactor 5 → 19.9.
+    expect(fitAutoTextElement(node)).toBeCloseTo(19.9, 1);
+    expect(content.style.fontSize).toBe('19.9px');
 
     widthFactor = 1;
     heightFactor = 1;

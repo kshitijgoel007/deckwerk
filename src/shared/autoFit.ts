@@ -26,13 +26,29 @@ export function fitAutoTextElement(node: HTMLElement, minimum = 6): number | nul
   const ceiling = Number.parseFloat(getComputedStyle(node).fontSize);
   if (!Number.isFinite(ceiling) || ceiling <= 0) return null;
 
+  // Fitting to the exact pixel edge is fragile: line-wrap decisions differ by
+  // fractions of a pixel between rendering contexts (stage scale, device pixel
+  // ratio, font rasterisation), so a size whose last line fits exactly where it
+  // was measured can wrap — and therefore clip — on the projector or in a
+  // capture. Measure against a content box narrowed by 1%, then restore the
+  // full width: the settled size then sits decisively on the fitting side of
+  // every wrap boundary, and text with any slack at all is unaffected.
+  const narrowed = Math.max(0, body.clientWidth - Math.max(1, body.clientWidth * 0.01));
+  const priorWidth = content.style.getPropertyValue('width');
+  const priorPriority = content.style.getPropertyPriority('width');
+  content.style.setProperty('width', `${narrowed}px`);
+  const restoreWidth = (): void => {
+    if (priorWidth) content.style.setProperty('width', priorWidth, priorPriority);
+    else content.style.removeProperty('width');
+  };
   const fits = (size: number): boolean => {
     content.style.fontSize = `${size}px`;
-    return content.scrollWidth <= body.clientWidth + 0.5 &&
+    return content.scrollWidth <= narrowed + 0.5 &&
       content.scrollHeight <= body.clientHeight + 0.5;
   };
 
   if (fits(ceiling)) {
+    restoreWidth();
     content.dataset.fittedFontSize = String(ceiling);
     return ceiling;
   }
@@ -46,6 +62,7 @@ export function fitAutoTextElement(node: HTMLElement, minimum = 6): number | nul
     if (fits(middle)) low = middle;
     else high = middle;
   }
+  restoreWidth();
   const fitted = Math.round(low * 10) / 10;
   content.style.fontSize = `${fitted}px`;
   content.dataset.fittedFontSize = String(fitted);

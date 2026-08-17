@@ -77,6 +77,7 @@ export class EditorCanvas {
    * what you are cutting away.
    */
   private maskingId: string | null = null;
+  private buildBadgesVisible = false;
   /** The crop as it was when the current mask drag began. */
   private maskOrigin: { x: number; y: number; w: number; h: number } | null = null;
 
@@ -246,6 +247,14 @@ export class EditorCanvas {
         node.querySelector('svg > path')?.setAttribute('d', quadraticPath(el));
       }
 
+      // "Keep aspect ratio" flips `fit` without changing structure, so the
+      // inner tag's object-fit must follow here — otherwise a resize with the
+      // toggle off keeps letterboxing instead of stretching the picture.
+      if ((el.type === 'image' || el.type === 'video') && !el.sourceBox) {
+        const media = node.querySelector<HTMLElement>('img, video');
+        if (media) media.style.objectFit = el.fit;
+      }
+
       // Cropped media: the inner tag is positioned in the window's coordinates
       // and has to follow crop changes here, since they no longer rebuild.
       if ((el.type === 'image' || el.type === 'video') && el.sourceBox) {
@@ -361,6 +370,29 @@ export class EditorCanvas {
   ): void {
     const frag = document.createDocumentFragment();
 
+    // While the Build tab is open, number every element a build entry touches
+    // so the cards in the panel can be matched to objects on the slide.
+    if (this.buildBadgesVisible) {
+      const slide = this.store.get().deck.slides[this.store.get().slideIndex];
+      const numbersByElement = new Map<string, number[]>();
+      slide?.timeline.forEach((entry, i) => {
+        const list = numbersByElement.get(entry.action.target) ?? [];
+        list.push(i + 1);
+        numbersByElement.set(entry.action.target, list);
+      });
+      for (const el of elements) {
+        const numbers = numbersByElement.get(el.id);
+        if (!numbers) continue;
+        const badge = document.createElement('div');
+        badge.className = 'build-badge';
+        badge.textContent = numbers.join(',');
+        badge.style.left = `${el.x + el.w}px`;
+        badge.style.top = `${el.y}px`;
+        badge.style.setProperty('--inv', String(1 / this.scale));
+        frag.appendChild(badge);
+      }
+    }
+
     // In mask mode, show the full frame faintly outside the crop window so it
     // is clear what is being cut away rather than merely what is kept.
     if (this.maskingId) {
@@ -384,6 +416,9 @@ export class EditorCanvas {
       box.style.top = `${el.y}px`;
       box.style.width = `${el.w}px`;
       box.style.height = `${el.h}px`;
+      // The outline must sit on the element as drawn, not where the frame
+      // would be at rot 0. Same rotation, same centre as the element node.
+      if (el.rot) box.style.transform = `rotate(${el.rot}deg)`;
       // Counter-scale so outlines and handles stay one visual size at any zoom.
       box.style.setProperty('--inv', String(1 / this.scale));
 
@@ -513,6 +548,13 @@ export class EditorCanvas {
     // Suppress the browser's own text selection: dragging across a slide would
     // otherwise sweep-select the text of every element it crossed.
     if (!this.editingId) ev.preventDefault();
+
+    // preventDefault also suppresses the focus change a click normally causes,
+    // so a previously focused surface (the slide rail) would keep owning
+    // Backspace and delete the whole slide instead of the clicked object.
+    if (!this.editingId && document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
 
     // Clicks inside an active text edit belong to the caret, not to dragging.
     if (this.editingId) {
@@ -1011,6 +1053,13 @@ export class EditorCanvas {
     if (content?.contains(range.commonAncestorContainer)) {
       this.textSelectionRange = range.cloneRange();
     }
+  }
+
+  /** Show or hide the numbered build badges (on while the Build tab is open). */
+  setBuildBadgesVisible(visible: boolean): void {
+    if (this.buildBadgesVisible === visible) return;
+    this.buildBadgesVisible = visible;
+    this.render();
   }
 
   /** The element whose mask is being edited, if any. */

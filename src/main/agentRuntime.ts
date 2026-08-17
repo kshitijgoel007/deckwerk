@@ -196,7 +196,9 @@ export async function waitForAgentResponse(
       await new Promise((resolveWait) => setTimeout(resolveWait, 50));
     }
   }
-  throw new Error('Timed out waiting for the editor to process the request');
+  throw new Error('Timed out waiting for the editor to process the request.'
+    + ' The editor may still apply it: check `slide-agent context` before retrying,'
+    + ' and never re-apply the same change on a timeout alone.');
 }
 
 export async function atomicJson(path: string, value: unknown): Promise<void> {

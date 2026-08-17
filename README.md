@@ -185,7 +185,5 @@ importers/       Keynote .key importer (Python sidecar)
 ## Known gaps
 
 - Tables and charts import as placeholders.
-- Image masks (Keynote's crop) are approximated by stretching to the displayed box.
 - Rotated groups are flattened without composing child rotation.
 - Multi-select resize moves elements but does not scale them as a group.
-- Slide backgrounds import as white; Keynote's slide fill is not read yet.

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { existsSync } from 'node:fs';
-import { mkdtemp, readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -25,6 +25,7 @@ import {
   waitForAgentResponse,
   writeAgentRequest,
 } from '../main/agentRuntime.js';
+import { adoptAuthoredIds } from '@shared/htmlSlides.js';
 import { DECK_FILE, importAsset, loadDeck } from '../main/deckStore.js';
 import { htmlEditTransaction } from '../main/htmlAuthoring.js';
 import { renderSlidesToPng } from './renderSlides.js';
@@ -74,7 +75,9 @@ Everything else:
 
   docs                                    the full agent guide, as markdown
   capabilities                            every feature, with copyable JSON
-  validate  [deck]                        schema, ids, references, assets
+  validate  [deck] [--slide id|--selected]
+                                          schema, ids, references, assets, and
+                                          canvas overflows (scoped to your slides)
   asset import <deck> <paths...>          copy media into assets/, probed
   inspect   [deck] [--dom]                computed scenes, for questions
   render    [deck] [--selected|--slide id|--all] --output <dir> [--annotate] [--built]
@@ -128,16 +131,24 @@ export async function runAgentCli(argv: string[], io: CliIo): Promise<number> {
       return EXIT_CONFLICT;
     }
     io.err(error instanceof Error ? error.message : String(error));
-    return EXIT_ERROR;
+    return error instanceof UsageError ? EXIT_USAGE : EXIT_ERROR;
   }
 }
 
 /* --- commands --- */
 
 async function contextCommand(argv: string[], io: CliIo): Promise<number> {
-  const { positional } = parseFlags(argv);
+  const { flags, positional } = parseFlags(argv);
+  ensureKnownFlags('context', flags, []);
+  ensurePositionals('context', positional, 1);
   const deckDir = resolveDeckDir(positional[0], io);
-  io.out(json(await currentContext(deckDir, { scenes: false, digest: true })));
+  const context = await currentContext(deckDir, { scenes: false, digest: true });
+  const outline = (context as { outline?: unknown[] }).outline ?? [];
+  // The count first, before hundreds of outline entries: an agent that pipes
+  // this through `head` must not mistake the visible outline for the deck.
+  // Outline entries are one line each — pretty-printing them tripled the size
+  // of the output an agent reads on every task, for no information at all.
+  io.out(jsonCompactArrays({ slideCount: outline.length, ...context }, ['outline']));
   return EXIT_OK;
 }
 
@@ -152,7 +163,9 @@ async function contextCommand(argv: string[], io: CliIo): Promise<number> {
 async function applyCommand(argv: string[], io: CliIo): Promise<number> {
   // `--html` takes a filename here, while `inspect --html` is a bare flag, so
   // the value-taking flags are named per command rather than globally.
-  const { options, positional } = parseFlags(argv, ['html', 'after', 'label']);
+  const { flags, options, positional } = parseFlags(argv, ['html', 'after', 'label']);
+  ensureKnownFlags('apply', flags, []);
+  ensurePositionals('apply', positional, 1);
   const deckDir = resolveDeckDir(positional[0], io);
   const htmlPath = options.get('html');
   if (!htmlPath) {
@@ -161,16 +174,18 @@ async function applyCommand(argv: string[], io: CliIo): Promise<number> {
   }
 
   const deck = await loadDeck(deckDir);
+  const filePath = resolve(io.cwd, htmlPath);
+  const authoredBefore = await readFile(filePath, 'utf8');
   // The same compile the editor performs on a watched save, in a headless
   // window because this path is the one taken with the editor closed.
   const { transaction, slides } = await htmlEditTransaction(
     deckDir,
     deck,
-    resolve(io.cwd, htmlPath),
+    filePath,
     { after: options.get('after') ?? null, label: options.get('label') },
   );
 
-  return applyTransaction(deckDir, transaction, io, {
+  const code = await applyTransaction(deckDir, transaction, io, {
     slides: slides.map((slide) => ({
       id: slide.id,
       elements: slide.elements.map((element) => ({
@@ -179,14 +194,30 @@ async function applyCommand(argv: string[], io: CliIo): Promise<number> {
       })),
     })),
   });
+
+  // Stamp the assigned ids back into the file so applying it again replaces
+  // these slides instead of inserting them a second time. Skipped if the file
+  // changed while the compile ran — stamping ids onto contents that were not
+  // compiled would misattribute them.
+  if (code === EXIT_OK) {
+    const authored = await readFile(filePath, 'utf8');
+    if (authored === authoredBefore) {
+      const adopted = adoptAuthoredIds(authored, slides);
+      if (adopted) await writeFile(filePath, adopted, 'utf8');
+    }
+  }
+  return code;
 }
 
 async function inspectCommand(argv: string[], io: CliIo): Promise<number> {
   const { flags, positional } = parseFlags(argv);
+  ensureKnownFlags('inspect', flags, ['html', 'dom', 'selected', 'slide', 'all']);
+  ensurePositionals('inspect', positional, 1);
   const deckDir = resolveDeckDir(positional[0], io);
 
   if (flags.has('html')) {
     const deck = await loadDeck(deckDir);
+    ensureSlideIdsExist(flags, deck);
     const context = await currentContext(deckDir, { scenes: false });
     const wanted = selectionFilter(flags);
     const chosen = deck.slides.filter((slide, index) => !wanted || wanted({
@@ -230,6 +261,7 @@ async function inspectCommand(argv: string[], io: CliIo): Promise<number> {
     return EXIT_OK;
   }
 
+  ensureSlideIdsExist(flags, await loadDeck(deckDir));
   const context = await currentContext(deckDir, { scenes: true });
   const wanted = selectionFilter(flags);
   io.out(json({
@@ -242,6 +274,8 @@ async function inspectCommand(argv: string[], io: CliIo): Promise<number> {
 
 async function renderCommand(argv: string[], io: CliIo): Promise<number> {
   const { flags, options, positional } = parseFlags(argv);
+  ensureKnownFlags('render', flags, ['selected', 'slide', 'all', 'annotate', 'built']);
+  ensurePositionals('render', positional, 1);
   const deckDir = resolveDeckDir(positional[0], io);
   const outDir = options.get('output');
   if (!outDir) {
@@ -251,6 +285,7 @@ async function renderCommand(argv: string[], io: CliIo): Promise<number> {
 
   const context = await currentContext(deckDir, { scenes: false });
   const deck = await loadDeck(deckDir);
+  ensureSlideIdsExist(flags, deck);
   const wanted = selectionFilter(flags);
   const chosen = deck.slides
     .map((slide, index) => ({ id: slide.id, number: index + 1, index, slide }))
@@ -279,9 +314,29 @@ async function renderCommand(argv: string[], io: CliIo): Promise<number> {
 }
 
 async function validateCommand(argv: string[], io: CliIo): Promise<number> {
-  const { positional } = parseFlags(argv);
+  const { flags, positional } = parseFlags(argv);
+  ensureKnownFlags('validate', flags, ['slide', 'selected', 'all']);
+  ensurePositionals('validate', positional, 1);
   const deckDir = resolveDeckDir(positional[0], io);
   const errors = await validateDeckFolder(deckDir);
+
+  // Per-slide findings can be scoped: an agent that touched three slides
+  // wants its own report, not the whole deck's pre-existing bleeds drowning
+  // it. Structural errors stay deck-wide — a broken deck is broken for
+  // everyone. With no scope flags, the whole deck is reported as before.
+  const scoped = flags.has('selected') || requestedSlideIds(flags).length > 0;
+  let wanted: ((scene: { id: string; index: number; selected: boolean; active: boolean }) => boolean) | null = null;
+  let selectedSlideIds: string[] = [];
+  if (scoped) {
+    selectedSlideIds = (await currentContext(deckDir, { scenes: false })).selectedSlideIds;
+    wanted = selectionFilter(flags);
+    try {
+      ensureSlideIdsExist(flags, await loadDeck(deckDir));
+    } catch (error) {
+      // A stale id is a usage error; an unparseable deck is already in `errors`.
+      if (error instanceof UsageError) throw error;
+    }
+  }
   let importGaps: Array<{
     slideId: string; elementId: string; originalType: string; note: string;
   }> = [];
@@ -298,7 +353,46 @@ async function validateCommand(argv: string[], io: CliIo): Promise<number> {
   } catch {
     // The parse failure is already represented in `errors`.
   }
-  io.out(json({ valid: errors.length === 0, deckPath: deckDir, errors, importGaps }));
+  // Elements reaching past the canvas, reported from authored geometry so it
+  // works with no browser. Warnings, not errors: a picture bleeding off the
+  // edge is a real design — but a text box running off the bottom is the
+  // classic silent authoring failure, and this is the only offline place an
+  // agent can catch it without rendering a PNG.
+  let overflows: Array<{ slideId: string; elementId: string; type: string; beyond: Record<string, number> }> = [];
+  try {
+    const deck = await loadDeck(deckDir);
+    overflows = deck.slides.flatMap((slide) => slide.elements.flatMap((element) => {
+      const beyond: Record<string, number> = {};
+      if (element.x < 0) beyond.left = round2(-element.x);
+      if (element.y < 0) beyond.top = round2(-element.y);
+      if (element.x + element.w > deck.canvas.w) beyond.right = round2(element.x + element.w - deck.canvas.w);
+      if (element.y + element.h > deck.canvas.h) beyond.bottom = round2(element.y + element.h - deck.canvas.h);
+      return Object.keys(beyond).length > 0
+        ? [{ slideId: slide.id, elementId: element.id, type: element.type, beyond }]
+        : [];
+    }));
+  } catch {
+    // The parse failure is already represented in `errors`.
+  }
+  if (wanted) {
+    const filter = wanted;
+    const keep = (slideId: string): boolean =>
+      filter({ id: slideId, index: 0, selected: selectedSlideIds.includes(slideId), active: false });
+    importGaps = importGaps.filter((gap) => keep(gap.slideId));
+    overflows = overflows.filter((overflow) => keep(overflow.slideId));
+  }
+
+  io.out(jsonCompactArrays(
+    {
+      valid: errors.length === 0,
+      deckPath: deckDir,
+      ...(scoped ? { scope: requestedSlideIds(flags).length > 0 ? requestedSlideIds(flags) : 'selected' } : {}),
+      errors,
+      importGaps,
+      overflows,
+    },
+    ['overflows'],
+  ));
   return errors.length === 0 ? EXIT_OK : EXIT_ERROR;
 }
 
@@ -376,12 +470,15 @@ async function applyTransaction(
   // is the real document, and routing through it is what makes the change one
   // undo entry rather than a surprise reload.
   if (live) {
+    // A generous wait: the editor may be busy compiling a watched save of the
+    // very same file. Timing out while the editor still applies the change is
+    // worse than waiting — the caller's natural reaction is to apply again.
     const response = await request(deckDir, {
       version: AGENT_PROTOCOL_VERSION,
       id: requestId(),
       kind: 'transaction',
       transaction,
-    });
+    }, 120_000);
     io.out(json({
       status: response.status,
       revision: response.revision,
@@ -483,19 +580,80 @@ function authoredScenes(
     authoredScene(deck, slide, index, selectedSlideIds, selectedElementIds, activeSlideId));
 }
 
-/** `--selected` (default), `--slide <id>` or `--all`. */
+/** A caller mistake, reported as usage rather than as a failure of the tool. */
+export class UsageError extends Error {}
+
+/**
+ * Refuse flags a command does not know.
+ *
+ * A misspelt flag that is silently dropped does not fail — it does something
+ * *else*: `inspect --slides x` once fell back to the current selection and
+ * exported a different slide than the one named, and everything downstream of
+ * that export was wrong. An agent can recover from an error; it cannot recover
+ * from the wrong slide.
+ */
+function ensureKnownFlags(command: string, flags: Set<string>, allowed: string[]): void {
+  for (const flag of flags) {
+    const name = flag.split('=', 1)[0];
+    if (allowed.includes(name)) continue;
+    const hint = name === 'slides' ? ' Did you mean --slide <id>?'
+      : allowed.find((known) => known.startsWith(name) || name.startsWith(known))
+        ? ` Did you mean --${allowed.find((known) => known.startsWith(name) || name.startsWith(known))}?`
+        : '';
+    throw new UsageError(`Unknown flag --${name} for ${command}.`
+      + (allowed.length > 0 ? ` Known flags: ${allowed.map((known) => `--${known}`).join(', ')}.` : '')
+      + hint);
+  }
+}
+
+/** Refuse stray positionals — usually the value of a flag that was misspelt. */
+function ensurePositionals(command: string, positional: string[], max: number): void {
+  if (positional.length > max) {
+    throw new UsageError(`Unexpected argument for ${command}: ${positional.slice(max).join(' ')}.`
+      + ' The only positional argument is the deck folder.');
+  }
+}
+
+/** The ids named by `--slide`, each flag holding one id or a comma-separated list. */
+function requestedSlideIds(flags: Set<string>): string[] {
+  return [...flags]
+    .filter((flag) => flag.startsWith('slide='))
+    .flatMap((flag) => flag.slice('slide='.length).split(','))
+    .map((id) => id.trim())
+    .filter(Boolean);
+}
+
+/**
+ * A `--slide` naming a slide that does not exist must be an error, not an
+ * empty (or fallback) result: the caller is holding a stale id, and the sooner
+ * it re-reads `context` the less it builds on the wrong slide.
+ */
+function ensureSlideIdsExist(flags: Set<string>, deck: Deck): void {
+  const known = new Set(deck.slides.map((slide) => slide.id));
+  const missing = requestedSlideIds(flags).filter((id) => !known.has(id));
+  if (missing.length > 0) {
+    throw new UsageError(`No such slide: ${missing.join(', ')}.`
+      + ' Run `slide-agent context` for the current outline.');
+  }
+}
+
+/** `--selected` (default), `--slide <id>` (repeatable, or comma-separated) or `--all`. */
 function selectionFilter(
   flags: Set<string>,
 ): ((scene: { id: string; index: number; selected: boolean; active: boolean }) => boolean) | null {
   if (flags.has('all')) return null;
-  const slideId = [...flags].find((flag) => flag.startsWith('slide='))?.slice('slide='.length);
-  if (slideId) return (scene) => scene.id === slideId;
+  const slideIds = new Set(requestedSlideIds(flags));
+  if (slideIds.size > 0) return (scene) => slideIds.has(scene.id);
   return (scene) => scene.selected || scene.active;
 }
 
-async function request(deckDir: string, payload: Parameters<typeof writeAgentRequest>[1]) {
+async function request(
+  deckDir: string,
+  payload: Parameters<typeof writeAgentRequest>[1],
+  timeoutMs?: number,
+) {
   const responsePath = await writeAgentRequest(deckDir, payload);
-  return waitForAgentResponse(responsePath);
+  return waitForAgentResponse(responsePath, timeoutMs);
 }
 
 function requestId(): string {
@@ -589,8 +747,29 @@ export function parseFlags(argv: string[], valuedFlags: string[] = ['output']): 
   return { flags, options, positional };
 }
 
+function round2(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
 function json(value: unknown): string {
   return `${JSON.stringify(value, null, 2)}\n`;
+}
+
+/**
+ * Pretty-printed JSON, except that each element of the named top-level arrays
+ * is emitted on a single line. Still perfectly parseable; a third the bytes
+ * for list-shaped output an agent pays tokens to read.
+ */
+function jsonCompactArrays(value: Record<string, unknown>, keys: string[]): string {
+  const parts = Object.entries(value).map(([key, entry]) => {
+    if (keys.includes(key) && Array.isArray(entry)) {
+      const items = entry.map((item) => `    ${JSON.stringify(item)}`).join(',\n');
+      return `  ${JSON.stringify(key)}: [\n${items}\n  ]`;
+    }
+    const printed = JSON.stringify(entry, null, 2);
+    return `  ${JSON.stringify(key)}: ${printed === undefined ? 'null' : printed.replace(/\n/g, '\n  ')}`;
+  });
+  return `{\n${parts.join(',\n')}\n}\n`;
 }
 
 /** A scratch directory for the export a render is captured from. */

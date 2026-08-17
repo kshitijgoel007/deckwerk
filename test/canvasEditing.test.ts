@@ -426,6 +426,33 @@ describe('inline text editing', () => {
     expect(host.querySelector('.sel-box.masking')).not.toBeNull();
     expect(host.querySelector('[data-element-id="video-1"] > div > video')).not.toBeNull();
   });
+
+  /**
+   * Regression: selecting a rotated element drew the selection box as if the
+   * element were unrotated — the outline sat where the text *would* be at
+   * rot 0 while the text itself rendered rotated. The selection box must carry
+   * the same rotation as the element it highlights, about the same centre.
+   */
+  it('rotates the selection outline with a rotated element', () => {
+    const { store, host } = setup();
+    store.select(['text-1']);
+    store.updateSelected((el) => {
+      el.rot = -90;
+    });
+
+    const node = host.querySelector<HTMLElement>('[data-element-id="text-1"]')!;
+    expect(node.style.transform).toBe('rotate(-90deg)');
+
+    const box = host.querySelector<HTMLElement>('.sel-box')!;
+    expect(box).not.toBeNull();
+    // Same frame as the element…
+    expect(box.style.left).toBe('100px');
+    expect(box.style.top).toBe('100px');
+    expect(box.style.width).toBe('600px');
+    expect(box.style.height).toBe('120px');
+    // …and the same rotation about it.
+    expect(box.style.transform).toContain('rotate(-90deg)');
+  });
 });
 
 /**
@@ -567,6 +594,68 @@ describe('dragging does not disturb media', () => {
 
     const after = document.querySelector('[data-element-id="video-1"] video');
     expect(after).not.toBe(before);
+  });
+});
+
+describe('warping media with "Keep aspect ratio" off', () => {
+  beforeEach(() => {
+    document.body.replaceChildren();
+  });
+
+  it('applies fit changes to the inner video without rebuilding it', () => {
+    const { store, canvas } = setup();
+    void canvas;
+    const before = document.querySelector<HTMLElement>(
+      '[data-element-id="video-1"] video',
+    )!;
+    expect(before.style.objectFit).toBe('contain');
+
+    // Uncheck "Keep aspect ratio" — the inspector writes fit: 'fill'.
+    store.select(['video-1']);
+    store.updateSelected((el) => {
+      if (el.type === 'video') el.fit = 'fill';
+    });
+
+    const after = document.querySelector<HTMLElement>(
+      '[data-element-id="video-1"] video',
+    )!;
+    expect(after, 'the video element was recreated by a fit toggle').toBe(before);
+    expect(
+      after.style.objectFit,
+      'fit: fill never reached the <video>, so resizing only moves the box',
+    ).toBe('fill');
+
+    // A resize with the toggle off must stretch the picture: the inner video
+    // keeps filling the (now differently shaped) box instead of letterboxing.
+    store.updateSelected((el) => {
+      if (el.type === 'video') {
+        el.w = 900;
+        el.h = 120;
+      }
+    });
+    const node = document.querySelector<HTMLElement>('[data-element-id="video-1"]')!;
+    expect(node.style.width).toBe('900px');
+    expect(node.style.height).toBe('120px');
+    const video = node.querySelector<HTMLElement>('video')!;
+    expect(video.style.width).toBe('100%');
+    expect(video.style.height).toBe('100%');
+    expect(video.style.objectFit).toBe('fill');
+  });
+
+  it('restores letterboxing when the toggle is switched back on', () => {
+    const { store, canvas } = setup();
+    void canvas;
+    store.select(['video-1']);
+    store.updateSelected((el) => {
+      if (el.type === 'video') el.fit = 'fill';
+    });
+    store.updateSelected((el) => {
+      if (el.type === 'video') el.fit = 'contain';
+    });
+    const video = document.querySelector<HTMLElement>(
+      '[data-element-id="video-1"] video',
+    )!;
+    expect(video.style.objectFit).toBe('contain');
   });
 });
 
@@ -1024,5 +1113,36 @@ describe('video preview on the canvas', () => {
     });
 
     expect(canvas.isPlaying('video-1')).toBe(true);
+  });
+});
+
+describe('build badges on the canvas', () => {
+  beforeEach(() => {
+    document.body.replaceChildren();
+  });
+
+  it('numbers animated elements while the Build tab is open, and only then', () => {
+    const { store, canvas, host } = setup();
+    store.commit((deck) => {
+      deck.slides[0].timeline.push(
+        { id: 't-1', trigger: { on: 'click', ref: null, delay: 0 },
+          action: { type: 'appear', target: 'text-1', value: null } },
+        { id: 't-2', trigger: { on: 'afterPrev', ref: null, delay: 0 },
+          action: { type: 'play', target: 'video-1', value: null } },
+        { id: 't-3', trigger: { on: 'click', ref: null, delay: 0 },
+          action: { type: 'disappear', target: 'text-1', value: null } },
+      );
+    });
+    expect(host.querySelectorAll('.build-badge')).toHaveLength(0);
+
+    canvas.setBuildBadgesVisible(true);
+    const badges = [...host.querySelectorAll<HTMLElement>('.build-badge')];
+    expect(badges.map((b) => b.textContent)).toEqual(['1,3', '2']);
+    // Anchored to the element's top-right corner in canvas coordinates.
+    expect(badges[0].style.left).toBe('700px');
+    expect(badges[0].style.top).toBe('100px');
+
+    canvas.setBuildBadgesVisible(false);
+    expect(host.querySelectorAll('.build-badge')).toHaveLength(0);
   });
 });

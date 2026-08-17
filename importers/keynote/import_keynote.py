@@ -474,6 +474,21 @@ def resolve_text_style(objects: dict[int, Any], shape: Any) -> TextStyle:
         if storage is None or not _has(storage, "table_para_style"):
             continue
 
+        # A colour or face changed on *selected text* lands in the character
+        # style table, overriding whatever the paragraph style still says —
+        # recolouring a label leaves the old colour behind in the paragraph
+        # style. Read the first run's own character properties before the
+        # paragraph chain so the label imports in the colour Keynote shows.
+        # Only the leaf is read: its parents are theme-wide defaults, which
+        # must not outrank the paragraph style's explicit values.
+        if _has(storage, "table_char_style"):
+            for entry in storage.table_char_style.entries:
+                style_id = int(entry.object.identifier) if entry.object.identifier else -1
+                leaf = objects.get(style_id)
+                if leaf is not None and _has(leaf, "char_properties"):
+                    _read_char_properties(leaf.char_properties, out)
+                break
+
         for entry in storage.table_para_style.entries:
             style_id = int(entry.object.identifier) if entry.object.identifier else -1
             _read_para_style(objects, style_id, out)
@@ -536,6 +551,24 @@ def _resolve_text_horizontal_padding(objects: dict[int, Any], shape: Any) -> flo
     return 8.0
 
 
+def _read_char_properties(chars: Any, out: TextStyle) -> None:
+    """Fill any unset character-level fields of `out` from a properties message."""
+    if out.font_size is None and chars.HasField("font_size"):
+        size = float(chars.font_size)
+        if size > 0:
+            out.font_size = size
+    if out.font_name is None and chars.HasField("font_name"):
+        out.font_name = str(chars.font_name) or None
+    if out.bold is None and chars.HasField("bold"):
+        out.bold = bool(chars.bold)
+    if out.color is None and chars.HasField("font_color"):
+        out.color = color_to_hex(chars.font_color)
+    if out.gradient is None and chars.HasField("tsd_fill"):
+        fill = chars.tsd_fill
+        if fill.HasField("gradient"):
+            out.gradient = gradient_to_css(fill.gradient)
+
+
 def _read_para_style(objects: dict[int, Any], style_id: int, out: TextStyle) -> None:
     """Fill in size, colour and alignment, following the style's parent chain.
 
@@ -556,21 +589,7 @@ def _read_para_style(objects: dict[int, Any], style_id: int, out: TextStyle) -> 
         style = objects[current_id]
 
         if _has(style, "char_properties"):
-            chars = style.char_properties
-            if out.font_size is None and chars.HasField("font_size"):
-                size = float(chars.font_size)
-                if size > 0:
-                    out.font_size = size
-            if out.font_name is None and chars.HasField("font_name"):
-                out.font_name = str(chars.font_name) or None
-            if out.bold is None and chars.HasField("bold"):
-                out.bold = bool(chars.bold)
-            if out.color is None and chars.HasField("font_color"):
-                out.color = color_to_hex(chars.font_color)
-            if out.gradient is None and chars.HasField("tsd_fill"):
-                fill = chars.tsd_fill
-                if fill.HasField("gradient"):
-                    out.gradient = gradient_to_css(fill.gradient)
+            _read_char_properties(style.char_properties, out)
 
         if not align_found and _has(style, "para_properties"):
             paras = style.para_properties
@@ -1180,11 +1199,20 @@ class Importer:
         The path source normally carries Keynote's computed ``naturalSize``,
         which is the exact result of its font layout. Character-count estimates
         are only a fallback for older files that omit that cache.
+
+        Rotated boxes store their position under a different convention (see
+        the quarter-turn handling below), verified against the hand-authored
+        vertical labels on reference.key slide 25.
         """
         out = dict(box)
         lines = _normalise_breaks(text).split("\n")
         longest = max((len(line) for line in lines), default=1)
         width_was_auto = out["w"] <= 1
+        height_was_auto = out["h"] <= 1
+        rot = _normalise_angle(float(out.get("rot", 0.0) or 0.0))
+        # Vertical text: Keynote's anchor conventions for auto-sized geometry
+        # change once a box is turned on its side.
+        quarter_turn = abs(abs(rot) - 90.0) < 2.0
 
         if width_was_auto:
             measured = _measure_text_width(
@@ -1201,11 +1229,13 @@ class Importer:
 
             # Auto-width geometry stores the alignment anchor, not always the
             # left edge: centred labels use their horizontal centre and
-            # right-aligned labels use their right edge.
-            if align == "center":
-                out["x"] -= out["w"] / 2
-            elif align == "right":
-                out["x"] -= out["w"]
+            # right-aligned labels use their right edge. Fully-auto rotated
+            # boxes are anchored differently and handled below instead.
+            if not (quarter_turn and height_was_auto):
+                if align == "center":
+                    out["x"] -= out["w"] / 2
+                elif align == "right":
+                    out["x"] -= out["w"]
             self.report.autosized_boxes += 1
 
         if out["h"] <= 1:
@@ -1224,13 +1254,45 @@ class Importer:
                 room = max(font_size * 1.3, self.canvas[1] - out["y"])
                 out["h"] = min(estimated, room)
             # Auto-height geometry stores the vertical alignment anchor: top,
-            # centre, or bottom depending on the shape style.
-            if valign == "middle":
-                out["y"] = centre_y - out["h"] / 2
-            elif valign == "bottom":
-                out["y"] = centre_y - out["h"]
+            # centre, or bottom depending on the shape style. Rotated boxes
+            # use their own anchors, applied below.
+            if not quarter_turn:
+                if valign == "middle":
+                    out["y"] = centre_y - out["h"] / 2
+                elif valign == "bottom":
+                    out["y"] = centre_y - out["h"]
             self.report.autosized_boxes += 1
 
+        # Quarter-turned text stores its position under conventions of its own,
+        # reverse-engineered from the hand-authored vertical labels on
+        # reference.key slide 25 (all rotated 90° anticlockwise):
+        #
+        #  * both dimensions auto: the stored position is where the *unrotated
+        #    frame's top-left corner* lands after rotating about the frame's
+        #    centre. Solved generally below, so it also reduces to the plain
+        #    top-left at rot 0.
+        #  * fixed width, auto height: the stored position is the frame's
+        #    top-left displaced by (h/2, h/2) — h being the laid-out height —
+        #    independent of the shape's valign (slide 25's labels carry
+        #    valign bottom yet anchor at h/2). Only observed at 90°
+        #    anticlockwise; assumed symmetric for clockwise.
+        if quarter_turn and width_was_auto and height_was_auto:
+            theta = math.radians(rot)
+            corner_dx = (-out["w"] / 2) * math.cos(theta) - (-out["h"] / 2) * math.sin(theta)
+            corner_dy = (-out["w"] / 2) * math.sin(theta) + (-out["h"] / 2) * math.cos(theta)
+            out["x"] = box["x"] - corner_dx - out["w"] / 2
+            out["y"] = box["y"] - corner_dy - out["h"] / 2
+        elif quarter_turn and not width_was_auto and height_was_auto:
+            out["x"] -= out["h"] / 2
+            out["y"] -= out["h"] / 2
+
+        # A rotated frame legitimately extends past the canvas while its
+        # visible extent stays on the slide — clamping the unrotated frame
+        # would shear the box sideways (it truncated the slide-25 "Robotics"
+        # label to two thirds of its width). The selection outline follows the
+        # rotation in the editor, so oversized handles are not a concern here.
+        if abs(rot) > 0.5:
+            return out
         return self._clamp_text_box(out)
 
     def _clamp_text_box(self, box: dict[str, float]) -> dict[str, float]:
@@ -1582,7 +1644,9 @@ class Importer:
                 return None
         return None
 
-    def convert_slide(self, slide_obj: Any, index: int) -> dict[str, Any]:
+    def convert_slide(
+        self, slide_obj: Any, index: int, skipped: bool = False
+    ) -> dict[str, Any]:
         elements: list[dict[str, Any]] = []
         drawable_ids = [int(r.identifier) for r in slide_obj.owned_drawables]
 
@@ -1612,7 +1676,7 @@ class Importer:
 
         notes = self._slide_notes(slide_obj)
 
-        return {
+        slide: dict[str, Any] = {
             "id": f"slide-{index + 1}",
             "name": name or f"Slide {index + 1}",
             "background": self.slide_background(slide_obj),
@@ -1623,6 +1687,10 @@ class Importer:
             # none. Everything lands visible; re-author reveals in the editor.
             "timeline": [],
         }
+        if skipped:
+            # Keynote's "Skip Slide": kept in the deck, stepped over on stage.
+            slide["skipped"] = True
+        return slide
 
     def _slide_notes(self, slide_obj: Any) -> str:
         note_id = _ref(slide_obj, "note")
@@ -1808,11 +1876,12 @@ def _connection_curve(
 ] | None:
     """Return start/control/end for a curved Keynote connector.
 
-    A curved connection line is stored as a 3-point polyline whose middle point
-    lies ON the curve, not a bezier — Keynote reconstructs the curve at draw
-    time. Rendering the stored points literally gives a kinked elbow. A
-    quadratic through the midpoint (control = 2m - (p0+p2)/2) reproduces the
-    curve. Straight connectors have 2 points and are left alone.
+    A quadratic connection line is stored as a 3-point polyline whose middle
+    point is the bezier CONTROL point — Keynote reconstructs the curve at draw
+    time. (Not a point on the curve: on reference.key slide 20, reading it as
+    on-curve derives controls outside the segment, one nearly coincident with
+    the arrow's endpoint, which flips the arrowhead tangent and renders the
+    head inverted.) Straight connectors have 2 points and are left alone.
     """
     pts: list[tuple[float, float]] = []
     start: tuple[float, float] | None = None
@@ -1847,10 +1916,7 @@ def _connection_curve(
             return None
     if len(pts) != 3:
         return None
-    (x0, y0), (mx, my), (x2, y2) = pts
-    cx = 2 * mx - (x0 + x2) / 2
-    cy = 2 * my - (y0 + y2) / 2
-    return (x0, y0), (cx, cy), (x2, y2)
+    return pts[0], pts[1], pts[2]
 
 
 def _path_endpoints(
@@ -2015,7 +2081,8 @@ def import_key(path: Path, out_dir: Path, write: bool) -> tuple[dict[str, Any], 
             try:
                 node = objects[int(node_ref.identifier)]
                 slide_obj = objects[int(node.slide.identifier)]
-                slides.append(importer.convert_slide(slide_obj, index))
+                skipped = bool(getattr(node, "isSkipped", False))
+                slides.append(importer.convert_slide(slide_obj, index, skipped))
             except Exception as exc:
                 # One unreadable slide must not cost the other ninety-five.
                 report.warnings.append(f"Slide {index + 1} failed: {exc}")

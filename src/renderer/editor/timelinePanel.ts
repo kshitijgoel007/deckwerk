@@ -32,44 +32,42 @@ export class TimelinePanel {
     const title = document.createElement('h3');
     title.textContent = 'Build';
     header.appendChild(title);
-
-    const add = document.createElement('button');
-    add.textContent = 'Reveal selected on click';
-    add.disabled = this.store.get().selection.size === 0;
-    add.title = add.disabled
-      ? 'Select an element first'
-      : 'Hide the selected elements until the next click';
-    add.addEventListener('click', () => this.addRevealForSelection());
-    header.appendChild(add);
     this.host.appendChild(header);
 
-    const help = document.createElement('p');
-    help.className = 'insp-hint build-help';
-    help.textContent = this.store.get().selection.size === 0
-      ? 'Select one or more slide objects, then reveal them on a click.'
-      : 'The selected objects will start hidden and appear at the next click.';
-    this.host.appendChild(help);
+    const selection = this.store.get().selection;
 
     const elementsTitle = document.createElement('div');
     elementsTitle.className = 'step-label';
     elementsTitle.textContent = 'Slide elements';
     this.host.appendChild(elementsTitle);
-    const revealTargets = new Set(slide.timeline
-      .filter((entry) => entry.action.type === 'appear')
-      .map((entry) => entry.action.target));
+
+    // The list mirrors the canvas selection: picking an object on the slide
+    // lights up its row here, and picking a row selects it on the slide, so
+    // "add animation" never requires hunting through the list.
+    const list = document.createElement('div');
+    list.className = 'build-element-list';
     for (const element of slide.elements) {
-      const row = document.createElement('label');
+      const row = document.createElement('button');
+      row.type = 'button';
       row.className = 'build-element-row';
       row.dataset.elementId = element.id;
-      const checkbox = document.createElement('input');
-      checkbox.type = 'checkbox';
-      checkbox.checked = revealTargets.has(element.id);
-      checkbox.addEventListener('change', () => this.setAppear(element.id, checkbox.checked));
-      const name = document.createElement('span');
-      name.textContent = describeElement(element);
-      row.append(checkbox, name);
-      this.host.appendChild(row);
+      row.classList.toggle('selected', selection.has(element.id));
+      row.textContent = describeElement(element);
+      row.title = row.textContent;
+      row.addEventListener('click', () => this.store.select([element.id]));
+      list.appendChild(row);
     }
+    this.host.appendChild(list);
+
+    const add = document.createElement('button');
+    add.className = 'primary panel-action';
+    add.textContent = 'Add animation';
+    add.disabled = selection.size === 0;
+    add.title = add.disabled
+      ? 'Select an element on the slide or in the list first'
+      : 'Hide the selected elements until the next click';
+    add.addEventListener('click', () => this.addAnimationForSelection());
+    this.host.appendChild(add);
 
     if (slide.timeline.length === 0) {
       const hint = document.createElement('p');
@@ -80,31 +78,37 @@ export class TimelinePanel {
       return;
     }
 
+    // The same numbers appear as badges on the canvas, so a card can be
+    // matched to the object it animates at a glance.
+    const orderOf = new Map(slide.timeline.map((entry, i) => [entry.id, i + 1]));
+
     const steps = groupIntoSteps(slide);
     steps.forEach((entries, stepIndex) => {
       const block = document.createElement('div');
       block.className = 'step-block';
 
-      const label = document.createElement('div');
-      label.className = 'step-label';
-      label.textContent = stepIndex === 0 ? 'On slide enter' : `Click ${stepIndex}`;
-      block.appendChild(label);
-
-      if (entries.length === 0) {
-        const none = document.createElement('div');
-        none.className = 'step-empty';
-        none.textContent = 'everything visible';
-        block.appendChild(none);
+      if (stepIndex === 0) {
+        const label = document.createElement('div');
+        label.className = 'step-label';
+        label.textContent = 'On slide enter';
+        block.appendChild(label);
+        if (entries.length === 0) {
+          const none = document.createElement('div');
+          none.className = 'step-empty';
+          none.textContent = 'everything visible';
+          block.appendChild(none);
+        }
       }
+      if (stepIndex > 0 && entries.length === 0) return;
 
       for (const entry of entries) {
-        block.appendChild(this.entryRow(entry, slide.elements));
+        block.appendChild(this.entryRow(entry, slide.elements, orderOf.get(entry.id) ?? 0));
       }
       this.host.appendChild(block);
     });
   }
 
-  private entryRow(entry: TimelineEntry, elements: SlideElement[]): HTMLElement {
+  private entryRow(entry: TimelineEntry, elements: SlideElement[], num: number): HTMLElement {
     const row = document.createElement('div');
     row.className = 'timeline-row';
     row.dataset.entryId = entry.id;
@@ -160,20 +164,18 @@ export class TimelinePanel {
       }),
     );
 
-    const target = document.createElement('select');
-    target.className = 'build-target';
-    for (const el of elements) {
-      const opt = document.createElement('option');
-      opt.value = el.id;
-      opt.textContent = describeElement(el);
-      target.appendChild(opt);
-    }
-    target.value = entry.action.target;
-    target.addEventListener('change', () =>
-      this.mutate(entry.id, (e) => {
-        e.action.target = target.value;
-      }),
-    );
+    // Each card is bound to one element — matching the numbered badge on the
+    // canvas — rather than offering a dropdown to retarget it.
+    const numChip = document.createElement('span');
+    numChip.className = 'build-num';
+    numChip.textContent = String(num);
+    numChip.title = 'Matches the numbered badge on the slide';
+
+    const targetEl = elements.find((el) => el.id === entry.action.target);
+    const name = document.createElement('span');
+    name.className = 'build-target-name';
+    name.textContent = targetEl ? describeElement(targetEl) : '(missing element)';
+    name.title = name.textContent;
 
     const trigger = document.createElement('select');
     trigger.className = 'build-trigger';
@@ -220,7 +222,13 @@ export class TimelinePanel {
       this.store.select([entry.action.target]);
     });
 
-    row.append(grip, action, target, trigger, delay, remove);
+    const head = document.createElement('div');
+    head.className = 'build-card-head';
+    head.append(grip, numChip, trigger, remove);
+    const body = document.createElement('div');
+    body.className = 'build-card-body';
+    body.append(action, name, delay);
+    row.append(head, body);
     return row;
   }
 
@@ -237,15 +245,12 @@ export class TimelinePanel {
    * click; the rest chain with `afterPrev` at zero delay so a multi-selection
    * reveals as a single group rather than needing one click each.
    */
-  private addRevealForSelection(): void {
+  private addAnimationForSelection(): void {
     const ids = [...this.store.get().selection];
     if (ids.length === 0) return;
     this.store.commit((deck) => {
       const slide = deck.slides[this.store.get().slideIndex];
-      const existing = new Set(slide.timeline
-        .filter((entry) => entry.action.type === 'appear')
-        .map((entry) => entry.action.target));
-      ids.filter((target) => !existing.has(target)).forEach((target, i) => {
+      ids.forEach((target, i) => {
         slide.timeline.push({
           id: makeId('t'),
           trigger: {
@@ -256,21 +261,7 @@ export class TimelinePanel {
           action: { type: 'appear', target, value: null },
         });
       });
-    }, { label: 'Reveal selected objects on click' });
-  }
-
-  private setAppear(target: string, enabled: boolean): void {
-    this.store.commit((deck) => {
-      const slide = deck.slides[this.store.get().slideIndex];
-      slide.timeline = slide.timeline.filter((entry) =>
-        !(entry.action.target === target && entry.action.type === 'appear'));
-      if (enabled) {
-        slide.timeline.push({
-          id: makeId('t'), trigger: { on: 'click', ref: null, delay: 0 },
-          action: { type: 'appear', target, value: null },
-        });
-      }
-    });
+    }, { label: 'Add animation' });
   }
 }
 
@@ -301,13 +292,23 @@ export function reorderBuildEntry(
   }
 }
 
+const SHAPE_NAMES: Record<string, string> = {
+  rect: 'rectangle',
+  ellipse: 'ellipse',
+  line: 'line',
+  arrow: 'arrow',
+  path: 'shape',
+};
+
 function describeElement(el: SlideElement): string {
   switch (el.type) {
     case 'text':
-      return `text: ${stripTags(el.html).slice(0, 24) || '(empty)'}`;
+      return stripTags(el.html).slice(0, 32) || 'text (empty)';
     case 'image':
     case 'video':
       return `${el.type}: ${el.src.split('/').pop()}`;
+    case 'shape':
+      return SHAPE_NAMES[el.shape] ?? el.shape;
     default:
       return `${el.type} ${el.id.slice(-4)}`;
   }

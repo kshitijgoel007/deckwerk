@@ -702,6 +702,98 @@ describe.skipIf(!ready)('reference.key ground truth', () => {
     expect(title.html).not.toContain('<br>');
   });
 
+  /**
+   * Slide 25 is the rotated-text ground truth. As authored, it holds three
+   * videos and six text boxes; four of the text boxes are rotated 90 degrees
+   * counter-clockwise (vertical, reading bottom-to-top). Vincent supplied the
+   * Keynote inspector values: position is the top-left of the rotated shape's
+   * *bounding box*, size is the unrotated frame. The deck stores the unrotated
+   * frame plus `rot` about its centre, so for a ±90° box the visual bounding
+   * box is (cx − h/2, cy − w/2, h, w). Asserting on that bounding box tests
+   * exactly what the eye checks against the original slide.
+   */
+  describe('slide 25: rotated text', () => {
+    const slide = () => deck.slides[24];
+    const textByContent = (content: string) => {
+      const el = slide().elements.find(
+        (e) => e.type === 'text' && e.html.includes(content),
+      );
+      expect(el?.type, `text "${content}" on slide 25`).toBe('text');
+      if (el?.type !== 'text') throw new Error(`expected text "${content}"`);
+      return el;
+    };
+    const visualBox = (el: { x: number; y: number; w: number; h: number; rot: number }) => ({
+      x: el.x + el.w / 2 - el.h / 2,
+      y: el.y + el.h / 2 - el.w / 2,
+      w: el.h,
+      h: el.w,
+    });
+
+    it('keeps the three videos at their authored positions', () => {
+      const videos = slide().elements.filter((e) => e.type === 'video');
+      expect(videos).toHaveLength(3);
+      for (const [x, y] of [[585, 31], [81, 562], [1000, 560]]) {
+        const match = videos.find((v) => Math.abs(v.x - x) < 2 && Math.abs(v.y - y) < 2);
+        expect(match, `video at ${x},${y}`).toBeDefined();
+      }
+    });
+
+    it('places the rotated section labels where they were authored', () => {
+      // [content, bounding-box x, bounding-box y, unrotated w] — w omitted
+      // for Gaming, whose authored width was not recorded.
+      const labels: Array<[string, number, number, number?]> = [
+        ['Robotics', -13, 422, 608],
+        ['Self-Driving', 494, 38, 462],
+        ['Gaming', 912, 605],
+      ];
+      for (const [content, bx, by, w] of labels) {
+        const el = textByContent(content);
+        near(el.rot, -90, 0.5);
+        const box = visualBox(el);
+        // The Robotics label deliberately pokes 13pt off the left edge; give
+        // the x expectation room for an importer that clamps the visual box
+        // back onto the canvas, but no more than that.
+        near(box.x, bx, content === 'Robotics' ? 15 : 2);
+        near(box.y, by, 2);
+        near(box.w, 91.4, 2); // all three share the same 91pt frame height
+        if (w !== undefined) near(box.h, w, 2);
+      }
+    });
+
+    it('places the rotated captions where they were authored', () => {
+      const waymo = textByContent('Waymo, 2026');
+      near(waymo.rot, -90, 0.5);
+      const waymoBox = visualBox(waymo);
+      near(waymoBox.x, 1394, 2);
+      near(waymoBox.y, 368, 2);
+
+      const crimson = textByContent('Crimson Desert');
+      near(crimson.rot, -90, 0.5);
+      const crimsonBox = visualBox(crimson);
+      near(crimsonBox.x, 1853, 2);
+      near(crimsonBox.y, 591, 2);
+      // Two 20px lines including a full YouTube URL cannot fit a short frame;
+      // the current importer collapses this box to 67pt long.
+      expect(crimsonBox.h).toBeGreaterThan(250);
+
+      // The one unrotated caption anchors the coordinate frame.
+      const rhoda = textByContent('Rhoda AI, 2026');
+      near(rhoda.rot, 0, 0.5);
+      near(rhoda.x, 81, 2);
+      near(rhoda.y, 1030, 2);
+    });
+
+    it('imports every text box black, rotated or not', () => {
+      // As authored all six boxes are black; the current importer turns the
+      // Robotics and Self-Driving labels white.
+      const texts = slide().elements.filter((e) => e.type === 'text');
+      expect(texts).toHaveLength(6);
+      for (const el of texts) {
+        expect(el.style['color'], el.html.slice(0, 40)).toBe('#000000');
+      }
+    });
+  });
+
   it('writes every referenced asset to disk', () => {
     for (const slide of deck.slides) {
       for (const el of slide.elements) {
