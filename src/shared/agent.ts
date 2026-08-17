@@ -24,8 +24,10 @@ export const ComputedElementSceneSchema = z.object({
     html: z.string(),
     plain: z.string(),
     fittedFontSize: z.number().nullable(),
-    overflowX: z.boolean(),
-    overflowY: z.boolean(),
+    // Booleans when a browser measured the slide; null when the scene was
+    // derived from deck.json alone and no measurement was taken.
+    overflowX: z.boolean().nullable(),
+    overflowY: z.boolean().nullable(),
   }).nullable(),
   media: z.object({
     src: z.string(),
@@ -341,8 +343,8 @@ function authoredElementScene(element: SlideElement, selected: Set<string>): Com
       html: element.html,
       plain: element.html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim(),
       fittedFontSize: null,
-      overflowX: false,
-      overflowY: false,
+      overflowX: null,
+      overflowY: null,
     } : null,
     media: element.type === 'image' || element.type === 'video' ? {
       src: element.src,

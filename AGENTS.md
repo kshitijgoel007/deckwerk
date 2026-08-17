@@ -49,6 +49,13 @@ explicitly, which does the identical thing:
 slide-agent apply . --html edit/work.html
 ```
 
+Its JSON reply includes `overflows`: every text element in the applied slides
+whose content still spills past its box after auto-fit has settled, with how
+far (`beyond`, in canvas pixels) and the size auto-fit reached. A non-empty
+list means the slide clips text — fix it (shorter text, a bigger box, a
+smaller size, or `data-autofit="true"`) rather than rendering a PNG to look
+for it.
+
 Use `slide-agent capabilities` for the data attributes that carry builds, Magic
 Move, crops, video trim and KaTeX. Use `render` only when you want a PNG to
 look at.
@@ -223,7 +230,8 @@ Each element carries:
 - `computedStyle` — resolved typography and colour, merged across the element
   wrapper, its text body and its fitted content.
 - `text` — `html`, `plain`, the size auto-fit settled on (`fittedFontSize`),
-  and `overflowX` / `overflowY`.
+  and `overflowX` / `overflowY`. The overflow flags are `null` offline: they
+  are measurements, and without an editor none was taken.
 - `media` — `src`, `fit`, `sourceBox` (the crop), `effects`, border, duration.
 - `shape` — kind, stroke, fill, arrowheads, curve `control` point, `path`.
 - `magicMoveId` and `lineageId` — explicit pairing and duplication ancestry.
