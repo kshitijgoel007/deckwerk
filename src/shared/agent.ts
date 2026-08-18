@@ -123,8 +123,22 @@ const DeleteElementsOperation = z.object({
 const UpdateDeckOperation = z.object({
   op: z.literal('updateDeck'),
   title: z.string().optional(),
+  canvas: z.object({ w: z.number().positive(), h: z.number().positive() }).optional(),
+  theme: z.string().optional(),
+  themePreset: z.string().nullable().optional(),
+  themeStyle: DeckSchema.shape.themeStyle.removeDefault().optional(),
   magicMoveDuration: z.number().min(100).max(5000).optional(),
   magicMoveEasing: z.enum(['ease-in-out', 'ease-out', 'linear']).optional(),
+});
+/**
+ * Replace every slide property except `elements`, so slide-level edits
+ * (name, background, layout, timeline, …) can merge alongside concurrent
+ * element edits on the same slide instead of stomping them via replaceSlide.
+ */
+const SetSlidePropertiesOperation = z.object({
+  op: z.literal('setSlideProperties'),
+  slideId: z.string(),
+  slide: SlideSchema.omit({ elements: true }),
 });
 
 export const AgentOperationSchema = z.discriminatedUnion('op', [
@@ -136,6 +150,7 @@ export const AgentOperationSchema = z.discriminatedUnion('op', [
   ReplaceElementOperation,
   DeleteElementsOperation,
   UpdateDeckOperation,
+  SetSlidePropertiesOperation,
 ]);
 
 export const AgentTransactionSchema = z.object({
@@ -250,8 +265,21 @@ function applyOperation(deck: Deck, operation: AgentOperation): void {
     }
     case 'updateDeck':
       if (operation.title !== undefined) deck.title = operation.title;
+      if (operation.canvas !== undefined) deck.canvas = structuredClone(operation.canvas);
+      if (operation.theme !== undefined) deck.theme = operation.theme;
+      if (operation.themePreset !== undefined) deck.themePreset = operation.themePreset;
+      if (operation.themeStyle !== undefined) deck.themeStyle = structuredClone(operation.themeStyle);
       if (operation.magicMoveDuration !== undefined) deck.magicMoveDuration = operation.magicMoveDuration;
       if (operation.magicMoveEasing !== undefined) deck.magicMoveEasing = operation.magicMoveEasing;
+      return;
+    case 'setSlideProperties': {
+      const at = requireSlideIndex(deck, operation.slideId);
+      if (operation.slide.id !== operation.slideId) {
+        throw new Error(`Slide properties id must remain ${operation.slideId}`);
+      }
+      deck.slides[at] = { ...structuredClone(operation.slide), elements: deck.slides[at].elements };
+      return;
+    }
   }
 }
 

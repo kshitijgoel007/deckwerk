@@ -1,0 +1,259 @@
+import type { AgentOperation } from '@shared/agent.js';
+import { applyOpsLenient } from '@shared/collabApply.js';
+import {
+  COLLAB_PROTOCOL_VERSION,
+  ServerMessageSchema,
+  type ClientMessage,
+  type CursorPosition,
+  type PresenceState,
+  type ServerWelcomeMessage,
+} from '@shared/collab.js';
+import type { Deck } from '@shared/deck.js';
+import { diffDecks } from '@shared/deckDiff.js';
+import { makeId } from '@shared/geometry.js';
+
+/**
+ * Optimistic replication against the collab server.
+ *
+ * The bridge keeps `shadow` — the deck exactly as the server has decided it,
+ * advanced by every server transaction in sequence order — and `pending`, the
+ * local transactions sent but not yet echoed back. The UI deck is always
+ * `shadow + pending replayed leniently`; because the lenient apply is
+ * deterministic and the server broadcasts one total order, every client
+ * converges on the same document.
+ *
+ * Undo is op-based and selective: each local edit records its forward and
+ * inverse op lists, and undo applies the inverse to the *current* deck as an
+ * ordinary new transaction. A whole-deck snapshot undo would also revert other
+ * people's concurrent edits, which is why the collab shell never binds the
+ * store's snapshot stacks.
+ */
+
+const UNDO_LIMIT = 200;
+
+interface UndoEntry {
+  label: string;
+  forward: AgentOperation[];
+  inverse: AgentOperation[];
+  /**
+   * Edits arriving with the same key extend this entry instead of pushing a
+   * new one. Live text sync streams a transaction every few hundred ms; one
+   * typing session must still be one undo step.
+   */
+  coalesceKey?: string;
+}
+
+export interface CollabBridgeHooks {
+  /** Server-decided deck to show; apply via store.applyRemote. */
+  onDeckReplaced: (deck: Deck, label: string) => void;
+  onWelcome: (welcome: ServerWelcomeMessage) => void;
+  onPeerPresence: (state: PresenceState) => void;
+  onPeerCursor: (clientId: string, cursor: CursorPosition | null) => void;
+  onPeerLeft: (clientId: string) => void;
+  onThemeCss: (css: string) => void;
+  onStatus: (text: string) => void;
+  /** True while no local transaction is awaiting confirmation. */
+  onCleanChange: (clean: boolean) => void;
+}
+
+export class CollabBridge {
+  clientId = '';
+  private socket: WebSocket | null = null;
+  private shadow: Deck | null = null;
+  private pending: Array<{ txnId: string; label: string; ops: AgentOperation[] }> = [];
+  private undoStack: UndoEntry[] = [];
+  private redoStack: UndoEntry[] = [];
+  private replayingHistory = false;
+  private reconnectDelay = 500;
+  private closed = false;
+
+  constructor(
+    private readonly url: string,
+    private readonly name: string | undefined,
+    private readonly hooks: CollabBridgeHooks,
+  ) {}
+
+  connect(): void {
+    this.closed = false;
+    const socket = new WebSocket(this.url);
+    this.socket = socket;
+    socket.addEventListener('open', () => {
+      this.reconnectDelay = 500;
+      this.send({ kind: 'hello', version: COLLAB_PROTOCOL_VERSION, name: this.name });
+    });
+    socket.addEventListener('message', (event) => {
+      try {
+        this.handle(JSON.parse(String(event.data)));
+      } catch (error) {
+        console.error('collab: bad server message', error);
+      }
+    });
+    socket.addEventListener('close', () => {
+      if (this.closed) return;
+      this.hooks.onStatus(`Disconnected — retrying in ${Math.round(this.reconnectDelay / 1000)}s`);
+      setTimeout(() => this.connect(), this.reconnectDelay);
+      this.reconnectDelay = Math.min(this.reconnectDelay * 2, 10_000);
+    });
+  }
+
+  close(): void {
+    this.closed = true;
+    this.socket?.close();
+  }
+
+  /** Wire this to store.onLocalEdit. */
+  localEdit = (prev: Deck, next: Deck, label: string, coalesceKey?: string): void => {
+    const forward = diffDecks(prev, next);
+    if (forward.length === 0) return;
+    const inverse = diffDecks(next, prev);
+    if (!this.replayingHistory) {
+      const top = this.undoStack[this.undoStack.length - 1];
+      if (coalesceKey && top?.coalesceKey === coalesceKey) {
+        // Op lists compose by concatenation: forward replays oldest→newest,
+        // inverse newest→oldest, so undoing lands on the session's start.
+        top.label = label;
+        top.forward.push(...forward);
+        top.inverse.unshift(...inverse);
+      } else {
+        this.undoStack.push({ label, forward, inverse, coalesceKey });
+        if (this.undoStack.length > UNDO_LIMIT) this.undoStack.shift();
+      }
+      this.redoStack = [];
+    }
+    const txnId = makeId('txn');
+    this.pending.push({ txnId, label, ops: forward });
+    this.hooks.onCleanChange(false);
+    this.send({ kind: 'txn', txnId, baseSeq: this.seq, label, ops: forward });
+  };
+
+  undo(currentDeck: Deck): void {
+    const entry = this.undoStack.pop();
+    if (!entry) return;
+    this.redoStack.push(entry);
+    this.applyHistoryOps(currentDeck, entry.inverse, `Undo: ${entry.label}`);
+  }
+
+  redo(currentDeck: Deck): void {
+    const entry = this.redoStack.pop();
+    if (!entry) return;
+    this.undoStack.push(entry);
+    this.applyHistoryOps(currentDeck, entry.forward, `Redo: ${entry.label}`);
+  }
+
+  canUndo(): boolean {
+    return this.undoStack.length > 0;
+  }
+
+  canRedo(): boolean {
+    return this.redoStack.length > 0;
+  }
+
+  sendPresence(state: {
+    activeSlideId: string | null;
+    selectedSlideIds: string[];
+    selectedElementIds: string[];
+    editingElementId: string | null;
+  }): void {
+    this.send({ kind: 'presence', ...state });
+  }
+
+  sendCursor(cursor: CursorPosition | null): void {
+    this.send({ kind: 'cursor', cursor });
+  }
+
+  sendTheme(css: string): void {
+    this.send({ kind: 'theme', css });
+  }
+
+  private seq = 0;
+
+  private applyHistoryOps(currentDeck: Deck, ops: AgentOperation[], label: string): void {
+    // Route through the normal local-edit pipeline by presenting the result as
+    // an ordinary edit: the caller's store fires onLocalEdit, which diffs
+    // current → applied and broadcasts. Skipped ops (targets a peer deleted
+    // meanwhile) simply drop out of the diff.
+    const { deck } = applyOpsLenient(currentDeck, ops);
+    this.replayingHistory = true;
+    try {
+      this.hooks.onDeckReplaced(deck, label);
+    } finally {
+      this.replayingHistory = false;
+    }
+    // onDeckReplaced applies without firing onLocalEdit, so broadcast directly.
+    const forward = diffDecks(currentDeck, deck);
+    if (forward.length === 0) return;
+    const txnId = makeId('txn');
+    this.pending.push({ txnId, label, ops: forward });
+    this.hooks.onCleanChange(false);
+    this.send({ kind: 'txn', txnId, baseSeq: this.seq, label, ops: forward });
+  }
+
+  private send(message: ClientMessage): void {
+    if (this.socket?.readyState === WebSocket.OPEN) {
+      this.socket.send(JSON.stringify(message));
+    }
+  }
+
+  private handle(raw: unknown): void {
+    const message = ServerMessageSchema.parse(raw);
+    switch (message.kind) {
+      case 'welcome': {
+        this.clientId = message.clientId;
+        this.seq = message.seq;
+        this.shadow = message.deck;
+        // A reconnect abandons unconfirmed work: the server state wins, the
+        // same contract as an external rewrite.
+        this.pending = [];
+        this.hooks.onCleanChange(true);
+        this.hooks.onWelcome(message);
+        return;
+      }
+      case 'txn': {
+        if (!this.shadow) return;
+        this.seq = message.seq;
+        this.shadow = applyOpsLenient(this.shadow, message.ops).deck;
+        const mineIndex = this.pending.findIndex((p) => p.txnId === message.txnId);
+        if (mineIndex !== -1) this.pending.splice(mineIndex, 1);
+        // UI = shadow + everything still pending, replayed in order.
+        let ui = this.shadow;
+        for (const p of this.pending) ui = applyOpsLenient(ui, p.ops).deck;
+        this.replayingHistory = true;
+        try {
+          this.hooks.onDeckReplaced(ui, mineIndex !== -1 ? message.label : `${message.label} (remote)`);
+        } finally {
+          this.replayingHistory = false;
+        }
+        if (this.pending.length === 0) this.hooks.onCleanChange(true);
+        return;
+      }
+      case 'deck': {
+        this.seq = message.seq;
+        this.shadow = message.deck;
+        this.pending = [];
+        this.hooks.onCleanChange(true);
+        this.replayingHistory = true;
+        try {
+          this.hooks.onDeckReplaced(
+            message.deck,
+            message.reason === 'external-edit' ? 'External edit' : 'Server resync',
+          );
+        } finally {
+          this.replayingHistory = false;
+        }
+        return;
+      }
+      case 'presence':
+        this.hooks.onPeerPresence(message.state);
+        return;
+      case 'cursor':
+        this.hooks.onPeerCursor(message.clientId, message.cursor);
+        return;
+      case 'peerLeft':
+        this.hooks.onPeerLeft(message.clientId);
+        return;
+      case 'theme':
+        this.hooks.onThemeCss(message.css);
+        return;
+    }
+  }
+}

@@ -48,7 +48,7 @@ export class MagicMovePanel {
   render(): void {
     const { deck, slideIndex } = this.store.get();
     const selectedSlides = this.store.selectedSlides();
-    if (selectedSlides.length > 3) {
+    if (selectedSlides.length > 1) {
       this.renderBulk(selectedSlides);
       return;
     }
@@ -180,7 +180,7 @@ export class MagicMovePanel {
 
     const action = document.createElement('button');
     action.className = 'primary panel-action magic-bulk-pair';
-    action.textContent = 'Auto-Pair and Enable Magic Move';
+    action.textContent = 'Enable Magic-Move & Auto-Pair';
     action.addEventListener('click', () => this.autoPairAcross(slides));
 
     const hint = document.createElement('p');

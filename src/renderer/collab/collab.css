@@ -1,0 +1,24 @@
+/* Collaboration chrome: presence dots on rail rows. Cursor glyphs and
+   selection outlines are styled inline by presenceOverlay.ts because their
+   colors are per-peer. */
+
+.rail-presence {
+  position: absolute;
+  right: 6px;
+  top: 6px;
+  display: flex;
+  gap: 3px;
+  pointer-events: none;
+}
+
+.rail-presence-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.85);
+  box-shadow: 0 0 2px rgba(0, 0, 0, 0.5);
+}
+
+.presence-layer {
+  z-index: 40;
+}

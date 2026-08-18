@@ -1,7 +1,13 @@
 import { MIRRORED_TEXT_STYLE_PROPERTIES } from '@shared/deck.js';
 import type { Deck, Slide, SlideElement } from '@shared/deck.js';
 import { type Rect, fitScale, makeId } from '@shared/geometry.js';
-import { fitAutoText, quadraticPath, renderSlide, scheduleAutoFit } from '../player/render.js';
+import {
+  fitAutoText,
+  quadraticPath,
+  renderElement,
+  renderSlide,
+  scheduleAutoFit,
+} from '../player/render.js';
 import { expandTimeline } from '@shared/timeline.js';
 import { normalizeParagraphHtml, paragraphUnits } from '@shared/paragraphs.js';
 import { HANDLES, type SnapLine, snapMove, snapResize } from './snapping.js';
@@ -66,8 +72,21 @@ export class EditorCanvas {
   /** Called to open the trim window for a video. */
   onTrimRequest?: (el: Extract<SlideElement, { type: 'video' }>) => void;
 
+  /**
+   * Stream text edits to the store while typing (throttled), instead of only
+   * on blur. Enabled by the collab shell so peers watch each other type; off
+   * in the desktop app, where it would only churn the undo stack and autosave.
+   */
+  liveTextSync = false;
+
   /** Id of the text element currently being edited in place, if any. */
   private editingId: string | null = null;
+  /** Distinguishes editing sessions, so undo coalescing never spans two. */
+  private textEditSession = 0;
+  /** Coalesce key for the session's stream of live commits + the final one. */
+  private textEditCoalesceKey: string | null = null;
+  /** The element's html when the editing session began (live sync mutates it). */
+  private textEditOriginalHtml: string | null = null;
   /** Last non-collapsed browser selection inside the active text element. */
   private textSelectionRange: Range | null = null;
 
@@ -88,6 +107,10 @@ export class EditorCanvas {
   onMaskModeChange?: (elementId: string | null) => void;
   /** Notified when inline text editing starts or ends. */
   onTextEditModeChange?: (elementId: string | null) => void;
+  /** Pointer position in slide space on every move, null on leave. For presence. */
+  onPointerSample?: (point: { x: number; y: number } | null) => void;
+  /** Fired after the stage scale/placement recomputes. For presence overlays. */
+  onViewportChange?: () => void;
 
   /**
    * Context-menu actions, supplied by the shell so the menu can reach
@@ -153,9 +176,15 @@ export class EditorCanvas {
     // applied to the existing nodes instead of rebuilding them. Rebuilding
     // recreates each <video>, which reloads the media and makes clips flicker
     // continuously while you drag anything on the slide.
-    if (this.renderedSlide && sameStructure(this.renderedSlide, slide)) {
+    //
+    // Html-only changes take the same path, with the changed elements rebuilt
+    // individually. That is what lets a collaborator's typing stream in
+    // without destroying the contenteditable node (and caret) of a text box
+    // being edited on this machine.
+    if (this.renderedSlide && sameStructure(this.renderedSlide, slide, true)) {
       const previous = this.renderedSlide;
       this.renderedSlide = slide;
+      this.patchChangedHtml(slide, previous);
       this.applyGeometry(slide, previous);
       this.rescale();
       this.drawOverlay(deck, slide.elements, selection);
@@ -199,6 +228,26 @@ export class EditorCanvas {
 
     this.rescale();
     this.drawOverlay(deck, slide.elements, selection);
+  }
+
+  /**
+   * Rebuild just the elements whose html changed, in place. The element being
+   * edited locally is left alone: its DOM is the live source of truth, and
+   * replacing it would blur the contenteditable and eject the caret.
+   */
+  private patchChangedHtml(slide: Slide, previous: Slide): void {
+    const before = new Map(previous.elements.map((e) => [e.id, e]));
+    for (const el of slide.elements) {
+      if (el.type !== 'text' && el.type !== 'html') continue;
+      if (el.id === this.editingId) continue;
+      const prev = before.get(el.id);
+      if (!prev || !('html' in prev) || prev.html === el.html) continue;
+      const node = this.slideLayer.querySelector<HTMLElement>(
+        `[data-element-id="${CSS.escape(el.id)}"]`,
+      );
+      if (!node) continue;
+      node.replaceWith(renderElement(el, { resolveSrc: (src) => window.api.assetUrl(src) }));
+    }
   }
 
   /** Reposition and restyle existing nodes for a non-structural change. */
@@ -392,6 +441,37 @@ export class EditorCanvas {
     this.stage.style.transformOrigin = 'top left';
     this.stage.style.left = `${(r.width - deck.canvas.w * scale) / 2}px`;
     this.stage.style.top = `${(r.height - deck.canvas.h * scale) / 2}px`;
+    this.onViewportChange?.();
+  }
+
+  /**
+   * A sibling of the slide and selection layers inside the scaled stage, in
+   * slide coordinate space. Remote-presence decorations live in their own
+   * layer because drawOverlay rebuilds the selection overlay wholesale on
+   * every state change, which would throw away high-frequency cursor DOM.
+   */
+  addStageLayer(className: string): HTMLElement {
+    const layer = document.createElement('div');
+    layer.className = className;
+    layer.style.pointerEvents = 'none';
+    const { deck } = this.store.get();
+    layer.style.width = `${deck.canvas.w}px`;
+    layer.style.height = `${deck.canvas.h}px`;
+    layer.style.position = 'absolute';
+    layer.style.left = '0';
+    layer.style.top = '0';
+    this.stage.append(layer);
+    return layer;
+  }
+
+  /** The element under live text edit, or null. For presence. */
+  editingElementId(): string | null {
+    return this.editingId;
+  }
+
+  /** Current stage scale, for counter-scaling constant-size decorations. */
+  stageScale(): number {
+    return this.scale;
   }
 
   /** Selection outlines, handles, snap guides and the marquee. */
@@ -694,6 +774,9 @@ export class EditorCanvas {
   }
 
   private onPointerMove(ev: PointerEvent): void {
+    // Presence: report the pointer in slide space whether hovering or
+    // dragging, so collaborators see the cursor move, not only the edits.
+    this.onPointerSample?.(this.toCanvas(ev));
     if (this.drag.kind === 'none') return;
     const slide = this.store.slide;
     if (!slide) return;
@@ -1034,17 +1117,64 @@ export class EditorCanvas {
     selection?.removeAllRanges();
     selection?.addRange(range);
     this.textSelectionRange = range.cloneRange();
+    this.textEditCoalesceKey = `text:${elementId}:${++this.textEditSession}`;
+    this.textEditOriginalHtml = el.html;
     this.onTextEditModeChange?.(elementId);
+
+    // Live sync: stream the box's content to the store (and thus to
+    // collaborators) while typing, throttled to one commit per interval. The
+    // commits are transient — no undo slot, no history entry — and share this
+    // session's coalesce key so the collab undo layer folds the whole stream
+    // into one undoable "Edit text".
+    let liveTimer = 0;
+    const pushLive = () => {
+      liveTimer = 0;
+      if (this.editingId !== elementId) return;
+      const html = normalizeParagraphHtml(body.innerHTML);
+      const current = this.store.slide?.elements.find((e) => e.id === elementId);
+      if (!current || (current.type !== 'text' && current.type !== 'html')) return;
+      if (current.html === html) return;
+      const coalesceKey = this.textEditCoalesceKey ?? undefined;
+      this.store.commit((deck) => {
+        const target = deck.slides[this.store.get().slideIndex]?.elements.find(
+          (e) => e.id === elementId,
+        );
+        if (target && (target.type === 'text' || target.type === 'html')) target.html = html;
+      }, { label: 'Edit text', transient: true, coalesceKey });
+    };
 
     const finish = (commit: boolean) => {
       body.removeEventListener('blur', onBlur);
       body.removeEventListener('keydown', onKey);
       body.removeEventListener('input', onInput);
+      if (liveTimer) {
+        clearTimeout(liveTimer);
+        liveTimer = 0;
+      }
       if (commit) this.commitTextEdit();
       else {
         this.editingId = null;
         this.textSelectionRange = null;
         this.onTextEditModeChange?.(null);
+        // Escape means discard — including anything live sync already
+        // streamed. The revert shares the session's coalesce key, so in the
+        // collab undo layer stream + revert fold into one net no-op.
+        const streamed = this.store.slide?.elements.find((e) => e.id === elementId);
+        if (
+          streamed && (streamed.type === 'text' || streamed.type === 'html')
+          && streamed.html !== el.html
+        ) {
+          const coalesceKey = this.textEditCoalesceKey ?? undefined;
+          this.store.commit((deck) => {
+            const target = deck.slides[this.store.get().slideIndex]?.elements.find(
+              (e) => e.id === elementId,
+            );
+            if (target && (target.type === 'text' || target.type === 'html')) {
+              target.html = el.html;
+            }
+          }, { label: 'Edit text', transient: true, coalesceKey });
+        }
+        this.textEditCoalesceKey = null;
         this.render();
       }
     };
@@ -1052,6 +1182,7 @@ export class EditorCanvas {
     const onBlur = () => finish(true);
     const onInput = () => {
       if (el.type === 'text' && (el.autoFit || el.noWrap)) scheduleAutoFit(node!);
+      if (this.liveTextSync && !liveTimer) liveTimer = window.setTimeout(pushLive, 250);
     };
     const onKey = (e: KeyboardEvent) => {
       // Editing keys must not reach the canvas shortcuts (Delete would remove
@@ -1091,9 +1222,17 @@ export class EditorCanvas {
     body.contentEditable = 'false';
     node!.classList.remove('editing');
 
+    const coalesceKey = this.textEditCoalesceKey ?? undefined;
+    const originalHtml = this.textEditOriginalHtml;
+    this.textEditCoalesceKey = null;
+    this.textEditOriginalHtml = null;
+
     const current = this.store.slide?.elements.find((e) => e.id === elementId);
     if (!current || (current.type !== 'text' && current.type !== 'html')) return;
-    if (current.html === html) return;
+    // Live sync may have already streamed the final html; the session still
+    // counts as an edit (and strips the placeholder class) if the text ends
+    // up different from where it started.
+    if (current.html === html && html === (originalHtml ?? html)) return;
 
     this.store.commit((deck) => {
       const el = deck.slides[this.store.get().slideIndex].elements.find(
@@ -1103,7 +1242,7 @@ export class EditorCanvas {
         el.html = html;
         el.class = el.class.filter((name) => name !== 'placeholder');
       }
-    }, { label: 'Edit text' });
+    }, { label: 'Edit text', coalesceKey });
   }
 
   /** True while a text element is being edited, so callers can defer redraws. */
@@ -1270,8 +1409,12 @@ export class EditorCanvas {
       const files = [...(e.dataTransfer?.files ?? [])];
       if (files.length === 0) return;
 
-      const paths = files.map((f) => window.api.pathForFile(f)).filter(Boolean);
-      const assets = await window.api.importAssets(paths);
+      // The browser collab client uploads file bytes over HTTP; Electron
+      // recovers filesystem paths through the preload. Both land in the same
+      // content-hash importer.
+      const assets = window.api.importAssetFiles
+        ? await window.api.importAssetFiles(files)
+        : await window.api.importAssets(files.map((f) => window.api.pathForFile(f)).filter(Boolean));
       if (assets.length === 0) return;
 
       const { deck } = this.store.get();
@@ -1353,7 +1496,7 @@ export class EditorCanvas {
  * Same elements, same order, same media and same content — so the existing DOM
  * can be repositioned rather than rebuilt.
  */
-function sameStructure(a: Slide, b: Slide): boolean {
+function sameStructure(a: Slide, b: Slide, ignoreHtml = false): boolean {
   if (a.elements.length !== b.elements.length) return false;
   for (let i = 0; i < a.elements.length; i++) {
     const x = a.elements[i];
@@ -1365,7 +1508,7 @@ function sameStructure(a: Slide, b: Slide): boolean {
       (y.type === 'image' || y.type === 'video') &&
       Boolean(x.sourceBox) !== Boolean(y.sourceBox)
     ) return false;
-    if ('html' in x && 'html' in y && x.html !== y.html) return false;
+    if (!ignoreHtml && 'html' in x && 'html' in y && x.html !== y.html) return false;
     if (x.class.join(' ') !== y.class.join(' ')) return false;
     if (
       (x.type === 'image' || x.type === 'video') &&

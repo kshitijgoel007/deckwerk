@@ -4,13 +4,8 @@ import { applyAgentTransaction } from '@shared/agent.js';
 import type { SlideElement } from '@shared/deck.js';
 import { emptyDeck } from '@shared/deck.js';
 import type { AuthoredHtmlFile, WorkflowKind } from '@shared/ipc.js';
-import { makeId } from '@shared/geometry.js';
 import { adoptAuthoredIds } from '@shared/htmlSlides.js';
 import {
-  THEMES,
-  type ThemeAdoption,
-  type ThemePreset,
-  adoptThemeStyles,
   themeById,
   themeCss,
   themeStyleCss,
@@ -23,15 +18,17 @@ import { Inspector } from './inspector.js';
 import { HistoryPanel } from './historyPanel.js';
 import { authoredHtmlSync, fileName } from './htmlCompile.js';
 import { createShapeInsertPicker, insertText } from './elementCreation.js';
-import { createThemeGallery, type ThemeGallery } from './themeGallery.js';
-import { SlideRail } from './slideRail.js';
+import { createThemePanel } from './themePanel.js';
 import {
-  EditorStore,
-  copySelectionToClipboard,
-  copySlidesToClipboard,
-  cutSelectionToClipboard,
-  pasteFromClipboard,
-} from './store.js';
+  barButton,
+  bindEditorKeys,
+  createClipboardActions,
+  makeContextActions,
+  wireCanvasInspector,
+  type ShellDeps,
+} from './shellWiring.js';
+import { SlideRail } from './slideRail.js';
+import { EditorStore } from './store.js';
 import { TimelinePanel } from './timelinePanel.js';
 import { WelcomeScreen } from './welcomeScreen.js';
 
@@ -70,18 +67,7 @@ const openTrim = (element: Extract<SlideElement, { type: 'video' }>) => {
   pendingTrimElementId = element.id;
   void window.api.openTrim({ src: element.src, elementId: element.id });
 };
-canvas.onTrimRequest = openTrim;
-inspector.onTrimRequest = openTrim;
-inspector.onTogglePlay = (id) => canvas.toggleVideo(id);
-inspector.onEditText = (id) => canvas.beginTextEdit(id);
-inspector.editingText = () => canvas.isEditing();
-inspector.onApplyTextSelectionWeight = (weight) => canvas.applyTextSelectionWeight(weight);
-inspector.onToggleMask = (id) => canvas.toggleMaskMode(id);
-inspector.maskingElement = () => canvas.maskingElement();
-inspector.onSeekPreview = (id, t) => canvas.seekVideo(id, t);
-inspector.videoDuration = (id) => canvas.videoDuration(id);
-canvas.onMaskModeChange = () => inspector.render();
-canvas.onTextEditModeChange = () => inspector.render();
+wireCanvasInspector(canvas, inspector, openTrim);
 
 /**
  * The agent's window into this editor: it publishes the computed selection to
@@ -234,180 +220,14 @@ async function importKeynotePresentation(): Promise<void> {
   }
 }
 
-/**
- * Theme presets are immutable style sources. One explicit operation chooses
- * scope, semantic roles and independent properties; selecting a card alone is
- * always side-effect-free.
- */
-const themeAdoption: ThemeAdoption = {
-  scope: 'slides',
-  roles: ['title', 'heading', 'body', 'caption', 'base'],
-  fontFamily: true,
-  fontWeight: false,
-  typeScale: false,
-  textColor: false,
-  background: false,
-  objectColors: false,
-  replaceOverrides: true,
-  detectRoles: false,
-};
-
-/** The gallery selection can lead the installed deck theme until Apply/Install. */
-let selectedThemeId: string | null = null;
-let themeGallery: ThemeGallery | null = null;
-let themeScopeSelect: HTMLSelectElement | null = null;
-let themeApplyButton: HTMLButtonElement | null = null;
-
-function currentTheme(): ThemePreset | null {
-  return themeById(selectedThemeId) ?? themeById(store.get().deck.themePreset) ?? null;
-}
-
-function themePicker(): HTMLElement {
-  const wrap = document.createElement('div');
-  wrap.className = 'theme-browser';
-
-  const preset = store.get().deck.themePreset;
-  themeGallery = createThemeGallery(THEMES, preset, (theme) => {
-    selectedThemeId = theme.id;
-  });
-  selectedThemeId = themeGallery.selectedId();
-
-  const intro = document.createElement('div');
-  intro.className = 'theme-browser-intro';
-  const title = document.createElement('h2');
-  title.textContent = 'Themes';
-  const help = document.createElement('p');
-  help.textContent = 'Select a style source, then choose exactly where and which properties to use. Selection alone changes nothing.';
-  intro.append(title, help);
-
-  const controls = document.createElement('div');
-  controls.className = 'theme-adoption-controls';
-
-  const scopeLabel = document.createElement('label');
-  scopeLabel.className = 'field';
-  const scopeTitle = document.createElement('span');
-  scopeTitle.textContent = 'Apply to';
-  const scope = document.createElement('select');
-  themeScopeSelect = scope;
-  for (const [value, label] of [
-    ['deck', 'Deck defaults + all slides'],
-    ['slides', 'Selected slides'],
-    ['selection', 'Selected objects only'],
-  ] as const) {
-    const option = document.createElement('option');
-    option.value = value;
-    option.textContent = label;
-    scope.appendChild(option);
-  }
-  scope.value = themeAdoption.scope;
-  scope.addEventListener('change', () => {
-    themeAdoption.scope = scope.value as ThemeAdoption['scope'];
-    syncSlideSelectionContext();
-  });
-  scopeLabel.append(scopeTitle, scope);
-
-  const roleTitle = document.createElement('div');
-  roleTitle.className = 'theme-option-title';
-  roleTitle.textContent = 'Text roles';
-  const roleBoxes = (['title', 'heading', 'body', 'caption', 'base'] as const).map((role) => {
-    const box = optionBox(role, themeAdoption.roles.includes(role));
-    box.input.addEventListener('change', () => {
-      themeAdoption.roles = box.input.checked
-        ? [...new Set([...themeAdoption.roles, role])]
-        : themeAdoption.roles.filter((candidate) => candidate !== role);
-    });
-    return box.label;
-  });
-
-  const propertyTitle = document.createElement('div');
-  propertyTitle.className = 'theme-option-title';
-  propertyTitle.textContent = 'Properties from theme';
-  const boxes: Array<[keyof ThemeAdoption, string]> = [
-    ['fontFamily', 'Font family'],
-    ['fontWeight', 'Font weight'],
-    ['typeScale', 'Size + spacing'],
-    ['textColor', 'Text colour'],
-    ['background', 'Slide background'],
-    ['objectColors', 'Shape colours'],
-    ['replaceOverrides', 'Replace matching overrides'],
-    ['detectRoles', 'Detect roles for untagged text'],
-  ];
-  const boxEls = boxes.map(([key, label]) => {
-    const o = optionBox(label, themeAdoption[key] as boolean);
-    o.input.addEventListener('change', () => {
-      (themeAdoption[key] as boolean) = o.input.checked;
-    });
-    return o.label;
-  });
-  controls.append(scopeLabel, roleTitle, ...roleBoxes, propertyTitle, ...boxEls);
-
-  const actions = document.createElement('div');
-  actions.className = 'theme-actions';
-  themeApplyButton = barButton('Apply theme to selected slides', () => {
-      const theme = currentTheme();
-      if (!theme) return;
-      const { slideIndex, slideSelection, selection } = store.get();
-      store.commit((deck) => adoptThemeStyles(
-        deck,
-        theme,
-        { ...themeAdoption, roles: [...themeAdoption.roles] },
-        slideIndex,
-        new Set(selection),
-        new Set(slideSelection),
-      ));
-      if (themeAdoption.scope === 'deck') refreshThemeCss(theme.name);
-      refreshSwatches(theme);
-      if (themeAdoption.scope === 'deck') themeGallery?.setInstalled(theme.id);
-      void save();
-      const scopeName = themeAdoption.scope === 'deck'
-        ? 'deck defaults and existing slides'
-        : themeAdoption.scope === 'slides'
-          ? `${slideSelection.size} selected slide${slideSelection.size === 1 ? '' : 's'}`
-          : themeAdoption.scope === 'slide' ? 'current slide' : 'selection';
-      setStatusMessage(`Used selected “${theme.name}” styles for ${scopeName}.`);
-    });
-  themeApplyButton.className = 'primary panel-action';
-  actions.append(themeApplyButton);
-  wrap.append(intro, themeGallery.element, controls, actions);
-  return wrap;
-}
-
-function refreshThemeCss(label: string): void {
-  const style = store.get().deck.themeStyle;
-  if (!style) return;
-  const css = withThemeBlock(cssEditor.getValue(), themeStyleCss(style, label));
-  cssEditor.setValue(css);
-  void window.api.saveTheme(css);
-}
-
-/** The swatch row shown in every colour picker, fed by the installed theme. */
-function refreshSwatches(theme: ThemePreset | null): void {
-  let list = document.getElementById('theme-swatches') as HTMLDataListElement | null;
-  if (!list) {
-    list = document.createElement('datalist');
-    list.id = 'theme-swatches';
-    document.body.appendChild(list);
-  }
-  list.replaceChildren(
-    ...(theme?.palette ?? []).map((c) => {
-      const o = document.createElement('option');
-      o.value = c;
-      return o;
-    }),
-  );
-}
-
-function optionBox(text: string, checked: boolean): { label: HTMLElement; input: HTMLInputElement } {
-  const label = document.createElement('label');
-  label.className = 'bar-check';
-  const input = document.createElement('input');
-  input.type = 'checkbox';
-  input.checked = checked;
-  const span = document.createElement('span');
-  span.textContent = text;
-  label.append(input, span);
-  return { label, input };
-}
+/** The Theme sidebar tab, shared with the browser collab shell. */
+const themePanel = createThemePanel({
+  store,
+  cssEditor,
+  save,
+  setStatusMessage,
+  saveThemeCss: (css) => void window.api.saveTheme(css),
+});
 
 /**
  * The "Agent…" dialog: pick a workflow, type instructions, hand the deck over.
@@ -492,14 +312,6 @@ function openWorkflowDialog(): void {
   instructions.focus();
 }
 
-function barButton(label: string, onClick: () => void, variant = ''): HTMLButtonElement {
-  const b = document.createElement('button');
-  b.textContent = label;
-  if (variant) b.className = variant;
-  b.addEventListener('click', onClick);
-  return b;
-}
-
 /* --- side panel tabs --- */
 
 const PANELS = [
@@ -523,10 +335,9 @@ function buildTabs(): void {
 }
 
 let activePanelId = 'inspector';
-let hadMultipleSlidesSelected = false;
 
 function showPanel(id: string): void {
-  if (store.get().slideSelection.size > 1 && id !== 'themePanel') return;
+  if (store.get().slideSelection.size > 1 && id !== 'themePanel' && id !== 'inspector') return;
   activePanelId = id;
   for (const panel of PANELS) {
     el(panel.id).hidden = panel.id !== id;
@@ -538,30 +349,19 @@ function showPanel(id: string): void {
   canvas.setBuildBadgesVisible(id === 'timeline');
 }
 
-/** Multi-slide selection is a deck-level editing context, so only Theme applies. */
+/** Multi-slide selection is a deck-level editing context: Theme and Props (Magic Move) apply. */
 function syncSlideSelectionContext(): void {
   const count = store.get().slideSelection.size;
   const multiple = count > 1;
   for (const button of el('side-tabs').querySelectorAll<HTMLButtonElement>('button')) {
-    button.disabled = multiple && button.dataset.panel !== 'themePanel';
+    button.disabled = multiple
+      && button.dataset.panel !== 'themePanel'
+      && button.dataset.panel !== 'inspector';
   }
-  const objectScope = themeScopeSelect?.querySelector<HTMLOptionElement>('option[value="selection"]');
-  if (objectScope) objectScope.disabled = multiple;
-  if (multiple && activePanelId !== 'themePanel') showPanel('themePanel');
-  if (multiple && !hadMultipleSlidesSelected) {
-    themeAdoption.scope = 'slides';
-    if (themeScopeSelect) themeScopeSelect.value = 'slides';
+  if (multiple && activePanelId !== 'themePanel' && activePanelId !== 'inspector') {
+    showPanel('themePanel');
   }
-  hadMultipleSlidesSelected = multiple;
-  if (themeApplyButton) {
-    themeApplyButton.textContent = themeAdoption.scope === 'deck'
-      ? 'Apply theme to deck'
-      : themeAdoption.scope === 'slides'
-        ? `Apply theme to ${count} selected slide${count === 1 ? '' : 's'}`
-        : themeAdoption.scope === 'selection'
-          ? 'Apply theme to selected objects'
-          : 'Apply theme to current slide';
-  }
+  themePanel.syncScope(count);
 }
 
 /* --- element creation --- */
@@ -607,155 +407,20 @@ async function adopt(dir: string, deck: Parameters<typeof store.load>[0]): Promi
     : loadedCss;
   cssEditor.setValue(refreshedCss);
   if (refreshedCss !== loadedCss) void window.api.saveTheme(refreshedCss);
-  themeGallery?.setSelected(deck.themePreset);
-  themeGallery?.setInstalled(deck.themePreset);
-  selectedThemeId = themeGallery?.selectedId() ?? deck.themePreset;
-  refreshSwatches(currentTheme());
+  themePanel.noteDeckOpened(deck);
 }
 
-/* --- keyboard --- */
+/* --- keyboard, clipboard, context menu: shared shell wiring --- */
 
-function bindKeys(): void {
-  window.addEventListener('keydown', (e) => {
-    const t = e.target as HTMLElement | null;
-    const typing =
-      t &&
-      (t.isContentEditable ||
-        /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) ||
-        t.closest('.cm-editor') !== null);
-    // Also bail while a canvas text edit is live, so Delete edits the text
-    // rather than deleting the element being typed into.
-    if (typing || canvas.isEditing()) return;
-
-    const mod = e.metaKey || e.ctrlKey;
-
-    if (mod && e.key.toLowerCase() === 'z') {
-      e.preventDefault();
-      if (e.shiftKey) store.redo();
-      else store.undo();
-      return;
-    }
-    if (mod && e.key.toLowerCase() === 's') {
-      e.preventDefault();
-      void save();
-      return;
-    }
-    if (mod && e.key.toLowerCase() === 'd') {
-      e.preventDefault();
-      duplicateSelection();
-      return;
-    }
-    if (mod && e.key.toLowerCase() === 'c') {
-      e.preventDefault();
-      void copyToClipboard('Copied');
-      return;
-    }
-    if (mod && e.key.toLowerCase() === 'x') {
-      e.preventDefault();
-      void cutToClipboard();
-      return;
-    }
-    if (mod && e.key.toLowerCase() === 'v') {
-      e.preventDefault();
-      void pasteClipboard();
-      return;
-    }
-
-    switch (e.key) {
-      case 'Backspace':
-      case 'Delete': {
-        e.preventDefault();
-        deleteSelection();
-        break;
-      }
-      case 'Escape':
-        store.clearSelection();
-        break;
-      case 'ArrowLeft':
-      case 'ArrowRight':
-      case 'ArrowUp':
-      case 'ArrowDown': {
-        e.preventDefault();
-        // Shift for a coarse nudge; plain arrows for pixel-accurate placement.
-        const step = e.shiftKey ? 10 : 1;
-        const dx = e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0;
-        const dy = e.key === 'ArrowUp' ? -step : e.key === 'ArrowDown' ? step : 0;
-        store.updateSelected((el) => {
-          el.x += dx;
-          el.y += dy;
-          if (el.type === 'shape' && el.control) {
-            el.control.x += dx;
-            el.control.y += dy;
-          }
-        });
-        break;
-      }
-      case 'n':
-        if (!mod) rail.addSlide();
-        break;
-    }
-  });
-}
-
-function deleteSelection(): void {
-  store.deleteSelection();
-}
-
-/* --- clipboard ---
- *
- * Copy targets whatever the user has selected: canvas elements when any are
- * selected, otherwise the slides picked in the rail. The payload crosses the
- * OS clipboard, so it pastes into another running instance of the app too.
- */
-
-async function copyToClipboard(verb: 'Copied' | 'Cut'): Promise<'elements' | 'slides' | null> {
-  if (store.get().selection.size > 0) {
-    const n = await copySelectionToClipboard(store);
-    if (n) setStatusMessage(`${verb} ${n} element${n > 1 ? 's' : ''}.`);
-    return n ? 'elements' : null;
-  }
-  const n = await copySlidesToClipboard(store);
-  if (n) setStatusMessage(`${verb} ${n} slide${n > 1 ? 's' : ''}.`);
-  return n ? 'slides' : null;
-}
-
-async function cutToClipboard(): Promise<void> {
-  const copied = await copyToClipboard('Cut');
-  if (copied === 'elements') store.deleteSelection();
-  else if (copied === 'slides') rail.deleteSlide();
-}
-
-async function pasteClipboard(): Promise<void> {
-  const pasted = await pasteFromClipboard(store);
-  if (pasted) {
-    const noun = pasted.kind === 'slides' ? 'slide' : 'element';
-    setStatusMessage(`Pasted ${pasted.count} ${noun}${pasted.count > 1 ? 's' : ''}.`);
-  }
-}
-
-function duplicateSelection(): void {
-  const ids = store.get().selection;
-  if (ids.size === 0) return;
-  const created: string[] = [];
-  store.commit((deck) => {
-    const slide = deck.slides[store.get().slideIndex];
-    for (const el of slide.elements.filter((e) => ids.has(e.id))) {
-      const copy = structuredClone(el);
-      copy.lineageId = el.lineageId ?? el.id;
-      copy.magicMoveId = null;
-      copy.id = makeId(el.type);
-      copy.x += 24;
-      copy.y += 24;
-      if (copy.type === 'shape' && copy.control) {
-        copy.control.x += 24;
-        copy.control.y += 24;
-      }
-      created.push(copy.id);
-      slide.elements.push(copy);
-    }
-  });
-  store.select(created);
-}
+const shellDeps: ShellDeps = {
+  store,
+  canvas,
+  rail,
+  save,
+  setStatusMessage,
+  openTrim,
+};
+const clipboard = createClipboardActions(shellDeps);
 
 /* --- status bar --- */
 
@@ -785,9 +450,9 @@ function renderStatus(): void {
 buildToolbar();
 buildTabs();
 // The theme gallery lives in its own sidebar tab, not the toolbar.
-el('themePanel').appendChild(themePicker());
+el('themePanel').appendChild(themePanel.element);
 el('themePanel').classList.add('theme-panel');
-bindKeys();
+bindEditorKeys(shellDeps, clipboard);
 store.subscribe(() => {
   syncSlideSelectionContext();
   renderStatus();
@@ -822,42 +487,7 @@ window.api.onTrimDone((result) => {
 });
 
 
-canvas.contextActions = (el) => {
-  const sel = store.get().selection.size;
-  const items: Array<{ label: string; action: () => void } | 'separator'> = [];
-  if (el) {
-    items.push(
-      { label: 'Cut', action: () => void cutSelectionToClipboard(store) },
-      { label: 'Copy', action: () => void copySelectionToClipboard(store) },
-    );
-  }
-  items.push({ label: 'Paste', action: () => void pasteClipboard() });
-  if (el) {
-    items.push(
-      { label: 'Duplicate', action: () => duplicateSelection() },
-      { label: 'Delete', action: () => deleteSelection() },
-      'separator',
-      { label: 'Bring to front', action: () => store.updateSelected((e) => (e.z += 1000)) },
-      { label: 'Send to back', action: () => store.updateSelected((e) => (e.z -= 1000)) },
-    );
-    if (el.type === 'image' || el.type === 'video') {
-      items.push('separator', {
-        label: canvas.maskingElement() === el.id ? 'Done editing mask' : 'Edit mask (crop)',
-        action: () => canvas.toggleMaskMode(el.id),
-      });
-    }
-    if (el.type === 'video') {
-      items.push(
-        { label: canvas.isPlaying(el.id) ? 'Pause' : 'Play', action: () => void canvas.toggleVideo(el.id) },
-        { label: 'Edit w/ ffmpeg…', action: () => openTrim(el) },
-      );
-    }
-    if (el.type === 'text' && sel === 1) {
-      items.unshift({ label: 'Edit text', action: () => canvas.beginTextEdit(el.id) }, 'separator');
-    }
-  }
-  return items;
-};
+canvas.contextActions = makeContextActions(shellDeps, clipboard);
 
 // Watch mode: the main process reloads the deck when deck.json changes on
 // disk (an agent, a git checkout, hand editing) and broadcasts it here. Our
@@ -873,7 +503,7 @@ window.api.onDeckState((session) => {
   if (session.dir !== state.dir) store.load(session.deck, session.dir, { keepView: true });
   else store.replaceExternal(session.deck, session.dir);
   welcome.setVisible(false);
-  refreshSwatches(currentTheme());
+  themePanel.refreshSwatches();
   setStatusMessage('Deck reloaded from disk.');
 });
 window.api.onThemeCss?.((css) => {
@@ -884,5 +514,5 @@ window.api.onThemeCss?.((css) => {
 void (async () => {
   const session = await window.api.getDeck();
   if (session) await adopt(session.dir, session.deck);
-  refreshSwatches(currentTheme());
+  themePanel.refreshSwatches();
 })();

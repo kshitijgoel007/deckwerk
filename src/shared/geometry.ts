@@ -63,7 +63,20 @@ export function fitInside(content: Size, box: Size): Size {
   return { w: content.w * scale, h: content.h * scale };
 }
 
+/**
+ * Per-client id suffix for collaborative sessions. Eight random base-36 chars
+ * carry no client entropy, and validateDeckIntegrity treats a deck-wide
+ * duplicate id as a hard error — so when several clients mint ids against the
+ * same deck concurrently, each stamps its ids with a short client marker.
+ * Local Electron and CLI use leave it empty and ids look exactly as before.
+ */
+let idSuffix = '';
+
+export function setIdSuffix(suffix: string): void {
+  idSuffix = suffix ? `-${suffix.replace(/[^a-zA-Z0-9]+/g, '').slice(0, 8)}` : '';
+}
+
 /** Sequential, collision-free element ids scoped to a prefix. */
 export function makeId(prefix: string): string {
-  return `${prefix}-${Math.random().toString(36).slice(2, 10)}`;
+  return `${prefix}-${Math.random().toString(36).slice(2, 10)}${idSuffix}`;
 }

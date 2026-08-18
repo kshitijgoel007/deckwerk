@@ -47,6 +47,17 @@ const api = {
 
   importAssets: (paths: string[]): Promise<ImportedAsset[]> =>
     ipcRenderer.invoke(IPC.assetImport, paths),
+  /**
+   * Import dropped Files. Electron resolves them to filesystem paths; the
+   * browser collab client replaces this whole api object with one that
+   * uploads the bytes instead — the drop handler prefers this method so both
+   * environments share one code path.
+   */
+  importAssetFiles: (files: File[]): Promise<ImportedAsset[]> =>
+    ipcRenderer.invoke(
+      IPC.assetImport,
+      files.map((file) => webUtils.getPathForFile(file)).filter(Boolean),
+    ),
   probeAsset: (src: string): Promise<MediaInfo> =>
     ipcRenderer.invoke(IPC.assetProbe, src),
 

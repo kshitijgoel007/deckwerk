@@ -33,6 +33,11 @@ export class SlideRail {
    * that survives re-renders but not a reload.
    */
   private expandedRuns = new Set<string>();
+  /**
+   * Collaboration presence: who is on which slide, drawn as colored dots on
+   * the rail rows. Unset outside collab sessions.
+   */
+  presenceForSlide?: (slideId: string) => Array<{ name: string; color: string }>;
 
   constructor(host: HTMLElement, store: EditorStore) {
     this.host = host;
@@ -227,6 +232,25 @@ export class SlideRail {
     return thumb;
   }
 
+  /** Re-decorate presence dots in place, without invalidating thumbnails. */
+  refreshPresence(): void {
+    for (const dots of this.host.querySelectorAll<HTMLElement>('.rail-presence')) {
+      const slideId = dots.dataset.slideId;
+      if (slideId) this.paintPresence(dots, slideId);
+    }
+  }
+
+  private paintPresence(container: HTMLElement, slideId: string): void {
+    const peers = this.presenceForSlide?.(slideId) ?? [];
+    container.replaceChildren(...peers.map((peer) => {
+      const dot = document.createElement('span');
+      dot.className = 'rail-presence-dot';
+      dot.style.background = peer.color;
+      dot.title = peer.name;
+      return dot;
+    }));
+  }
+
   /** One slide row: number, cached thumbnail, hidden badge, handlers. */
   private buildItem(
     deck: ReturnType<EditorStore['get']>['deck'],
@@ -248,6 +272,11 @@ export class SlideRail {
       num.textContent = String(i + 1);
 
       item.append(num, this.thumbFor(deck, slide));
+      const dots = document.createElement('span');
+      dots.className = 'rail-presence';
+      dots.dataset.slideId = slide.id;
+      item.appendChild(dots);
+      this.paintPresence(dots, slide.id);
       if (slide.skipped) {
         const badge = document.createElement('span');
         badge.className = 'rail-skipped-badge';
@@ -345,7 +374,12 @@ export class SlideRail {
       e.preventDefault();
       e.stopPropagation();
       const { slideIndex, deck } = this.store.get();
-      const next = e.key === 'ArrowDown' ? slideIndex + 1 : slideIndex - 1;
+      // Arrow keys walk visible slides only: hidden slides (and collapsed
+      // runs of them) are skipped, never revealed. Clicking is the only way
+      // to select a hidden slide.
+      const step = e.key === 'ArrowDown' ? 1 : -1;
+      let next = slideIndex + step;
+      while (next >= 0 && next < deck.slides.length && deck.slides[next].skipped) next += step;
       if (next < 0 || next >= deck.slides.length) return;
       this.store.selectSlide(next);
     });

@@ -47,6 +47,16 @@ interface UndoItem {
 const HISTORY_LIMIT = 200;
 
 export class EditorStore {
+  /**
+   * Fired whenever a local undo unit is born (commit, drag transaction end,
+   * history replace) with the deck before and after. Unset in the Electron
+   * shell; the collab shell diffs the pair into ops and sends them to the
+   * server. Never fired for remote or external deck replacements.
+   */
+  onLocalEdit:
+    | ((prev: Deck, next: Deck, label: string, coalesceKey?: string) => void)
+    | null = null;
+
   private state: EditorState;
   private listeners = new Set<Listener>();
   private undoStack: UndoItem[] = [];
@@ -128,10 +138,30 @@ export class EditorStore {
   /** Replace the document as one local, dirty, undoable transaction. */
   replaceWithHistory(deck: Deck, label: string): void {
     const anchor = this.cursorAnchor();
-    this.pushUndo(this.state.deck, label);
+    const previous = this.state.deck;
+    this.pushUndo(previous, label);
     this.state = { ...this.state, deck: parseDeck(deck), dirty: true };
     this.restoreCursor(anchor);
     this.recordHistory(label);
+    this.onLocalEdit?.(previous, this.state.deck, label);
+    this.emit();
+  }
+
+  /**
+   * Absorb a deck decided elsewhere (the collab server) without an undo entry
+   * and without dirtying the document — persistence is the server's job. Slide
+   * object identity is re-shared so untouched slides keep their DOM and
+   * playing videos; the cursor stays on the same slide by id.
+   */
+  applyRemote(deck: Deck, label = 'Remote edit'): void {
+    const anchor = this.cursorAnchor();
+    const next = parseDeck(deck);
+    shareUnchangedSlides(this.state.deck, next);
+    this.state = { ...this.state, deck: next };
+    this.restoreCursor(anchor);
+    // Live typing arrives as a stream of same-label transactions; folding them
+    // into one history entry keeps the History panel legible.
+    this.recordHistory(label, { coalesce: true });
     this.emit();
   }
 
@@ -164,18 +194,24 @@ export class EditorStore {
    */
   commit(
     fn: (deck: Deck) => void,
-    opts: { history?: boolean; label?: string } = {},
+    opts: { history?: boolean; label?: string; transient?: boolean; coalesceKey?: string } = {},
   ): void {
     const previous = this.state.deck;
     const next = structuredClone(previous) as Deck;
     fn(next);
     shareUnchangedSlides(previous, next);
 
-    if (opts.history !== false && !this.txnBase) {
+    // Transient commits stream work in progress (live typing) to collaborators
+    // without consuming undo slots or history entries; the coalesce key lets
+    // the collab undo layer fold the stream into one undoable edit.
+    if (opts.history !== false && !this.txnBase && !opts.transient) {
       this.pushUndo(previous, opts.label ?? 'Edit slide');
     }
     this.state = { ...this.state, deck: next, dirty: true };
-    if (!this.txnBase) this.recordHistory(opts.label ?? 'Edit slide');
+    if (!this.txnBase) {
+      if (!opts.transient) this.recordHistory(opts.label ?? 'Edit slide');
+      this.onLocalEdit?.(previous, next, opts.label ?? 'Edit slide', opts.coalesceKey);
+    }
     this.emit();
   }
 
@@ -198,6 +234,7 @@ export class EditorStore {
     if (base !== this.state.deck) {
       this.pushUndo(base, this.txnLabel);
       this.recordHistory(this.txnLabel);
+      this.onLocalEdit?.(base, this.state.deck, this.txnLabel);
     }
   }
 
@@ -242,6 +279,7 @@ export class EditorStore {
   restoreHistory(id: number): boolean {
     const snapshot = this.historyLog.find((item) => item.id === id);
     if (!snapshot || snapshot.deck === this.state.deck) return false;
+    const previous = this.state.deck;
     const slideIndex = Math.min(
       snapshot.slideIndex,
       Math.max(0, snapshot.deck.slides.length - 1),
@@ -260,6 +298,7 @@ export class EditorStore {
     };
     this.slideSelectionAnchor = this.state.slideIndex;
     this.recordHistory(`Reverted to ${snapshot.label}`);
+    this.onLocalEdit?.(previous, this.state.deck, `Revert to ${snapshot.label}`);
     this.emit();
     return true;
   }
@@ -313,8 +352,15 @@ export class EditorStore {
   }
 
   clearSelection(): void {
-    if (this.state.selection.size === 0) return;
-    this.state = { ...this.state, selection: new Set() };
+    const currentSlide = this.slide;
+    const collapseRail = this.state.slideSelection.size > 1 && currentSlide;
+    if (this.state.selection.size === 0 && !collapseRail) return;
+    if (collapseRail) this.slideSelectionAnchor = this.state.slideIndex;
+    this.state = {
+      ...this.state,
+      selection: new Set(),
+      ...(collapseRail ? { slideSelection: new Set([currentSlide.id]) } : {}),
+    };
     this.emit();
   }
 
@@ -381,7 +427,14 @@ export class EditorStore {
     };
   }
 
-  private recordHistory(label: string): void {
+  private recordHistory(label: string, opts: { coalesce?: boolean } = {}): void {
+    const last = this.historyLog[this.historyLog.length - 1];
+    if (opts.coalesce && last && last.label === label) {
+      last.at = Date.now();
+      last.slideIndex = this.state.slideIndex;
+      last.deck = this.state.deck;
+      return;
+    }
     this.historyLog.push({
       id: this.nextHistoryId++,
       label,
@@ -401,7 +454,7 @@ export class EditorStore {
  * decoded media. Without this reconciliation, changing one layout in a large
  * imported deck rebuilds every thumbnail and can exhaust the renderer.
  */
-function shareUnchangedSlides(previous: Deck, next: Deck): void {
+export function shareUnchangedSlides(previous: Deck, next: Deck): void {
   const byId = new Map(previous.slides.map((slide) => [slide.id, slide]));
   for (let i = 0; i < next.slides.length; i++) {
     const candidate = byId.get(next.slides[i].id);

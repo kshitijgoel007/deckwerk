@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Slide Editor — Collaboration</title>
+  </head>
+  <body>
+    <div id="app">
+      <header id="toolbar"></header>
+      <div id="body">
+        <aside id="rail"></aside>
+        <main id="canvas"></main>
+        <aside id="side">
+          <nav id="side-tabs"></nav>
+          <div id="side-panels">
+            <div id="inspector" class="side-panel"></div>
+            <div id="themePanel" class="side-panel" hidden></div>
+            <div id="timeline" class="side-panel" hidden></div>
+            <div id="history" class="side-panel" hidden></div>
+          </div>
+        </aside>
+      </div>
+      <footer id="status"></footer>
+    </div>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

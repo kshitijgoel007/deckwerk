@@ -83,6 +83,12 @@ export class Inspector {
     this.host.replaceChildren();
     if (selected.length > 0) this.magicMovePanel.dismiss();
 
+    if (slideSelection.size > 1 && selected.length === 0) {
+      this.host.appendChild(hint(`${slideSelection.size} slides selected`));
+      this.appendMagicMove();
+      return;
+    }
+
     if (selected.length === 0) {
       this.host.appendChild(hint('Nothing selected'));
       const slideGroup = group('Slide');
@@ -761,8 +767,12 @@ export class Inspector {
 
         // Last resort: the destructive ffmpeg editor. Writes a new file and
         // relinks — for when the non-destructive CSS path is not enough.
-        wrap.appendChild(button('Edit w/ ffmpeg…', () => this.onTrimRequest?.(el), 'primary panel-action'));
-        wrap.appendChild(hint('Re-encodes to a new file. The original is kept.'));
+        // Desktop only: shells that can't spawn ffmpeg leave onTrimRequest unset.
+        if (this.onTrimRequest) {
+          const request = this.onTrimRequest;
+          wrap.appendChild(button('Edit w/ ffmpeg…', () => request(el), 'primary panel-action'));
+          wrap.appendChild(hint('Re-encodes to a new file. The original is kept.'));
+        }
         return wrap;
       }
 

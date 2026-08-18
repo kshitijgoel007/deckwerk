@@ -18,3 +18,12 @@ examples/test-presentation/assets/
 
 # Large local presentation corpus used by the importer regression suite.
 example_presentations/
+
+# Collab server data: decks people edit live, including large media.
+collab-decks/
+
+# Local reference presentation and oversized reference media (>100MB blobs
+# were stripped from history; the files live on disk only).
+reference.key
+animation-reference/assets/Screen-Recording-2026-03-24-at-19.32.20-22961.mov
+animation-reference/assets/teaser_video--1--22051.mp4

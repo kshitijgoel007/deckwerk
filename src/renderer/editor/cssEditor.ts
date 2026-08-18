@@ -55,6 +55,11 @@ export class CssEditor {
     return this.view.state.doc.toString();
   }
 
+  /** Whether the user is typing here — collab holds remote CSS while true. */
+  hasFocus(): boolean {
+    return this.view.hasFocus;
+  }
+
   /** Flush any pending write, for use before presenting or quitting. */
   async flush(): Promise<void> {
     if (!this.saveTimer) return;
