@@ -27,5 +27,5 @@ await import('../../src/renderer/trim/main.js');
 // Hand the window a real clip, the way the main process would.
 const clip =
   new URLSearchParams(location.search).get('src') ??
-  'examples/demo-deck/assets/testclip.mp4';
+  'decks/demo-deck/assets/testclip.mp4';
 for (const fn of listeners) fn({ src: clip, elementId: 'harness-video' });

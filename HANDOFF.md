@@ -9,7 +9,7 @@ deck format works; this document is about **where we are and what is next**.
 ```bash
 npm install
 npm run setup:importer          # Python venv for the Keynote importer
-npm run dev -- examples/test-presentation
+npm run dev -- decks/test-presentation
 ```
 
 `npm run dev` hot-reloads renderer changes. Two gotchas that have already
@@ -217,8 +217,8 @@ Every geometry and styling problem so far has been fixed in
 no `deck.json` has ever been hand-edited. The loop to keep using:
 
 ```bash
-rm -rf examples/test-presentation
-./.venv-import/bin/python importers/keynote/import_keynote.py test_presentation.key --out examples/test-presentation
+rm -rf decks/test-presentation
+./.venv-import/bin/python importers/keynote/import_keynote.py test_presentation.key --out decks/test-presentation
 npx vitest run test/importGeometry.test.ts
 ```
 

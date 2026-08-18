@@ -6,10 +6,10 @@ import { Player } from '../../src/renderer/player/player.js';
 /**
  * Mounts the real Player against a deck folder served from the project root,
  * so magic-move transitions can be watched and inspected in a plain browser.
- * Query params: ?deck=animation-reference&duration=3000
+ * Query params: ?deck=decks/animation-reference&duration=3000
  */
 const params = new URLSearchParams(location.search);
-const deckName = params.get('deck') ?? 'animation-reference';
+const deckName = params.get('deck') ?? 'decks/animation-reference';
 
 const raw = await (await fetch(`/${deckName}/deck.json`)).json();
 const deck = DeckSchema.parse(raw);

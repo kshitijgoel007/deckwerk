@@ -20,7 +20,7 @@ npm run dev
 To open a deck straight away:
 
 ```bash
-npm run dev -- examples/demo-deck
+npm run dev -- decks/demo-deck
 ```
 
 ## How a deck is stored

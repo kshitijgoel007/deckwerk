@@ -7,14 +7,16 @@ dist/
 __pycache__/
 *.py[cod]
 
-# Imported and exported decks are large and regenerable.
-examples/imported-*/
-examples/exported-*/
-
-# Local full-size import fixture. Keep its deck geometry, but not the source
-# presentation or media payload (both include files over GitHub's size limit).
+# Reference/test/example decks live under decks/. Only what the tests and
+# the agent CLI need is tracked: demo-deck, reference, agent-reference,
+# test-presentation geometry, and animation-reference's deck files. Everything
+# else — imported corpora, large media, generated renders — stays local.
+decks/imported-*/
+decks/exported-*/
+decks/animation-reference/assets/
+decks/*/edit/.workflow*
 test_presentation.key
-examples/test-presentation/assets/
+decks/test-presentation/assets/
 
 # Large local presentation corpus used by the importer regression suite.
 example_presentations/
@@ -22,8 +24,5 @@ example_presentations/
 # Collab server data: decks people edit live, including large media.
 collab-decks/
 
-# Local reference presentation and oversized reference media (>100MB blobs
-# were stripped from history; the files live on disk only).
+# Local reference presentation (>100MB, stripped from history).
 reference.key
-animation-reference/assets/Screen-Recording-2026-03-24-at-19.32.20-22961.mov
-animation-reference/assets/teaser_video--1--22051.mp4

@@ -12,7 +12,7 @@ import { type Deck, parseDeck } from '../src/shared/deck.js';
  * They cannot drift.
  */
 
-const OUT = join(process.cwd(), 'examples', 'agent-reference');
+const OUT = join(process.cwd(), 'decks', 'agent-reference');
 const ASSETS = ['swatch.png', 'testclip.mp4'];
 
 const THEME = `/* The reference deck's theme. Deliberately plain: it is here to show what
@@ -58,7 +58,7 @@ const deck: Deck = parseDeck({
 
 await mkdir(join(OUT, 'assets'), { recursive: true });
 for (const asset of ASSETS) {
-  await copyFile(join('examples', 'demo-deck', 'assets', asset), join(OUT, 'assets', asset));
+  await copyFile(join('decks', 'demo-deck', 'assets', asset), join(OUT, 'assets', asset));
 }
 await writeFile(join(OUT, 'deck.json'), `${JSON.stringify(deck, null, 2)}\n`, 'utf8');
 await writeFile(join(OUT, 'theme.css'), THEME, 'utf8');

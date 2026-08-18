@@ -751,7 +751,7 @@ export function capabilitiesReport(only: string[] = []): unknown {
 }
 
 export function referenceDeckPath(): string {
-  return fileURLToPath(new URL('../../examples/agent-reference', import.meta.url));
+  return fileURLToPath(new URL('../../decks/agent-reference', import.meta.url));
 }
 
 /** The guide ships with the editor, so it is found relative to this module. */

@@ -37,7 +37,7 @@ const electronPath = (): string | null => {
   }
 };
 
-const FIXTURE = join(process.cwd(), 'examples', 'reference');
+const FIXTURE = join(process.cwd(), 'decks', 'reference');
 const runnable = electronPath() !== null && existsSync(join(FIXTURE, 'deck.json'));
 
 /** Every asset the page asked for, and whether the browser actually got it. */

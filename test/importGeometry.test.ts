@@ -14,7 +14,7 @@ import { type Deck, parseDeck } from '../src/shared/deck.js';
  * here immediately.
  */
 
-const DECK_DIR = join(process.cwd(), 'examples/test-presentation');
+const DECK_DIR = join(process.cwd(), 'decks/test-presentation');
 const ready = existsSync(join(DECK_DIR, 'deck.json'));
 
 async function loadDeck(): Promise<Deck> {

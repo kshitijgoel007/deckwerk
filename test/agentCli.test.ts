@@ -373,7 +373,7 @@ describe('slide-agent CLI', () => {
   });
 
   describe('asset import', () => {
-    const fixtures = join(process.cwd(), 'examples', 'demo-deck', 'assets');
+    const fixtures = join(process.cwd(), 'decks', 'demo-deck', 'assets');
 
     it('imports stills, vectors and documents with deck-relative paths', async () => {
       const png = join(dir, 'figure.png');
@@ -436,7 +436,7 @@ describe('slide-agent CLI', () => {
     // The end-to-end shape the plan describes: research happens elsewhere, and
     // what lands in the deck is slides, media and a plain-text citation.
     const figure = join(dir, 'figure.png');
-    await copyFile(join(process.cwd(), 'examples', 'demo-deck', 'assets', 'swatch.png'), figure);
+    await copyFile(join(process.cwd(), 'decks', 'demo-deck', 'assets', 'swatch.png'), figure);
 
     const imported = await parsed('asset', 'import', dir, figure);
     const src = imported.json.assets[0].src as string;

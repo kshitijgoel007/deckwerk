@@ -50,7 +50,7 @@ deck.slides[0].elements = [
     opacity: 1,
     class: [],
     style: {},
-    src: 'examples/demo-deck/assets/testclip.mp4',
+    src: 'decks/demo-deck/assets/testclip.mp4',
     fit: 'contain',
     autoplay: true,
     loop: true,

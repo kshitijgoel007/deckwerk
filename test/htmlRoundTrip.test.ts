@@ -33,7 +33,7 @@ const electronPath = (): string | null => {
   }
 };
 
-const FIXTURE = join(process.cwd(), 'examples', 'reference');
+const FIXTURE = join(process.cwd(), 'decks', 'reference');
 const runnable = electronPath() !== null && existsSync(join(FIXTURE, 'deck.json'));
 
 /** Geometry within a pixel; everything else exact. */

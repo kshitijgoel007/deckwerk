@@ -64,7 +64,7 @@ describe('the deck outline', () => {
     // Measured against a real imported deck rather than a synthetic one: the
     // saving comes from dropping per-element geometry, and only a deck with
     // real slides on it shows that honestly.
-    const path = join(process.cwd(), 'examples', 'reference', 'deck.json');
+    const path = join(process.cwd(), 'decks', 'reference', 'deck.json');
     if (!existsSync(path)) return;
     const deck = parseDeck(JSON.parse(await readFile(path, 'utf8')));
 

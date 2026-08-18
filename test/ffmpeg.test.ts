@@ -11,7 +11,7 @@ import { buildTrimArgs, probeMedia, runTrim } from '../src/main/ffmpeg.js';
  * and dimensions that were asked for.
  */
 
-const FIXTURE = join(__dirname, '..', 'examples', 'demo-deck', 'assets', 'testclip.mp4');
+const FIXTURE = join(__dirname, '..', 'decks', 'demo-deck', 'assets', 'testclip.mp4');
 
 function request(over: Partial<TrimRequest> = {}): TrimRequest {
   return {
