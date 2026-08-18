@@ -3,7 +3,7 @@ import './editor.css';
 import { applyAgentTransaction } from '@shared/agent.js';
 import type { SlideElement } from '@shared/deck.js';
 import { emptyDeck } from '@shared/deck.js';
-import type { AuthoredHtmlFile } from '@shared/ipc.js';
+import type { AuthoredHtmlFile, WorkflowKind } from '@shared/ipc.js';
 import { makeId } from '@shared/geometry.js';
 import { adoptAuthoredIds } from '@shared/htmlSlides.js';
 import {
@@ -190,6 +190,7 @@ function buildToolbar(): void {
         setStatusMessage(`HTML export failed: ${err instanceof Error ? err.message : err}`);
       }
     }),
+    barButton('Agent…', openWorkflowDialog),
     barButton('Present', async () => {
       // Flush before presenting: the projector must not show a stale theme.
       await cssEditor.flush();
@@ -406,6 +407,89 @@ function optionBox(text: string, checked: boolean): { label: HTMLElement; input:
   span.textContent = text;
   label.append(input, span);
   return { label, input };
+}
+
+/**
+ * The "Agent…" dialog: pick a workflow, type instructions, hand the deck over.
+ *
+ * The heavy lifting — rendering the slides in scope, assembling the prompt
+ * from workflows/<kind>.md, opening the terminal running the agent — happens
+ * in the main process; this is only the ask. The user keeps working in the
+ * editor and watches the agent's saves land live.
+ */
+function openWorkflowDialog(): void {
+  const overlay = document.createElement('div');
+  overlay.className = 'workflow-overlay';
+
+  const box = document.createElement('div');
+  box.className = 'workflow-dialog';
+
+  const title = document.createElement('h2');
+  title.textContent = 'Hand this deck to an agent';
+
+  const picker = document.createElement('select');
+  const selectionCount = store.get().slideSelection.size;
+  const kinds: Array<{ kind: WorkflowKind; label: string; disabled?: boolean }> = [
+    { kind: 'rework-selected-slides',
+      label: selectionCount > 0
+        ? `Rework the ${selectionCount} selected slide${selectionCount === 1 ? '' : 's'}`
+        : 'Rework selected slides (select slides first)',
+      disabled: selectionCount === 0 },
+    { kind: 'beautify-deck', label: 'Beautify the whole deck' },
+    { kind: 'draft-new-slides', label: 'Draft new slides after the current one' },
+  ];
+  for (const entry of kinds) {
+    const option = document.createElement('option');
+    option.value = entry.kind;
+    option.textContent = entry.label;
+    option.disabled = entry.disabled ?? false;
+    picker.append(option);
+  }
+  picker.value = selectionCount > 0 ? 'rework-selected-slides' : 'beautify-deck';
+
+  const instructions = document.createElement('textarea');
+  instructions.placeholder = 'Instructions for the agent — what should change, what must not…';
+  instructions.rows = 5;
+
+  const actions = document.createElement('div');
+  actions.className = 'workflow-actions';
+  const cancel = barButton('Cancel', () => overlay.remove());
+  const start = barButton('Start agent', () => void launch(), 'primary');
+  actions.append(cancel, start);
+
+  async function launch(): Promise<void> {
+    start.disabled = true;
+    start.textContent = 'Preparing…';
+    try {
+      // Flush so the agent's renders show what the user sees right now.
+      await cssEditor.flush();
+      await save();
+      const state = store.get();
+      const result = await window.api.startWorkflow?.({
+        kind: picker.value as WorkflowKind,
+        instructions: instructions.value,
+        selectedSlideIds: state.deck.slides
+          .filter((slide) => state.slideSelection.has(slide.id))
+          .map((slide) => slide.id),
+        activeSlideId: state.deck.slides[state.slideIndex]?.id ?? null,
+      });
+      overlay.remove();
+      setStatusMessage(result?.launched
+        ? 'Agent started in a terminal — its changes will land here live.'
+        : `Prompt ready at ${result?.promptPath} — run: ${result?.command}`);
+    } catch (err) {
+      overlay.remove();
+      setStatusMessage(`Could not start the agent: ${err instanceof Error ? err.message : err}`);
+    }
+  }
+
+  box.append(title, picker, instructions, actions);
+  overlay.append(box);
+  overlay.addEventListener('click', (event) => {
+    if (event.target === overlay) overlay.remove();
+  });
+  document.body.append(overlay);
+  instructions.focus();
 }
 
 function barButton(label: string, onClick: () => void, variant = ''): HTMLButtonElement {

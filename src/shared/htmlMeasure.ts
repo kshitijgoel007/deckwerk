@@ -597,8 +597,11 @@ export function measureTextOverflows(doc: Document): TextOverflow[] {
       const body = node.querySelector<HTMLElement>(':scope > .text-body');
       const content = body?.querySelector<HTMLElement>(':scope > .text-content');
       if (!body || !content) continue;
-      if (node.dataset.autofit === 'true' && fit) fit(node);
-      const x = Math.round((content.scrollWidth - body.clientWidth) * 10) / 10;
+      if ((node.dataset.autofit === 'true' || node.dataset.nowrap === 'true') && fit) fit(node);
+      // A condensed box squeezes horizontally with a transform, which scroll
+      // sizes ignore; the fit records its scale so width can be judged as painted.
+      const scaleX = Number.parseFloat(content.dataset.fittedScaleX ?? '1') || 1;
+      const x = Math.round((content.scrollWidth * scaleX - body.clientWidth) * 10) / 10;
       const y = Math.round((content.scrollHeight - body.clientHeight) * 10) / 10;
       // One pixel of grace, not auto-fit's half: scroll and client sizes are
       // integer-quantised, and the fitted size is rounded to a tenth of a

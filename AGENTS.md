@@ -187,7 +187,8 @@ Diagnostics go to stderr. Exit codes are `0` ok, `1` error,
 | `context [deck]` | What is selected, what revision is the deck, is the editor live |
 | `inspect [deck] [--selected\|--slide id\|--all] [--html\|--dom]` | Editable HTML, or computed inspection data |
 | `apply [deck] --html <file>` | Explicitly compile and sync an HTML range |
-| `render [deck] [--selected\|--slide id\|--all] --output <dir> [--annotate] [--built]` | Optional PNGs |
+| `render [deck] [--selected\|--slide id\|--all] --output <dir> [--annotate] [--built] [--contact-sheet]` | Optional PNGs; `--contact-sheet` adds one tiled overview of everything rendered |
+| `preview [deck] [--port n] [--open]` | Export through the real player and serve on localhost; prints its URL as JSON, then blocks — run it in the background and give the user the URL |
 | `validate [deck]` | Schema, duplicate ids, timeline references, missing assets |
 | `asset import <deck> <paths...>` | Media copied into `assets/`, deduped, probed, transcoded |
 | `transaction apply <deck> <file.json>` | One atomic, named change |

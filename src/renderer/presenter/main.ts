@@ -3,6 +3,7 @@ import './presenter.css';
 import type { Deck } from '@shared/deck.js';
 import type { DeckSession, PresentationState } from '@shared/ipc.js';
 import { resolveState } from '@shared/timeline.js';
+import { applyParagraphVisibility } from '@shared/paragraphs.js';
 import { applyStageScale, renderSlide } from '../player/render.js';
 import { formatElapsed, presentationLabel } from './model.js';
 
@@ -32,6 +33,7 @@ function preview(host: HTMLElement, slideIndex: number, step = 0): void {
     const node = stage.querySelector<HTMLElement>(`[data-element-id="${CSS.escape(element.id)}"]`);
     if (node) node.style.visibility = resolved.visible.has(element.id) ? 'visible' : 'hidden';
   }
+  applyParagraphVisibility(stage, resolved);
   const bounds = host.getBoundingClientRect();
   applyStageScale(stage, deck, { w: bounds.width, h: bounds.height });
   for (const video of stage.querySelectorAll('video')) video.pause();

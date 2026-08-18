@@ -38,6 +38,7 @@
         "to": "importers"
       }
     ],
+    "beforePack": "scripts/assert-importer-fresh.cjs",
     "asarUnpack": [
       "**/node_modules/ffmpeg-static/**",
       "**/node_modules/ffprobe-static/**"

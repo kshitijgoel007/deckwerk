@@ -4,8 +4,67 @@
     {
       "name": "harness",
       "runtimeExecutable": "npx",
-      "runtimeArgs": ["vite", "--config", "vite.harness.config.ts", "--port", "5601", "--strictPort"],
+      "runtimeArgs": [
+        "vite",
+        "--config",
+        "vite.harness.config.ts",
+        "--port",
+        "5601",
+        "--strictPort"
+      ],
       "port": 5601
+    },
+    {
+      "name": "harness-alt",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "vite",
+        "--config",
+        "vite.harness.config.ts",
+        "--port",
+        "5611",
+        "--strictPort"
+      ],
+      "port": 5611
+    },
+    {
+      "name": "harness-alt2",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "vite",
+        "--config",
+        "vite.harness.config.ts",
+        "--port",
+        "5621",
+        "--strictPort"
+      ],
+      "port": 5621
+    },
+    {
+      "name": "harness-alt3",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "vite",
+        "--config",
+        "vite.harness.config.ts",
+        "--port",
+        "5631",
+        "--strictPort"
+      ],
+      "port": 5631
+    },
+    {
+      "name": "harness-alt4",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "vite",
+        "--config",
+        "vite.harness.config.ts",
+        "--port",
+        "5641",
+        "--strictPort"
+      ],
+      "port": 5641
     }
   ]
 }

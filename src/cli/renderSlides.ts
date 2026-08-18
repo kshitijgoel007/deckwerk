@@ -24,6 +24,8 @@ export interface RenderRequest {
   annotate: boolean;
   /** Fire every build, so the capture shows the finished slide. */
   built: boolean;
+  /** Also compose one tiled, numbered overview of every captured slide. */
+  contactSheet?: boolean;
   selectedElementIds: string[];
 }
 
@@ -33,7 +35,13 @@ export interface RenderedImage {
   path: string;
 }
 
-export async function renderSlidesToPng(request: RenderRequest): Promise<RenderedImage[]> {
+export interface RenderResult {
+  images: RenderedImage[];
+  /** Path of the tiled overview, when one was requested. */
+  contactSheet: string | null;
+}
+
+export async function renderSlidesToPng(request: RenderRequest): Promise<RenderResult> {
   const bundleDir = await tempDir('slide-agent-bundle-');
   await exportDeck(request.deckDir, request.deck, bundleDir);
 
@@ -45,6 +53,7 @@ export async function renderSlidesToPng(request: RenderRequest): Promise<Rendere
     canvas: request.deck.canvas,
     annotate: request.annotate,
     built: request.built,
+    contactSheet: request.contactSheet ?? false,
     selectedElementIds: request.selectedElementIds,
     // SLIDE_AGENT_DEBUG=1 keeps the capture's own diagnostics on stderr, which
     // is the only way to see inside a headless render that came out wrong.
@@ -52,8 +61,8 @@ export async function renderSlidesToPng(request: RenderRequest): Promise<Rendere
   }), 'utf8');
 
   const stdout = await runElectron(captureScript(), jobPath);
-  const parsed = JSON.parse(stdout) as { images: RenderedImage[] };
-  return parsed.images;
+  const parsed = JSON.parse(stdout) as { images: RenderedImage[]; contactSheet?: string | null };
+  return { images: parsed.images, contactSheet: parsed.contactSheet ?? null };
 }
 
 function captureScript(): string {
@@ -63,6 +72,10 @@ function captureScript(): string {
 }
 
 function electronBinary(): string {
+  // Inside Electron (the editor spawning a capture for a workflow) the
+  // `electron` module is the API object, not a path — but the running binary
+  // itself is the Electron we want.
+  if (process.versions.electron) return process.execPath;
   // Resolved lazily and through `require`: the `electron` package exports the
   // path to its executable, which is only meaningful outside Electron itself.
   return createRequire(import.meta.url)('electron') as unknown as string;

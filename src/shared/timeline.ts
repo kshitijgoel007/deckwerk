@@ -1,8 +1,10 @@
 import type { Slide, SlideElement, TimelineEntry } from './deck.js';
+import { countParagraphs } from './paragraphs.js';
 
 /**
- * Pure timeline reasoning, kept free of the DOM so it can be unit tested and
- * reused by both the player and the editor's timeline panel.
+ * Timeline reasoning, shared by the player and the editor's timeline panel.
+ * DOM-free except for by-paragraph expansion, which counts paragraphs in the
+ * target's HTML — slides without by-paragraph builds never touch the DOM.
  *
  * A slide is a sequence of *steps*. Step 0 is the state on slide entry; each
  * timeline entry with an `on: "click"` trigger starts a new step. Entries with
@@ -10,10 +12,67 @@ import type { Slide, SlideElement, TimelineEntry } from './deck.js';
  * (or to step 0 if they precede every click).
  */
 
-/** Timeline entries grouped by the step they belong to. Always length >= 1. */
-export function groupIntoSteps(slide: Slide): TimelineEntry[][] {
-  const steps: TimelineEntry[][] = [[]];
+/**
+ * One runnable unit of the timeline: a stored entry, or a single paragraph of
+ * a by-paragraph reveal. `sourceId` groups the fan-out back onto its card.
+ */
+export interface ExpandedEntry extends TimelineEntry {
+  sourceId: string;
+  /** Paragraph index for by-paragraph reveals; null for whole-element entries. */
+  part: number | null;
+  partCount: number;
+}
+
+/** An `appear` marked `byParagraph` reveals its text one paragraph at a time. */
+export function isParagraphBuild(entry: TimelineEntry, slide: Slide): boolean {
+  return (
+    entry.action.type === 'appear' &&
+    entry.action.value === 'byParagraph' &&
+    findElement(slide, entry.action.target)?.type === 'text'
+  );
+}
+
+/**
+ * The timeline with by-paragraph entries fanned out into one unit per
+ * paragraph, in document order — paragraphs cannot be reordered or split
+ * apart, so a card stays a single stored entry and this expansion is where
+ * it becomes steps. The card's trigger applies to every paragraph: `click`
+ * takes one click each; any other trigger reveals the first paragraph on the
+ * card's trigger and cascades the rest `afterPrev` with the card's delay.
+ */
+export function expandTimeline(slide: Slide): ExpandedEntry[] {
+  const out: ExpandedEntry[] = [];
   for (const entry of slide.timeline) {
+    if (!isParagraphBuild(entry, slide)) {
+      out.push({ ...entry, sourceId: entry.id, part: null, partCount: 1 });
+      continue;
+    }
+    const el = findElement(slide, entry.action.target) as Extract<SlideElement, { type: 'text' }>;
+    const count = countParagraphs(el.html);
+    for (let part = 0; part < count; part++) {
+      out.push({
+        id: part === 0 ? entry.id : `${entry.id}#p${part}`,
+        sourceId: entry.id,
+        part,
+        partCount: count,
+        trigger: part === 0
+          ? entry.trigger
+          : {
+              on: entry.trigger.on === 'click' ? 'click' : 'afterPrev',
+              ref: null,
+              delay: entry.trigger.delay,
+            },
+        action: entry.action,
+      });
+    }
+  }
+  return out;
+}
+
+/** Expanded timeline units grouped by the step they belong to. Always length >= 1. */
+export function groupIntoSteps(slide: Slide): ExpandedEntry[][] {
+  const steps: ExpandedEntry[][] = [[]];
+  for (const entry of expandTimeline(slide)) {
     if (entry.trigger.on === 'click') steps.push([entry]);
     else steps[steps.length - 1].push(entry);
   }
@@ -54,6 +113,8 @@ export interface SlideState {
   classes: Map<string, Set<string>>;
   /** Seek positions in seconds requested by `seek` actions. */
   seeks: Map<string, number>;
+  /** For by-paragraph targets: how many leading paragraphs are revealed. */
+  parts: Map<string, number>;
 }
 
 /**
@@ -77,6 +138,13 @@ export function resolveState(slide: Slide, step: number): SlideState {
     ),
     classes: new Map(),
     seeks: new Map(),
+    // Seeding every by-paragraph target at zero tells the renderers which
+    // elements need per-paragraph reconciliation even before their first step.
+    parts: new Map(
+      slide.timeline
+        .filter((entry) => isParagraphBuild(entry, slide))
+        .map((entry) => [entry.action.target, 0]),
+    ),
   };
 
   const steps = groupIntoSteps(slide);
@@ -90,12 +158,16 @@ export function resolveState(slide: Slide, step: number): SlideState {
 /** Fold a single timeline entry's action into a mutable state. */
 export function applyAction(
   state: SlideState,
-  entry: TimelineEntry,
+  entry: TimelineEntry | ExpandedEntry,
   slide: Slide,
 ): void {
   const { type, target, value } = entry.action;
   switch (type) {
     case 'appear': {
+      const part = (entry as Partial<ExpandedEntry>).part;
+      if (typeof part === 'number') {
+        state.parts.set(target, Math.max(state.parts.get(target) ?? 0, part + 1));
+      }
       state.visible.add(target);
       // Revealing a video that wants to autoplay also starts it, so the common
       // "click to reveal a demo clip" case needs one entry rather than two.
@@ -106,6 +178,7 @@ export function applyAction(
     case 'disappear':
       state.visible.delete(target);
       state.playing.delete(target);
+      if (state.parts.has(target)) state.parts.set(target, 0);
       break;
     case 'play':
       state.playing.add(target);

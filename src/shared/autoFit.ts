@@ -23,8 +23,32 @@ export function fitAutoTextElement(node: HTMLElement, minimum = 6): number | nul
   if (!body || !content || body.clientWidth <= 0 || body.clientHeight <= 0) return null;
 
   content.style.removeProperty('font-size');
+  // A previous condense pass leaves a horizontal squeeze behind; every fit
+  // starts from the unscaled layout so toggling modes never compounds.
+  content.style.removeProperty('transform');
+  content.style.removeProperty('transform-origin');
+  delete content.dataset.fittedScaleX;
   const ceiling = Number.parseFloat(getComputedStyle(node).fontSize);
   if (!Number.isFinite(ceiling) || ceiling <= 0) return null;
+
+  // Condense mode (no-wrap boxes only): keep the authored size and squeeze
+  // the type horizontally instead of shrinking it. Width is the only axis a
+  // squeeze can fix; vertical overflow stays for the measure pass to report.
+  if (node.dataset.fitMode === 'condense') {
+    const room = Math.max(0, body.clientWidth - Math.max(1, body.clientWidth * 0.01));
+    const width = content.scrollWidth;
+    if (width > room && width > 0) {
+      const scale = room / width;
+      const align = getComputedStyle(body).textAlign;
+      content.style.transform = `scaleX(${scale})`;
+      content.style.transformOrigin =
+        align === 'right' || align === 'end' ? '100% 50%'
+          : align === 'center' ? '50% 50%' : '0 50%';
+      content.dataset.fittedScaleX = String(Math.round(scale * 1000) / 1000);
+    }
+    content.dataset.fittedFontSize = String(ceiling);
+    return ceiling;
+  }
 
   // Fitting to the exact pixel edge is fragile: line-wrap decisions differ by
   // fractions of a pixel between rendering contexts (stage scale, device pixel

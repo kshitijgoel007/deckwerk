@@ -1,7 +1,8 @@
-import type { Slide, SlideElement } from '@shared/deck.js';
+import type { Slide } from '@shared/deck.js';
 import { makeId } from '@shared/geometry.js';
 import { explicitMagicMovePairs, suggestMagicMovePairs } from '@shared/magicMove.js';
 import { renderSlide } from '../player/render.js';
+import { describeElement as describe, renderElementLabel } from './elementLabel.js';
 import type { EditorStore } from './store.js';
 
 const PREVIEW_WIDTH_FALLBACK = 560;
@@ -46,6 +47,11 @@ export class MagicMovePanel {
 
   render(): void {
     const { deck, slideIndex } = this.store.get();
+    const selectedSlides = this.store.selectedSlides();
+    if (selectedSlides.length > 3) {
+      this.renderBulk(selectedSlides);
+      return;
+    }
     const current = deck.slides[slideIndex];
     const next = deck.slides[slideIndex + 1];
     for (const observer of this.previewObservers) observer.disconnect();
@@ -80,6 +86,31 @@ export class MagicMovePanel {
     suffix.textContent = 'ms';
     duration.append(durationLabel, durationInput, suffix);
     this.host.appendChild(duration);
+
+    const easing = document.createElement('label');
+    easing.className = 'field magic-easing';
+    const easingLabel = document.createElement('span');
+    easingLabel.textContent = 'Motion curve';
+    const easingSelect = document.createElement('select');
+    for (const [value, text] of [
+      ['ease-in-out', 'Smooth (ease in-out)'],
+      ['ease-out', 'Snappy (ease out)'],
+      ['linear', 'Linear'],
+    ] as const) {
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = text;
+      easingSelect.appendChild(option);
+    }
+    easingSelect.value = deck.magicMoveEasing;
+    easingSelect.addEventListener('change', () => {
+      const value = easingSelect.value as typeof deck.magicMoveEasing;
+      this.store.commit((nextDeck) => {
+        nextDeck.magicMoveEasing = value;
+      }, { label: 'Change Magic Move easing' });
+    });
+    easing.append(easingLabel, easingSelect);
+    this.host.appendChild(easing);
 
     if (!current || !next) {
       const hint = document.createElement('p');
@@ -130,6 +161,61 @@ export class MagicMovePanel {
     this.host.append(previews, summary, edit);
 
     if (this.modal?.isConnected) this.renderModal();
+  }
+
+  /**
+   * With a run of slides selected, per-pair pairing UI is useless — offer the
+   * one action that makes sense across the whole run instead.
+   */
+  private renderBulk(slides: Slide[]): void {
+    for (const observer of this.previewObservers) observer.disconnect();
+    this.previewObservers = [];
+    this.host.replaceChildren();
+
+    const header = document.createElement('div');
+    header.className = 'panel-header';
+    const title = document.createElement('h3');
+    title.textContent = 'Magic Move';
+    header.appendChild(title);
+
+    const action = document.createElement('button');
+    action.className = 'primary panel-action magic-bulk-pair';
+    action.textContent = 'Auto-Pair and Enable Magic Move';
+    action.addEventListener('click', () => this.autoPairAcross(slides));
+
+    const hint = document.createElement('p');
+    hint.className = 'insp-hint';
+    hint.textContent = `${slides.length} slides selected.`;
+
+    this.host.append(header, hint, action);
+    if (this.message) {
+      const status = document.createElement('p');
+      status.className = 'insp-hint magic-message';
+      status.textContent = this.message;
+      this.host.appendChild(status);
+    }
+  }
+
+  /** Auto-pair and enable Magic Move for every consecutive pair in the run. */
+  private autoPairAcross(slides: Slide[]): void {
+    const ids = slides.map((slide) => slide.id);
+    let paired = 0;
+    let transitions = 0;
+    this.store.commit((deck) => {
+      const byId = new Map(deck.slides.map((slide) => [slide.id, slide] as const));
+      for (let i = 0; i + 1 < ids.length; i += 1) {
+        const left = byId.get(ids[i]);
+        const right = byId.get(ids[i + 1]);
+        if (!left || !right) continue;
+        for (const [source, target] of suggestMagicMovePairs(left.elements, right.elements)) {
+          if (pairMagicMoveObjects(left, right, source.id, target.id)) paired += 1;
+        }
+        right.magicMoveFromPrevious = true;
+        transitions += 1;
+      }
+    }, { label: 'Auto-pair and enable Magic Move' });
+    this.message = `Enabled Magic Move across ${transitions} transition${transitions === 1 ? '' : 's'}; paired ${paired} object${paired === 1 ? '' : 's'}.`;
+    this.render();
   }
 
   private openModal(): void {
@@ -273,7 +359,8 @@ export class MagicMovePanel {
       badge.className = 'magic-list-badge';
       badge.textContent = pair ? String(pair) : '';
       const label = document.createElement('span');
-      label.textContent = describe(element);
+      label.className = 'magic-list-label';
+      renderElementLabel(label, element);
       pick.append(badge, label);
       pick.addEventListener('click', () => this.handleObjectClick(side, element.id));
       row.appendChild(pick);
@@ -452,13 +539,3 @@ export function pairMagicMoveObjects(
   return true;
 }
 
-function describe(element: SlideElement): string {
-  if (element.type === 'text') {
-    const text = element.html.replace(/<[^>]+>/g, '').trim();
-    return text ? `“${text.slice(0, 22)}”` : 'Empty text';
-  }
-  if (element.type === 'image' || element.type === 'video') {
-    return `${element.type}: ${element.src.split('/').pop()}`;
-  }
-  return `${element.type} ${element.id.slice(-5)}`;
-}

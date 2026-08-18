@@ -21,7 +21,10 @@ import type {
   PresentationState,
   TrimRequest,
   TrimResult,
+  WorkflowStartRequest,
+  WorkflowStartResult,
 } from '@shared/ipc.js';
+import { startWorkflow } from './workflow.js';
 import { AgentRuntime } from './agentRuntime.js';
 import { installAssetProtocol, registerAssetScheme, setDeckDir } from './assetProtocol.js';
 import {
@@ -476,6 +479,14 @@ function registerHandlers(): void {
     await exportDeck(s.dir, s.deck, target.filePath);
     return target.filePath;
   });
+
+  ipcMain.handle(
+    IPC.workflowStart,
+    async (_e, request: WorkflowStartRequest): Promise<WorkflowStartResult> => {
+      const s = requireSession();
+      return startWorkflow(s.dir, s.deck, request);
+    },
+  );
 
   ipcMain.handle(IPC.trimRun, async (event, req: TrimRequest): Promise<TrimResult> => {
     const s = requireSession();

@@ -204,6 +204,43 @@ describe('deck objects become authored HTML', () => {
     expect(html).toContain('text-align:center');
   });
 
+  it('mirrors inheritable inline text styles onto the content node', () => {
+    // A theme rule targeting `.text-content` directly would otherwise beat
+    // the wrapper's inline style; the mirror keeps the element's colour
+    // authoritative in the compiled document too.
+    const deck = emptyDeck('Mirror');
+    deck.slides[0].elements = [{
+      id: 'title', type: 'text', x: 10, y: 20, w: 300, h: 100, rot: 0, z: 1,
+      opacity: 1, class: ['role-title'],
+      style: { color: '#ffffff', 'font-size': '112px' },
+      html: 'Hi', align: 'left', valign: 'middle',
+    }];
+    const html = slideToHtml(parseDeck(deck).slides[0], { w: 1920, h: 1080 });
+
+    expect(html).toMatch(/class="text-content"[^>]*style="[^"]*color:#ffffff/);
+    // font-size stays off the content node — auto-fit owns it there.
+    expect(html).not.toMatch(/class="text-content"[^>]*style="[^"]*font-size/);
+  });
+
+  it('round-trips paragraph spacing through the data attribute', () => {
+    const deck = emptyDeck('Spacing');
+    deck.slides[0].elements = [{
+      id: 'list', type: 'text', x: 10, y: 20, w: 300, h: 100, rot: 0, z: 1,
+      opacity: 1, class: [], style: {}, html: '<ul><li>a</li><li>b</li></ul>',
+      align: 'left', valign: 'top', paragraphSpacing: 24,
+    }];
+    const html = slideToHtml(parseDeck(deck).slides[0], { w: 1920, h: 1080 });
+    expect(html).toContain('data-paragraph-spacing="24"');
+    expect(html).toContain('--paragraph-spacing:24px');
+
+    const parsed = elementFromNode(node({
+      tag: 'ul',
+      html: '<li>a</li><li>b</li>',
+      dataset: { paragraphSpacing: '24' },
+    }), 'list', 1);
+    expect(parsed).toMatchObject({ type: 'text', paragraphSpacing: 24 });
+  });
+
   it('carries the slide identity a bake-back needs to find its target', () => {
     const html = slideToHtml(emptyDeck('Deck').slides[0], { w: 1920, h: 1080 });
     expect(html).toContain('data-slide-id="slide-1"');

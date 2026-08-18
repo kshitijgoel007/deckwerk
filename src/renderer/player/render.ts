@@ -1,3 +1,4 @@
+import { MIRRORED_TEXT_STYLE_PROPERTIES } from '@shared/deck.js';
 import type { Deck, Slide, SlideElement } from '@shared/deck.js';
 import { fitScale } from '@shared/geometry.js';
 import { fitAutoTextElement } from '@shared/autoFit.js';
@@ -77,7 +78,17 @@ export function renderElement(
   }
 
   node.appendChild(body);
-  if (el.type === 'text' && el.autoFit) {
+  if (el.type === 'text' && el.paragraphSpacing !== undefined) {
+    node.dataset.paragraphSpacing = String(el.paragraphSpacing);
+    s.setProperty('--paragraph-spacing', `${el.paragraphSpacing}px`);
+  }
+  if (el.type === 'text' && el.noWrap) {
+    node.dataset.noWrap = 'true';
+    if (el.noWrapMode === 'condense') node.dataset.fitMode = 'condense';
+  }
+  // noWrap implies the fit: with soft wrapping off, shrinking is the only way
+  // an overlong line stays inside the box.
+  if (el.type === 'text' && (el.autoFit || el.noWrap)) {
     node.dataset.autoFit = 'true';
     scheduleAutoFit(node);
   }
@@ -180,6 +191,13 @@ function renderBody(el: SlideElement, opts: RenderOptions): HTMLElement | SVGEle
       const content = document.createElement('div');
       content.className = 'text-content';
       content.style.width = '100%';
+      // Element inline styles sit on the wrapper and reach the text only by
+      // inheritance; a theme rule targeting .text-content directly would beat
+      // them. Mirror them here so the element's own style always wins.
+      for (const property of MIRRORED_TEXT_STYLE_PROPERTIES) {
+        const value = el.style[property];
+        if (value !== undefined) content.style.setProperty(property, value);
+      }
       // KaTeX auto-render does not exclude escaped delimiter characters before
       // pairing `$...$`. Protect literal dollars, render, then restore them.
       const escapedDollar = '\uE000';

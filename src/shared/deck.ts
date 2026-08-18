@@ -66,6 +66,24 @@ const TextElement = BaseElement.extend({
   html: z.string().default(''),
   /** Shrink text as needed to keep it inside its box; never enlarge past its authored size. */
   autoFit: z.boolean().optional(),
+  /**
+   * Disable automatic line wrapping: lines break only where the author wrote
+   * a break. Overlong lines are compressed by the auto-fit shrink (which this
+   * flag implies) rather than wrapped.
+   */
+  noWrap: z.boolean().optional(),
+  /**
+   * How a no-wrap box compresses an overlong line. 'shrink' (the default)
+   * reduces the font size uniformly, preserving the glyphs' aspect ratio;
+   * 'condense' keeps the font size and squeezes the type horizontally.
+   * Only meaningful with noWrap.
+   */
+  noWrapMode: z.enum(['shrink', 'condense']).optional(),
+  /**
+   * Vertical gap in px between paragraphs and between bullet list items.
+   * Unset keeps the theme's default spacing.
+   */
+  paragraphSpacing: z.number().min(0).optional(),
   align: z.enum(['left', 'center', 'right', 'justify']).default('left'),
   valign: z.enum(['top', 'middle', 'bottom']).default('top'),
 });
@@ -254,6 +272,8 @@ export const DeckSchema = z.object({
   themeStyle: ThemeStyleSchema.nullable().default(null),
   /** Deck-wide duration for every explicitly paired Magic Move, in milliseconds. */
   magicMoveDuration: z.number().min(100).max(5000).default(1000),
+  /** Deck-wide motion curve for Magic Move transitions. */
+  magicMoveEasing: z.enum(['ease-in-out', 'ease-out', 'linear']).default('ease-in-out'),
   slides: z.array(SlideSchema).default([]),
 });
 
@@ -287,6 +307,30 @@ export function parseDeck(raw: unknown): Deck {
     .join('\n');
   throw new Error(`deck.json is not valid:\n${details}`);
 }
+
+/**
+ * Inheritable text properties that must be mirrored from a text element's
+ * inline `style` onto its `.text-content` node. The element's inline style
+ * lives on the outer wrapper and reaches the text only by inheritance, so a
+ * theme selector that targets the content node directly (e.g.
+ * `.role-title .text-content { color: … }`) silently overrides it — the
+ * imported colour disappears and the inspector's colour picker goes dead.
+ * Mirroring the value as an inline style on the content node restores the
+ * invariant that an element's own style always wins over theme CSS.
+ *
+ * `font-size` is deliberately absent: auto-fit owns that property on the
+ * content node and clears it when disabled.
+ */
+export const MIRRORED_TEXT_STYLE_PROPERTIES = [
+  'color',
+  'font-family',
+  'font-weight',
+  'font-style',
+  'letter-spacing',
+  'line-height',
+  'text-transform',
+  'text-decoration',
+] as const;
 
 export function emptyDeck(title = 'Untitled'): Deck {
   return parseDeck({

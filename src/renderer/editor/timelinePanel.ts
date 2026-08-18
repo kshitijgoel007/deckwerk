@@ -1,6 +1,8 @@
-import type { SlideElement, TimelineEntry } from '@shared/deck.js';
+import type { Slide, TimelineEntry } from '@shared/deck.js';
 import { makeId } from '@shared/geometry.js';
-import { groupIntoSteps } from '@shared/timeline.js';
+import { expandTimeline, groupIntoSteps, isParagraphBuild } from '@shared/timeline.js';
+import { countParagraphs, paragraphTexts } from '@shared/paragraphs.js';
+import { describeElement, renderElementLabel } from './elementLabel.js';
 import type { EditorStore } from './store.js';
 
 /**
@@ -52,8 +54,8 @@ export class TimelinePanel {
       row.className = 'build-element-row';
       row.dataset.elementId = element.id;
       row.classList.toggle('selected', selection.has(element.id));
-      row.textContent = describeElement(element);
-      row.title = row.textContent;
+      renderElementLabel(row, element);
+      row.title = describeElement(element);
       row.addEventListener('click', () => this.store.select([element.id]));
       list.appendChild(row);
     }
@@ -69,6 +71,20 @@ export class TimelinePanel {
     add.addEventListener('click', () => this.addAnimationForSelection());
     this.host.appendChild(add);
 
+    // Text with several paragraphs can build in line by line: one stored
+    // entry that fans out into a step per paragraph, in document order.
+    const selected = slide.elements.filter((el) => selection.has(el.id));
+    const paraTarget =
+      selected.length === 1 && selected[0].type === 'text' ? selected[0] : null;
+    if (paraTarget && countParagraphs(paraTarget.html) > 1) {
+      const addPara = document.createElement('button');
+      addPara.className = 'panel-action';
+      addPara.textContent = 'Add animation by paragraph';
+      addPara.title = 'Reveal this text one paragraph per click';
+      addPara.addEventListener('click', () => this.addParagraphAnimation(paraTarget.id));
+      this.host.appendChild(addPara);
+    }
+
     if (slide.timeline.length === 0) {
       const hint = document.createElement('p');
       hint.className = 'insp-hint';
@@ -79,11 +95,20 @@ export class TimelinePanel {
     }
 
     // The same numbers appear as badges on the canvas, so a card can be
-    // matched to the object it animates at a glance.
-    const orderOf = new Map(slide.timeline.map((entry, i) => [entry.id, i + 1]));
+    // matched to the object it animates at a glance. A by-paragraph card
+    // spans several numbers — one per paragraph — collected under its id.
+    const numbersBySource = new Map<string, number[]>();
+    expandTimeline(slide).forEach((unit, i) => {
+      const list = numbersBySource.get(unit.sourceId) ?? [];
+      list.push(i + 1);
+      numbersBySource.set(unit.sourceId, list);
+    });
 
+    // Steps are expanded units, but cards are stored entries: a by-paragraph
+    // entry renders once, at the step where its first paragraph fires.
+    const rendered = new Set<string>();
     const steps = groupIntoSteps(slide);
-    steps.forEach((entries, stepIndex) => {
+    steps.forEach((units, stepIndex) => {
       const block = document.createElement('div');
       block.className = 'step-block';
 
@@ -92,23 +117,29 @@ export class TimelinePanel {
         label.className = 'step-label';
         label.textContent = 'On slide enter';
         block.appendChild(label);
-        if (entries.length === 0) {
+        if (units.length === 0) {
           const none = document.createElement('div');
           none.className = 'step-empty';
           none.textContent = 'everything visible';
           block.appendChild(none);
         }
       }
-      if (stepIndex > 0 && entries.length === 0) return;
 
-      for (const entry of entries) {
-        block.appendChild(this.entryRow(entry, slide.elements, orderOf.get(entry.id) ?? 0));
+      for (const unit of units) {
+        if (rendered.has(unit.sourceId)) continue;
+        rendered.add(unit.sourceId);
+        const entry = slide.timeline.find((e) => e.id === unit.sourceId);
+        if (!entry) continue;
+        block.appendChild(this.entryRow(entry, slide, numbersBySource.get(entry.id) ?? []));
       }
+      if (stepIndex > 0 && block.childElementCount === 0) return;
       this.host.appendChild(block);
     });
   }
 
-  private entryRow(entry: TimelineEntry, elements: SlideElement[], num: number): HTMLElement {
+  private entryRow(entry: TimelineEntry, slide: Slide, numbers: number[]): HTMLElement {
+    const elements = slide.elements;
+    const byParagraph = isParagraphBuild(entry, slide);
     const row = document.createElement('div');
     row.className = 'timeline-row';
     row.dataset.entryId = entry.id;
@@ -149,6 +180,8 @@ export class TimelinePanel {
       }, { label: mode === 'fuse' ? 'Group build animations' : 'Reorder build animations' });
     });
 
+    const targetEl = elements.find((el) => el.id === entry.action.target);
+
     const action = document.createElement('select');
     action.className = 'build-action';
     for (const t of ['appear', 'disappear', 'play', 'pause'] as const) {
@@ -157,25 +190,40 @@ export class TimelinePanel {
       opt.textContent = t;
       action.appendChild(opt);
     }
-    action.value = entry.action.type;
+    // Text can build in a paragraph at a time; switching back and forth keeps
+    // the same card, so changing your mind never means recreating the entry.
+    if (targetEl?.type === 'text') {
+      const opt = document.createElement('option');
+      opt.value = 'appear:paragraph';
+      opt.textContent = 'appear by paragraph';
+      action.insertBefore(opt, action.children[1]);
+    }
+    action.value = byParagraph ? 'appear:paragraph' : entry.action.type;
     action.addEventListener('change', () =>
       this.mutate(entry.id, (e) => {
-        e.action.type = action.value as 'appear';
+        if (action.value === 'appear:paragraph') {
+          e.action.type = 'appear';
+          e.action.value = 'byParagraph';
+        } else {
+          e.action.type = action.value as 'appear';
+          if (e.action.value === 'byParagraph') e.action.value = null;
+        }
       }),
     );
 
     // Each card is bound to one element — matching the numbered badge on the
-    // canvas — rather than offering a dropdown to retarget it.
+    // canvas — rather than offering a dropdown to retarget it. A by-paragraph
+    // card carries its numbers on the paragraph rows below instead.
     const numChip = document.createElement('span');
     numChip.className = 'build-num';
-    numChip.textContent = String(num);
+    numChip.textContent = String(numbers[0] ?? 0);
     numChip.title = 'Matches the numbered badge on the slide';
 
-    const targetEl = elements.find((el) => el.id === entry.action.target);
     const name = document.createElement('span');
     name.className = 'build-target-name';
-    name.textContent = targetEl ? describeElement(targetEl) : '(missing element)';
-    name.title = name.textContent;
+    if (targetEl) renderElementLabel(name, targetEl);
+    else name.textContent = '(missing element)';
+    name.title = targetEl ? describeElement(targetEl) : '(missing element)';
 
     const trigger = document.createElement('select');
     trigger.className = 'build-trigger';
@@ -224,12 +272,46 @@ export class TimelinePanel {
 
     const head = document.createElement('div');
     head.className = 'build-card-head';
-    head.append(grip, numChip, trigger, remove);
+    if (byParagraph) head.append(grip, trigger, remove);
+    else head.append(grip, numChip, trigger, remove);
     const body = document.createElement('div');
     body.className = 'build-card-body';
     body.append(action, name, delay);
     row.append(head, body);
+
+    // The paragraphs build in document order and cannot be reordered, so they
+    // are a read-only sub-list: each row's number matches its canvas badge.
+    if (byParagraph && targetEl?.type === 'text') {
+      const list = document.createElement('div');
+      list.className = 'build-paragraph-list';
+      paragraphTexts(targetEl.html).forEach((text, i) => {
+        const para = document.createElement('div');
+        para.className = 'build-paragraph-row';
+        const chip = document.createElement('span');
+        chip.className = 'build-num';
+        chip.textContent = String(numbers[i] ?? '');
+        chip.title = 'Matches the numbered badge on the slide';
+        const label = document.createElement('span');
+        label.className = 'build-paragraph-text';
+        label.textContent = text || '(empty)';
+        label.title = text;
+        para.append(chip, label);
+        list.appendChild(para);
+      });
+      row.appendChild(list);
+    }
     return row;
+  }
+
+  /** One stored entry that reveals the text a paragraph per click. */
+  private addParagraphAnimation(target: string): void {
+    this.store.commit((deck) => {
+      deck.slides[this.store.get().slideIndex].timeline.push({
+        id: makeId('t'),
+        trigger: { on: 'click', ref: null, delay: 0 },
+        action: { type: 'appear', target, value: 'byParagraph' },
+      });
+    }, { label: 'Add animation by paragraph' });
   }
 
   private mutate(entryId: string, fn: (entry: TimelineEntry) => void): void {
@@ -292,30 +374,3 @@ export function reorderBuildEntry(
   }
 }
 
-const SHAPE_NAMES: Record<string, string> = {
-  rect: 'rectangle',
-  ellipse: 'ellipse',
-  line: 'line',
-  arrow: 'arrow',
-  path: 'shape',
-};
-
-function describeElement(el: SlideElement): string {
-  switch (el.type) {
-    case 'text':
-      return stripTags(el.html).slice(0, 32) || 'text (empty)';
-    case 'image':
-    case 'video':
-      return `${el.type}: ${el.src.split('/').pop()}`;
-    case 'shape':
-      return SHAPE_NAMES[el.shape] ?? el.shape;
-    default:
-      return `${el.type} ${el.id.slice(-4)}`;
-  }
-}
-
-function stripTags(html: string): string {
-  const div = document.createElement('div');
-  div.innerHTML = html;
-  return div.textContent ?? '';
-}

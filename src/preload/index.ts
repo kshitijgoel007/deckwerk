@@ -16,6 +16,8 @@ import type {
   TrimProgress,
   TrimRequest,
   TrimResult,
+  WorkflowStartRequest,
+  WorkflowStartResult,
 } from '@shared/ipc.js';
 
 /**
@@ -59,6 +61,8 @@ const api = {
     ipcRenderer.invoke(IPC.keynoteImport),
   exportBundle: (): Promise<string | null> => ipcRenderer.invoke(IPC.exportBundle),
   exportHtml: (slideIds: string[]): Promise<string> => ipcRenderer.invoke(IPC.htmlExport, slideIds),
+  startWorkflow: (request: WorkflowStartRequest): Promise<WorkflowStartResult> =>
+    ipcRenderer.invoke(IPC.workflowStart, request),
   publishAgentContext: (context: AgentContextDraft): Promise<void> =>
     ipcRenderer.invoke(IPC.agentContextPublish, context),
   respondAgentRequest: (response: AgentResponse): void =>

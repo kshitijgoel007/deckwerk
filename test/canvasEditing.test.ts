@@ -260,6 +260,69 @@ describe('inline text editing', () => {
     styles.remove();
   });
 
+  it('lets an element inline colour beat a theme rule that targets .text-content', () => {
+    // Imported/agent-authored themes may style the content node directly
+    // (`.role-title .text-content { color: … }`), which would override the
+    // wrapper's inline colour by specificity — the imported colour vanished
+    // and the picker went dead. Inline styles are mirrored onto .text-content
+    // so the element always wins.
+    installDomShims();
+    const styles = document.createElement('style');
+    styles.textContent = '.role-title .text-content { color: #111111; }';
+    document.head.appendChild(styles);
+    const deck = emptyDeck('Mirrored colour');
+    deck.slides[0].elements = [{
+      id: 'title-1', type: 'text', x: 0, y: 0, w: 800, h: 100, rot: 0, z: 1,
+      opacity: 1, class: ['kn-text', 'role-title'],
+      style: { 'font-size': '80px', color: '#ffffff' },
+      html: 'Video Models', align: 'left', valign: 'middle',
+    }];
+    const host = document.createElement('div');
+    document.body.replaceChildren(host);
+    const store = new EditorStore(deck, '/tmp/mirrored-colour');
+    new EditorCanvas(host, store);
+
+    const content = () => host.querySelector<HTMLElement>(
+      '[data-element-id="title-1"] .text-content',
+    )!;
+    expect(getComputedStyle(content()).color).toBe('rgb(255, 255, 255)');
+
+    // The inspector's colour picker path: update style.color in place.
+    store.select(['title-1']);
+    store.updateSelected((element) => {
+      if (element.type === 'text') element.style = { ...element.style, color: '#c026d3' };
+    });
+    expect(getComputedStyle(content()).color).toBe('rgb(192, 38, 211)');
+
+    // Clearing the colour hands control back to the theme rule.
+    store.updateSelected((element) => {
+      if (element.type !== 'text') return;
+      const { color: _color, ...rest } = element.style;
+      element.style = rest;
+    });
+    expect(getComputedStyle(content()).color).toBe('rgb(17, 17, 17)');
+    styles.remove();
+  });
+
+  it('opens imported `<br>` text as blocks, and flattens what return nests', () => {
+    const { store, canvas, host } = setup();
+    store.commit((deck) => {
+      (deck.slides[0].elements[0] as { html: string }).html = 'one<br>two<br>three';
+    });
+    canvas.beginTextEdit('text-1');
+    // Blocks in: return then splits a block instead of stranding a `<br>`.
+    expect(bodyOf(host, 'text-1').innerHTML).toBe('<p>one</p><p>two</p><p>three</p>');
+
+    // Blocks out: what Chrome leaves behind after two returns is one paragraph
+    // with the rest of the text nested inside it, which used to swallow every
+    // paragraph but the first.
+    bodyOf(host, 'text-1').innerHTML = '<p>one</p><div><p>two</p><div><p>three</p></div></div>';
+    bodyOf(host, 'text-1').dispatchEvent(new FocusEvent('blur'));
+    expect((store.slide!.elements[0] as { html: string }).html).toBe(
+      '<p>one</p><p>two</p><p>three</p>',
+    );
+  });
+
   it('inserts multiple lines of text and can delete all of that text again', () => {
     const { store, canvas, host } = setup();
     canvas.beginTextEdit('text-1');
@@ -1009,6 +1072,29 @@ describe('object creation and manipulation', () => {
     expect(getComputedStyle(svg).display).toBe('block');
   });
 
+  it('leaves a rotated arrow selection box unrotated so canvas-space handles land on the arrow', () => {
+    const { store, host } = setup();
+    stageAtOne(host);
+    const arrow = insertLine(store, 'arrow');
+    store.commit((deck) => {
+      const el = deck.slides[0].elements.find((e) => e.id === arrow.id)!;
+      el.rot = 90;
+    }, { label: 'rotate arrow' });
+    store.select([arrow.id]);
+    const rotated = store.slide!.elements.find((el) => el.id === arrow.id)!;
+    // The endpoints already include the rotation, so the selection box must
+    // not rotate again — otherwise every handle lands sideways off the arrow.
+    const box = host.querySelector<HTMLElement>('.sel-box.line-sel')!;
+    expect(box.style.transform).toBe('');
+    const { start, end } = lineEndpoints(rotated);
+    const drawnStart = host.querySelector<HTMLElement>('.handle-endpoint[data-endpoint="start"]')!;
+    const drawnEnd = host.querySelector<HTMLElement>('.handle-endpoint[data-endpoint="end"]')!;
+    expect(Number.parseFloat(drawnStart.style.left) + rotated.x).toBeCloseTo(start.x, 1);
+    expect(Number.parseFloat(drawnStart.style.top) + rotated.y).toBeCloseTo(start.y, 1);
+    expect(Number.parseFloat(drawnEnd.style.left) + rotated.x).toBeCloseTo(end.x, 1);
+    expect(Number.parseFloat(drawnEnd.style.top) + rotated.y).toBeCloseTo(end.y, 1);
+  });
+
   it('deletes a selected text box and clears its selection', () => {
     const { store, host } = setup();
     store.commit((deck) => {
@@ -1081,6 +1167,28 @@ describe('inline styles reach the DOM', () => {
     });
     const node = host.querySelector<HTMLElement>('[data-element-id="text-1"]')!;
     expect(node.style.getPropertyValue('color')).toBe('');
+  });
+
+  it('applies paragraph spacing on the fast path, even mid text edit', () => {
+    const { store, canvas, host } = setup();
+    canvas.beginTextEdit('text-1');
+
+    // Spacing changes are structure-preserving, so they must land on the
+    // existing node — and without ending the editing session.
+    store.select(['text-1']);
+    store.updateSelected((el) => {
+      if (el.type === 'text') el.paragraphSpacing = 24;
+    });
+    const node = host.querySelector<HTMLElement>('[data-element-id="text-1"]')!;
+    expect(node.dataset.paragraphSpacing).toBe('24');
+    expect(node.style.getPropertyValue('--paragraph-spacing')).toBe('24px');
+    expect(canvas.isEditing()).toBe(true);
+
+    store.updateSelected((el) => {
+      if (el.type === 'text') delete el.paragraphSpacing;
+    });
+    expect(node.dataset.paragraphSpacing).toBeUndefined();
+    expect(node.style.getPropertyValue('--paragraph-spacing')).toBe('');
   });
 });
 

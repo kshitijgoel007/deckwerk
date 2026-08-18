@@ -49,7 +49,12 @@ app.whenReady().then(async () => {
       writeFileSync(file, image.toPNG());
       written.push({ slideId: slide.id, number: slide.number, path: file });
     }
-    process.stdout.write(JSON.stringify({ images: written }));
+    let contactSheet = null;
+    if (job.contactSheet && written.length > 0) {
+      contactSheet = join(outDir, 'contact-sheet.png');
+      writeFileSync(contactSheet, await captureContactSheet(win, written, canvas));
+    }
+    process.stdout.write(JSON.stringify({ images: written, contactSheet }));
     app.exit(0);
   } catch (error) {
     process.stderr.write(String((error && error.stack) || error));
@@ -73,6 +78,50 @@ const REVEAL_BUILDS = `(() => {
 
 const NEXT_PAINT =
   'new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(() => done(true))))';
+
+/**
+ * One tiled overview of every captured slide, numbered.
+ *
+ * A deck survey costs one look instead of N: this is the artifact an agent
+ * reads before deciding which slides need work at full size. Rendered as an
+ * ordinary page in the same offscreen window and captured like a slide.
+ */
+async function captureContactSheet(win, written, canvas) {
+  const columns = Math.min(4, Math.max(2, Math.ceil(Math.sqrt(written.length))));
+  const thumbWidth = 460;
+  const thumbHeight = Math.round((thumbWidth * canvas.h) / canvas.w);
+  const gap = 10;
+  const label = 24;
+  const rows = Math.ceil(written.length / columns);
+  const pageWidth = columns * thumbWidth + (columns + 1) * gap;
+  const pageHeight = rows * (thumbHeight + label) + (rows + 1) * gap;
+
+  const cells = written.map((image) => `
+    <figure style="margin:0; width:${thumbWidth}px;">
+      <img src="${image.slideId}.png" width="${thumbWidth}" height="${thumbHeight}"
+        style="display:block; outline:1px solid #d0d0d6;">
+      <figcaption style="font:600 14px/1.5 -apple-system, sans-serif; color:#444;">
+        ${image.number} &middot; ${image.slideId}
+      </figcaption>
+    </figure>`).join('');
+  const page = `<!doctype html><body style="margin:0; background:#f4f4f6;">
+    <div style="display:flex; flex-wrap:wrap; gap:${gap}px; padding:${gap}px;">
+      ${cells}
+    </div></body>`;
+
+  // Written next to the PNGs and loaded as a file: a data: URL page may not
+  // read file:// images, but a file:// page loads its siblings by relative
+  // path without any security relaxation.
+  const sheetPage = join(outDir, 'contact-sheet.html');
+  writeFileSync(sheetPage, page);
+  win.setContentSize(pageWidth, pageHeight);
+  await win.loadFile(sheetPage);
+  // Every thumb must have decoded, or the sheet ships grey rectangles.
+  await win.webContents.executeJavaScript(
+    'Promise.all([...document.images].map((i) => i.decode().catch(() => null))).then(() => true)');
+  await win.webContents.executeJavaScript(NEXT_PAINT);
+  return (await win.webContents.capturePage()).toPNG();
+}
 
 /** Outline every object, label it with its element id, and mark the selection. */
 function annotationScript(selectedElementIds) {

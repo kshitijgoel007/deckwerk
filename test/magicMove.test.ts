@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { emptyDeck, type SlideElement } from '../src/shared/deck.js';
 import {
+  essentialMagicMovePairs,
   explicitMagicMovePairs,
   suggestMagicMovePairs,
   unchangedMagicMovePairs,
@@ -50,6 +51,26 @@ describe('Magic Move matching', () => {
     expect(css.slice(objectHover, objectHover + 180)).toContain('rgb(245 158 11 / 3%)');
   });
 
+  it('essentially pairs objects that differ only by sub-epsilon drift', () => {
+    const arrow = (id: string, x: number, y: number, w: number, rot: number): SlideElement => ({
+      id, type: 'shape', shape: 'arrow', x, y, w, h: 1, rot, z: 1, opacity: 1,
+      class: [], style: {}, fill: null, stroke: '#000000', strokeWidth: 6,
+      radius: 0, path: null, pathSize: null, arrowStart: false, arrowEnd: true,
+    });
+    // The drifted twin pairs; the relocated and restyled arrows decisively do not.
+    const previous = [
+      arrow('drifted-src', 367.5, 643.62, 167.35, 90.1),
+      arrow('moved-src', 122.51, 566.6, 329.57, 90.07),
+    ];
+    const next = [
+      arrow('drifted-dst', 367.12, 648.43, 167.14, 90.43),
+      arrow('moved-dst', 611.75, 564.07, 329.8, 90.07),
+      { ...arrow('restyled-dst', 367.5, 643.62, 167.35, 90.1), stroke: '#ff0000' },
+    ];
+    expect(essentialMagicMovePairs(previous, next).map((pair) => pair.map((el) => el.id)))
+      .toEqual([['drifted-src', 'drifted-dst']]);
+  });
+
   it('pairs nothing by default, even when visible content is identical', () => {
     const deck = twoSlideDeck();
     expect(matchMagicMoveElements(deck.slides[0].elements, deck.slides[1].elements)).toEqual([]);
@@ -63,9 +84,15 @@ describe('Magic Move matching', () => {
       .toEqual([[deck.slides[0].elements[0], deck.slides[1].elements[0]]]);
   });
 
+  it('skips objects that are visually identical and therefore never animate', () => {
+    const source = [text('a', 'The same title')];
+    const target = [text('c', 'The same title')];
+    expect(suggestMagicMovePairs(source, target)).toEqual([]);
+  });
+
   it('suggests strong matches without pairing unrelated same-type objects', () => {
     const source = [text('a', 'The same title'), text('b', 'Completely unrelated')];
-    const target = [text('c', 'The same title'), text('d', 'Nothing in common')];
+    const target = [text('c', 'The same title', 600), text('d', 'Nothing in common', 600)];
     expect(suggestMagicMovePairs(source, target).map(([a, b]) => [a.id, b.id]))
       .toEqual([['a', 'c']]);
   });
@@ -192,7 +219,7 @@ describe('Magic Move matching', () => {
     document.querySelector<HTMLButtonElement>('.magic-modal-close')!.click();
   });
 
-  it('runs paired movement and discrete unpaired switches on one timeline', async () => {
+  it('runs paired movement and edge-window unpaired fades on one timeline', async () => {
     const deck = twoSlideDeck();
     deck.magicMoveDuration = 1350;
     deck.slides[0].elements[0].magicMoveId = 'pair';
@@ -218,11 +245,15 @@ describe('Magic Move matching', () => {
       expect.objectContaining({ duration: 1350 }),
     ]);
     const tracks = animate.mock.calls.map((call) => call[0] as Keyframe[]);
+    // The incoming object fades in over the final quarter…
     expect(tracks.some((frames) =>
-      frames[0].visibility === 'hidden' && frames[2].visibility === 'visible'))
+      frames[0].opacity === '0' && frames[1].offset === 0.75 &&
+      frames[1].opacity === '0' && frames[2].opacity !== '0'))
       .toBe(true);
+    // …and the removed object's ghost fades out over the first quarter.
     expect(tracks.some((frames) =>
-      frames[0].visibility === 'visible' && frames[2].visibility === 'hidden'))
+      frames[0].opacity !== '0' && frames[1].offset === 0.25 &&
+      frames[1].opacity === '0' && frames[2].opacity === '0'))
       .toBe(true);
     const discreteOptions = animate.mock.calls.slice(1).map((call) => call[1]);
     expect(discreteOptions).toEqual([
@@ -290,6 +321,39 @@ describe('Magic Move matching', () => {
     player.destroy();
   });
 
+  it('animates rotated movers about the center, matching the settled render', () => {
+    const deck = twoSlideDeck();
+    const arrow = (id: string, x: number, y: number, rot: number): SlideElement => ({
+      id, type: 'shape', shape: 'arrow', x, y, w: 200, h: 2, rot, z: 1, opacity: 1,
+      class: [], style: {}, fill: null, stroke: '#000000', strokeWidth: 6,
+      radius: 0, path: null, pathSize: null, arrowStart: false, arrowEnd: true,
+      magicMoveId: 'arrow-pair',
+    });
+    deck.slides[0].elements = [arrow('arrow-src', 10, 20, 90)];
+    deck.slides[1].elements = [arrow('arrow-dst', 14, 24, 91)];
+    deck.slides[1].magicMoveFromPrevious = true;
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const animate = vi.fn((
+      _keyframes: Keyframe[] | PropertyIndexedKeyframes | null,
+      _options?: number | KeyframeAnimationOptions,
+    ) => ({ finished: Promise.resolve() }));
+    HTMLElement.prototype.animate = animate as unknown as typeof HTMLElement.prototype.animate;
+    const player = new Player({ deck, container: host, resolveSrc: (src) => src });
+
+    player.goToSlide(1);
+
+    const frames = animate.mock.calls[0][0] as unknown as Keyframe[];
+    // The settled render rotates about the center; the animation must move
+    // between the two centers and rotate in the same frame of reference, or a
+    // thin rotated arrow lurches at frame 0 and snaps back when fill ends.
+    expect(frames[0].transform).toBe('translate(-4px, -4px) rotate(90deg) scale(1, 1)');
+    expect(frames[0].transformOrigin).toBe('center');
+    expect(frames[frames.length - 1].transform).toBe('rotate(91deg)');
+    expect(frames[frames.length - 1].transformOrigin).toBe('center');
+    player.destroy();
+  });
+
   it('keeps a mover above a removed backdrop it outranked on the source slide', () => {
     const deck = twoSlideDeck();
     deck.slides[0].elements[0].magicMoveId = 'pair';
@@ -319,9 +383,10 @@ describe('Magic Move matching', () => {
     // switch — which requires linear overall timing with the ease on frame 0.
     const mover = calls.find((frames) => frames[0].transform !== undefined)!;
     expect(mover.map((frame) => frame.zIndex)).toEqual(['1', '1', '0', '0']);
-    expect(mover[0].easing).toBe('cubic-bezier(.2,.8,.2,1)');
+    expect(mover[0].easing).toBe('cubic-bezier(.45,.05,.55,.95)');
     expect((animate.mock.calls[0][1] as KeyframeAnimationOptions).easing).toBe('linear');
-    const ghost = calls.find((frames) => frames[0].visibility === 'visible')!;
+    const ghost = calls.find((frames) =>
+      frames[0].transform === undefined && frames[frames.length - 1].opacity === '0')!;
     expect(ghost.every((frame) => frame.zIndex === '0')).toBe(true);
     player.destroy();
   });
@@ -339,7 +404,7 @@ describe('Magic Move matching', () => {
     expect(unchangedMagicMovePairs(deck.slides[0].elements, deck.slides[1].elements))
       .toHaveLength(1);
     expect(suggestMagicMovePairs(deck.slides[0].elements, deck.slides[1].elements))
-      .toHaveLength(1);
+      .toHaveLength(0);
     const host = document.createElement('div');
     document.body.appendChild(host);
     const animate = vi.fn();

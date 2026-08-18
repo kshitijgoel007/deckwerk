@@ -124,6 +124,7 @@ const UpdateDeckOperation = z.object({
   op: z.literal('updateDeck'),
   title: z.string().optional(),
   magicMoveDuration: z.number().min(100).max(5000).optional(),
+  magicMoveEasing: z.enum(['ease-in-out', 'ease-out', 'linear']).optional(),
 });
 
 export const AgentOperationSchema = z.discriminatedUnion('op', [
@@ -250,6 +251,7 @@ function applyOperation(deck: Deck, operation: AgentOperation): void {
     case 'updateDeck':
       if (operation.title !== undefined) deck.title = operation.title;
       if (operation.magicMoveDuration !== undefined) deck.magicMoveDuration = operation.magicMoveDuration;
+      if (operation.magicMoveEasing !== undefined) deck.magicMoveEasing = operation.magicMoveEasing;
   }
 }
 

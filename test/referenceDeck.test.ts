@@ -558,7 +558,7 @@ describe.skipIf(!ready)('reference.key ground truth', () => {
 
   it('slide 22: centres the goal text around its authored anchor', () => {
     const goal = deck.slides[21].elements.find(
-      (e) => e.type === 'text' && e.html.startsWith('My goal:'),
+      (e) => e.type === 'text' && e.html.replace(/^<p>/, '').startsWith('My goal:'),
     );
     expect(goal?.type).toBe('text');
     if (goal?.type !== 'text') throw new Error('expected goal text');
@@ -792,6 +792,21 @@ describe.skipIf(!ready)('reference.key ground truth', () => {
         expect(el.style['color'], el.html.slice(0, 40)).toBe('#000000');
       }
     });
+  });
+
+  it('slide 26: imports each Keynote paragraph as its own block', () => {
+    // The unit paragraph spacing spaces and by-paragraph builds reveal. As a
+    // `<br>` separator it was neither, and pressing return beside one is what
+    // used to bury the later paragraphs inside the block Chrome created.
+    const summary = deck.slides[25].elements.find(
+      (e) => e.type === 'text' && e.html.includes('Video policies'),
+    );
+    expect(summary?.type).toBe('text');
+    if (summary?.type !== 'text') throw new Error('expected the summary text');
+    expect(summary.html).not.toContain('<br>');
+    const paragraphs = [...summary.html.matchAll(/<p>(.*?)<\/p>/g)].map((m) => m[1]);
+    expect(paragraphs).toHaveLength(4);
+    expect(paragraphs[2]).toMatch(/^The bridge between video/);
   });
 
   it('writes every referenced asset to disk', () => {

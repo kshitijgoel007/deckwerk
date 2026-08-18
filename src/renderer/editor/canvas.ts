@@ -1,6 +1,9 @@
+import { MIRRORED_TEXT_STYLE_PROPERTIES } from '@shared/deck.js';
 import type { Deck, Slide, SlideElement } from '@shared/deck.js';
 import { type Rect, fitScale, makeId } from '@shared/geometry.js';
 import { fitAutoText, quadraticPath, renderSlide, scheduleAutoFit } from '../player/render.js';
+import { expandTimeline } from '@shared/timeline.js';
+import { normalizeParagraphHtml, paragraphUnits } from '@shared/paragraphs.js';
 import { HANDLES, type SnapLine, snapMove, snapResize } from './snapping.js';
 import type { EditorStore } from './store.js';
 
@@ -218,6 +221,20 @@ export class EditorCanvas {
       for (const [key, value] of Object.entries(el.style)) {
         node.style.setProperty(key, value);
       }
+      // Inheritable text properties are also mirrored onto .text-content
+      // (see MIRRORED_TEXT_STYLE_PROPERTIES): theme rules that target the
+      // content node directly would otherwise override the element's inline
+      // style, and colour changes from the inspector would never show.
+      if (el.type === 'text') {
+        const content = node.querySelector<HTMLElement>('.text-content');
+        if (content) {
+          for (const property of MIRRORED_TEXT_STYLE_PROPERTIES) {
+            const value = el.style[property];
+            if (value !== undefined) content.style.setProperty(property, value);
+            else content.style.removeProperty(property);
+          }
+        }
+      }
 
       node.style.left = `${el.x}px`;
       node.style.top = `${el.y}px`;
@@ -226,7 +243,22 @@ export class EditorCanvas {
       node.style.opacity = String(el.opacity);
       node.style.transform = el.rot ? `rotate(${el.rot}deg)` : '';
       if (el.type === 'text') {
-        if (el.autoFit) {
+        // Mirrored here as well as in renderElement so a spacing change shows
+        // immediately — including mid-edit — instead of on the next rebuild.
+        if (el.paragraphSpacing !== undefined) {
+          node.dataset.paragraphSpacing = String(el.paragraphSpacing);
+          node.style.setProperty('--paragraph-spacing', `${el.paragraphSpacing}px`);
+        } else {
+          delete node.dataset.paragraphSpacing;
+          node.style.removeProperty('--paragraph-spacing');
+        }
+        if (el.noWrap) node.dataset.noWrap = 'true';
+        else delete node.dataset.noWrap;
+        if (el.noWrap && el.noWrapMode === 'condense') node.dataset.fitMode = 'condense';
+        else delete node.dataset.fitMode;
+        // noWrap implies the fit: with soft wrapping off, shrinking is the
+        // only way an overlong line stays inside the box.
+        if (el.autoFit || el.noWrap) {
           node.dataset.autoFit = 'true';
           scheduleAutoFit(node);
         } else {
@@ -375,21 +407,46 @@ export class EditorCanvas {
     if (this.buildBadgesVisible) {
       const slide = this.store.get().deck.slides[this.store.get().slideIndex];
       const numbersByElement = new Map<string, number[]>();
-      slide?.timeline.forEach((entry, i) => {
-        const list = numbersByElement.get(entry.action.target) ?? [];
-        list.push(i + 1);
-        numbersByElement.set(entry.action.target, list);
+      // By-paragraph reveals get one badge per paragraph, pinned to the
+      // paragraph's own line so each number matches its row in the panel.
+      const paragraphNumbers = new Map<string, Array<{ part: number; num: number }>>();
+      (slide ? expandTimeline(slide) : []).forEach((unit, i) => {
+        if (unit.part !== null) {
+          const list = paragraphNumbers.get(unit.action.target) ?? [];
+          list.push({ part: unit.part, num: i + 1 });
+          paragraphNumbers.set(unit.action.target, list);
+        } else {
+          const list = numbersByElement.get(unit.action.target) ?? [];
+          list.push(i + 1);
+          numbersByElement.set(unit.action.target, list);
+        }
       });
-      for (const el of elements) {
-        const numbers = numbersByElement.get(el.id);
-        if (!numbers) continue;
+      const makeBadge = (text: string, x: number, y: number) => {
         const badge = document.createElement('div');
         badge.className = 'build-badge';
-        badge.textContent = numbers.join(',');
-        badge.style.left = `${el.x + el.w}px`;
-        badge.style.top = `${el.y}px`;
+        badge.textContent = text;
+        badge.style.left = `${x}px`;
+        badge.style.top = `${y}px`;
         badge.style.setProperty('--inv', String(1 / this.scale));
         frag.appendChild(badge);
+      };
+      const stageRect = this.stage.getBoundingClientRect();
+      for (const el of elements) {
+        const numbers = numbersByElement.get(el.id);
+        if (numbers) makeBadge(numbers.join(','), el.x + el.w, el.y);
+        const parts = paragraphNumbers.get(el.id);
+        if (!parts) continue;
+        const content = this.stage.querySelector<HTMLElement>(
+          `[data-element-id="${CSS.escape(el.id)}"] .text-content`,
+        );
+        const units = content ? paragraphUnits(content) : [];
+        for (const { part, num } of parts) {
+          const rect = units[part]?.getBoundingClientRect();
+          const y = rect && rect.height > 0
+            ? (rect.top - stageRect.top) / this.scale
+            : el.y + part * 24;
+          makeBadge(String(num), el.x + el.w, y + 9);
+        }
       }
     }
 
@@ -416,9 +473,13 @@ export class EditorCanvas {
       box.style.top = `${el.y}px`;
       box.style.width = `${el.w}px`;
       box.style.height = `${el.h}px`;
+      const isLine = el.type === 'shape' && (el.shape === 'line' || el.shape === 'arrow');
       // The outline must sit on the element as drawn, not where the frame
       // would be at rot 0. Same rotation, same centre as the element node.
-      if (el.rot) box.style.transform = `rotate(${el.rot}deg)`;
+      // Line/arrow selections stay unrotated: their children (endpoints,
+      // curve control, preview path) are positioned in canvas space, which
+      // already includes the rotation — rotating the box would apply it twice.
+      if (el.rot && !isLine) box.style.transform = `rotate(${el.rot}deg)`;
       // Counter-scale so outlines and handles stay one visual size at any zoom.
       box.style.setProperty('--inv', String(1 / this.scale));
 
@@ -705,17 +766,39 @@ export class EditorCanvas {
         const dy = point.y - drag.startCanvas.y;
         const o = drag.origin;
 
+        // Cmd resizes about the element's center (like Keynote's option-drag):
+        // both sides move, and the center is re-pinned after constraints.
+        const centered = ev.metaKey;
         let rect: Rect = { ...o };
-        if (edges.left) {
-          rect.x = o.x + dx;
-          rect.w = o.w - dx;
+        if (centered) {
+          if (edges.left) {
+            rect.x = o.x + dx;
+            rect.w = o.w - 2 * dx;
+          }
+          if (edges.right) {
+            rect.x = o.x - dx;
+            rect.w = o.w + 2 * dx;
+          }
+          if (edges.top) {
+            rect.y = o.y + dy;
+            rect.h = o.h - 2 * dy;
+          }
+          if (edges.bottom) {
+            rect.y = o.y - dy;
+            rect.h = o.h + 2 * dy;
+          }
+        } else {
+          if (edges.left) {
+            rect.x = o.x + dx;
+            rect.w = o.w - dx;
+          }
+          if (edges.right) rect.w = o.w + dx;
+          if (edges.top) {
+            rect.y = o.y + dy;
+            rect.h = o.h - dy;
+          }
+          if (edges.bottom) rect.h = o.h + dy;
         }
-        if (edges.right) rect.w = o.w + dx;
-        if (edges.top) {
-          rect.y = o.y + dy;
-          rect.h = o.h - dy;
-        }
-        if (edges.bottom) rect.h = o.h + dy;
 
         // Shift constrains, and so does "Keep aspect ratio" on media — with it
         // off (fit: fill) a resize genuinely stretches the picture.
@@ -734,7 +817,13 @@ export class EditorCanvas {
           : snapResize(rect, edges, deck.canvas, others, threshold);
         this.guides = snapped.guides;
 
-        const r = snapped.rect;
+        const r = { ...snapped.rect };
+        if (centered) {
+          // Aspect constraints and snapping anchor the opposite corner, which
+          // would drift the center — pin it back to where the drag started.
+          r.x = o.x + (o.w - r.w) / 2;
+          r.y = o.y + (o.h - r.h) / 2;
+        }
         if (this.maskingId === drag.elementId) {
           // Cropping, not scaling: the window moves, the picture stays put.
           this.applyMaskResize(drag.elementId, r, drag.origin);
@@ -921,7 +1010,16 @@ export class EditorCanvas {
     node!.classList.add('editing');
     // The player replaces TeX delimiters with KaTeX DOM. Editing must expose
     // the authored source, otherwise a save would persist generated markup.
-    body.innerHTML = el.html;
+    //
+    // Paragraphs are normalised to blocks first. Imported text separates them
+    // with `<br>`, and pressing return next to one makes Chrome nest the rest
+    // of the text inside a new `<div>` — after the second return every
+    // paragraph but the first is buried a level down, out of reach of both
+    // `--paragraph-spacing` and the by-paragraph builds. Blocks in, blocks
+    // out: `defaultParagraphSeparator` then keeps return producing `<p>`.
+    body.innerHTML = normalizeParagraphHtml(el.html, true);
+    // jsdom has no execCommand; the editing command is a browser-only nicety.
+    document.execCommand?.('defaultParagraphSeparator', false, 'p');
     body.contentEditable = 'true';
     body.spellcheck = false;
     body.style.outline = 'none';
@@ -953,7 +1051,7 @@ export class EditorCanvas {
 
     const onBlur = () => finish(true);
     const onInput = () => {
-      if (el.type === 'text' && el.autoFit) scheduleAutoFit(node!);
+      if (el.type === 'text' && (el.autoFit || el.noWrap)) scheduleAutoFit(node!);
     };
     const onKey = (e: KeyboardEvent) => {
       // Editing keys must not reach the canvas shortcuts (Delete would remove
@@ -987,7 +1085,9 @@ export class EditorCanvas {
     const body = node?.querySelector<HTMLElement>('.text-content') ?? null;
     if (!body) return;
 
-    const html = body.innerHTML;
+    // Without `splitBreaks`: a shift-return the author typed is a soft break
+    // inside its paragraph, not a new one.
+    const html = normalizeParagraphHtml(body.innerHTML);
     body.contentEditable = 'false';
     node!.classList.remove('editing');
 

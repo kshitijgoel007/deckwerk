@@ -26,6 +26,13 @@ export class SlideRail {
    * yet, so the previews went black.
    */
   private thumbCache = new Map<unknown, HTMLElement>();
+  /**
+   * Runs of consecutive hidden slides the user has expanded, keyed by the id
+   * of the run's first slide. Runs of two or more hidden slides collapse into
+   * a single placeholder by default; expanding is an explicit, per-run choice
+   * that survives re-renders but not a reload.
+   */
+  private expandedRuns = new Set<string>();
 
   constructor(host: HTMLElement, store: EditorStore) {
     this.host = host;
@@ -53,6 +60,12 @@ export class SlideRail {
   }
 
   private highlight(slideIndex: number, slideSelection: Set<string>): void {
+    // Selecting a slide inside a collapsed run (keyboard navigation, agent
+    // edits) must reveal it — its row doesn't exist until the run expands.
+    if (!this.host.querySelector(`.rail-item[data-index="${slideIndex}"]`)) {
+      this.render();
+      return;
+    }
     for (const item of this.host.querySelectorAll<HTMLElement>('.rail-item')) {
       const index = Number(item.dataset.index);
       const active = index === slideIndex;
@@ -74,7 +87,155 @@ export class SlideRail {
     }
     this.host.replaceChildren();
 
-    deck.slides.forEach((slide, i) => {
+    // Group consecutive hidden slides: runs of 2+ collapse to one placeholder
+    // unless expanded. A run holding the active slide stays expanded so the
+    // selection is never invisible.
+    for (let i = 0; i < deck.slides.length; ) {
+      if (!deck.slides[i].skipped) {
+        this.host.appendChild(this.buildItem(deck, i, slideIndex, slideSelection));
+        i += 1;
+        continue;
+      }
+      let end = i;
+      while (end + 1 < deck.slides.length && deck.slides[end + 1].skipped) end += 1;
+      if (end === i) {
+        this.host.appendChild(this.buildItem(deck, i, slideIndex, slideSelection));
+        i += 1;
+        continue;
+      }
+      const runKey = deck.slides[i].id;
+      const containsActive = slideIndex >= i && slideIndex <= end;
+      if (!this.expandedRuns.has(runKey) && !containsActive) {
+        this.host.appendChild(this.buildCollapsedRun(deck, i, end, runKey));
+      } else {
+        this.expandedRuns.add(runKey);
+        this.host.appendChild(this.buildExpandedRun(deck, i, end, runKey, slideIndex, slideSelection));
+      }
+      i = end + 1;
+    }
+
+    const actions = document.createElement('div');
+    actions.className = 'rail-actions';
+    actions.append(
+      railButton('+ Slide', () => this.addSlide()),
+      railButton('Duplicate', () => this.duplicateSlide()),
+      railButton(
+        deck.slides[slideIndex]?.skipped ? 'Show' : 'Hide',
+        () => this.toggleHidden(),
+      ),
+      railButton('Delete', () => this.deleteSlide()),
+    );
+    this.host.appendChild(actions);
+  }
+
+  /**
+   * Placeholder row standing in for a collapsed run of hidden slides: a
+   * normal-sized row whose thumbnail is the first hidden slide drawn as the
+   * top card of a stack, so the collapsed run reads as "slides live here".
+   */
+  private buildCollapsedRun(
+    deck: ReturnType<EditorStore['get']>['deck'],
+    start: number,
+    end: number,
+    runKey: string,
+  ): HTMLElement {
+    const row = document.createElement('button');
+    row.className = 'rail-item rail-collapsed';
+    row.title = `Show hidden slides ${start + 1}–${end + 1}`;
+
+    const num = document.createElement('span');
+    num.className = 'rail-num';
+    num.textContent = `${start + 1}…${end + 1}`;
+
+    const stack = document.createElement('div');
+    stack.className = 'rail-stack';
+    stack.appendChild(this.thumbFor(deck, deck.slides[start]));
+
+    const badge = document.createElement('span');
+    badge.className = 'rail-skipped-badge';
+    badge.textContent = `${end - start + 1} hidden`;
+
+    row.append(num, stack, badge);
+    row.addEventListener('click', () => {
+      this.expandedRuns.add(runKey);
+      this.render();
+    });
+    return row;
+  }
+
+  /**
+   * An expanded run of hidden slides: the rows themselves, with a bracket
+   * along their left edge that collapses the run again when clicked.
+   */
+  private buildExpandedRun(
+    deck: ReturnType<EditorStore['get']>['deck'],
+    start: number,
+    end: number,
+    runKey: string,
+    slideIndex: number,
+    slideSelection: Set<string>,
+  ): HTMLElement {
+    const wrap = document.createElement('div');
+    wrap.className = 'rail-run';
+    const bracket = document.createElement('button');
+    bracket.className = 'rail-run-bracket';
+    bracket.title = `Collapse hidden slides ${start + 1}–${end + 1}`;
+    bracket.setAttribute('aria-label', bracket.title);
+    bracket.addEventListener('click', () => {
+      this.expandedRuns.delete(runKey);
+      this.render();
+    });
+    const col = document.createElement('div');
+    col.className = 'rail-run-items';
+    for (let i = start; i <= end; i += 1) {
+      col.appendChild(this.buildItem(deck, i, slideIndex, slideSelection));
+    }
+    wrap.append(bracket, col);
+    return wrap;
+  }
+
+  /**
+   * A real miniature, cached by slide identity so untouched slides keep
+   * their live DOM (and their already-decoded video frames) across edits.
+   */
+  private thumbFor(
+    deck: ReturnType<EditorStore['get']>['deck'],
+    slide: ReturnType<EditorStore['get']>['deck']['slides'][number],
+  ): HTMLElement {
+    let thumb = this.thumbCache.get(slide);
+    if (!thumb) {
+      thumb = document.createElement('div');
+      thumb.className = 'rail-thumb';
+      const inner = document.createElement('div');
+      inner.className = 'rail-thumb-inner';
+      inner.style.width = `${deck.canvas.w}px`;
+      inner.style.height = `${deck.canvas.h}px`;
+      inner.style.transform = `scale(${THUMB_WIDTH / deck.canvas.w})`;
+      if (slide.background.color) inner.style.background = slide.background.color;
+      inner.appendChild(
+        renderSlide(slide, { resolveSrc: (src) => window.api.assetUrl(src) }),
+      );
+      for (const video of inner.querySelectorAll('video')) {
+        video.removeAttribute('autoplay');
+        // Decode one frame so the thumbnail shows a picture, then hold.
+        video.preload = 'auto';
+        video.pause();
+      }
+      thumb.appendChild(inner);
+      this.thumbCache.set(slide, thumb);
+    }
+    return thumb;
+  }
+
+  /** One slide row: number, cached thumbnail, hidden badge, handlers. */
+  private buildItem(
+    deck: ReturnType<EditorStore['get']>['deck'],
+    i: number,
+    slideIndex: number,
+    slideSelection: Set<string>,
+  ): HTMLElement {
+    const slide = deck.slides[i];
+    {
       const item = document.createElement('button');
       item.className = `rail-item${slideSelection.has(slide.id) ? ' selected' : ''}${i === slideIndex ? ' active' : ''}${slide.skipped ? ' skipped' : ''}`;
       item.setAttribute('aria-selected', String(slideSelection.has(slide.id)));
@@ -86,32 +247,7 @@ export class SlideRail {
       num.className = 'rail-num';
       num.textContent = String(i + 1);
 
-      // A real miniature, cached by slide identity so untouched slides keep
-      // their live DOM (and their already-decoded video frames) across edits.
-      let thumb = this.thumbCache.get(slide);
-      if (!thumb) {
-        thumb = document.createElement('div');
-        thumb.className = 'rail-thumb';
-        const inner = document.createElement('div');
-        inner.className = 'rail-thumb-inner';
-        inner.style.width = `${deck.canvas.w}px`;
-        inner.style.height = `${deck.canvas.h}px`;
-        inner.style.transform = `scale(${THUMB_WIDTH / deck.canvas.w})`;
-        if (slide.background.color) inner.style.background = slide.background.color;
-        inner.appendChild(
-          renderSlide(slide, { resolveSrc: (src) => window.api.assetUrl(src) }),
-        );
-        for (const video of inner.querySelectorAll('video')) {
-          video.removeAttribute('autoplay');
-          // Decode one frame so the thumbnail shows a picture, then hold.
-          video.preload = 'auto';
-          video.pause();
-        }
-        thumb.appendChild(inner);
-        this.thumbCache.set(slide, thumb);
-      }
-
-      item.append(num, thumb);
+      item.append(num, this.thumbFor(deck, slide));
       if (slide.skipped) {
         const badge = document.createElement('span');
         badge.className = 'rail-skipped-badge';
@@ -126,21 +262,63 @@ export class SlideRail {
         // slides then pressing Backspace appears to do nothing at all.
         this.host.focus({ preventScroll: true });
       });
-      this.host.appendChild(item);
-    });
+      item.addEventListener('contextmenu', (event) => this.onContextMenu(event, i));
+      return item;
+    }
+  }
 
-    const actions = document.createElement('div');
-    actions.className = 'rail-actions';
-    actions.append(
-      railButton('+ Slide', () => this.addSlide()),
-      railButton('Duplicate', () => this.duplicateSlide()),
-      railButton(
-        deck.slides[slideIndex]?.skipped ? 'Show' : 'Hide',
-        () => this.toggleHidden(),
-      ),
-      railButton('Delete', () => this.deleteSlide()),
-    );
-    this.host.appendChild(actions);
+  /**
+   * Right-click menu on a slide row. Shares the canvas menu's #ctx-menu
+   * styling so the two menus read as one control.
+   */
+  private onContextMenu(ev: MouseEvent, index: number): void {
+    ev.preventDefault();
+    ev.stopPropagation();
+    document.getElementById('ctx-menu')?.remove();
+
+    // Right-clicking outside the current selection retargets it, matching how
+    // the canvas menu (and every desktop list control) behaves.
+    const { deck, slideSelection } = this.store.get();
+    const slide = deck.slides[index];
+    if (!slide) return;
+    if (!slideSelection.has(slide.id)) this.store.selectSlide(index);
+    this.host.focus({ preventScroll: true });
+
+    const hidden = Boolean(this.store.get().deck.slides[index]?.skipped);
+    const items: Array<{ label: string; action: () => void } | 'separator'> = [
+      { label: hidden ? 'Show slide' : 'Hide slide', action: () => this.toggleHidden() },
+      'separator',
+      { label: 'Add slide below', action: () => this.addSlide() },
+      { label: 'Duplicate', action: () => this.duplicateSlide() },
+      'separator',
+      { label: 'Delete', action: () => this.deleteSlide() },
+    ];
+
+    const menu = document.createElement('div');
+    menu.id = 'ctx-menu';
+    menu.style.left = `${ev.clientX}px`;
+    menu.style.top = `${ev.clientY}px`;
+    for (const item of items) {
+      if (item === 'separator') {
+        const hr = document.createElement('div');
+        hr.className = 'ctx-sep';
+        menu.appendChild(hr);
+        continue;
+      }
+      const row = document.createElement('button');
+      row.textContent = item.label;
+      row.addEventListener('click', () => {
+        menu.remove();
+        item.action();
+      });
+      menu.appendChild(row);
+    }
+    document.body.appendChild(menu);
+    // Same ordering fix as the canvas menu: a document-level pointerdown must
+    // not tear the menu down before its row can receive the click.
+    menu.addEventListener('pointerdown', (event) => event.stopPropagation());
+    const close = () => menu.remove();
+    setTimeout(() => document.addEventListener('pointerdown', close, { once: true }), 0);
   }
 
   /** Keyboard navigation and quick insertion while the rail has focus. */

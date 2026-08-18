@@ -625,13 +625,25 @@ def _normalise_breaks(text: str) -> str:
     return text.replace("\v", "\n").replace("\u2028", "\n").replace("\u2029", "\n")
 
 
+def _wrap_paragraphs(paragraphs: list[str]) -> str:
+    """Join paragraph markup into one text element's HTML.
+
+    Each Keynote paragraph becomes a block, not a `<br>` separator, because a
+    block is the unit the editor's return key, `--paragraph-spacing` and the
+    by-paragraph builds all agree on; a `<br>` is invisible to every one of
+    them. A single paragraph stays bare so one-line labels import unchanged.
+    """
+    while paragraphs and not paragraphs[-1].strip():
+        paragraphs.pop()
+    if len(paragraphs) <= 1:
+        return paragraphs[0] if paragraphs else ""
+    return "".join(f"<p>{p or '<br>'}</p>" for p in paragraphs)
+
+
 def text_to_html(text: str) -> str:
     """Escape imported text, then map Keynote's paragraph breaks onto markup."""
     escaped = html.escape(_normalise_breaks(text))
-    paragraphs = [p for p in escaped.split("\n")]
-    while paragraphs and not paragraphs[-1].strip():
-        paragraphs.pop()
-    return "<br>".join(paragraphs)
+    return _wrap_paragraphs(escaped.split("\n"))
 
 
 def _char_run_css(
@@ -726,15 +738,23 @@ def styled_text_to_html(
         if not runs or not any(css for _, css in runs):
             return None
 
-        parts: list[str] = []
+        # Runs are sliced by character index and cut across paragraph breaks,
+        # so the split happens per run and the pieces are regrouped: a styled
+        # run spanning two paragraphs yields one span in each.
+        paragraphs: list[str] = [""]
         for run_text, css in runs:
-            escaped = html.escape(run_text).replace("\n", "<br>")
-            if css:
-                style_attr = "; ".join(f"{k}: {v}" for k, v in css.items())
-                parts.append(f'<span style="{style_attr}">{escaped}</span>')
-            else:
-                parts.append(escaped)
-        return "".join(parts)
+            pieces = html.escape(run_text).split("\n")
+            for pos, piece in enumerate(pieces):
+                if pos:
+                    paragraphs.append("")
+                if not piece:
+                    continue
+                if css:
+                    style_attr = "; ".join(f"{k}: {v}" for k, v in css.items())
+                    paragraphs[-1] += f'<span style="{style_attr}">{piece}</span>'
+                else:
+                    paragraphs[-1] += piece
+        return _wrap_paragraphs(paragraphs)
     return None
 
 
@@ -1764,8 +1784,25 @@ class Importer:
         except AttributeError:
             pass
 
+        # Keynote records which drawable is the slide's title/body placeholder.
+        # That identity is ground truth for semantic roles — font-size ratios
+        # alone misfile an 80px slide title as a heading whenever some other
+        # slide has a 112px one.
+        title_id = _ref(slide_obj, "titlePlaceholder")
+        body_id = _ref(slide_obj, "bodyPlaceholder")
+
         for z, drawable_id in enumerate(drawable_ids):
-            elements.extend(self.convert_drawable(drawable_id, z))
+            converted = self.convert_drawable(drawable_id, z)
+            role = (
+                "title"
+                if drawable_id == title_id
+                else "body" if drawable_id == body_id else None
+            )
+            if role:
+                for element in converted:
+                    if element["type"] == "text":
+                        element["_kn_role"] = role
+            elements.extend(converted)
 
         # Flattened group children must remain one contiguous paint block.
         # ``z + child_index`` overlaps later top-level z values and interleaves
@@ -1885,10 +1922,15 @@ def _measure_text_width(
 def _classify_text_roles(slides: list[dict[str, Any]]) -> None:
     """Tag every text element with a semantic role class.
 
-    Mirrors `roleForSize` in src/shared/fontSets.ts: roles are decided by each
-    element's size relative to the deck's largest text, because absolute sizes
-    mean nothing across decks. The classes make the "Cast fonts" button and the
-    per-element role picker work on freshly imported decks.
+    Keynote's own placeholder identity is authoritative: text that came from a
+    slide's title placeholder is `title`, from its body placeholder `body`
+    (tagged as `_kn_role` in `convert_slide`). Everything else is classified by
+    font size *relative to the deck's typical body size*, which the placeholders
+    anchor. Ratios against the deck's single largest text — the old scheme, kept
+    as a fallback for decks without placeholders — misfile ordinary slide titles
+    as headings whenever one slide carries an extra-large title.
+    The classes make the "Cast fonts" button and the per-element role picker
+    work on freshly imported decks.
     """
     def size_of(el: dict[str, Any]) -> float:
         try:
@@ -1900,42 +1942,77 @@ def _classify_text_roles(slides: list[dict[str, Any]]) -> None:
         import re
         return len(re.sub(r"<[^>]+>", "", el.get("html", "")).strip())
 
-    # The scale is set by real prose, not decorations: a lone 200px "+" glyph
-    # between two figures would otherwise become the "title" and demote every
-    # actual title to a heading.
-    sizes = [
-        size_of(el)
-        for slide in slides
-        for el in slide["elements"]
-        if el["type"] == "text" and text_len(el) >= 3
-    ]
-    max_size = max(sizes, default=0.0)
-    if max_size <= 0:
-        return
+    def set_role(el: dict[str, Any], role: str) -> None:
+        el["class"] = [c for c in el["class"] if not c.startswith("role-")]
+        if role != "base":
+            el["class"].append(f"role-{role}")
+
+    # First pass: lock in placeholder-derived roles and collect the sizes that
+    # anchor the deck's scale.
+    body_sizes: list[float] = []
+    texts: list[dict[str, Any]] = []
     for slide in slides:
         for el in slide["elements"]:
             if el["type"] != "text":
                 continue
-            size = size_of(el)
-            if text_len(el) < 3 and size > max_size:
-                # Oversized decoration (an operator glyph, a big quote mark):
-                # style it as base rather than letting it claim "title".
-                el["class"] = [c for c in el["class"] if not c.startswith("role-")]
-                continue
-            ratio = (size or max_size * 0.5) / max_size
-            if ratio >= 0.85:
-                role = "title"
-            elif ratio >= 0.6:
-                role = "heading"
-            elif ratio >= 0.38:
-                role = "body"
-            elif ratio <= 0.3:
-                role = "caption"
+            kn_role = el.pop("_kn_role", None)
+            if kn_role is not None:
+                set_role(el, kn_role)
+                if kn_role == "body" and size_of(el) > 0:
+                    body_sizes.append(size_of(el))
             else:
+                texts.append(el)
+
+    if body_sizes:
+        body_sizes.sort()
+        body_scale = body_sizes[len(body_sizes) // 2]
+        for el in texts:
+            size = size_of(el) or body_scale
+            ratio = size / body_scale
+            if ratio >= 1.15 and text_len(el) < 3:
+                # Oversized decoration (an operator glyph, a big quote mark):
+                # style it as base rather than letting it claim a heading role.
                 role = "base"
-            el["class"] = [c for c in el["class"] if not c.startswith("role-")]
-            if role != "base":
-                el["class"].append(f"role-{role}")
+            elif ratio >= 1.45:
+                role = "title"
+            elif ratio >= 1.15:
+                role = "heading"
+            elif ratio >= 0.6:
+                role = "body"
+            else:
+                role = "caption"
+            set_role(el, role)
+        return
+
+    # Fallback for decks with no placeholder text at all: rank by each
+    # element's size relative to the deck's largest prose, mirroring
+    # `roleForSize` in src/shared/fontSets.ts.
+    # The scale is set by real prose, not decorations: a lone 200px "+" glyph
+    # between two figures would otherwise become the "title" and demote every
+    # actual title to a heading.
+    sizes = [size_of(el) for el in texts if text_len(el) >= 3]
+    max_size = max(sizes, default=0.0)
+    if max_size <= 0:
+        return
+    for el in texts:
+        size = size_of(el)
+        if text_len(el) < 3 and size > max_size:
+            # Oversized decoration (an operator glyph, a big quote mark):
+            # style it as base rather than letting it claim "title".
+            set_role(el, "base")
+            continue
+        ratio = (size or max_size * 0.5) / max_size
+        if ratio >= 0.85:
+            role = "title"
+        elif ratio >= 0.6:
+            role = "heading"
+        elif ratio >= 0.38:
+            role = "body"
+        elif ratio <= 0.3:
+            role = "caption"
+        else:
+            role = "base"
+        set_role(el, role)
 
 
 def _simple_line(path_data: str) -> bool:
@@ -2225,10 +2302,45 @@ def import_key(path: Path, out_dir: Path, write: bool) -> tuple[dict[str, Any], 
             theme_path = out_dir / "theme.css"
             if not theme_path.exists():
                 theme_path.write_text(THEME_CSS, encoding="utf8")
+            write_agent_brief(out_dir)
 
         return deck, report
     finally:
         pkg.close()
+
+
+def write_agent_brief(out_dir: Path) -> None:
+    """Leave the same AGENTS.md brief the editor writes when it opens a deck.
+
+    An imported deck is usually handed straight to a coding agent, whose
+    working directory is the deck folder — without this file its first step is
+    guesswork. The canonical text lives in docs/deck-brief.md (shared with
+    src/main/deckStore.ts); a deck imported by a copy of this script that has
+    lost the docs folder still gets a minimal pointer at `slide-agent docs`.
+    Never overwrites: the file belongs to the user once it exists.
+    """
+    (out_dir / "edit").mkdir(exist_ok=True)
+    brief_path = out_dir / "AGENTS.md"
+    if brief_path.exists():
+        return
+    repo = Path(__file__).resolve().parent.parent.parent
+    launcher = repo / "bin" / "slide-agent"
+    hint = (
+        f"\nIf `slide-agent` is not on your PATH, it is at:\n\n    {launcher}\n"
+        if launcher.exists() else ""
+    )
+    canonical = repo / "docs" / "deck-brief.md"
+    if canonical.exists():
+        text = canonical.read_text(encoding="utf8").replace("{{LAUNCHER_HINT}}", hint)
+    else:
+        text = (
+            "# Working on this deck\n\n"
+            "Author slides through the `slide-agent` CLI from this folder. Start\n"
+            "with `slide-agent docs` for the full guide; the loop is `context` ->\n"
+            "`inspect --html` -> edit the file in `edit/` -> save (editor open) or\n"
+            "`apply` (editor closed). Never edit `deck.json`.\n" + hint
+        )
+    brief_path.write_text(text, encoding="utf8")
 
 
 def main(argv: list[str]) -> int:

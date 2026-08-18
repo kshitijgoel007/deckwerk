@@ -37,7 +37,17 @@
 /* Auto-fit has a 6px readability floor. Pathologically long unbroken content
    is clipped at that floor rather than painting over neighbouring objects. */
 .element-text[data-auto-fit="true"] .text-body,
-.element-text[data-autofit="true"] .text-body { overflow: hidden; }
+.element-text[data-autofit="true"] .text-body,
+.element-text[data-no-wrap="true"] .text-body,
+.element-text[data-nowrap="true"] .text-body { overflow: hidden; }
+
+/* No-wrap boxes break lines only where the author wrote a break; the auto-fit
+   shrink (which no-wrap implies) compresses overlong lines instead. */
+.element-text[data-no-wrap="true"] .text-body,
+.element-text[data-nowrap="true"] .text-body {
+  white-space: pre;
+  word-break: normal;
+}
 
 /* Empty imported Keynote text boxes are authoring affordances, not slide
    content. The editor makes them faintly visible again; presentations, web
@@ -72,4 +82,23 @@
 
 .text-body li {
   margin: 0.15em 0;
+}
+
+/* A paragraph is a block, and the only gap between two of them is the deck's
+   own paragraph spacing — never the browser's 1em default, which would make
+   text jump the moment the editor turned imported `<br>` breaks into blocks. */
+.text-body :is(p, h1, h2, h3, h4, h5, h6) {
+  margin: 0;
+}
+
+/* Explicit paragraph spacing: one number governs the gap between paragraphs
+   and between bullets. The element carries data-paragraph-spacing and the
+   --paragraph-spacing variable; unset elements keep the defaults above. */
+[data-paragraph-spacing] .text-body :is(p, ul, ol, li) {
+  margin-top: 0;
+  margin-bottom: 0;
+}
+[data-paragraph-spacing] .text-content > * + *,
+[data-paragraph-spacing] .text-body li + li {
+  margin-top: var(--paragraph-spacing, 0);
 }

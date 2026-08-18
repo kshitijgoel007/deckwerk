@@ -2,6 +2,7 @@ import '../../src/renderer/player/player.css';
 import '../../src/renderer/editor/editor.css';
 import { emptyDeck } from '../../src/shared/deck.js';
 import { EditorCanvas } from '../../src/renderer/editor/canvas.js';
+import { SlideRail } from '../../src/renderer/editor/slideRail.js';
 import { EditorStore } from '../../src/renderer/editor/store.js';
 
 /**
@@ -62,8 +63,18 @@ deck.slides[0].elements = [
   },
 ];
 
+// A second slide so rail commands with direction (hide, delete, reorder) have
+// something to act on.
+deck.slides.push({
+  ...structuredClone(deck.slides[0]),
+  id: 'slide-2',
+  name: 'Second',
+  elements: [],
+});
+
 const store = new EditorStore(deck, '/tmp/harness');
+const rail = new SlideRail(document.getElementById('rail')!, store);
 const canvas = new EditorCanvas(document.getElementById('canvas')!, store);
 
 // Exposed so the harness can be driven and asserted on from the console.
-Object.assign(window, { store, canvas });
+Object.assign(window, { store, rail, canvas });

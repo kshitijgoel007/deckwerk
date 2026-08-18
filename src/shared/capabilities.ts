@@ -52,6 +52,7 @@ export function capabilities(): Capability[] {
         'role-title, role-heading, role-body, role-caption are the vocabulary.',
         'An inline `style` overrides the theme and should be a deliberate one-off.',
         'html may contain inline markup: <b>, <i>, <br>, <span>.',
+        'paragraphSpacing (px) sets the gap between paragraphs and between bullets; unset keeps the theme default.',
       ],
       elements: [
         text('cap-roles-title', 'A title in the deck’s own type', TITLE, { class: ['role-title'] }),
@@ -89,6 +90,8 @@ export function capabilities(): Capability[] {
       notes: [
         'autoFit never grows text past its authored size; it only shrinks.',
         'inspect reports the size it settled on as text.fittedFontSize.',
+        'noWrap: true disables automatic line wrapping — lines break only where the author wrote one — and implies the auto-fit shrink for overlong lines.',
+        "noWrapMode picks how a no-wrap line is compressed: 'shrink' (default) reduces the font size uniformly; 'condense' keeps the size and squeezes the type horizontally.",
       ],
       elements: [
         text('cap-fit-title', 'Auto-fit', TITLE, { class: ['role-title'] }),
@@ -217,6 +220,7 @@ export function capabilities(): Capability[] {
         'An entry is a trigger (click / afterPrev / withPrev / mediaEnd) plus an action.',
         'Every timeline entry must target an element id on the same slide.',
         'Objects with no build are visible from the start.',
+        "An appear with value: 'byParagraph' on a text element reveals it one paragraph (or list item) at a time, in document order — one click each, or a cascade when triggered afterPrev/withPrev.",
       ],
       elements: [
         text('cap-build-title', 'Builds', TITLE, { class: ['role-title'] }),
@@ -245,6 +249,7 @@ export function capabilities(): Capability[] {
         'Give the same magicMoveId to the objects that are "the same thing" on both slides.',
         'Set magicMoveFromPrevious: true on the *later* slide.',
         'Unpaired objects cross-fade; deck.magicMoveDuration sets the timing.',
+        "deck.magicMoveEasing picks the motion curve: 'ease-in-out' (default), 'ease-out' (snappy start, soft landing), or 'linear'.",
       ],
       elements: [
         text('cap-magic-title', 'Magic Move', TITLE, { class: ['role-title'] }),

@@ -42,6 +42,7 @@ export class Inspector {
   private lastDeck: unknown = null;
   private lastSelection = '';
   private lastSlide = -1;
+  private lastSlideSelection = '';
   private magicMoveHost = document.createElement('section');
   private magicMovePanel: MagicMovePanel;
 
@@ -55,9 +56,15 @@ export class Inspector {
     // rebuilding then destroys whatever control the user is holding — the trim
     // slider died ~800ms into every drag this way.
     store.subscribe(() => {
-      const { deck, selection, slideIndex } = this.store.get();
+      const { deck, selection, slideIndex, slideSelection } = this.store.get();
       const sel = [...selection].sort().join(',');
-      if (deck === this.lastDeck && sel === this.lastSelection && slideIndex === this.lastSlide) {
+      const slideSel = [...slideSelection].sort().join(',');
+      if (
+        deck === this.lastDeck
+        && sel === this.lastSelection
+        && slideIndex === this.lastSlide
+        && slideSel === this.lastSlideSelection
+      ) {
         return;
       }
       if (this.host.hidden) return;
@@ -67,10 +74,11 @@ export class Inspector {
   }
 
   render(): void {
-    const { deck, selection, slideIndex } = this.store.get();
+    const { deck, selection, slideIndex, slideSelection } = this.store.get();
     this.lastDeck = deck;
     this.lastSelection = [...selection].sort().join(',');
     this.lastSlide = slideIndex;
+    this.lastSlideSelection = [...slideSelection].sort().join(',');
     const selected = this.store.selectedElements();
     this.host.replaceChildren();
     if (selected.length > 0) this.magicMovePanel.dismiss();
@@ -515,6 +523,22 @@ export class Inspector {
         if (element.type === 'text') element.autoFit = on;
       }),
     ));
+    wrap.appendChild(mixedCheckboxField(
+      'Disable automatic line breaks',
+      commonValue(texts.map((text) => Boolean(text.noWrap))),
+      (on) => this.store.updateSelected((element) => {
+        if (element.type === 'text') element.noWrap = on;
+      }),
+    ));
+    if (texts.some((text) => text.noWrap)) {
+      wrap.appendChild(mixedSelectField(
+        'Compress by', ['shrink', 'condense'],
+        commonValue(texts.map((text) => text.noWrapMode ?? 'shrink')),
+        (v) => this.store.updateSelected((element) => {
+          if (element.type === 'text') element.noWrapMode = v as 'shrink' | 'condense';
+        }),
+      ));
+    }
 
     const families = commonValue(texts.map((text) => text.style['font-family'] ?? ''));
     wrap.appendChild(textField(
@@ -620,6 +644,19 @@ export class Inspector {
         if (element.type === 'text') element.valign = value as 'top';
       }),
     ));
+    const spacings = sharedValue(texts.map((text) => text.paragraphSpacing ?? null));
+    const spacingField = optionalNumberField(
+      'Paragraph spacing', spacings.mixed ? null : spacings.value,
+      (value) => this.store.updateSelected((element) => {
+        if (element.type === 'text') element.paragraphSpacing = Math.max(0, value);
+      }),
+      () => this.store.updateSelected((element) => {
+        if (element.type === 'text') delete element.paragraphSpacing;
+      }),
+      'px',
+    );
+    if (spacings.mixed) spacingField.querySelector('input')!.placeholder = 'Mixed';
+    wrap.appendChild(spacingField);
     return wrap;
   }
 
@@ -754,6 +791,21 @@ export class Inspector {
             if (target.type === 'text') target.autoFit = on;
           }, { label: on ? 'Enable text auto-fit' : 'Disable text auto-fit' }),
         ));
+
+        wrap.appendChild(checkboxField('Disable automatic line breaks', Boolean(el.noWrap), (on) =>
+          this.store.updateSelected((target) => {
+            if (target.type === 'text') target.noWrap = on;
+          }, { label: on ? 'Disable automatic line breaks' : 'Enable automatic line breaks' }),
+        ));
+
+        if (el.noWrap) {
+          wrap.appendChild(selectField(
+            'Compress by', ['shrink', 'condense'], el.noWrapMode ?? 'shrink',
+            (v) => this.store.updateSelected((target) => {
+              if (target.type === 'text') target.noWrapMode = v as 'shrink' | 'condense';
+            }, { label: 'Change no-wrap compression' }),
+          ));
+        }
 
         wrap.appendChild(textField(
           'Font family', el.style['font-family'] ?? '',
@@ -896,6 +948,17 @@ export class Inspector {
             }),
           ),
         );
+        wrap.appendChild(optionalNumberField(
+          'Paragraph spacing',
+          el.paragraphSpacing ?? null,
+          (value) => this.store.updateSelected((e) => {
+            if (e.type === 'text') e.paragraphSpacing = Math.max(0, value);
+          }, { label: 'Change paragraph spacing' }),
+          () => this.store.updateSelected((e) => {
+            if (e.type === 'text') delete e.paragraphSpacing;
+          }, { label: 'Use theme paragraph spacing' }),
+          'px',
+        ));
         return wrap;
       }
 

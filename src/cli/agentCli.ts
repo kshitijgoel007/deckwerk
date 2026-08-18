@@ -28,6 +28,9 @@ import {
 import { adoptAuthoredIds } from '@shared/htmlSlides.js';
 import { DECK_FILE, importAsset, loadDeck } from '../main/deckStore.js';
 import { measureBuiltTextOverflows } from './compileHtml.js';
+import { serveBundle } from './previewServer.js';
+import { exportDeck } from '../main/exportDeck.js';
+import { spawn } from 'node:child_process';
 import { htmlEditTransaction } from '../main/htmlAuthoring.js';
 import { renderSlidesToPng } from './renderSlides.js';
 
@@ -82,6 +85,11 @@ Everything else:
   asset import <deck> <paths...>          copy media into assets/, probed
   inspect   [deck] [--dom]                computed scenes, for questions
   render    [deck] [--selected|--slide id|--all] --output <dir> [--annotate] [--built]
+                                          add --contact-sheet for one tiled
+                                          overview of everything rendered
+  preview   [deck] [--port <n>] [--open]  export through the real player and
+                                          serve it on localhost; blocks until
+                                          killed. --open shows it to the user
   transaction apply <deck> <file.json>    JSON fallback, for tooling with no
                                           browser — not how slides are authored
 
@@ -111,6 +119,8 @@ export async function runAgentCli(argv: string[], io: CliIo): Promise<number> {
         return await inspectCommand(rest, io);
       case 'render':
         return await renderCommand(rest, io);
+      case 'preview':
+        return await previewCommand(rest, io);
       case 'validate':
         return await validateCommand(rest, io);
       case 'asset':
@@ -286,7 +296,7 @@ async function inspectCommand(argv: string[], io: CliIo): Promise<number> {
 
 async function renderCommand(argv: string[], io: CliIo): Promise<number> {
   const { flags, options, positional } = parseFlags(argv);
-  ensureKnownFlags('render', flags, ['selected', 'slide', 'all', 'annotate', 'built']);
+  ensureKnownFlags('render', flags, ['selected', 'slide', 'all', 'annotate', 'built', 'contact-sheet']);
   ensurePositionals('render', positional, 1);
   const deckDir = resolveDeckDir(positional[0], io);
   const outDir = options.get('output');
@@ -312,16 +322,49 @@ async function renderCommand(argv: string[], io: CliIo): Promise<number> {
     return EXIT_ERROR;
   }
 
-  const images = await renderSlidesToPng({
+  const { images, contactSheet } = await renderSlidesToPng({
     deckDir,
     deck,
     outDir: resolve(io.cwd, outDir),
     slides: chosen.map(({ id, number }) => ({ id, number })),
     annotate: flags.has('annotate'),
     built: flags.has('built'),
+    contactSheet: flags.has('contact-sheet'),
     selectedElementIds: context.selectedElementIds,
   });
-  io.out(json({ revision: context.deckRevision, images }));
+  io.out(json({ revision: context.deckRevision, images, contactSheet }));
+  return EXIT_OK;
+}
+
+/**
+ * Show the deck: export through the real player, serve it, stay up.
+ *
+ * The one command whose job is a human looking at the result. It prints its
+ * URL as JSON on the first line and then blocks, so an agent runs it in the
+ * background and hands the URL to the user (or passes --open to raise the
+ * default browser directly).
+ */
+async function previewCommand(argv: string[], io: CliIo): Promise<number> {
+  const { flags, options, positional } = parseFlags(argv, ['port']);
+  ensureKnownFlags('preview', flags, ['open']);
+  ensurePositionals('preview', positional, 1);
+  const deckDir = resolveDeckDir(positional[0], io);
+  const deck = await loadDeck(deckDir);
+
+  const bundleDir = await tempDir('slide-agent-preview-');
+  await exportDeck(deckDir, deck, bundleDir);
+  const port = Number(options.get('port') ?? 0) || 0;
+  const { url } = await serveBundle(bundleDir, port);
+  io.out(json({ status: 'serving', url, bundleDir, deckPath: deckDir }));
+
+  if (flags.has('open') && process.platform === 'darwin') {
+    spawn('open', [url], { stdio: 'ignore', detached: true }).unref();
+  }
+  // Serve until killed: the caller owns this process's lifetime.
+  await new Promise<void>((done) => {
+    process.once('SIGINT', done);
+    process.once('SIGTERM', done);
+  });
   return EXIT_OK;
 }
 

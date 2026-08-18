@@ -1,4 +1,5 @@
 import type { AgentOperation } from './agent.js';
+import { MIRRORED_TEXT_STYLE_PROPERTIES } from './deck.js';
 import type { Deck, Slide, SlideElement, TimelineEntry } from './deck.js';
 import { fitAutoTextElement } from './autoFit.js';
 import { KATEX_AUTO_RENDER_JS, KATEX_CSS, KATEX_JS } from './katexInline.js';
@@ -223,7 +224,7 @@ const AUTO_FIT_SCRIPT = `
 ${fitAutoTextElement.toString()}
 (() => {
   const fit = () => {
-    for (const node of document.querySelectorAll('[data-autofit="true"]')) {
+    for (const node of document.querySelectorAll('[data-autofit="true"], [data-nowrap="true"]')) {
       fitAutoTextElement(node);
     }
   };
@@ -608,6 +609,11 @@ export function elementFromNode(
     align: alignFrom(node.attrs.textAlign),
     valign: valignFrom(node.dataset.valign),
     ...(node.dataset.autofit !== undefined ? { autoFit: node.dataset.autofit !== 'false' } : {}),
+    ...(node.dataset.nowrap !== undefined ? { noWrap: node.dataset.nowrap !== 'false' } : {}),
+    ...(node.dataset.fitMode === 'condense' ? { noWrapMode: 'condense' as const } : {}),
+    ...(Number.isFinite(Number.parseFloat(node.dataset.paragraphSpacing ?? ''))
+      ? { paragraphSpacing: Math.max(0, Number.parseFloat(node.dataset.paragraphSpacing!)) }
+      : {}),
   };
 }
 
@@ -704,12 +710,25 @@ function elementToHtml(element: SlideElement, build?: TimelineEntry): string {
       const body = `<div class="text-body" data-element="none" `
         + styleAttr(`display:flex; flex-direction:column; justify-content:${justify};`,
           'width:100%; height:100%;')
-        + `><div class="text-content" data-text-content ${styleAttr('width:100%;')}>`
+        // Inheritable inline styles are mirrored onto the content node so a
+        // theme rule targeting .text-content directly can't override them
+        // (matches the live renderer — see MIRRORED_TEXT_STYLE_PROPERTIES).
+        + `><div class="text-content" data-text-content ${styleAttr('width:100%;',
+          MIRRORED_TEXT_STYLE_PROPERTIES
+            .filter((property) => element.style[property] !== undefined)
+            .map((property) => `${property}:${element.style[property]};`)
+            .join(' '))}>`
         + `${element.html}</div></div>`;
       return `  <div ${attrs} class="element element-text${element.class.length > 0
         ? ` ${escape(element.class.join(' '))}` : ''}" data-valign="${element.valign}"`
         + `${element.autoFit ? ' data-autofit="true"' : ''}`
-        + ` ${styleAttr(position, inline, `text-align:${element.align};`)}>${body}</div>`;
+        + `${element.noWrap ? ' data-nowrap="true"' : ''}`
+        + `${element.noWrap && element.noWrapMode === 'condense' ? ' data-fit-mode="condense"' : ''}`
+        + `${element.paragraphSpacing !== undefined
+          ? ` data-paragraph-spacing="${element.paragraphSpacing}"` : ''}`
+        + ` ${styleAttr(position, inline, `text-align:${element.align};`,
+          element.paragraphSpacing !== undefined
+            ? `--paragraph-spacing:${element.paragraphSpacing}px;` : '')}>${body}</div>`;
     }
     case 'image':
       if (element.sourceBox) {

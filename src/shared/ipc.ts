@@ -36,7 +36,33 @@ export const IPC = {
   agentContextPublish: 'agent:contextPublish',
   agentRequest: 'agent:request',
   agentResponse: 'agent:response',
+  workflowStart: 'workflow:start',
 } as const;
+
+/** The workflow templates a UI action can instantiate (see workflows/). */
+export type WorkflowKind = 'rework-selected-slides' | 'beautify-deck' | 'draft-new-slides';
+
+/** A UI request to hand part of the deck to an agent, with instructions. */
+export interface WorkflowStartRequest {
+  kind: WorkflowKind;
+  /** The user's typed instructions, verbatim (may be empty). */
+  instructions: string;
+  /** Selection at the moment of the click; scope for rework workflows. */
+  selectedSlideIds: string[];
+  /** Active slide id — the insertion anchor for draft workflows. */
+  activeSlideId: string | null;
+}
+
+export interface WorkflowStartResult {
+  /** Where the assembled prompt was written, inside the deck folder. */
+  promptPath: string;
+  /** Directory of pre-rendered PNGs handed to the agent. */
+  renderDir: string;
+  /** True when a terminal running the agent was opened. */
+  launched: boolean;
+  /** How to start the agent by hand when it was not launched. */
+  command: string;
+}
 
 export type { AgentContextDraft, AgentRequest, AgentResponse };
 

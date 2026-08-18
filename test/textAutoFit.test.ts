@@ -45,6 +45,50 @@ describe('text auto-fit', () => {
     expect(content.style.fontSize).toBe('40px');
   });
 
+  it('no-wrap implies the fit and marks the node as non-wrapping', () => {
+    const node = renderElement({
+      id: 'nowrap', type: 'text', x: 0, y: 0, w: 100, h: 50, rot: 0, z: 1,
+      opacity: 1, class: [], style: { 'font-size': '40px' },
+      html: 'One long line', noWrap: true, align: 'left', valign: 'top',
+    }, { resolveSrc: (src) => src });
+    expect(node.dataset.noWrap).toBe('true');
+    expect(node.dataset.autoFit).toBe('true');
+    expect(node.dataset.fitMode).toBeUndefined();
+  });
+
+  it('condense mode keeps the font size and squeezes horizontally', () => {
+    const node = renderElement({
+      id: 'condense', type: 'text', x: 0, y: 0, w: 100, h: 50, rot: 0, z: 1,
+      opacity: 1, class: [], style: { 'font-size': '40px' },
+      html: 'One long line', noWrap: true, noWrapMode: 'condense',
+      align: 'left', valign: 'top',
+    }, { resolveSrc: (src) => src });
+    document.body.appendChild(node);
+    expect(node.dataset.fitMode).toBe('condense');
+    const body = node.querySelector<HTMLElement>('.text-body')!;
+    const content = node.querySelector<HTMLElement>('.text-content')!;
+    Object.defineProperties(body, {
+      clientWidth: { configurable: true, value: 100 },
+      clientHeight: { configurable: true, value: 50 },
+    });
+    let width = 200;
+    Object.defineProperty(content, 'scrollWidth', {
+      configurable: true, get: () => width,
+    });
+
+    // The line is twice as wide as the (1%-narrowed) box: squeezed, not shrunk.
+    expect(fitAutoTextElement(node)).toBe(40);
+    expect(content.style.fontSize).toBe('');
+    expect(content.style.transform).toBe('scaleX(0.495)');
+    expect(content.dataset.fittedScaleX).toBe('0.495');
+
+    // With room to spare the squeeze is released rather than compounded.
+    width = 50;
+    expect(fitAutoTextElement(node)).toBe(40);
+    expect(content.style.transform).toBe('');
+    expect(content.dataset.fittedScaleX).toBeUndefined();
+  });
+
   it('exposes auto-fit as an undoable text-box checkbox', () => {
     const deck = emptyDeck('Auto-fit');
     deck.slides[0].elements.push({

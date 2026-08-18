@@ -10,7 +10,8 @@ import {
   stepCount,
 } from '@shared/timeline.js';
 import { applyStageScale, fitAutoTextElement, renderSlide } from './render.js';
-import { explicitMagicMovePairs, unchangedMagicMovePairs } from '@shared/magicMove.js';
+import { applyParagraphVisibility } from '@shared/paragraphs.js';
+import { essentialMagicMovePairs, explicitMagicMovePairs, unchangedMagicMovePairs } from '@shared/magicMove.js';
 
 /**
  * The runtime that owns navigation and turns timeline entries into DOM and
@@ -124,13 +125,15 @@ export class Player {
     };
 
     // A video that appears on consecutive slides (Keynote's "plays across
-    // slides") must continue, not restart: capture playback positions by
-    // source before tearing the old slide down, and hand them to any matching
-    // video on the new one.
-    const carry = new Map<string, number>();
+    // slides") must continue, not restart: keep the playing element itself and
+    // adopt it into the new slide. A freshly created element — even seeked to
+    // the same position — paints nothing until its decoder produces a frame,
+    // which shows as a white flash at the slide switch. The live element keeps
+    // its decoded frame, so the picture never drops out.
+    const carry = new Map<string, HTMLVideoElement>();
     for (const video of this.stage.querySelectorAll('video')) {
       if (!video.paused && video.currentTime > 0) {
-        carry.set(video.getAttribute('src') ?? '', video.currentTime);
+        carry.set(video.getAttribute('src') ?? '', video);
       }
     }
     const previousNodes = new Map<string, HTMLElement>();
@@ -147,13 +150,16 @@ export class Player {
     this.stage.replaceChildren(rendered);
 
     for (const video of this.stage.querySelectorAll('video')) {
-      const from = carry.get(video.getAttribute('src') ?? '');
-      if (from === undefined) continue;
-      const resume = () => {
-        video.currentTime = from;
-      };
-      if (video.readyState >= HTMLMediaElement.HAVE_METADATA) resume();
-      else video.addEventListener('loadedmetadata', resume, { once: true });
+      const live = carry.get(video.getAttribute('src') ?? '');
+      if (!live || live === video) continue;
+      // The rendered element carries the new slide's presentation (crop
+      // offsets, fit, trim-aware loop flag); move all of it onto the live
+      // element before it takes the rendered one's place.
+      live.style.cssText = video.style.cssText;
+      live.loop = video.loop;
+      live.muted = video.muted;
+      live.controls = video.controls;
+      video.replaceWith(live);
     }
 
     this.rescale();
@@ -169,7 +175,15 @@ export class Player {
     previousNodes: Map<string, HTMLElement>,
   ): void {
     const duration = this.deck.magicMoveDuration;
-    const easing = 'cubic-bezier(.2,.8,.2,1)';
+    // The named curves map to beziers chosen for object motion, not the CSS
+    // keywords of the same name: 'ease-out' front-loads the motion (snappy
+    // arrival), while the default symmetric ease-in-out keeps mid-transition
+    // speed high so paths don't crawl toward the end.
+    const easing = {
+      'ease-in-out': 'cubic-bezier(.45,.05,.55,.95)',
+      'ease-out': 'cubic-bezier(.2,.8,.2,1)',
+      linear: 'linear',
+    }[this.deck.magicMoveEasing];
     const targetSlide = this.stage.querySelector<HTMLElement>('.slide');
     if (!targetSlide) return;
     const pairs = matchMagicMoveElements(previous.elements, next.elements);
@@ -182,6 +196,18 @@ export class Player {
     for (const [source, target] of unchanged) {
       pairedSources.add(source.id);
       pairedTargets.add(target.id);
+    }
+    // Near-identical leftovers (same object up to a few pixels of drift, as
+    // imports routinely produce) glide the tiny delta as ordinary movers
+    // instead of fading out and back in as two objects.
+    const essential = essentialMagicMovePairs(
+      previous.elements.filter((element) => !pairedSources.has(element.id)),
+      next.elements.filter((element) => !pairedTargets.has(element.id)),
+    );
+    for (const pair of essential) {
+      pairs.push(pair);
+      pairedSources.add(pair[0].id);
+      pairedTargets.add(pair[1].id);
     }
 
     // Stacking during the transition. Paint order is normally DOM order (the
@@ -220,11 +246,19 @@ export class Player {
         `[data-element-id="${CSS.escape(to.id)}"]`,
       );
       if (!node?.animate) continue;
-      let dx = from.x - to.x;
-      let dy = from.y - to.y;
-      let sx = from.w / to.w;
-      let sy = from.h / to.h;
-      let origin = 'top left';
+      // The settled render rotates about the element's center (the CSS
+      // default), so the animation must too: translate between centers and
+      // rotate before scaling, exactly mirroring how the source slide drew
+      // the box. Any other origin makes rotated elements (a thin arrow stored
+      // as a 90°-rotated horizontal box, say) lurch at frame 0 and snap back
+      // when the fill-none animation ends.
+      let dx = from.x + from.w / 2 - (to.x + to.w / 2);
+      let dy = from.y + from.h / 2 - (to.y + to.h / 2);
+      const sx = from.w / to.w;
+      const sy = from.h / to.h;
+      let origin = 'center';
+      let startTransform =
+        `translate(${dx}px, ${dy}px)${from.rot ? ` rotate(${from.rot}deg)` : ''} scale(${sx}, ${sy})`;
       if (from.type === 'text' && to.type === 'text') {
         // A text box is a layout container, not the glyphs: its width can
         // change without the rendered text changing at all, and scaling by the
@@ -238,9 +272,9 @@ export class Player {
         const ayFrom = { top: 0, middle: 0.5, bottom: 1 }[from.valign] ?? 0;
         dx = from.x + axFrom * from.w - (to.x + ax * to.w);
         dy = from.y + ayFrom * from.h - (to.y + ay * to.h);
-        sx = scale;
-        sy = scale;
         origin = `${ax * 100}% ${ay * 100}%`;
+        startTransform =
+          `translate(${dx}px, ${dy}px) scale(${scale}, ${scale})${from.rot ? ` rotate(${from.rot}deg)` : ''}`;
       }
       const finalTransform = to.style.transform ?? (to.rot ? `rotate(${to.rot}deg)` : 'none');
       const stacking = stackingFrames(to.id) ?? [];
@@ -250,7 +284,7 @@ export class Player {
       // flipping at the same real midpoint as every discrete switch.
       node.animate([
         {
-          transform: `translate(${dx}px, ${dy}px) scale(${sx}, ${sy})${from.rot ? ` rotate(${from.rot}deg)` : ''}`,
+          transform: startTransform,
           transformOrigin: origin,
           opacity: String(from.opacity),
           offset: 0,
@@ -268,9 +302,11 @@ export class Player {
       ], { duration, easing: 'linear', fill: 'none' });
     }
 
-    // Changed, unpaired objects switch discretely at the midpoint. Opacity
-    // fades made dense arrow diagrams look staggered under easing even though
-    // every animation had the same duration.
+    // Genuinely new objects (nothing on the source slide is even essentially
+    // the same) fade in over the final quarter, after the movers have mostly
+    // settled. The windows are fixed fractions of wall time and linear, so
+    // dense arrow diagrams fade as one — the stagger that discrete switching
+    // was introduced to avoid came from easing the fades, not from fading.
     for (const target of next.elements) {
       if (pairedTargets.has(target.id)) continue;
       const node = this.stage.querySelector<HTMLElement>(
@@ -280,10 +316,9 @@ export class Player {
       const dom = domRank.get(target.id);
       const zIndex = dom === undefined ? {} : { zIndex: String(dom) };
       node.animate([
-        { visibility: 'hidden', offset: 0, ...zIndex },
-        { visibility: 'hidden', offset: 0.499, ...zIndex },
-        { visibility: 'visible', offset: 0.5, ...zIndex },
-        { visibility: 'visible', offset: 1, ...zIndex },
+        { opacity: '0', offset: 0, ...zIndex },
+        { opacity: '0', offset: 0.75, ...zIndex },
+        { opacity: String(target.opacity), offset: 1, ...zIndex },
       ], { duration, easing: 'linear', fill: 'none' });
     }
 
@@ -306,12 +341,13 @@ export class Player {
         continue;
       }
       hasGhosts = true;
+      // Removed objects fade out over the first quarter, clearing the stage
+      // before the incoming objects' final-quarter fade begins.
       const zIndex = String(sourceRank.get(source.id) ?? 0);
       const animation = ghost.animate([
-        { visibility: 'visible', offset: 0, zIndex },
-        { visibility: 'visible', offset: 0.499, zIndex },
-        { visibility: 'hidden', offset: 0.5, zIndex },
-        { visibility: 'hidden', offset: 1, zIndex },
+        { opacity: String(source.opacity), offset: 0, zIndex },
+        { opacity: '0', offset: 0.25, zIndex },
+        { opacity: '0', offset: 1, zIndex },
       ], { duration, easing: 'linear', fill: 'forwards' });
       void animation.finished.then(() => ghost.remove(), () => ghost.remove());
     }
@@ -377,6 +413,7 @@ export class Player {
 
   /** Reconcile the DOM and media playback with a computed slide state. */
   private applyState(slide: Slide, state: SlideState): void {
+    applyParagraphVisibility(this.stage, state);
     for (const el of slide.elements) {
       const node = this.stage.querySelector<HTMLElement>(
         `[data-element-id="${CSS.escape(el.id)}"]`,
@@ -528,7 +565,7 @@ function textFontScale(
     const value = Number.parseFloat(style['font-size'] ?? '');
     return Number.isFinite(value) && value > 0 ? value : undefined;
   };
-  const toSize = (to.autoFit ? fitAutoTextElement(targetNode) ?? undefined : undefined)
+  const toSize = (to.autoFit || to.noWrap ? fitAutoTextElement(targetNode) ?? undefined : undefined)
     ?? fitted(targetNode) ?? authored(to.style);
   const fromSize = fitted(sourceClone) ?? authored(from.style);
   return fromSize !== undefined && toSize !== undefined && toSize > 0 ? fromSize / toSize : 1;

@@ -141,9 +141,10 @@ describe.skipIf(!ready)('keynote importer', () => {
         source.type === 'image' ? source.src : '',
         target.type === 'image' ? target.src : '',
       ])).toContainEqual(['assets/method-12913.png', 'assets/method-12913.png']);
+      // Auto-pair skips it: identical objects stay visible without a pair.
       expect(suggestMagicMovePairs(previous, next).some(([source, target]) =>
         source.type === 'image' && target.type === 'image' &&
-        source.src === 'assets/method-12913.png' && target.src === source.src)).toBe(true);
+        source.src === 'assets/method-12913.png' && target.src === source.src)).toBe(false);
     },
     60_000,
   );

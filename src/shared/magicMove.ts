@@ -23,6 +23,51 @@ export function unchangedMagicMovePairs(
   return pairs;
 }
 
+/**
+ * Objects that are the same up to a small geometric epsilon — every visual
+ * property identical, position/size within a few pixels, rotation within a
+ * degree. Imports commonly reproduce "the same" arrow or box with sub-pixel
+ * drift between slides; treating those as pairs lets them glide the tiny
+ * delta instead of popping out and back in. Deliberately conservative: any
+ * styling or content difference at all disqualifies a match, so whatever is
+ * left unpaired is decisively a different object.
+ */
+export function essentialMagicMovePairs(
+  previous: SlideElement[],
+  next: SlideElement[],
+): MagicMovePair[] {
+  const POSITION_EPSILON = 8;
+  const ROTATION_EPSILON = 1;
+  const available = new Set(previous);
+  const pairs: MagicMovePair[] = [];
+  for (const target of next) {
+    const signature = geometryFreeSignature(target);
+    let best: { source: SlideElement; distance: number } | null = null;
+    for (const candidate of available) {
+      if (geometryFreeSignature(candidate) !== signature) continue;
+      if (Math.abs(candidate.x - target.x) > POSITION_EPSILON ||
+        Math.abs(candidate.y - target.y) > POSITION_EPSILON ||
+        Math.abs(candidate.w - target.w) > POSITION_EPSILON ||
+        Math.abs(candidate.h - target.h) > POSITION_EPSILON ||
+        Math.abs(candidate.rot - target.rot) > ROTATION_EPSILON) continue;
+      // A curve's canvas-space control point is geometry too: compare it with
+      // the same tolerance, and never match a curved shape with a straight one.
+      const candidateControl = candidate.type === 'shape' ? candidate.control : null;
+      const targetControl = target.type === 'shape' ? target.control : null;
+      if (Boolean(candidateControl) !== Boolean(targetControl)) continue;
+      if (candidateControl && targetControl && (
+        Math.abs(candidateControl.x - targetControl.x) > POSITION_EPSILON ||
+        Math.abs(candidateControl.y - targetControl.y) > POSITION_EPSILON)) continue;
+      const distance = Math.hypot(candidate.x - target.x, candidate.y - target.y);
+      if (!best || distance < best.distance) best = { source: candidate, distance };
+    }
+    if (!best) continue;
+    available.delete(best.source);
+    pairs.push([best.source, target]);
+  }
+  return pairs;
+}
+
 /** Runtime matching is deliberately explicit: unpaired objects never animate. */
 export function explicitMagicMovePairs(
   previous: SlideElement[],
@@ -39,12 +84,20 @@ export function explicitMagicMovePairs(
   });
 }
 
-/** Conservative heuristic suggestions used only when the author presses Auto-pair. */
+/**
+ * Conservative heuristic suggestions used only when the author presses Auto-pair.
+ * Objects the conservative matcher already recognizes as visually identical are
+ * excluded: the player keeps them continuously visible without a pair, so an
+ * explicit pair would animate nothing and only clutter the pairing UI.
+ */
 export function suggestMagicMovePairs(
   previous: SlideElement[],
   next: SlideElement[],
 ): MagicMovePair[] {
-  const alreadyPaired = new Set(explicitMagicMovePairs(previous, next).flat());
+  const alreadyPaired = new Set([
+    ...explicitMagicMovePairs(previous, next).flat(),
+    ...unchangedMagicMovePairs(previous, next).flat(),
+  ]);
   const candidates: Array<{ source: SlideElement; target: SlideElement; score: number }> = [];
   for (const source of previous) {
     if (alreadyPaired.has(source)) continue;
@@ -118,6 +171,22 @@ function jaccard(left: string, right: string): number {
   if (a.size === 0 || b.size === 0) return 0;
   const intersection = [...a].filter((word) => b.has(word)).length;
   return intersection / new Set([...a, ...b]).size;
+}
+
+function geometryFreeSignature(element: SlideElement): string {
+  const {
+    id: _id,
+    magicMoveId: _magicMoveId,
+    lineageId: _lineageId,
+    x: _x,
+    y: _y,
+    w: _w,
+    h: _h,
+    rot: _rot,
+    ...visual
+  } = element;
+  if ('control' in visual) delete (visual as { control?: unknown }).control;
+  return JSON.stringify(visual);
 }
 
 function visualSignature(element: SlideElement): string {
