@@ -10,9 +10,11 @@ import {
 import {
   applyParagraphVisibility,
   countParagraphs,
+  listToParagraphs,
   normalizeParagraphHtml,
   paragraphTexts,
   paragraphUnits,
+  paragraphsToList,
 } from '../src/shared/paragraphs.js';
 import { EditorStore } from '../src/renderer/editor/store.js';
 import { TimelinePanel } from '../src/renderer/editor/timelinePanel.js';
@@ -98,6 +100,18 @@ describe('paragraph normalisation', () => {
     const flat = normalizeParagraphHtml(nested, true);
     expect(flat).toBe('<p>one</p><p>two</p><p>three</p>');
     expect(countParagraphs(flat)).toBe(3);
+  });
+
+  it('folds the sibling list Chrome indent creates into the item before it', () => {
+    // Tab in a bulleted list runs execCommand('indent'), which nests the new
+    // level as a *sibling* of the `<li>`s. Valid nesting puts it inside one.
+    expect(normalizeParagraphHtml('<ul><li>a</li><ul><li>b</li></ul><li>c</li></ul>')).toBe(
+      '<ul><li>a<ul><li>b</li></ul></li><li>c</li></ul>',
+    );
+    // Indenting the first bullet leaves no item to attach to; it gets one.
+    expect(normalizeParagraphHtml('<ul><ul><li>a</li></ul></ul>')).toBe(
+      '<ul><li><ul><li>a</li></ul></li></ul>',
+    );
   });
 
   it('passes authored structure through untouched', () => {
@@ -230,5 +244,44 @@ describe('Build panel by-paragraph card', () => {
     action.value = 'appear';
     action.dispatchEvent(new Event('change'));
     expect(store.slide!.timeline[0].action.value).toBeNull();
+  });
+});
+
+describe('bullet list conversion', () => {
+  it('makes one bullet per paragraph block', () => {
+    expect(paragraphsToList('<p>a</p><p>b</p><p>c</p>')).toBe(
+      '<ul><li>a</li><li>b</li><li>c</li></ul>',
+    );
+  });
+
+  it('splits legacy <br>-separated text into bullets', () => {
+    expect(paragraphsToList('a<br>b<br>c')).toBe('<ul><li>a</li><li>b</li><li>c</li></ul>');
+  });
+
+  it('keeps inline markup inside each bullet', () => {
+    expect(paragraphsToList('<p><b>a</b> x</p><p>b</p>')).toBe(
+      '<ul><li><b>a</b> x</li><li>b</li></ul>',
+    );
+  });
+
+  it('bare single-line text becomes a single bullet', () => {
+    expect(paragraphsToList('Summary')).toBe('<ul><li>Summary</li></ul>');
+  });
+
+  it('empty text yields a placeholder item', () => {
+    expect(paragraphsToList('')).toBe('<ul><li>Item</li></ul>');
+  });
+
+  it('converts a list back to one paragraph per item', () => {
+    expect(listToParagraphs('<ul><li>a</li><li>b</li></ul>')).toBe('<p>a</p><p>b</p>');
+  });
+
+  it('single-item list becomes a single paragraph', () => {
+    expect(listToParagraphs('<ul><li>only</li></ul>')).toBe('<p>only</p>');
+  });
+
+  it('round-trips paragraph text', () => {
+    const html = '<p>One</p><p>Two</p><p>Three</p>';
+    expect(listToParagraphs(paragraphsToList(html))).toBe(html);
   });
 });

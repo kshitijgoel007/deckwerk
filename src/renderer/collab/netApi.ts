@@ -1,4 +1,4 @@
-import type { ImportedAsset, MediaInfo } from '@shared/ipc.js';
+import type { AssetImportProgress, ImportedAsset, MediaInfo } from '@shared/ipc.js';
 
 /**
  * The browser collab client's stand-in for the Electron preload bridge.
@@ -15,26 +15,64 @@ export interface NetApiOptions {
   saveTheme: (css: string) => void;
 }
 
+const progressListeners = new Set<(p: AssetImportProgress) => void>();
+
+function emitProgress(p: AssetImportProgress): void {
+  for (const fn of progressListeners) fn(p);
+}
+
+/**
+ * XHR rather than fetch: only XHR exposes upload progress. Once the bytes are
+ * up, the server hashes/copies/transcodes before responding — that stretch is
+ * reported as an indeterminate 'processing' phase.
+ */
+function uploadFile(deck: string, file: File, token?: string): Promise<ImportedAsset> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `/api/upload?deck=${deck}&name=${encodeURIComponent(file.name)}`);
+    xhr.responseType = 'json';
+    if (token) {
+      xhr.upload.addEventListener('progress', (e) => {
+        emitProgress({
+          token,
+          phase: 'upload',
+          ratio: e.lengthComputable ? e.loaded / e.total : null,
+        });
+      });
+      xhr.upload.addEventListener('load', () =>
+        emitProgress({ token, phase: 'processing', ratio: null }),
+      );
+    }
+    xhr.addEventListener('load', () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(xhr.response as ImportedAsset);
+      } else {
+        const body = xhr.response as { error?: string } | null;
+        reject(new Error(body?.error ?? `upload failed (${xhr.status})`));
+      }
+    });
+    xhr.addEventListener('error', () => reject(new Error('upload failed (network)')));
+    xhr.send(file);
+  });
+}
+
 export function installNetApi(options: NetApiOptions): void {
   const deck = encodeURIComponent(options.deckId);
   const api = {
     assetUrl: (src: string): string =>
       `/decks/${deck}/${src.replace(/^\/+/, '').split('/').map(encodeURIComponent).join('/')}`,
 
-    importAssetFiles: async (files: File[]): Promise<ImportedAsset[]> => {
+    importAssetFiles: async (files: File[], progressToken?: string): Promise<ImportedAsset[]> => {
       const imported: ImportedAsset[] = [];
       for (const file of files) {
-        const response = await fetch(
-          `/api/upload?deck=${deck}&name=${encodeURIComponent(file.name)}`,
-          { method: 'POST', body: file },
-        );
-        if (!response.ok) {
-          const body = await response.json().catch(() => ({}));
-          throw new Error((body as { error?: string }).error ?? `upload failed (${response.status})`);
-        }
-        imported.push(await response.json() as ImportedAsset);
+        imported.push(await uploadFile(deck, file, progressToken));
       }
       return imported;
+    },
+
+    onAssetImportProgress: (fn: (p: AssetImportProgress) => void): (() => void) => {
+      progressListeners.add(fn);
+      return () => progressListeners.delete(fn);
     },
 
     // The drop handler prefers importAssetFiles; these exist so shared code

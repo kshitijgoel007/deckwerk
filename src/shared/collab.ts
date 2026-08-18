@@ -133,6 +133,11 @@ export const ServerThemeSchema = z.object({
   byClientId: z.string(),
 });
 
+/** Hosted session torn down on purpose (host clicked End collaboration). */
+export const ServerEndedSchema = z.object({
+  kind: z.literal('ended'),
+});
+
 export const ServerMessageSchema = z.discriminatedUnion('kind', [
   ServerWelcomeSchema,
   ServerTxnSchema,
@@ -141,6 +146,7 @@ export const ServerMessageSchema = z.discriminatedUnion('kind', [
   ServerCursorSchema,
   ServerPeerLeftSchema,
   ServerThemeSchema,
+  ServerEndedSchema,
 ]);
 
 export type ServerMessage = z.infer<typeof ServerMessageSchema>;

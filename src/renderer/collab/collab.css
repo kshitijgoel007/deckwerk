@@ -2,23 +2,39 @@
    selection outlines are styled inline by presenceOverlay.ts because their
    colors are per-peer. */
 
+/* Lives on .rail-item, in the left gutter beside the thumbnail: a vertical
+   stack of dots aligned with the slide's top edge, outside the slide card.
+   The row is a button, so hover tooltips work without extra opt-in. */
 .rail-presence {
   position: absolute;
-  right: 6px;
-  top: 6px;
+  left: 3px;
+  top: 4px; /* lines up with the thumbnail's top edge */
+  z-index: 3;
   display: flex;
+  flex-direction: column;
   gap: 3px;
-  pointer-events: none;
 }
 
 .rail-presence-dot {
-  width: 8px;
-  height: 8px;
+  width: 10px;
+  height: 10px;
   border-radius: 50%;
   border: 1px solid rgba(255, 255, 255, 0.85);
   box-shadow: 0 0 2px rgba(0, 0, 0, 0.5);
+  pointer-events: auto;
 }
 
 .presence-layer {
   z-index: 40;
+}
+
+/* The host's End collaboration toolbar button. */
+button.danger {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+button.danger:hover:not(:disabled) {
+  background: var(--danger);
+  color: #fff;
+  border-color: transparent;
 }

@@ -39,11 +39,20 @@ export function fitAutoTextElement(node: HTMLElement, minimum = 6): number | nul
     const width = content.scrollWidth;
     if (width > room && width > 0) {
       const scale = room / width;
+      // An overlong no-wrap line is laid out pinned to the box's left edge
+      // regardless of text-align (alignment only distributes positive free
+      // space), so the squeeze must anchor there too — an alignment-based
+      // origin scaled around empty space and shifted the text sideways. The
+      // translate re-seats the squeezed line (now `room` wide) where the
+      // author's alignment wants it inside the full box width.
       const align = getComputedStyle(body).textAlign;
-      content.style.transform = `scaleX(${scale})`;
-      content.style.transformOrigin =
-        align === 'right' || align === 'end' ? '100% 50%'
-          : align === 'center' ? '50% 50%' : '0 50%';
+      const slack = body.clientWidth - width * scale;
+      const shift =
+        align === 'right' || align === 'end' ? slack
+          : align === 'center' ? slack / 2 : 0;
+      content.style.transform =
+        `${shift > 0 ? `translateX(${Math.round(shift * 10) / 10}px) ` : ''}scaleX(${scale})`;
+      content.style.transformOrigin = '0 50%';
       content.dataset.fittedScaleX = String(Math.round(scale * 1000) / 1000);
     }
     content.dataset.fittedFontSize = String(ceiling);

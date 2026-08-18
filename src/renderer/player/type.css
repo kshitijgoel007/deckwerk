@@ -84,6 +84,11 @@
   margin: 0.15em 0;
 }
 
+/* Indented bullets (tab while editing a list) switch to a dash marker. */
+.text-body ul ul {
+  list-style-type: "-  ";
+}
+
 /* A paragraph is a block, and the only gap between two of them is the deck's
    own paragraph spacing — never the browser's 1em default, which would make
    text jump the moment the editor turned imported `<br>` breaks into blocks. */
@@ -94,7 +99,9 @@
 /* Explicit paragraph spacing: one number governs the gap between paragraphs
    and between bullets. The element carries data-paragraph-spacing and the
    --paragraph-spacing variable; unset elements keep the defaults above. */
-[data-paragraph-spacing] .text-body :is(p, ul, ol, li) {
+/* :where keeps this reset at the same specificity as the spacing rule below,
+   so the later rule wins on the elements both match. */
+[data-paragraph-spacing] .text-body :where(p, ul, ol, li) {
   margin-top: 0;
   margin-bottom: 0;
 }

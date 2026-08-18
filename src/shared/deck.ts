@@ -38,6 +38,19 @@ const ThemeStyleSchema = z.object({
   }),
 });
 
+/**
+ * A comment attached to a slide or an element. Comments live in deck.json so
+ * they sync through the same element-level diff/merge as every other edit and
+ * survive download/export. `ts` is an ISO-8601 timestamp.
+ */
+export const CommentSchema = z.object({
+  id: Id,
+  author: z.string().default(''),
+  text: z.string(),
+  ts: z.string(),
+  resolved: z.boolean().default(false),
+});
+
 /** Shared geometry for every element. */
 const BaseElement = z.object({
   id: Id,
@@ -58,6 +71,8 @@ const BaseElement = z.object({
   magicMoveId: z.string().nullable().optional(),
   /** Stable ancestry retained when an object is duplicated, for opt-in Auto-pair. */
   lineageId: z.string().nullable().optional(),
+  /** Discussion attached to this element; absent when there is none. */
+  comments: z.array(CommentSchema).optional(),
 });
 
 const TextElement = BaseElement.extend({
@@ -100,6 +115,12 @@ const ImageElement = BaseElement.extend({
   src: z.string(),
   fit: z.enum(['contain', 'cover', 'fill']).default('contain'),
   alt: z.string().default(''),
+  /**
+   * Shape of the element box's mask. 'circle' clips the visible window to an
+   * inscribed ellipse; combined with `sourceBox` this gives Keynote-style
+   * "shift the photo behind a circular mask" editing. Absent means rectangular.
+   */
+  maskShape: z.enum(['rect', 'circle']).optional(),
   /** Ordered, non-destructive visual effects. Order is significant. */
   effects: z.array(MediaEffectSchema).optional(),
   borderColor: z.string().nullable().optional(),
@@ -124,6 +145,8 @@ const VideoElement = BaseElement.extend({
   type: z.literal('video'),
   src: z.string(),
   fit: z.enum(['contain', 'cover', 'fill']).default('contain'),
+  /** Shape of the element box's mask; same semantics as on images. */
+  maskShape: z.enum(['rect', 'circle']).optional(),
   autoplay: z.boolean().default(true),
   loop: z.boolean().default(true),
   muted: z.boolean().default(true),
@@ -256,6 +279,8 @@ export const SlideSchema = z.object({
   skipped: z.boolean().optional(),
   elements: z.array(ElementSchema).default([]),
   timeline: z.array(TimelineEntrySchema).default([]),
+  /** Discussion attached to the slide as a whole; absent when there is none. */
+  comments: z.array(CommentSchema).optional(),
 });
 
 export const DeckSchema = z.object({
@@ -290,6 +315,7 @@ export type ShapeEl = z.infer<typeof ShapeElement>;
 export type HtmlEl = z.infer<typeof HtmlElement>;
 export type UnsupportedEl = z.infer<typeof UnsupportedElement>;
 export type Slide = z.infer<typeof SlideSchema>;
+export type Comment = z.infer<typeof CommentSchema>;
 export type Deck = z.infer<typeof DeckSchema>;
 export type ThemeStyle = z.infer<typeof ThemeStyleSchema>;
 

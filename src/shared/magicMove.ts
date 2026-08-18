@@ -97,6 +97,7 @@ export function suggestMagicMovePairs(
   const alreadyPaired = new Set([
     ...explicitMagicMovePairs(previous, next).flat(),
     ...unchangedMagicMovePairs(previous, next).flat(),
+    ...essentialMagicMovePairs(previous, next).flat(),
   ]);
   const candidates: Array<{ source: SlideElement; target: SlideElement; score: number }> = [];
   for (const source of previous) {
@@ -178,6 +179,7 @@ function geometryFreeSignature(element: SlideElement): string {
     id: _id,
     magicMoveId: _magicMoveId,
     lineageId: _lineageId,
+    z: _z,
     x: _x,
     y: _y,
     w: _w,
@@ -189,11 +191,16 @@ function geometryFreeSignature(element: SlideElement): string {
   return JSON.stringify(visual);
 }
 
+// Stacking order (z) is deliberately not part of either signature: an object
+// whose only difference between slides is paint order is still the same
+// object, and treating it as changed makes auto-pair suggest a pair that
+// animates nothing. The player resolves transition stacking separately.
 function visualSignature(element: SlideElement): string {
   const {
     id: _id,
     magicMoveId: _magicMoveId,
     lineageId: _lineageId,
+    z: _z,
     ...visual
   } = element;
   return JSON.stringify(visual);

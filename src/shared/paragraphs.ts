@@ -128,6 +128,33 @@ export function applyParagraphVisibility(stage: ParentNode, state: SlideState): 
 }
 
 /**
+ * Convert paragraph markup to a bulleted list, one `<li>` per paragraph.
+ * Legacy `<br>`-separated text is split the same way the editor would
+ * (normalisation promotes each line to a block first).
+ */
+export function paragraphsToList(html: string): string {
+  const template = document.createElement('template');
+  template.innerHTML = normalizeParagraphHtml(html, true);
+  const items = paragraphUnits(template.content)
+    .map((unit) => `<li>${unit.innerHTML}</li>`)
+    .join('');
+  return `<ul>${items || '<li>Item</li>'}</ul>`;
+}
+
+/**
+ * Convert a bulleted list back to paragraph markup, one paragraph per item.
+ * Normalisation keeps the single-paragraph case as bare inline markup.
+ */
+export function listToParagraphs(html: string): string {
+  const template = document.createElement('template');
+  template.innerHTML = html;
+  const items = [...template.content.querySelectorAll('li')]
+    .map((li) => `<p>${li.innerHTML}</p>`)
+    .join('');
+  return normalizeParagraphHtml(items);
+}
+
+/**
  * A block element the editor generated rather than the author: contenteditable
  * wraps what you type in a bare `<div>` with no attributes. Authored
  * containers (a flex row, a styled box) always carry class or style, so this
@@ -196,6 +223,26 @@ function collectParagraphs(
 }
 
 /**
+ * Chrome's indent command nests a list as a *sibling* of the `<li>`s
+ * (`<ul><li>a</li><ul>…`), which is invalid HTML and invisible to the
+ * paragraph segmentation above. Fold each such list into the `<li>` before
+ * it, where nested lists belong.
+ */
+function nestStrayLists(root: ParentNode & Node): void {
+  for (const list of [...root.querySelectorAll(':is(ul, ol) > :is(ul, ol)')]) {
+    const prev = list.previousElementSibling;
+    if (prev?.tagName === 'LI') {
+      prev.appendChild(list);
+    } else {
+      // No item to attach to (indented the first bullet): give it one.
+      const li = (root.ownerDocument ?? document).createElement('li');
+      list.parentNode?.insertBefore(li, list);
+      li.appendChild(list);
+    }
+  }
+}
+
+/**
  * Rewrite text markup so that every paragraph is a top-level block of
  * `.text-content`.
  *
@@ -206,6 +253,7 @@ function collectParagraphs(
 export function normalizeParagraphHtml(html: string, splitBreaks = false): string {
   const template = document.createElement('template');
   template.innerHTML = html;
+  nestStrayLists(template.content);
   const paragraphs: HTMLElement[] = [];
   const generated = new Set<HTMLElement>();
   collectParagraphs(template.content, paragraphs, generated, splitBreaks);

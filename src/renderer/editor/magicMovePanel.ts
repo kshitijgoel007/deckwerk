@@ -133,9 +133,16 @@ export class MagicMovePanel {
       }, { label: enabledInput.checked ? 'Enable Magic Move' : 'Disable Magic Move' });
     });
     const enabledLabel = document.createElement('span');
-    enabledLabel.textContent = 'Enable to next slide';
+    enabledLabel.textContent = 'Enabled';
     enabled.append(enabledInput, enabledLabel);
     this.host.appendChild(enabled);
+
+    const enableAndPair = document.createElement('button');
+    enableAndPair.className = 'panel-action magic-enable-pair';
+    enableAndPair.textContent = 'Enable and Auto-Pair';
+    enableAndPair.title = 'Enable Magic Move to the next slide and pair strongly matching objects';
+    enableAndPair.addEventListener('click', () => this.enableAndAutoPair());
+    this.host.appendChild(enableAndPair);
 
     const pairCount = pairs.length;
     const pairNumbers = new Map<string, number>();
@@ -159,6 +166,12 @@ export class MagicMovePanel {
     edit.textContent = 'Open Magic Move editor…';
     edit.addEventListener('click', () => this.openModal());
     this.host.append(previews, summary, edit);
+    if (this.message) {
+      const status = document.createElement('p');
+      status.className = 'insp-hint magic-message';
+      status.textContent = this.message;
+      this.host.appendChild(status);
+    }
 
     if (this.modal?.isConnected) this.renderModal();
   }
@@ -493,6 +506,26 @@ export class MagicMovePanel {
         target.magicMoveId = null;
       }
     }, { label: 'Clear Magic Move pairs' });
+  }
+
+  /** One-click: turn on Magic Move to the next slide and auto-pair matches. */
+  private enableAndAutoPair(): void {
+    const { deck, slideIndex } = this.store.get();
+    const current = deck.slides[slideIndex];
+    const next = deck.slides[slideIndex + 1];
+    if (!current || !next) return;
+    const suggestions = suggestMagicMovePairs(current.elements, next.elements);
+    this.message = suggestions.length > 0
+      ? `Enabled Magic Move; auto-paired ${suggestions.length} object${suggestions.length === 1 ? '' : 's'}.`
+      : 'Enabled Magic Move; no confident new matches to pair.';
+    this.store.commit((nextDeck) => {
+      const left = nextDeck.slides[slideIndex];
+      const right = nextDeck.slides[slideIndex + 1];
+      for (const [source, target] of suggestions) {
+        pairMagicMoveObjects(left, right, source.id, target.id);
+      }
+      right.magicMoveFromPrevious = true;
+    }, { label: 'Enable and auto-pair Magic Move' });
   }
 
   private autoPair(): void {

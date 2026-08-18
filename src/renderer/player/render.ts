@@ -2,6 +2,7 @@ import { MIRRORED_TEXT_STYLE_PROPERTIES } from '@shared/deck.js';
 import type { Deck, Slide, SlideElement } from '@shared/deck.js';
 import { fitScale } from '@shared/geometry.js';
 import { fitAutoTextElement } from '@shared/autoFit.js';
+import { isPendingSrc, pendingName, pendingToken } from '@shared/media.js';
 import { quadraticPath, shapeSvg } from '@shared/shapeSvg.js';
 import renderMathInElement from 'katex/contrib/auto-render';
 import 'katex/dist/katex.min.css';
@@ -64,13 +65,27 @@ export function renderElement(
   s.opacity = String(el.opacity);
   if (el.rot) s.transform = `rotate(${el.rot}deg)`;
   for (const [k, v] of Object.entries(el.style)) s.setProperty(k, v);
-  if ((el.type === 'image' || el.type === 'video') && (el.borderWidth ?? 0) > 0) {
-    s.border = `${el.borderWidth}px solid ${el.borderColor ?? '#000000'}`;
-    s.borderRadius = `${el.borderRadius ?? 0}px`;
-    s.overflow = 'hidden';
+  if (el.type === 'image' || el.type === 'video') {
+    if ((el.borderWidth ?? 0) > 0) {
+      s.border = `${el.borderWidth}px solid ${el.borderColor ?? '#000000'}`;
+    }
+    const radius = mediaRadius(el);
+    if (radius) {
+      s.borderRadius = radius;
+      // Rounding must clip, or the media's corners paint outside the radius.
+      s.overflow = 'hidden';
+    }
   }
 
   const body = renderBody(el, opts);
+  if (el.type === 'image' || el.type === 'video') {
+    // The radius goes on the media node itself as well as on the wrapper: a
+    // <video> gets its own compositing layer, which an ancestor's
+    // overflow: hidden does not always clip — the wrapper alone leaves a
+    // masked clip square on screen while the identical image is a circle.
+    const radius = mediaRadius(el);
+    if (radius) body.style.borderRadius = radius;
+  }
   if ((el.type === 'image' || el.type === 'video') && el.effects?.length) {
     const renderedEffects = renderMediaEffects(el.id, el.effects);
     body.style.filter = renderedEffects.filter;
@@ -93,6 +108,21 @@ export function renderElement(
     scheduleAutoFit(node);
   }
   return node;
+}
+
+/**
+ * The CSS corner radius for a media element, or '' for square corners.
+ *
+ * A circular mask clips the box to its inscribed ellipse and wins over a
+ * numeric corner radius; a raw `border-radius` in the element's own style is
+ * honoured as authored.
+ */
+export function mediaRadius(
+  el: Extract<SlideElement, { type: 'image' | 'video' }>,
+): string {
+  if (el.maskShape === 'circle') return '50%';
+  if ((el.borderRadius ?? 0) > 0) return `${el.borderRadius}px`;
+  return el.style['border-radius'] ?? '';
 }
 
 function renderMediaEffects(
@@ -224,6 +254,7 @@ function renderBody(el: SlideElement, opts: RenderOptions): HTMLElement | SVGEle
     }
 
     case 'image': {
+      if (isPendingSrc(el.src)) return renderPendingPlaceholder(el.src);
       if (/\.pdf(?:$|[?#])/i.test(el.src)) {
         const pdf = document.createElement('embed');
         pdf.src = `${opts.resolveSrc(el.src)}#page=1&toolbar=0&navpanes=0`;
@@ -288,10 +319,41 @@ function renderBody(el: SlideElement, opts: RenderOptions): HTMLElement | SVGEle
   }
 }
 
+/**
+ * A media element whose file is still uploading or transcoding. Rendered as a
+ * labelled box with a progress ring; the ring is indeterminate by default
+ * (that's all a collab peer knows), and the uploading client's canvas layers
+ * live progress and a local preview frame on top after each render.
+ */
+function renderPendingPlaceholder(src: string): HTMLElement {
+  const box = document.createElement('div');
+  box.className = 'pending-asset';
+  box.dataset.pendingToken = pendingToken(src) ?? '';
+
+  const preview = document.createElement('div');
+  preview.className = 'pending-asset-preview';
+  box.appendChild(preview);
+
+  const hud = document.createElement('div');
+  hud.className = 'pending-asset-hud';
+  const ring = document.createElement('div');
+  ring.className = 'pending-asset-ring indeterminate';
+  const label = document.createElement('div');
+  label.className = 'pending-asset-label';
+  label.textContent = pendingName(src);
+  const status = document.createElement('div');
+  status.className = 'pending-asset-status';
+  status.textContent = 'Uploading…';
+  hud.append(ring, label, status);
+  box.appendChild(hud);
+  return box;
+}
+
 function renderVideo(
   el: Extract<SlideElement, { type: 'video' }>,
   opts: RenderOptions,
 ): HTMLElement {
+  if (isPendingSrc(el.src)) return renderPendingPlaceholder(el.src);
   const video = document.createElement('video');
   video.src = opts.resolveSrc(el.src);
   video.loop = el.loop;

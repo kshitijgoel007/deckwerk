@@ -6,7 +6,12 @@ const shared = resolve(__dirname, 'src/shared');
 export default defineConfig({
   main: {
     build: {
-      rollupOptions: { input: resolve(__dirname, 'src/main/index.ts') },
+      rollupOptions: {
+        input: resolve(__dirname, 'src/main/index.ts'),
+        // Bundling ws breaks its optional native bufferutil/utf-8-validate
+        // loading (bufferUtil.unmask is not a function at runtime).
+        external: ['ws', 'bufferutil', 'utf-8-validate'],
+      },
     },
     resolve: { alias: { '@shared': shared } },
   },

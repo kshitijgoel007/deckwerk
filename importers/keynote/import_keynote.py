@@ -1791,6 +1791,28 @@ class Importer:
         title_id = _ref(slide_obj, "titlePlaceholder")
         body_id = _ref(slide_obj, "bodyPlaceholder")
 
+        background = self.slide_background(slide_obj)
+        if background["image"]:
+            # A background image is not kept as a slide-level background:
+            # it becomes an ordinary full-bleed image element painted first,
+            # so it can be selected, replaced and animated like anything else.
+            width, height = self.canvas
+            bg_element = self._base(
+                {"x": 0.0, "y": 0.0, "w": width, "h": height, "rot": 0.0},
+                0,
+                "image",
+            )
+            bg_element.update(
+                {
+                    "src": background["image"],
+                    "fit": "fill",
+                    "alt": "",
+                    "sourceBox": None,
+                }
+            )
+            elements.append(bg_element)
+            background = {"color": background["color"] or "#ffffff", "image": None}
+
         for z, drawable_id in enumerate(drawable_ids):
             converted = self.convert_drawable(drawable_id, z)
             role = (
@@ -1821,7 +1843,7 @@ class Importer:
         slide: dict[str, Any] = {
             "id": f"slide-{index + 1}",
             "name": name or f"Slide {index + 1}",
-            "background": self.slide_background(slide_obj),
+            "background": background,
             "notes": notes,
             "elements": elements,
             # Builds are not imported: Keynote's build graph does not map onto

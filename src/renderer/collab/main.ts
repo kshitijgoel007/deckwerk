@@ -4,12 +4,15 @@ import './collab.css';
 import { emptyDeck } from '@shared/deck.js';
 import { setIdSuffix } from '@shared/geometry.js';
 import { EditorCanvas } from '../editor/canvas.js';
+import { installAgentApi, setAgentName } from './agentApi.js';
 import { CssEditor } from '../editor/cssEditor.js';
 import { createShapeInsertPicker, insertText } from '../editor/elementCreation.js';
 import { HistoryPanel } from '../editor/historyPanel.js';
 import { Inspector } from '../editor/inspector.js';
 import {
   barButton,
+  barIconButton,
+  TEXT_ICON,
   bindEditorKeys,
   createClipboardActions,
   makeContextActions,
@@ -58,6 +61,31 @@ function userName(): string {
   }
 }
 
+/* --- server session config --------------------------------------------------- */
+
+/**
+ * A hosted session is the desktop app sharing the one deck it has open: the
+ * server pins that deck, so joiners get no New/Open/Import — they land
+ * straight in the shared presentation.
+ */
+interface ServerConfig {
+  hosted: boolean;
+  deckId: string | null;
+  urls: string[];
+}
+
+let serverConfig: ServerConfig = { hosted: false, deckId: null, urls: [] };
+
+async function fetchServerConfig(): Promise<ServerConfig> {
+  try {
+    const response = await fetch('/api/config');
+    if (response.ok) return await response.json() as ServerConfig;
+  } catch {
+    // Older server without /api/config; behave like the multi-deck server.
+  }
+  return { hosted: false, deckId: null, urls: [] };
+}
+
 /* --- deck selection -------------------------------------------------------- */
 
 const deckId = new URLSearchParams(location.search).get('deck');
@@ -69,9 +97,18 @@ function setStatusMessage(text: string): void {
 }
 
 if (!deckId) {
-  // No deck chosen: the picker is the whole page.
-  el('status').textContent = 'Choose a presentation to start.';
-  showDeckPicker({ dismissable: false, onStatus: setStatusMessage });
+  el('status').textContent = 'Connecting…';
+  void fetchServerConfig().then((config) => {
+    if (config.hosted && config.deckId) {
+      // Hosted session: there is exactly one deck — join it, no picker.
+      const params = new URLSearchParams(location.search);
+      params.set('deck', config.deckId);
+      location.search = params.toString();
+      return;
+    }
+    el('status').textContent = 'Choose a presentation to start.';
+    showDeckPicker({ dismissable: false, onStatus: setStatusMessage });
+  });
   throw new Error('no deck selected — showing picker');
 }
 
@@ -80,6 +117,8 @@ if (!deckId) {
 installNetApi({ deckId, saveTheme: (css) => bridge.sendTheme(css) });
 
 const store = new EditorStore(emptyDeck('Connecting…'));
+// The documented console surface for agents (see /api/brief on the server).
+installAgentApi(store, deckId);
 const canvas = new EditorCanvas(el('canvas'), store);
 // Peers should watch each other type, not just see the result on blur.
 canvas.liveTextSync = true;
@@ -116,6 +155,7 @@ const wsUrl = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.hos
 const bridge = new CollabBridge(wsUrl, userName() || undefined, {
   onWelcome: (welcome) => {
     setIdSuffix(welcome.clientId.slice(0, 4));
+    setAgentName(welcome.self.name);
     connectionState = `connected as ${welcome.self.name}`;
     store.load(welcome.deck, `(collab) ${deckId}`, { keepView: true });
     cssEditor.setValue(welcome.themeCss);
@@ -146,6 +186,10 @@ const bridge = new CollabBridge(wsUrl, userName() || undefined, {
   },
   onCleanChange: (clean) => {
     if (clean) store.markClean();
+  },
+  onEnded: () => {
+    connectionState = 'session ended by the host';
+    setStatusMessage('The host ended this collaboration.');
   },
 });
 
@@ -225,27 +269,91 @@ canvas.onTextEditModeChange = (elementId) => {
 
 /* --- toolbar, tabs, status -------------------------------------------------- */
 
+/**
+ * navigator.clipboard only exists in secure contexts; joiners load this page
+ * over plain http on the LAN, so fall back to the legacy execCommand path.
+ */
+async function copyText(text: string): Promise<void> {
+  if (navigator.clipboard) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const scratch = document.createElement('textarea');
+  scratch.value = text;
+  scratch.style.position = 'fixed';
+  scratch.style.opacity = '0';
+  document.body.append(scratch);
+  scratch.select();
+  const ok = document.execCommand('copy');
+  scratch.remove();
+  if (!ok) throw new Error('copy rejected');
+}
+
 function buildToolbar(): void {
   const bar = el('toolbar');
   bar.replaceChildren();
 
   const left = document.createElement('div');
   left.className = 'bar-group';
-  left.append(
-    barButton('New', () => {
-      void createDeckOnServer().catch((error) =>
-        setStatusMessage(`Create failed: ${error instanceof Error ? error.message : error}`));
-    }),
-    barButton('Open', () => showDeckPicker({ dismissable: true, onStatus: setStatusMessage })),
-    barButton('Import Keynote…', () => importKeynoteToServer(setStatusMessage)),
-  );
+  // In a hosted session the server pins one deck; switching, creating or
+  // importing presentations is the host's business, not a joiner's.
+  if (!serverConfig.hosted) {
+    left.append(
+      barButton('New', () => {
+        void createDeckOnServer().catch((error) =>
+          setStatusMessage(`Create failed: ${error instanceof Error ? error.message : error}`));
+      }),
+      barButton('Open', () => showDeckPicker({ dismissable: true, onStatus: setStatusMessage })),
+      barButton('Import Keynote…', () => importKeynoteToServer(setStatusMessage)),
+    );
+  }
 
   const mid = document.createElement('div');
-  mid.className = 'bar-group';
-  mid.append(barButton('+ Text', () => insertText(store)), createShapeInsertPicker(store));
+  mid.className = 'bar-group bar-center';
+  mid.append(barIconButton('Text', TEXT_ICON, () => insertText(store)), createShapeInsertPicker(store));
 
   const right = document.createElement('div');
   right.className = 'bar-group bar-right';
+  // Everyone can take the deck home at any point: the server flushes the live
+  // session and streams the whole deck folder (deck.json, theme, assets) as a zip.
+  right.append(
+    barButton('Download', () => {
+      const link = document.createElement('a');
+      link.href = `/api/download?deck=${encodeURIComponent(deckId!)}`;
+      link.download = `${deckId}.zip`;
+      link.click();
+    }),
+  );
+  if (serverConfig.hosted) {
+    right.append(
+      barButton('Copy Invite Link', () => {
+        const base = serverConfig.urls.find((u) => !u.includes('127.0.0.1')) ?? serverConfig.urls[0];
+        if (!base) {
+          setStatusMessage('No invite link available');
+          return;
+        }
+        const link = `${base}?deck=${encodeURIComponent(deckId!)}`;
+        void copyText(link).then(
+          () => setStatusMessage('Invite link copied'),
+          () => setStatusMessage(`Could not copy — invite: ${link}`),
+        );
+      }),
+    );
+  }
+  // In a hosted session the desktop app's own window is the only loopback
+  // client, so hosted + loopback identifies the host. The server enforces the
+  // same rule on /api/end; this only decides whether to show the button.
+  const isHost = serverConfig.hosted
+    && (location.hostname === '127.0.0.1' || location.hostname === 'localhost');
+  if (isHost) {
+    right.append(
+      barButton('End collaboration', () => {
+        if (!confirm('End the collaboration for everyone? All edits are saved.')) return;
+        void fetch('/api/end', { method: 'POST' }).catch((error) =>
+          setStatusMessage(`Could not end the session: ${error instanceof Error ? error.message : error}`));
+      }, 'danger'),
+    );
+  }
   right.append(
     barButton('Present', () => {
       const slideIndex = store.get().slideIndex;
@@ -318,10 +426,25 @@ function renderStatus(): void {
   if (selection.size > 0) bits.push(`${selection.size} selected`);
   if (dirty) bits.push('syncing…');
   if (statusMessage) bits.push(statusMessage);
+  // In a hosted session, keep the invite address visible so anyone at the
+  // machine can read it out — the LAN/tailscale URL, not loopback.
+  if (serverConfig.hosted) {
+    const invite = serverConfig.urls.find((u) => !u.includes('127.0.0.1')) ?? serverConfig.urls[0];
+    if (invite) bits.push(`invite: ${invite}`);
+  }
+  // Visible in any screenshot or accessibility read of the page, so an agent
+  // that lands here cold finds its onboarding without guessing endpoints.
+  bits.push('agents: GET /api/brief · window.agent.seeComments()');
   el('status').textContent = bits.join('  ·  ');
 }
 
-buildToolbar();
+// The toolbar depends on whether this is a hosted session; one round-trip
+// before first paint of the buttons keeps New/Open/Import from flashing in.
+void fetchServerConfig().then((config) => {
+  serverConfig = config;
+  buildToolbar();
+  renderStatus();
+});
 buildTabs();
 syncSlideSelectionContext();
 renderStatus();

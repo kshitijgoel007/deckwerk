@@ -48,6 +48,87 @@
   pointer-events: none;
 }
 
+/* Placeholder for media that is still uploading or transcoding. */
+.pending-asset {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  border-radius: 6px;
+  background: rgba(120, 120, 130, 0.18);
+  outline: 1px dashed rgba(120, 120, 130, 0.55);
+  outline-offset: -1px;
+}
+
+.pending-asset-preview {
+  position: absolute;
+  inset: 0;
+  background-size: cover;
+  background-position: center;
+  filter: grayscale(0.35) brightness(0.85);
+}
+
+.pending-asset-hud {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: #fff;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.6);
+  background: rgba(0, 0, 0, 0.28);
+  font-family: system-ui, sans-serif;
+}
+
+.pending-asset-ring {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  /* Determinate: a conic sweep driven by --pending-ratio (0..1). */
+  background: conic-gradient(
+    #fff calc(var(--pending-ratio, 0) * 360deg),
+    rgba(255, 255, 255, 0.25) 0
+  );
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 5px), #000 calc(100% - 4px));
+  mask: radial-gradient(farthest-side, transparent calc(100% - 5px), #000 calc(100% - 4px));
+}
+
+.pending-asset-ring.indeterminate {
+  background: conic-gradient(#fff 90deg, rgba(255, 255, 255, 0.25) 0);
+  animation: pending-ring-spin 1s linear infinite;
+}
+
+@keyframes pending-ring-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.pending-asset-label {
+  max-width: 85%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 20px;
+  font-weight: 600;
+}
+
+.pending-asset-status {
+  font-size: 16px;
+  opacity: 0.85;
+}
+
+.pending-asset.upload-failed .pending-asset-ring {
+  display: none;
+}
+
+.pending-asset.upload-failed .pending-asset-status {
+  color: #ffb4ab;
+  opacity: 1;
+}
+
 
 
 

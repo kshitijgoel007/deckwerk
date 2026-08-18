@@ -81,14 +81,34 @@ export function isWebSafeCodec(codec: string | null): boolean {
 }
 
 /** Transcode to H.264/AAC in place-adjacent file; returns the new path. */
-export async function transcodeToH264(input: string, output: string): Promise<void> {
+export async function transcodeToH264(
+  input: string,
+  output: string,
+  onProgress?: (ratio: number | null) => void,
+): Promise<void> {
+  // Duration bounds the progress ratio; without it we can still report that
+  // work is happening (null ratio → indeterminate spinner).
+  const duration = onProgress ? (await probeMedia(input)).duration : null;
   await new Promise<void>((resolvePromise, reject) => {
     const child = spawn(getFfmpegPath(), [
-      '-hide_banner', '-loglevel', 'error', '-y', '-i', input,
+      '-hide_banner', '-loglevel', 'error', '-progress', 'pipe:1', '-nostats', '-y', '-i', input,
       '-c:v', 'libx264', '-crf', '20', '-preset', 'veryfast', '-pix_fmt', 'yuv420p',
       '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', output,
     ]);
     let stderr = '';
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', (chunk: string) => {
+      if (!onProgress) return;
+      for (const line of chunk.split('\n')) {
+        const m = /^out_time_us=(\d+)/.exec(line.trim());
+        if (!m) continue;
+        if (duration && duration > 0) {
+          onProgress(Math.min(1, Number(m[1]) / 1_000_000 / duration));
+        } else {
+          onProgress(null);
+        }
+      }
+    });
     child.stderr.on('data', (d) => (stderr = (stderr + d).slice(-2000)));
     child.on('error', reject);
     child.on('close', (code) =>

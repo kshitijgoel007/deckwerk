@@ -8,7 +8,55 @@ launched on: every immediate subdirectory containing a `deck.json` is an
 openable deck, new decks and Keynote imports are created inside it, and over
 HTTP only each deck's `assets/` subtree is servable.
 
-## Running
+## Hosting from the desktop app
+
+The **Collaborate** toolbar button shares the deck currently open in the
+desktop app. The main process starts the same collab server pinned to that
+one deck (port 5800, or a free port if taken) and swaps the editor window for
+the browser client over localhost — the host becomes an ordinary peer, so
+there is never a second writer on `deck.json`. The status bar shows the
+invite URL (the LAN/tailscale address); anyone opening it lands directly in
+the shared presentation. In a hosted session the New / Open / Import
+Keynote… controls are absent for everyone: the server refuses deck listing
+beyond the shared deck, deck creation, and Keynote import. The host's window
+has an **End collaboration** button (also: just closing the window) that
+ends the session for everyone — joiners see "session ended by the host" and
+stop reconnecting — then reloads the deck from disk and brings the ordinary
+editor back. The button only appears (and `/api/end` only works) for the
+loopback client in a hosted session, i.e. the host machine.
+
+Requires the built browser client (`npm run build:collab`); packaged builds
+ship it in `dist/collab`.
+
+## Agent sessions
+
+The **Agent…** toolbar button starts the same in-process server *unpinned*:
+it hosts the open deck's whole parent directory, and no controls disappear —
+an agent joining by URL can list, create, and import decks exactly like a
+human peer. Hand the invite URL (copied to the clipboard, shown in the status
+bar) to the agent of your choice; that URL is the entire integration.
+
+An agent landing on the client page finds:
+
+- `GET /api/brief` — a markdown onboarding document: the deck schema, how to
+  edit through `window.store.commit`, how to upload media, comment etiquette.
+- `window.agent` — a documented console API: `brief()`, `getDeck()`,
+  `goToSlide(n)`, `commit(fn, label)`, `seeComments()` (every comment with its
+  1-based slide number), `addComment()`, `resolveComment()`,
+  `uploadAsset(name, data)`.
+- a `console.info` pointer to both, for agents that arrive cold.
+
+## Comments
+
+Slides and elements carry `comments: [{id, author, text, ts, resolved}]`
+arrays in `deck.json`, so comments sync, merge, and export like any other
+edit. In the UI: hover a slide row in the rail for the comment bubble
+(bottom-right; it stays visible with the open count once comments exist);
+on the canvas, elements with comments show a bubble at their top-right
+corner, and right-click → "Add comment…" starts a thread on any object.
+Comments from a collab session carry the author's display name.
+
+## Running a standalone server
 
 Build the browser client once (rebuild after pulling client changes):
 
@@ -35,6 +83,10 @@ asks once and the server falls back to `Guest n`.
   along).
 - **Import Keynote…** — uploads a `.key` file; the server runs the same
   importer sidecar as the desktop app and the deck opens when it finishes.
+- **Download** — everyone, at any point, can download the deck as a zip of
+  the whole deck folder (`deck.json`, `theme.css`, `assets/`). The server
+  flushes the live session first, so the archive is exactly what everyone
+  currently sees; unzip it and open the folder in the desktop app.
 - **Present** — opens the real Player in a new browser tab, fed by the same
   WebSocket session: edits made while presenting land on the presentation
   live, exactly like the desktop projector window. Arrow keys/space/click

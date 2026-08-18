@@ -54,6 +54,8 @@ export interface CollabBridgeHooks {
   onStatus: (text: string) => void;
   /** True while no local transaction is awaiting confirmation. */
   onCleanChange: (clean: boolean) => void;
+  /** The host ended the session; the bridge stops reconnecting. */
+  onEnded?: () => void;
 }
 
 export class CollabBridge {
@@ -253,6 +255,11 @@ export class CollabBridge {
         return;
       case 'theme':
         this.hooks.onThemeCss(message.css);
+        return;
+      case 'ended':
+        // Deliberate teardown, not a network blip: don't reconnect.
+        this.closed = true;
+        this.hooks.onEnded?.();
         return;
     }
   }

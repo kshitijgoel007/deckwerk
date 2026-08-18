@@ -229,6 +229,10 @@ export function makeContextActions(
         { label: 'Duplicate', action: () => duplicateSelection(store) },
         { label: 'Delete', action: () => store.deleteSelection() },
         'separator',
+        {
+          label: (el.comments?.length ?? 0) > 0 ? 'Comments…' : 'Add comment…',
+          action: () => canvas.openElementComments(el.id),
+        },
         { label: 'Bring to front', action: () => store.updateSelected((e) => (e.z += 1000)) },
         { label: 'Send to back', action: () => store.updateSelected((e) => (e.z -= 1000)) },
       );
@@ -236,6 +240,16 @@ export function makeContextActions(
         items.push('separator', {
           label: canvas.maskingElement() === el.id ? 'Done editing mask' : 'Edit mask (crop)',
           action: () => canvas.toggleMaskMode(el.id),
+        });
+      }
+      if (el.type === 'image' || el.type === 'video') {
+        items.push({
+          label: el.maskShape === 'circle' ? 'Rectangular mask' : 'Circular mask',
+          action: () => store.updateSelected((target) => {
+            if (target.type === 'image' || target.type === 'video') {
+              target.maskShape = target.maskShape === 'circle' ? undefined : 'circle';
+            }
+          }, { label: 'Mask shape' }),
         });
       }
       if (el.type === 'video') {
@@ -262,3 +276,16 @@ export function barButton(label: string, onClick: () => void, variant = ''): HTM
   b.addEventListener('click', onClick);
   return b;
 }
+
+/** Bar button with a small leading SVG icon. */
+export function barIconButton(label: string, iconSvg: string, onClick: () => void): HTMLButtonElement {
+  const b = document.createElement('button');
+  b.className = 'bar-icon-button';
+  b.innerHTML = `${iconSvg}<span>${label}</span>`;
+  b.addEventListener('click', onClick);
+  return b;
+}
+
+export const TEXT_ICON =
+  '<svg class="bar-icon" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">' +
+  '<path d="M3 3.5V2.5h10v1M8 2.5v11M6 13.5h4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>';

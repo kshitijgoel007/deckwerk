@@ -2,8 +2,18 @@ import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { z } from 'zod';
 import { capabilities } from '../src/shared/capabilities.js';
-import { type Deck, type Slide, type SlideElement, emptyDeck, parseDeck } from '../src/shared/deck.js';
+import {
+  DeckSchema,
+  ElementSchema,
+  SlideSchema,
+  type Deck,
+  type Slide,
+  type SlideElement,
+  emptyDeck,
+  parseDeck,
+} from '../src/shared/deck.js';
 import { deckOutline, deckStyleDigest, htmlToText } from '../src/shared/deckDigest.js';
 import { validateDeckIntegrity } from '../src/shared/agent.js';
 import { capabilitiesReport, referenceDeckPath } from '../src/cli/agentCli.js';
@@ -197,5 +207,170 @@ describe('the capability cookbook', () => {
 
     expect(deck.slides.map((slide) => slide.id))
       .toEqual(capabilities().map((capability) => capability.id));
+  });
+});
+
+/**
+ * Does the cookbook still cover everything this editor can do?
+ *
+ * The cookbook is the only place an agent learns a feature exists, so a
+ * feature shipped without an entry here is a feature agents reimplement by
+ * hand — literal "•" bullets instead of a <ul>, a re-encoded video instead of
+ * a sourceBox crop. Remembering to update it is not a plan, so these tests
+ * derive the checklist from the schema itself: add a field, a type or an enum
+ * variant to deck.ts and the coverage test fails until the cookbook teaches it
+ * or it is exempted here with a reason.
+ */
+describe('cookbook coverage, derived from the schema', () => {
+  /** Element types no agent should ever author. */
+  const EXEMPT_TYPES: Record<string, string> = {
+    unsupported: 'Keynote-importer placeholder for an object it could not map; never hand-authored.',
+  };
+
+  /** Fields the editor sets for itself, which an agent has no business writing. */
+  const EXEMPT_FIELDS: Record<string, string> = {
+    lineageId: 'Internal: stamped on duplication so Magic Move auto-pair can recognise a copy.',
+    originalType: 'Importer-only, on unsupported placeholders.',
+    note: 'Importer-only, on unsupported placeholders.',
+  };
+
+  const EXEMPT_ENUM_VALUES: Record<string, string> = {
+    'type:unsupported': 'See EXEMPT_TYPES.',
+  };
+
+  const caps = capabilities();
+  /** What the examples actually demonstrate: elements, timelines, slide props. */
+  const exercised = JSON.stringify(caps.map((capability) => ({
+    elements: capability.elements,
+    timeline: capability.timeline ?? [],
+    slide: capability.slide ?? {},
+  })));
+  /** What the prose explains. Teaching a feature in `notes` counts as covering it. */
+  const prose = caps
+    .map((capability) => [capability.what, capability.when, ...(capability.notes ?? [])].join(' '))
+    .join(' ');
+
+  const elementOptions = ElementSchema.options as unknown as Array<z.ZodObject<z.ZodRawShape>>;
+  const typeOf = (option: z.ZodObject<z.ZodRawShape>): string =>
+    (option.shape.type as z.ZodLiteral<string>).value;
+
+  const mentionedInProse = (word: string): boolean =>
+    new RegExp(`\\b${word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(prose);
+
+  it('has an example of every element type an agent can author', () => {
+    const missing = elementOptions
+      .map(typeOf)
+      .filter((type) => !(type in EXEMPT_TYPES))
+      .filter((type) => !exercised.includes(`"type":"${type}"`));
+
+    expect(missing, 'element types with no cookbook example').toEqual([]);
+  });
+
+  it('exercises or explains every field an agent can set', () => {
+    // Field names are collapsed across element types: the cookbook teaches
+    // `sourceBox` once, not once per media type. Schema symmetry between
+    // images and video is a separate test below.
+    const fields = new Set<string>();
+    for (const option of elementOptions) {
+      if (typeOf(option) in EXEMPT_TYPES) continue;
+      for (const key of Object.keys(option.shape)) fields.add(key);
+    }
+
+    const uncovered = [...fields]
+      .filter((field) => !(field in EXEMPT_FIELDS))
+      .filter((field) => !exercised.includes(`"${field}":`) && !mentionedInProse(field));
+
+    expect(uncovered, 'element fields the cookbook neither uses nor mentions').toEqual([]);
+  });
+
+  it('exercises or explains every value in the deck vocabulary', () => {
+    // Every enum and discriminator reachable from a slide (elements, their
+    // per-type fields, timeline triggers and actions, media effects, layout)
+    // plus the deck-level motion settings.
+    const vocabulary = new Map<string, Set<string>>();
+    const collect = (schema: z.ZodTypeAny, field: string, depth = 0): void => {
+      if (depth > 8) return;
+      let current: z.ZodTypeAny = schema;
+      for (let i = 0; i < 8; i++) {
+        const def = current._def as { innerType?: z.ZodTypeAny; type?: z.ZodTypeAny };
+        if (current instanceof z.ZodOptional || current instanceof z.ZodNullable
+          || current instanceof z.ZodDefault) current = def.innerType!;
+        else if (current instanceof z.ZodArray) current = def.type!;
+        else break;
+      }
+      const add = (value: string) => {
+        const values = vocabulary.get(field) ?? new Set<string>();
+        values.add(value);
+        vocabulary.set(field, values);
+      };
+      if (current instanceof z.ZodEnum) {
+        for (const value of current.options as string[]) add(value);
+      } else if (current instanceof z.ZodLiteral) {
+        if (typeof current.value === 'string') add(current.value);
+      } else if (current instanceof z.ZodObject) {
+        for (const [key, value] of Object.entries(current.shape as z.ZodRawShape)) {
+          collect(value as z.ZodTypeAny, key, depth + 1);
+        }
+      } else if (current instanceof z.ZodDiscriminatedUnion || current instanceof z.ZodUnion) {
+        for (const option of (current._def as { options: z.ZodTypeAny[] }).options) {
+          collect(option, field, depth + 1);
+        }
+      }
+    };
+    collect(SlideSchema, 'slide');
+    collect(DeckSchema.shape.magicMoveEasing, 'magicMoveEasing');
+
+    const uncovered: string[] = [];
+    for (const [field, values] of vocabulary) {
+      for (const value of values) {
+        if (`${field}:${value}` in EXEMPT_ENUM_VALUES) continue;
+        // Matched as a field/value pair, so a shape kind of "rect" cannot
+        // stand in for a mask shape of "rect".
+        if (exercised.includes(`"${field}":"${value}"`)) continue;
+        if (mentionedInProse(value)) continue;
+        uncovered.push(`${field}: ${value}`);
+      }
+    }
+
+    expect(uncovered, 'vocabulary the cookbook neither uses nor mentions').toEqual([]);
+  });
+});
+
+/**
+ * Images and video are the same object with a different tag, and every time
+ * they drift an agent gets hurt: `maskShape` shipped on images only, so
+ * setting it on a video was silently dropped on parse and the agent was left
+ * debugging a renderer that looked broken. Any new media field must land on
+ * both, or be declared asymmetric here on purpose.
+ */
+describe('image and video keep the same media vocabulary', () => {
+  const IMAGE_ONLY: Record<string, string> = {
+    alt: 'Alternative text; a video carries no equivalent.',
+  };
+  const VIDEO_ONLY: Record<string, string> = {
+    autoplay: 'Playback, meaningless on a still.',
+    loop: 'Playback, meaningless on a still.',
+    muted: 'Playback, meaningless on a still.',
+    controls: 'Playback, meaningless on a still.',
+    start: 'Trim point, meaningless on a still.',
+    end: 'Trim point, meaningless on a still.',
+    poster: 'Still shown before playback begins.',
+  };
+
+  const shapeOf = (type: string): Set<string> => {
+    const option = (ElementSchema.options as unknown as Array<z.ZodObject<z.ZodRawShape>>)
+      .find((candidate) => (candidate.shape.type as z.ZodLiteral<string>).value === type)!;
+    return new Set(Object.keys(option.shape));
+  };
+
+  it('gives both types every shared media field', () => {
+    const image = shapeOf('image');
+    const video = shapeOf('video');
+
+    const missingOnVideo = [...image].filter((field) => !video.has(field) && !(field in IMAGE_ONLY));
+    const missingOnImage = [...video].filter((field) => !image.has(field) && !(field in VIDEO_ONLY));
+
+    expect(missingOnVideo, 'fields on images but not video').toEqual([]);
+    expect(missingOnImage, 'fields on video but not images').toEqual([]);
   });
 });

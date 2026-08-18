@@ -1,8 +1,18 @@
 import type { MediaEffect, SlideElement } from '@shared/deck.js';
+import { paragraphsToList, listToParagraphs } from '@shared/paragraphs.js';
 import { type AlignMode, alignElements } from './align.js';
 import type { EditorStore } from './store.js';
 import { LAYOUT_LABELS, applySlideLayout, type SlideLayout } from './slideLayouts.js';
 import { MagicMovePanel } from './magicMovePanel.js';
+import { fontFamilyField } from './fontPicker.js';
+
+/** Display labels for the video behaviour flags. */
+const VIDEO_FLAG_LABELS = {
+  autoplay: 'Autoplay',
+  loop: 'Loop',
+  muted: 'Mute',
+  controls: 'Controls',
+} as const;
 
 /**
  * The properties panel.
@@ -188,6 +198,18 @@ export class Inspector {
     const el = this.store
       .selectedElements()
       .find((e) => e.id === elementId);
+    if (el && (el.type === 'image' || el.type === 'video')) {
+      // The mask's shape. Circle clips the element box to its inscribed
+      // ellipse; "Edit mask" then moves/scales the picture behind it and the
+      // box handles resize the mask itself — Keynote's circular-mask workflow.
+      wrap.appendChild(checkboxField('Circular mask', el.maskShape === 'circle', (on) =>
+        this.store.updateSelected((target) => {
+          if (target.type === 'image' || target.type === 'video') {
+            target.maskShape = on ? 'circle' : undefined;
+          }
+        }, { label: on ? 'Circular mask' : 'Rectangular mask' }),
+      ));
+    }
     if (el && (el.type === 'image' || el.type === 'video') && el.sourceBox) {
       wrap.appendChild(
         button('Reset crop', () =>
@@ -547,16 +569,16 @@ export class Inspector {
     }
 
     const families = commonValue(texts.map((text) => text.style['font-family'] ?? ''));
-    wrap.appendChild(textField(
+    wrap.appendChild(fontFamilyField(
       'Font family', families ?? '',
       (value) => this.store.updateSelected((element) => {
         if (element.type !== 'text') return;
         const style = { ...element.style };
-        if (value.trim()) style['font-family'] = value.trim();
+        if (value) style['font-family'] = value;
         else delete style['font-family'];
         element.style = style;
       }, { label: 'Change font family' }),
-      families === null ? 'Mixed — enter to replace all' : 'Theme font',
+      { mixed: families === null },
     ));
 
     const sizes = sharedValue(texts.map((text) => {
@@ -612,13 +634,9 @@ export class Inspector {
       (on) => this.store.updateSelected((element) => {
         if (element.type !== 'text') return;
         if (on && !element.html.trimStart().startsWith('<ul')) {
-          const items = element.html.split(/<br\s*\/?>/i).map((line) => line.trim())
-            .filter(Boolean).map((line) => `<li>${line}</li>`).join('');
-          element.html = `<ul>${items || '<li>Item</li>'}</ul>`;
+          element.html = paragraphsToList(element.html);
         } else if (!on && element.html.trimStart().startsWith('<ul')) {
-          const div = document.createElement('div');
-          div.innerHTML = element.html;
-          element.html = [...div.querySelectorAll('li')].map((item) => item.innerHTML).join('<br>');
+          element.html = listToParagraphs(element.html);
         }
       }),
     ));
@@ -675,7 +693,7 @@ export class Inspector {
     if (kind === 'video') {
       for (const key of ['autoplay', 'loop', 'muted', 'controls'] as const) {
         wrap.appendChild(mixedCheckboxField(
-          key,
+          VIDEO_FLAG_LABELS[key],
           commonValue(media.map((element) => element.type === 'video' && element[key])),
           (value) => this.store.updateSelected((element) => {
             if (element.type === 'video') element[key] = value;
@@ -742,7 +760,7 @@ export class Inspector {
 
         for (const key of ['autoplay', 'loop', 'muted', 'controls'] as const) {
           wrap.appendChild(
-            checkboxField(key, el[key], (v) =>
+            checkboxField(VIDEO_FLAG_LABELS[key], el[key], (v) =>
               this.store.updateSelected((e) => {
                 if (e.type === 'video') e[key] = v;
               }),
@@ -817,16 +835,15 @@ export class Inspector {
           ));
         }
 
-        wrap.appendChild(textField(
+        wrap.appendChild(fontFamilyField(
           'Font family', el.style['font-family'] ?? '',
           (value) => this.store.updateSelected((target) => {
             if (target.type !== 'text') return;
             const style = { ...target.style };
-            if (value.trim()) style['font-family'] = value.trim();
+            if (value) style['font-family'] = value;
             else delete style['font-family'];
             target.style = style;
           }, { label: 'Change font family' }),
-          'Theme font',
         ));
 
         wrap.appendChild(optionalNumberField(
@@ -912,19 +929,9 @@ export class Inspector {
             this.store.updateSelected((e) => {
               if (e.type !== 'text') return;
               if (on && !e.html.trimStart().startsWith('<ul')) {
-                const items = e.html
-                  .split(/<br\s*\/?>/i)
-                  .map((line) => line.trim())
-                  .filter(Boolean)
-                  .map((line) => `<li>${line}</li>`)
-                  .join('');
-                e.html = `<ul>${items || '<li>Item</li>'}</ul>`;
+                e.html = paragraphsToList(e.html);
               } else if (!on && e.html.trimStart().startsWith('<ul')) {
-                const div = document.createElement('div');
-                div.innerHTML = e.html;
-                e.html = [...div.querySelectorAll('li')]
-                  .map((li) => li.innerHTML)
-                  .join('<br>');
+                e.html = listToParagraphs(e.html);
               }
             }),
           ),

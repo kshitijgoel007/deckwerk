@@ -54,6 +54,108 @@
       "port": 5631
     },
     {
+      "name": "collab-server-decks-5839",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "vite-node",
+        "--config",
+        "vitest.config.ts",
+        "scripts/collab-server.mts",
+        "--",
+        "decks",
+        "--port",
+        "5839",
+        "--host",
+        "127.0.0.1"
+      ],
+      "port": 5839
+    },
+    {
+      "name": "collab-server-decks-5800",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "vite-node",
+        "--config",
+        "vitest.config.ts",
+        "scripts/collab-server.mts",
+        "--",
+        "decks",
+        "--port",
+        "5800",
+        "--host",
+        "127.0.0.1"
+      ],
+      "port": 5800
+    },
+    {
+      "name": "collab-server-5800",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "vite-node",
+        "--config",
+        "vitest.config.ts",
+        "scripts/collab-server.mts",
+        "--",
+        "collab-decks",
+        "--port",
+        "5800",
+        "--host",
+        "127.0.0.1"
+      ],
+      "port": 5800
+    },
+    {
+      "name": "collab-server-5829",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "vite-node",
+        "--config",
+        "vitest.config.ts",
+        "scripts/collab-server.mts",
+        "--",
+        "collab-decks",
+        "--port",
+        "5829",
+        "--host",
+        "127.0.0.1"
+      ],
+      "port": 5829
+    },
+    {
+      "name": "collab-server-5819",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "vite-node",
+        "--config",
+        "vitest.config.ts",
+        "scripts/collab-server.mts",
+        "--",
+        "collab-decks",
+        "--port",
+        "5819",
+        "--host",
+        "127.0.0.1"
+      ],
+      "port": 5819
+    },
+    {
+      "name": "collab-server-5809",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "vite-node",
+        "--config",
+        "vitest.config.ts",
+        "scripts/collab-server.mts",
+        "--",
+        "collab-decks",
+        "--port",
+        "5809",
+        "--host",
+        "127.0.0.1"
+      ],
+      "port": 5809
+    },
+    {
       "name": "collab-client",
       "runtimeExecutable": "npx",
       "runtimeArgs": [
@@ -65,6 +167,32 @@
         "--strictPort"
       ],
       "port": 5651
+    },
+    {
+      "name": "collab-client-alt",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "vite",
+        "--config",
+        "vite.collab.config.ts",
+        "--port",
+        "5661",
+        "--strictPort"
+      ],
+      "port": 5661
+    },
+    {
+      "name": "collab-client-alt2",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "vite",
+        "--config",
+        "vite.collab.config.ts",
+        "--port",
+        "5671",
+        "--strictPort"
+      ],
+      "port": 5671
     },
     {
       "name": "harness-alt4",

@@ -5,6 +5,7 @@ import { basename, extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { type Deck, emptyDeck, parseDeck } from '@shared/deck.js';
 import type { ImportedAsset } from '@shared/ipc.js';
+import { classifyMediaName } from '@shared/media.js';
 import { isWebSafeCodec, probeMedia, transcodeToH264, videoCodec } from './ffmpeg.js';
 
 /**
@@ -20,8 +21,6 @@ export const DECK_FILE = 'deck.json';
 export const ASSETS_DIR = 'assets';
 export const AGENT_GUIDE_FILE = 'AGENTS.md';
 
-const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.avif', '.pdf']);
-const VIDEO_EXTS = new Set(['.mp4', '.mov', '.m4v', '.webm', '.mkv', '.avi']);
 
 const DEFAULT_THEME = `/* Fonts, sizes and colours live here. The editor never rewrites this file. */
 
@@ -145,10 +144,7 @@ export async function saveTheme(
 }
 
 export function classifyMedia(path: string): 'image' | 'video' | null {
-  const ext = extname(path).toLowerCase();
-  if (IMAGE_EXTS.has(ext)) return 'image';
-  if (VIDEO_EXTS.has(ext)) return 'video';
-  return null;
+  return classifyMediaName(path);
 }
 
 /**
@@ -162,6 +158,7 @@ export function classifyMedia(path: string): 'image' | 'video' | null {
 export async function importAsset(
   deckDir: string,
   sourcePath: string,
+  onProgress?: (ratio: number | null) => void,
 ): Promise<ImportedAsset> {
   const kind = classifyMedia(sourcePath);
   if (!kind) throw new Error(`Unsupported media type: ${basename(sourcePath)}`);
@@ -186,7 +183,7 @@ export async function importAsset(
     if (!isWebSafeCodec(codec)) {
       const converted = `${stem}.${hash}.h264.mp4`;
       const convertedPath = join(assetsDir, converted);
-      if (!existsSync(convertedPath)) await transcodeToH264(dest, convertedPath);
+      if (!existsSync(convertedPath)) await transcodeToH264(dest, convertedPath, onProgress);
       finalName = converted;
     }
   }

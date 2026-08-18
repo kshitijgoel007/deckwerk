@@ -57,33 +57,95 @@ export function insertLine(
   return created;
 }
 
-/** Shape menu. Releasing focus after insertion lets object shortcuts work immediately. */
-export function createShapeInsertPicker(store: EditorStore): HTMLSelectElement {
-  const select = document.createElement('select');
-  select.className = 'bar-select';
-  const options: Array<[string, string]> = [
-    ['', '+ Shape'],
-    ['rect', 'Rectangle'],
-    ['ellipse', 'Ellipse'],
-    ['line', 'Line'],
-    ['arrow', 'Arrow'],
-    ['curved-arrow', 'Curved arrow'],
-  ];
-  for (const [value, label] of options) {
-    const option = document.createElement('option');
-    option.value = value;
-    option.textContent = label;
-    select.appendChild(option);
+type ShapeKind = 'rect' | 'ellipse' | 'line' | 'arrow' | 'curved-arrow';
+
+function shapeIcon(paths: string): string {
+  return (
+    '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" ' +
+    'fill="none" stroke="currentColor" stroke-width="1.5" ' +
+    'stroke-linecap="round" stroke-linejoin="round">' + paths + '</svg>'
+  );
+}
+
+const SHAPE_OPTIONS: Array<{ kind: ShapeKind; label: string; icon: string }> = [
+  { kind: 'rect', label: 'Rectangle',
+    icon: shapeIcon('<rect x="2" y="3.5" width="12" height="9" rx="1.5"/>') },
+  { kind: 'ellipse', label: 'Ellipse',
+    icon: shapeIcon('<ellipse cx="8" cy="8" rx="6" ry="4.5"/>') },
+  { kind: 'line', label: 'Line',
+    icon: shapeIcon('<path d="M2.5 13.5 13.5 2.5"/>') },
+  { kind: 'arrow', label: 'Arrow',
+    icon: shapeIcon('<path d="M2.5 13.5 13.5 2.5M7.5 2.5h6v6"/>') },
+  { kind: 'curved-arrow', label: 'Curved arrow',
+    icon: shapeIcon('<path d="M2.5 13.5C3 7 7 3 13.5 2.7M8.6 2.5l5-.2.2 5"/>') },
+];
+
+/** Shape menu: a custom dropdown so each option carries an icon. */
+export function createShapeInsertPicker(store: EditorStore): HTMLElement {
+  const wrap = document.createElement('span');
+  wrap.className = 'shape-menu-wrap';
+
+  const trigger = document.createElement('button');
+  trigger.type = 'button';
+  trigger.className = 'shape-menu-trigger';
+  trigger.setAttribute('aria-haspopup', 'menu');
+  trigger.setAttribute('aria-expanded', 'false');
+  trigger.innerHTML =
+    '<svg class="bar-icon" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">' +
+    '<rect x="1.5" y="1.5" width="8" height="8" rx="1" fill="none" stroke="currentColor" stroke-width="1.5"/>' +
+    '<circle cx="10.5" cy="10.5" r="4" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>' +
+    '<span>Shape</span>' +
+    '<svg class="shape-menu-chevron" viewBox="0 0 10 10" width="9" height="9" aria-hidden="true">' +
+    '<path d="M2 3.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.5" ' +
+    'stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+  let menu: HTMLDivElement | null = null;
+
+  function close(): void {
+    menu?.remove();
+    menu = null;
+    trigger.setAttribute('aria-expanded', 'false');
+    document.removeEventListener('pointerdown', onOutside, true);
+    document.removeEventListener('keydown', onKey, true);
   }
-  select.addEventListener('change', () => {
-    const kind = select.value as 'rect' | 'ellipse' | 'line' | 'arrow' | 'curved-arrow' | '';
-    select.value = '';
-    // A focused <select> suppresses the editor's Backspace/Delete shortcuts.
-    // The newly created object is the active context, so return focus to it.
-    select.blur();
-    if (kind === 'curved-arrow') insertLine(store, 'arrow', true);
-    else if (kind === 'line' || kind === 'arrow') insertLine(store, kind);
-    else if (kind === 'rect' || kind === 'ellipse') insertShape(store, kind);
-  });
-  return select;
+
+  function onOutside(event: PointerEvent): void {
+    if (!wrap.contains(event.target as Node)) close();
+  }
+
+  function onKey(event: KeyboardEvent): void {
+    if (event.key === 'Escape') close();
+  }
+
+  function open(): void {
+    menu = document.createElement('div');
+    menu.className = 'shape-menu';
+    menu.setAttribute('role', 'menu');
+    for (const { kind, label, icon } of SHAPE_OPTIONS) {
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = 'shape-menu-item';
+      item.setAttribute('role', 'menuitem');
+      item.innerHTML = `${icon}<span>${label}</span>`;
+      item.addEventListener('click', () => {
+        close();
+        // A focused control suppresses the editor's Backspace/Delete
+        // shortcuts; the newly created object is the active context.
+        item.blur();
+        trigger.blur();
+        if (kind === 'curved-arrow') insertLine(store, 'arrow', true);
+        else if (kind === 'line' || kind === 'arrow') insertLine(store, kind);
+        else insertShape(store, kind);
+      });
+      menu.appendChild(item);
+    }
+    wrap.appendChild(menu);
+    trigger.setAttribute('aria-expanded', 'true');
+    document.addEventListener('pointerdown', onOutside, true);
+    document.addEventListener('keydown', onKey, true);
+  }
+
+  trigger.addEventListener('click', () => (menu ? close() : open()));
+  wrap.appendChild(trigger);
+  return wrap;
 }

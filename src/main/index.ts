@@ -1,5 +1,6 @@
 import { type FSWatcher, existsSync, mkdirSync, watch } from 'node:fs';
-import { basename, join, resolve, sep } from 'node:path';
+import { userInfo } from 'node:os';
+import { basename, dirname, join, resolve, sep } from 'node:path';
 import { BrowserWindow, app, clipboard, dialog, ipcMain, shell } from 'electron';
 import type { Deck } from '@shared/deck.js';
 import {
@@ -43,8 +44,11 @@ import { probeMedia, runTrim } from './ffmpeg.js';
 import { importKeynote } from './keynoteImport.js';
 import { HTML_EDIT_DIR, writeHtmlScope } from './htmlAuthoring.js';
 import {
-  createEditorWindow, createPresentWindow, createPresenterWindow, createTrimWindow,
+  createCollabHostWindow, createEditorWindow, createPresentWindow, createPresenterWindow, createTrimWindow,
 } from './windows.js';
+import {
+  defaultClientDir, startCollabServer, type RunningCollabServer,
+} from '../server/collabServer.js';
 
 /**
  * Main process: owns the filesystem, ffmpeg and the windows. The renderer never
@@ -62,6 +66,10 @@ let presentWindow: BrowserWindow | null = null;
 let presenterWindow: BrowserWindow | null = null;
 let presentationState: PresentationState | null = null;
 let trimWindow: BrowserWindow | null = null;
+/** Live while the open deck is being shared for co-editing. */
+let collabServer: RunningCollabServer | null = null;
+let collabWindow: BrowserWindow | null = null;
+let quitting = false;
 const agentRuntime = new AgentRuntime(() => editorWindow);
 
 function requireSession(): DeckSession {
@@ -222,7 +230,9 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', () => {
+  quitting = true;
   void agentRuntime.close();
+  void collabServer?.close();
 });
 
 function registerHandlers(): void {
@@ -317,13 +327,23 @@ function registerHandlers(): void {
 
   ipcMain.handle(
     IPC.assetImport,
-    async (_e, paths: string[]): Promise<ImportedAsset[]> => {
+    async (event, paths: string[], token?: string): Promise<ImportedAsset[]> => {
       const s = requireSession();
       const out: ImportedAsset[] = [];
       for (const p of paths) {
         // One bad file in a multi-file drop shouldn't lose the rest.
         try {
-          out.push(await importAsset(s.dir, p));
+          out.push(
+            await importAsset(s.dir, p, (ratio) => {
+              if (token && !event.sender.isDestroyed()) {
+                event.sender.send(IPC.assetImportProgress, {
+                  token,
+                  phase: 'processing',
+                  ratio,
+                });
+              }
+            }),
+          );
         } catch (err) {
           console.error(`Skipped ${p}:`, err);
         }
@@ -478,6 +498,89 @@ function registerHandlers(): void {
     if (target.canceled || !target.filePath) return null;
     await exportDeck(s.dir, s.deck, target.filePath);
     return target.filePath;
+  });
+
+  /**
+   * "Collaborate": share the open deck for live co-editing.
+   *
+   * The collab server becomes the deck's only writer — the desktop watcher
+   * closes and the editor window is swapped for the same browser client the
+   * joiners load (over localhost), so the host is simply another peer. The
+   * server is pinned to this one deck: joiners can't list, create, or import
+   * anything else. Closing the window ends the session and brings the
+   * ordinary editor back.
+   */
+  // Joiners need a URL reachable from their machine, so prefer a LAN
+  // address over the loopback one the host window itself uses.
+  const copyJoinLink = (urls: string[], deckId: string): void => {
+    const base = urls.find((u) => !u.includes('127.0.0.1')) ?? urls[0];
+    if (base) clipboard.writeText(`${base}?deck=${encodeURIComponent(deckId)}`);
+  };
+
+  // "Agent…" runs the same session unpinned: the server hosts the deck's
+  // whole parent directory and refuses nothing, so an agent joining by URL
+  // can list, create, and import decks exactly like a human peer. The host
+  // hands the printed invite URL to the agent of their choice.
+  ipcMain.handle(IPC.collabStart, async (_e, opts?: { agent?: boolean }): Promise<string[]> => {
+    const s = requireSession();
+    if (collabServer) {
+      copyJoinLink(collabServer.urls, basename(s.dir));
+      return collabServer.urls;
+    }
+
+    const clientDir = defaultClientDir(app.getAppPath());
+    if (!clientDir) {
+      throw new Error('The browser client is not built — run: npm run build:collab');
+    }
+
+    const deckId = basename(s.dir);
+    const base = {
+      rootDir: dirname(s.dir),
+      hostedDeckId: opts?.agent ? undefined : deckId,
+      clientDir,
+      // "End collaboration" in the host window: closing the window is the
+      // existing teardown path (stops the server, restores the editor).
+      onSessionEnd: () => setImmediate(() => collabWindow?.close()),
+    };
+    let server: RunningCollabServer;
+    try {
+      server = await startCollabServer(base);
+    } catch {
+      // 5800 taken (another session or app); any free port still shares fine.
+      server = await startCollabServer({ ...base, port: 0 });
+    }
+    collabServer = server;
+    copyJoinLink(server.urls, deckId);
+
+    // Two debounced whole-file writers on one deck.json silently last-write-
+    // wins each other; from here the server owns persistence.
+    for (const w of watchers) w.close();
+    watchers = [];
+
+    const hostName = userInfo().username || 'Host';
+    collabWindow = createCollabHostWindow(
+      `http://127.0.0.1:${server.port}/?deck=${encodeURIComponent(deckId)}&name=${encodeURIComponent(hostName)}`,
+    );
+    collabWindow.on('closed', () => {
+      collabWindow = null;
+      const closing = collabServer;
+      collabServer = null;
+      // Recreate the editor synchronously: with no window at all,
+      // window-all-closed would quit the app on non-macOS.
+      if (!quitting && session) editorWindow = createEditorWindow();
+      void (async () => {
+        await closing?.close();
+        if (quitting || !session) return;
+        // The server may have flushed edits after our watchers closed; reload
+        // so the returning editor shows what everyone last saw.
+        session.deck = await loadDeck(session.dir);
+        watchDeck(session.dir, session.deck.theme);
+        broadcastDeck();
+      })();
+    });
+    editorWindow?.close();
+    editorWindow = null;
+    return server.urls;
   });
 
   ipcMain.handle(

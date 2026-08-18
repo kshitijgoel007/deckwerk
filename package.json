@@ -10,7 +10,8 @@
   "license": "MIT",
   "scripts": {
     "dev": "electron-vite dev",
-    "build": "tsc --noEmit && electron-vite build && npm run build:export",
+    "predev": "npm run build:collab",
+    "build": "tsc --noEmit && electron-vite build && npm run build:export && npm run build:collab",
     "build:export": "vite build --config vite.export.config.ts",
     "build:importer": "python3 -m venv .venv-import && ./.venv-import/bin/pip install -q keynote-parser pyinstaller && ./.venv-import/bin/pyinstaller --onefile --name keynote-import --collect-all keynote_parser --collect-all snappy --distpath build/importers --workpath build/pyinstaller --specpath build/pyinstaller importers/keynote/import_keynote.py",
     "setup:importer": "python3 -m venv .venv-import && ./.venv-import/bin/pip install -q keynote-parser",
@@ -32,6 +33,7 @@
     "productName": "Slide Editor",
     "files": [
       "out/**/*",
+      "dist/collab/**/*",
       "package.json"
     ],
     "extraResources": [

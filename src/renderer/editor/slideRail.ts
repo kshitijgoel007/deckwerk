@@ -1,6 +1,8 @@
 import { makeId } from '@shared/geometry.js';
 import { renderSlide } from '../player/render.js';
 import { applySlideLayout } from './slideLayouts.js';
+import { newComment, openCommentsPopover, openCount } from './comments.js';
+import type { Slide } from '@shared/deck.js';
 import type { EditorStore } from './store.js';
 
 /**
@@ -242,11 +244,15 @@ export class SlideRail {
 
   private paintPresence(container: HTMLElement, slideId: string): void {
     const peers = this.presenceForSlide?.(slideId) ?? [];
+    // One shared tooltip naming everyone on the slide, on the group and on
+    // each dot, so hovering anywhere over the cluster shows the full list.
+    const names = peers.map((peer) => peer.name).join(', ');
+    container.title = names;
     container.replaceChildren(...peers.map((peer) => {
       const dot = document.createElement('span');
       dot.className = 'rail-presence-dot';
       dot.style.background = peer.color;
-      dot.title = peer.name;
+      dot.title = names;
       return dot;
     }));
   }
@@ -271,7 +277,11 @@ export class SlideRail {
       num.className = 'rail-num';
       num.textContent = String(i + 1);
 
-      item.append(num, this.thumbFor(deck, slide));
+      const thumb = this.thumbFor(deck, slide);
+      item.append(num, thumb);
+      // Presence dots live on the row (not the cached thumbnail), in the left
+      // gutter beside the slide's top edge. Rows are rebuilt fresh each time,
+      // so no stale container can linger here.
       const dots = document.createElement('span');
       dots.className = 'rail-presence';
       dots.dataset.slideId = slide.id;
@@ -282,6 +292,26 @@ export class SlideRail {
         badge.className = 'rail-skipped-badge';
         badge.textContent = 'Hidden';
         item.appendChild(badge);
+      }
+      // Comment affordance in the row's bottom-right corner: hidden until
+      // hover when the slide has no comments, always visible (with the open
+      // count) when it does. A <span>, not a <button> — the row itself is a
+      // button and nesting them is invalid HTML.
+      {
+        const open = openCount(slide.comments);
+        const bubble = document.createElement('span');
+        bubble.className = `rail-comment${open > 0 ? ' has-comments' : ''}`;
+        bubble.setAttribute('role', 'button');
+        bubble.title = open > 0
+          ? `${open} open comment${open === 1 ? '' : 's'}`
+          : 'Add comment';
+        bubble.textContent = open > 0 ? String(open) : '+';
+        bubble.addEventListener('pointerdown', (e) => e.stopPropagation());
+        bubble.addEventListener('click', (e) => {
+          e.stopPropagation();
+          this.openComments(slide.id, i, bubble.getBoundingClientRect());
+        });
+        item.appendChild(bubble);
       }
       item.addEventListener('click', (event) => {
         this.store.selectSlide(i, event.shiftKey);
@@ -440,6 +470,35 @@ export class SlideRail {
         deck.slides.splice(to, 0, moved);
       });
       this.store.selectSlide(to);
+    });
+  }
+
+  /** Open the comments popover for a slide; edits commit like any other. */
+  private openComments(slideId: string, index: number, anchor: DOMRect): void {
+    const current = () =>
+      this.store.get().deck.slides.find((s) => s.id === slideId)?.comments ?? [];
+    const mutate = (label: string, fn: (slide: Slide) => void) => {
+      this.store.commit((deck) => {
+        const slide = deck.slides.find((s) => s.id === slideId);
+        if (slide) fn(slide);
+      }, { label });
+      pop.refresh(current());
+    };
+    const pop = openCommentsPopover({
+      anchor,
+      title: `Comments — slide ${index + 1}`,
+      comments: current(),
+      onAdd: (text) => mutate('Add comment', (slide) => {
+        (slide.comments ??= []).push(newComment(text));
+      }),
+      onResolve: (id, resolved) => mutate(resolved ? 'Resolve comment' : 'Reopen comment', (slide) => {
+        const comment = slide.comments?.find((c) => c.id === id);
+        if (comment) comment.resolved = resolved;
+      }),
+      onDelete: (id) => mutate('Delete comment', (slide) => {
+        slide.comments = (slide.comments ?? []).filter((c) => c.id !== id);
+        if (slide.comments.length === 0) delete slide.comments;
+      }),
     });
   }
 

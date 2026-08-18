@@ -16,10 +16,40 @@ This folder is that deck:
 Do not read `deck.json` and do not compute pixel geometry — writing CSS and
 letting the browser measure is the entire point of this workflow.
 
+## Start here: comments are your task list
+
+Humans leave instructions *inside the deck* as comments, attached to slides
+and to individual objects. Begin every work session with:
+
+    slide-agent comments .              # every comment, with its slide number
+    slide-agent comments . --unresolved # just the open ones
+
+Act on them, then mark each one done —
+`slide-agent comments . --resolve <commentId>` — and reply when useful:
+`slide-agent comments . --add "done, see slide 12" --slide <slideId>`.
+Never delete a human's comment.
+
+## If you were given a URL instead of this folder
+
+A `http://…:58xx/?deck=…` URL is a **live collaboration session** — prefer it
+over this file-based loop when you have a browser. Everything is discoverable
+from the server:
+
+- `GET /api/brief` — the full onboarding for the live workflow.
+- `GET /api/comments?deck=<id>` — the same comment list, over plain HTTP.
+- On the client page, `window.agent` (seeComments, commit, uploadAsset, …)
+  and `window.store` drive the deck directly; edits sync live to everyone.
+
+Do not run this folder's `apply` loop *and* drive the live session at the
+same time — pick one. (An offline `apply` while a server hosts the deck is
+picked up by its watcher, but it is a whole-file write: last resort, not the
+default.)
+
 ## Design bar
 
-These slides go on a projector next to professionally made ones. Hold the
-standard you would hold for a client's marketing page:
+These slides go on a projector next to professionally made ones. You are an
+expert slide designer; hold the standard you would hold for a client's
+marketing page:
 
 - One idea per slide: a strong title, a few supporting elements, and room to
   breathe. Generous margins (~120px sides), aligned edges, consistent spacing
@@ -32,6 +62,15 @@ standard you would hold for a client's marketing page:
   `position:absolute` output. Never imitate that style for new content —
   write the nested, semantic markup you would write for the web, and check
   your work by rendering a PNG.
+- **Critique before you call any slide done — not optional.** Render a PNG
+  and review it as a stranger's work: write down at least three concrete
+  deficiencies (composition, dead space, alignment, hierarchy, crowding),
+  fix the ones that matter, render again. You have just built the slide,
+  which is exactly when your judgment is most generous. "Renders without
+  errors" is the floor; a slide is finished when you would sign it as a
+  designer. Match the deck's *conventions* (fonts, colors, backgrounds),
+  but do not treat its existing slides as the quality bar — many were made
+  in a hurry.
 - **theme.css is the stylesheet — put your classes there.** It is yours to
   edit and the editor hot-reloads it. Layout from any CSS bakes correctly, and
   a container's paint (background, border, radius) survives however it was
@@ -88,6 +127,8 @@ place it elsewhere). Export a range only when you want to *change* it.
   — **its JSON output tells you the final `src`** (files are content-hashed
   on the way in), so read it rather than guessing or listing `assets/`.
 - **Images:** `<img src="assets/figure.png">`, laid out with normal CSS.
+  For a circular headshot, `border-radius: 50%` on the image (or its
+  container) survives the compile and clips correctly.
 - **Maths:** `$…$` and `$$…$$` in any text, rendered by built-in KaTeX.
   Never build equations out of positioned text.
 - **Text:** pick a theme role — `role-title`, `role-heading`, `role-body`,

@@ -16,7 +16,7 @@ import { deckOutline, deckStyleDigest } from '@shared/deckDigest.js';
 import { slidesToHtml } from '@shared/htmlSlides.js';
 import { capabilities } from '@shared/capabilities.js';
 import { PLAYER_TYPE_CSS } from '@shared/playerTypeCss.js';
-import type { Deck } from '@shared/deck.js';
+import type { Comment, Deck } from '@shared/deck.js';
 import { RevisionConflict, applyTransactionOffline, validateDeckFolder } from '../main/agentDeck.js';
 import {
   deckRevision,
@@ -90,6 +90,13 @@ Everything else:
   preview   [deck] [--port <n>] [--open]  export through the real player and
                                           serve it on localhost; blocks until
                                           killed. --open shows it to the user
+  comments  [deck] [--unresolved]         every comment, with its slide number.
+                                          Humans leave instructions this way —
+                                          check it at the start of a task.
+  comments  [deck] --resolve <commentId>  mark a comment resolved (do this
+                                          after acting on it; never delete)
+  comments  [deck] --add <text> (--slide <slideId> | --element <elementId>)
+                                          [--author <name>]  reply on a thread
   transaction apply <deck> <file.json>    JSON fallback, for tooling with no
                                           browser — not how slides are authored
 
@@ -125,6 +132,8 @@ export async function runAgentCli(argv: string[], io: CliIo): Promise<number> {
         return await validateCommand(rest, io);
       case 'asset':
         return await assetCommand(rest, io);
+      case 'comments':
+        return await commentsCommand(rest, io);
       case 'transaction':
         return await transactionCommand(rest, io);
       case 'help':
@@ -477,6 +486,136 @@ async function assetCommand(argv: string[], io: CliIo): Promise<number> {
   }
   io.out(json({ assets, failures }));
   return failures.length > 0 && assets.length === 0 ? EXIT_ERROR : EXIT_OK;
+}
+
+/**
+ * Comments are how humans leave instructions inside the deck (on slides or on
+ * individual elements). List them, reply, and resolve them from the CLI so a
+ * file-based agent never has to read deck.json for them. Mutations go through
+ * the ordinary transaction path, so a live editor or collab session applies
+ * them as one labelled, undoable change.
+ */
+async function commentsCommand(argv: string[], io: CliIo): Promise<number> {
+  const { flags, options, positional } = parseFlags(argv, [
+    'resolve', 'add', 'slide', 'element', 'author',
+  ]);
+  ensureKnownFlags('comments', flags, ['unresolved']);
+  ensurePositionals('comments', positional, 1);
+  const deckDir = resolveDeckDir(positional[0], io);
+  const deck = await loadDeck(deckDir);
+  const resolveId = options.get('resolve');
+  const addText = options.get('add');
+  const slideId = options.get('slide');
+  const elementId = options.get('element');
+
+  if (resolveId) {
+    const operation = resolveCommentOperation(deck, resolveId);
+    if (!operation) {
+      io.err(`No comment with id ${resolveId}`);
+      return EXIT_ERROR;
+    }
+    return applyTransaction(deckDir, {
+      version: AGENT_PROTOCOL_VERSION,
+      label: 'Resolve comment',
+      operations: [operation],
+    }, io, { resolved: resolveId });
+  }
+
+  if (addText) {
+    if (Boolean(slideId) === Boolean(elementId)) {
+      io.err('comments --add needs exactly one of --slide <slideId> or --element <elementId>');
+      return EXIT_USAGE;
+    }
+    const comment: Comment = {
+      id: `comment-${randomUUID().slice(0, 8)}`,
+      author: options.get('author') ?? 'agent',
+      text: addText,
+      ts: new Date().toISOString(),
+      resolved: false,
+    };
+    const operation = addCommentOperation(deck, comment, slideId, elementId);
+    if (!operation) {
+      io.err(`No such ${slideId ? `slide: ${slideId}` : `element: ${elementId}`}`);
+      return EXIT_ERROR;
+    }
+    return applyTransaction(deckDir, {
+      version: AGENT_PROTOCOL_VERSION,
+      label: 'Add comment',
+      operations: [operation],
+    }, io, { commentId: comment.id });
+  }
+
+  const rows = listComments(deck).filter((row) => !flags.has('unresolved') || !row.resolved);
+  io.out(json({ commentCount: rows.length, comments: rows }));
+  return EXIT_OK;
+}
+
+interface CommentRow extends Comment {
+  /** 1-based, matching what a human sees in the editor's slide rail. */
+  slide: number;
+  slideId: string;
+  slideName: string;
+  elementId?: string;
+  elementType?: string;
+}
+
+function listComments(deck: Deck): CommentRow[] {
+  const rows: CommentRow[] = [];
+  deck.slides.forEach((slide, index) => {
+    const base = { slide: index + 1, slideId: slide.id, slideName: slide.name };
+    for (const comment of slide.comments ?? []) rows.push({ ...base, ...comment });
+    for (const element of slide.elements) {
+      for (const comment of element.comments ?? []) {
+        rows.push({ ...base, elementId: element.id, elementType: element.type, ...comment });
+      }
+    }
+  });
+  return rows;
+}
+
+type DraftOperation = DraftTransaction['operations'][number];
+
+function resolveCommentOperation(deck: Deck, commentId: string): DraftOperation | null {
+  for (const slide of deck.slides) {
+    const onSlide = slide.comments?.find((c) => c.id === commentId);
+    if (onSlide) {
+      const { elements: _elements, ...props } = structuredClone(slide);
+      for (const c of props.comments ?? []) if (c.id === commentId) c.resolved = true;
+      return { op: 'setSlideProperties', slideId: slide.id, slide: props };
+    }
+    for (const element of slide.elements) {
+      if (element.comments?.some((c) => c.id === commentId)) {
+        const next = structuredClone(element);
+        for (const c of next.comments ?? []) if (c.id === commentId) c.resolved = true;
+        return { op: 'replaceElement', slideId: slide.id, elementId: element.id, element: next };
+      }
+    }
+  }
+  return null;
+}
+
+function addCommentOperation(
+  deck: Deck,
+  comment: Comment,
+  slideId?: string,
+  elementId?: string,
+): DraftOperation | null {
+  for (const slide of deck.slides) {
+    if (slideId && slide.id === slideId) {
+      const { elements: _elements, ...props } = structuredClone(slide);
+      (props.comments ??= []).push(comment);
+      return { op: 'setSlideProperties', slideId: slide.id, slide: props };
+    }
+    if (elementId) {
+      const element = slide.elements.find((e) => e.id === elementId);
+      if (element) {
+        const next = structuredClone(element);
+        (next.comments ??= []).push(comment);
+        return { op: 'replaceElement', slideId: slide.id, elementId, element: next };
+      }
+    }
+  }
+  return null;
 }
 
 async function transactionCommand(argv: string[], io: CliIo): Promise<number> {

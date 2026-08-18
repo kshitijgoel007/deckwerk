@@ -746,6 +746,21 @@ describe('native line endpoint editing', () => {
     expect(elementContainsPoint(line, { x: 850, y: 280 })).toBe(false);
   });
 
+  it('hits a rotated text box where it renders, not at its unrotated bounds', () => {
+    // Wide, short box rotated 90° about its centre: renders as a tall, narrow
+    // column. Centre (400, 300), so the visible box spans x 385..415, y 200..400.
+    const text = {
+      id: 't', type: 'text' as const, x: 300, y: 285, w: 200, h: 30, rot: 90,
+      z: 1, opacity: 1, class: [], style: {}, html: 'Waymo',
+      align: 'left' as const, valign: 'middle' as const,
+    };
+    // Bottom of the rendered column — inside visually, outside the raw bounds.
+    expect(elementContainsPoint(text, { x: 400, y: 390 })).toBe(true);
+    expect(elementContainsPoint(text, { x: 400, y: 210 })).toBe(true);
+    // Inside the raw bounds but visually empty after rotation.
+    expect(elementContainsPoint(text, { x: 320, y: 300 })).toBe(false);
+  });
+
   it('shows clean traces and persistent shared width controls for selected arrows', () => {
     const { store, host } = setup();
     const arrow = (id: string, start: { x: number; y: number }, end: { x: number; y: number }) => ({
@@ -823,14 +838,18 @@ describe('same-kind multi-selection properties', () => {
       .find((section) => section.querySelector('h3')?.textContent === 'Text')!;
     const field = (label: string) => [...textGroup.querySelectorAll<HTMLLabelElement>('label')]
       .find((candidate) => candidate.querySelector('span')?.textContent === label)!;
-    const family = field('Font family').querySelector<HTMLInputElement>('input')!;
+    const family = field('Font family').querySelector<HTMLSelectElement>('select')!;
     const size = field('Font size').querySelector<HTMLInputElement>('input')!;
     const weight = field('Font weight').querySelector<HTMLSelectElement>('select')!;
-    expect(family.value).toBe('');
-    expect(family.placeholder).toContain('Mixed');
+    expect(family.value).toBe('__mixed__');
     expect(size.value).toBe('42');
     expect(weight.value).toBe('__mixed__');
 
+    // The test environment has no local-font API, so the list is empty;
+    // inject the option the way the picker would after enumeration.
+    const interOption = document.createElement('option');
+    interOption.value = 'Inter';
+    family.appendChild(interOption);
     family.value = 'Inter';
     family.dispatchEvent(new Event('change', { bubbles: true }));
     const rerenderedText = [...inspectorHost.querySelectorAll<HTMLElement>('.insp-group')]
@@ -841,8 +860,10 @@ describe('same-kind multi-selection properties', () => {
     rerenderedWeight.value = '600';
     rerenderedWeight.dispatchEvent(new Event('change', { bubbles: true }));
 
-    expect(store.selectedElements().map((element) => element.style['font-family']))
-      .toEqual(['Inter', 'Inter']);
+    // The picker stores the chosen family plus its cross-platform fallbacks.
+    for (const element of store.selectedElements()) {
+      expect(element.style['font-family']).toMatch(/^Inter, .*sans-serif$/);
+    }
     expect(store.selectedElements().map((element) => element.style['font-weight']))
       .toEqual(['600', '600']);
     expect(inspectorHost.querySelector('.magic-move-section')).toBeNull();
@@ -863,7 +884,7 @@ describe('same-kind multi-selection properties', () => {
     const videoGroup = [...inspectorHost.querySelectorAll<HTMLElement>('.insp-group')]
       .find((section) => section.querySelector('h3')?.textContent === 'Video')!;
     const autoplay = [...videoGroup.querySelectorAll<HTMLLabelElement>('label')]
-      .find((label) => label.querySelector('span')?.textContent === 'autoplay')!
+      .find((label) => label.querySelector('span')?.textContent === 'Autoplay')!
       .querySelector<HTMLInputElement>('input')!;
     expect(autoplay.indeterminate).toBe(true);
     autoplay.checked = true;
@@ -998,13 +1019,18 @@ describe('object creation and manipulation', () => {
 
   it('releases shape-picker focus so Backspace can delete a new arrow immediately', () => {
     const { store } = setup();
-    const picker = createShapeInsertPicker(store);
-    document.body.appendChild(picker);
-    picker.focus();
-    picker.value = 'curved-arrow';
-    picker.dispatchEvent(new Event('change', { bubbles: true }));
+    const wrap = createShapeInsertPicker(store);
+    document.body.appendChild(wrap);
+    const trigger = wrap.querySelector<HTMLButtonElement>('.shape-menu-trigger')!;
+    trigger.focus();
+    trigger.click();
+    const item = [...wrap.querySelectorAll<HTMLButtonElement>('.shape-menu-item')].find(
+      (el) => el.textContent === 'Curved arrow',
+    )!;
+    item.click();
 
-    expect(document.activeElement).not.toBe(picker);
+    expect(document.activeElement).not.toBe(trigger);
+    expect(wrap.querySelector('.shape-menu')).toBeNull();
     const [id] = [...store.get().selection];
     expect(store.slide!.elements.find((el) => el.id === id)).toMatchObject({
       shape: 'arrow',

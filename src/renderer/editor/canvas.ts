@@ -3,13 +3,24 @@ import type { Deck, Slide, SlideElement } from '@shared/deck.js';
 import { type Rect, fitScale, makeId } from '@shared/geometry.js';
 import {
   fitAutoText,
+  mediaRadius,
   quadraticPath,
   renderElement,
   renderSlide,
   scheduleAutoFit,
 } from '../player/render.js';
 import { expandTimeline } from '@shared/timeline.js';
+import { classifyMediaName, makePendingSrc } from '@shared/media.js';
 import { normalizeParagraphHtml, paragraphUnits } from '@shared/paragraphs.js';
+import {
+  applyPendingHud,
+  clearPending,
+  markPendingFailed,
+  probeLocalFile,
+  setPendingPreview,
+  setPendingProgress,
+} from './pendingUploads.js';
+import { newComment, openCommentsPopover, openCount } from './comments.js';
 import { HANDLES, type SnapLine, snapMove, snapResize } from './snapping.js';
 import type { EditorStore } from './store.js';
 
@@ -226,6 +237,10 @@ export class EditorCanvas {
       else video.pause();
     }
 
+    // A rebuild replaces placeholder nodes, wiping their progress rings and
+    // preview frames; restore them from the client-local upload state.
+    applyPendingHud(this.slideLayer);
+
     this.rescale();
     this.drawOverlay(deck, slide.elements, selection);
   }
@@ -320,8 +335,18 @@ export class EditorCanvas {
         node.style.border = width > 0
           ? `${width}px solid ${el.borderColor ?? '#000000'}`
           : '';
-        node.style.borderRadius = width > 0 ? `${el.borderRadius ?? 0}px` : '';
-        node.style.overflow = width > 0 ? 'hidden' : '';
+        // Same rule as the renderer: any rounding clips, and the radius also
+        // goes on the media node, which is what actually clips a composited
+        // <video>. A raw style border-radius was already applied above.
+        const radius = mediaRadius(el);
+        if (radius) node.style.borderRadius = radius;
+        else node.style.removeProperty('border-radius');
+        node.style.overflow = radius ? 'hidden' : '';
+        const media = node.querySelector<HTMLElement>('img, video');
+        if (media) {
+          if (radius) media.style.borderRadius = radius;
+          else media.style.removeProperty('border-radius');
+        }
       }
 
       if (el.type === 'shape' && el.control) {
@@ -528,6 +553,30 @@ export class EditorCanvas {
           makeBadge(String(num), el.x + el.w, y + 9);
         }
       }
+    }
+
+    // Comment badges: a small bubble pinned to the top-right corner of any
+    // element that carries comments. Always visible (comments are useless if
+    // you cannot find them), counter-scaled like the handles, clickable even
+    // though the overlay itself is pointer-events: none.
+    for (const el of elements) {
+      const open = openCount(el.comments);
+      if ((el.comments?.length ?? 0) === 0) continue;
+      const bubble = document.createElement('div');
+      bubble.className = `element-comment${open > 0 ? '' : ' resolved'}`;
+      bubble.textContent = open > 0 ? String(open) : '✓';
+      bubble.title = open > 0
+        ? `${open} open comment${open === 1 ? '' : 's'}`
+        : 'All comments resolved';
+      bubble.style.left = `${el.x + el.w}px`;
+      bubble.style.top = `${el.y}px`;
+      bubble.style.setProperty('--inv', String(1 / this.scale));
+      bubble.addEventListener('pointerdown', (e) => e.stopPropagation());
+      bubble.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.openElementComments(el.id, bubble.getBoundingClientRect());
+      });
+      frag.appendChild(bubble);
     }
 
     // In mask mode, show the full frame faintly outside the crop window so it
@@ -983,7 +1032,7 @@ export class EditorCanvas {
       if (slide) {
         const box = this.marquee;
         const hits = slide.elements
-          .filter((e) => intersects({ x: e.x, y: e.y, w: e.w, h: e.h }, box))
+          .filter((e) => intersects(rotatedBounds(e), box))
           .map((e) => e.id);
         if (hits.length > 0) this.store.select(hits, ev.shiftKey);
       }
@@ -1012,6 +1061,47 @@ export class EditorCanvas {
   }
 
   /** Custom context menu: right-click selects the element and offers actions. */
+  /**
+   * Comments popover for one element. Public so the context menu's "Add
+   * comment…" can open it; the badge drawn by drawOverlay uses it too.
+   */
+  openElementComments(elementId: string, anchor?: DOMRect): void {
+    const slideId = this.store.slide?.id;
+    if (!slideId) return;
+    const find = (deck: Deck) =>
+      deck.slides.find((s) => s.id === slideId)?.elements.find((e) => e.id === elementId);
+    const current = () => find(this.store.get().deck)?.comments ?? [];
+    // Anchor on the element's on-screen box when the caller has no badge rect.
+    const node = this.slideLayer.querySelector<HTMLElement>(
+      `[data-element-id="${CSS.escape(elementId)}"]`,
+    );
+    const at = anchor ?? node?.getBoundingClientRect();
+    if (!at) return;
+    const mutate = (label: string, fn: (el: SlideElement) => void) => {
+      this.store.commit((deck) => {
+        const el = find(deck);
+        if (el) fn(el);
+      }, { label });
+      pop.refresh(current());
+    };
+    const pop = openCommentsPopover({
+      anchor: at,
+      title: 'Comments',
+      comments: current(),
+      onAdd: (text) => mutate('Add comment', (el) => {
+        (el.comments ??= []).push(newComment(text));
+      }),
+      onResolve: (id, resolved) => mutate(resolved ? 'Resolve comment' : 'Reopen comment', (el) => {
+        const comment = el.comments?.find((c) => c.id === id);
+        if (comment) comment.resolved = resolved;
+      }),
+      onDelete: (id) => mutate('Delete comment', (el) => {
+        el.comments = (el.comments ?? []).filter((c) => c.id !== id);
+        if (el.comments.length === 0) delete el.comments;
+      }),
+    });
+  }
+
   private onContextMenu(ev: MouseEvent): void {
     ev.preventDefault();
     document.getElementById('ctx-menu')?.remove();
@@ -1194,6 +1284,18 @@ export class EditorCanvas {
       } else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
         e.preventDefault();
         finish(true);
+      } else if (e.key === 'Tab' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        // Tab indents a bullet one level (nested lists render a "-" marker,
+        // see type.css); shift-tab unindents. Outside a list, tab keeps its
+        // browser default (which would blur the box), so swallow it there too.
+        e.preventDefault();
+        const anchor = window.getSelection()?.anchorNode;
+        const inItem = anchor instanceof Element
+          ? anchor.closest('li')
+          : anchor?.parentElement?.closest('li');
+        if (inItem && body.contains(inItem)) {
+          document.execCommand?.(e.shiftKey ? 'outdent' : 'indent');
+        }
       }
     };
 
@@ -1391,8 +1493,23 @@ export class EditorCanvas {
     return null;
   }
 
-  /** Drop media from Finder/Nautilus straight onto the slide. */
+  /**
+   * Drop media from Finder/Nautilus straight onto the slide.
+   *
+   * Elements appear instantly as pending placeholders — real elements, so they
+   * can be moved and resized (and sync to collaborators) while the bytes are
+   * still uploading or transcoding. Each file then imports independently,
+   * streaming progress into its placeholder; when the import lands, the
+   * placeholder src is swapped for the real asset path.
+   */
   private bindDrop(): void {
+    // Both the desktop preload and the collab netApi push import progress
+    // through this hook; it's absent only in stripped-down harnesses.
+    window.api.onAssetImportProgress?.((p) => {
+      setPendingProgress(p);
+      applyPendingHud(this.slideLayer);
+    });
+
     const stop = (e: DragEvent) => {
       e.preventDefault();
       e.stopPropagation();
@@ -1406,16 +1523,10 @@ export class EditorCanvas {
     this.host.addEventListener('drop', async (e) => {
       stop(e);
       this.host.classList.remove('drop-active');
-      const files = [...(e.dataTransfer?.files ?? [])];
+      const files = [...(e.dataTransfer?.files ?? [])]
+        .map((file) => ({ file, kind: classifyMediaName(file.name) }))
+        .filter((f): f is { file: File; kind: 'image' | 'video' } => f.kind !== null);
       if (files.length === 0) return;
-
-      // The browser collab client uploads file bytes over HTTP; Electron
-      // recovers filesystem paths through the preload. Both land in the same
-      // content-hash importer.
-      const assets = window.api.importAssetFiles
-        ? await window.api.importAssetFiles(files)
-        : await window.api.importAssets(files.map((f) => window.api.pathForFile(f)).filter(Boolean));
-      if (assets.length === 0) return;
 
       const { deck } = this.store.get();
       const r = this.stage.getBoundingClientRect();
@@ -1424,46 +1535,59 @@ export class EditorCanvas {
         y: (e.clientY - r.top) / this.scale,
       };
 
+      // Natural size and a preview frame are read from the local bytes before
+      // anything uploads, so the placeholder lands with the right aspect and
+      // shows the first frame while the import runs.
+      const probes = await Promise.all(
+        files.map(({ file, kind }) => probeLocalFile(file, kind)),
+      );
+
       const created: string[] = [];
+      const drops = files.map(({ file, kind }, i) => {
+        // Fall back to a PDF-ish or 16:9 box when the browser can't decode it.
+        const natural = {
+          w: probes[i].width ?? (file.name.toLowerCase().endsWith('.pdf') ? 1400 : 1600),
+          h: probes[i].height ?? (file.name.toLowerCase().endsWith('.pdf') ? 1000 : 900),
+        };
+        const maxW = deck.canvas.w * 0.6;
+        const scale = Math.min(1, maxW / natural.w);
+        const id = makeId(kind);
+        created.push(id);
+        return {
+          file,
+          kind,
+          id,
+          w: Math.round(natural.w * scale),
+          h: Math.round(natural.h * scale),
+          preview: probes[i].preview,
+        };
+      });
+
       this.store.commit((d) => {
         const slide = d.slides[this.store.get().slideIndex];
         const maxZ = slide.elements.reduce((m, el) => Math.max(m, el.z), 0);
-
-        assets.forEach((asset, i) => {
-          // Fall back to 16:9 when probing failed, so a drop always lands with
-          // sane proportions rather than a square.
-          const natural = {
-            w: asset.width ?? 1600,
-            h: asset.height ?? 900,
-          };
-          const maxW = deck.canvas.w * 0.6;
-          const scale = Math.min(1, maxW / natural.w);
-          const w = Math.round(natural.w * scale);
-          const h = Math.round(natural.h * scale);
+        drops.forEach((drop, i) => {
           // Centre on the cursor, cascading multi-file drops so they don't stack.
           const offset = i * 40;
-          const id = makeId(asset.kind);
-          created.push(id);
-
           const base = {
-            id,
-            x: Math.round(dropPoint.x - w / 2 + offset),
-            y: Math.round(dropPoint.y - h / 2 + offset),
-            w,
-            h,
+            id: drop.id,
+            x: Math.round(dropPoint.x - drop.w / 2 + offset),
+            y: Math.round(dropPoint.y - drop.h / 2 + offset),
+            w: drop.w,
+            h: drop.h,
             rot: 0,
             z: maxZ + 1 + i,
             opacity: 1,
             class: [],
             style: {},
           };
-
+          const src = makePendingSrc(drop.id, drop.file.name);
           slide.elements.push(
-            asset.kind === 'video'
+            drop.kind === 'video'
               ? {
                   ...base,
                   type: 'video',
-                  src: asset.src,
+                  src,
                   fit: 'contain',
                   autoplay: true,
                   loop: true,
@@ -1477,16 +1601,71 @@ export class EditorCanvas {
               : {
                   ...base,
                   type: 'image',
-                  src: asset.src,
+                  src,
                   fit: 'contain',
-                  alt: '',
+                  alt: drop.file.name,
                   sourceBox: null,
                 },
           );
         });
       });
       this.store.select(created);
+      for (const drop of drops) {
+        if (drop.preview) setPendingPreview(drop.id, drop.preview);
+      }
+      applyPendingHud(this.slideLayer);
+
+      // Each file imports on its own: one failure marks only its placeholder.
+      await Promise.all(drops.map((drop) => this.importDroppedFile(drop)));
     });
+  }
+
+  /** Upload/import one dropped file and resolve its pending placeholder. */
+  private async importDroppedFile(drop: {
+    file: File;
+    id: string;
+    w: number;
+    h: number;
+  }): Promise<void> {
+    try {
+      // The browser collab client uploads file bytes over HTTP; Electron
+      // recovers filesystem paths through the preload. Both land in the same
+      // content-hash importer, keyed by the element id for progress events.
+      const assets = window.api.importAssetFiles
+        ? await window.api.importAssetFiles([drop.file], drop.id)
+        : await window.api.importAssets(
+            [window.api.pathForFile(drop.file)].filter(Boolean),
+            drop.id,
+          );
+      const asset = assets[0];
+      if (!asset) throw new Error('unsupported or unreadable file');
+
+      clearPending(drop.id);
+      this.store.commit((d) => {
+        for (const slide of d.slides) {
+          const el = slide.elements.find((x) => x.id === drop.id);
+          if (!el || (el.type !== 'image' && el.type !== 'video')) continue;
+          el.src = asset.src;
+          // If the box is untouched and the real dimensions differ from the
+          // local guess (a PDF, or an undecodable codec), refit it in place.
+          if (el.w === drop.w && el.h === drop.h && asset.width && asset.height) {
+            const maxW = d.canvas.w * 0.6;
+            const scale = Math.min(1, maxW / asset.width);
+            const w = Math.round(asset.width * scale);
+            const h = Math.round(asset.height * scale);
+            el.x = Math.round(el.x + (el.w - w) / 2);
+            el.y = Math.round(el.y + (el.h - h) / 2);
+            el.w = w;
+            el.h = h;
+          }
+          return;
+        }
+      });
+    } catch (err) {
+      console.error(`Import failed for ${drop.file.name}:`, err);
+      markPendingFailed(drop.id);
+      applyPendingHud(this.slideLayer);
+    }
   }
 }
 
@@ -1536,6 +1715,17 @@ function sameStructure(a: Slide, b: Slide, ignoreHtml = false): boolean {
   return true;
 }
 
+/** Axis-aligned bounds of an element as rendered (rotation about its centre). */
+function rotatedBounds(el: SlideElement): Rect {
+  if (!el.rot) return { x: el.x, y: el.y, w: el.w, h: el.h };
+  const rad = (el.rot * Math.PI) / 180;
+  const cos = Math.abs(Math.cos(rad));
+  const sin = Math.abs(Math.sin(rad));
+  const w = el.w * cos + el.h * sin;
+  const h = el.w * sin + el.h * cos;
+  return { x: el.x + (el.w - w) / 2, y: el.y + (el.h - h) / 2, w, h };
+}
+
 /** Geometry-aware hit testing, with a screen-derived tolerance for strokes. */
 export function elementContainsPoint(
   el: SlideElement,
@@ -1570,8 +1760,20 @@ export function elementContainsPoint(
     return Math.hypot(point.x - nearestX, point.y - nearestY) <=
       Math.max(tolerance, el.strokeWidth / 2);
   }
-  return point.x >= el.x && point.x <= el.x + el.w &&
-    point.y >= el.y && point.y <= el.y + el.h;
+  // Rotated elements render about their centre; undo the rotation on the
+  // point so the axis-aligned bounds check matches what's on screen.
+  let { x, y } = point;
+  if (el.rot) {
+    const cx = el.x + el.w / 2;
+    const cy = el.y + el.h / 2;
+    const rad = (-el.rot * Math.PI) / 180;
+    const dx = x - cx;
+    const dy = y - cy;
+    x = cx + dx * Math.cos(rad) - dy * Math.sin(rad);
+    y = cy + dx * Math.sin(rad) + dy * Math.cos(rad);
+  }
+  return x >= el.x && x <= el.x + el.w &&
+    y >= el.y && y <= el.y + el.h;
 }
 
 function distanceToSegment(

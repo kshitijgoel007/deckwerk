@@ -5,6 +5,7 @@ import { IPC } from '@shared/ipc.js';
 import type {
   AgentContextDraft,
   AgentRequest,
+  AssetImportProgress,
   AgentResponse,
   AuthoredHtmlFile,
   DeckSession,
@@ -45,19 +46,23 @@ const api = {
   readClipboard: (): Promise<ClipboardPayload | null> =>
     ipcRenderer.invoke(IPC.clipboardRead),
 
-  importAssets: (paths: string[]): Promise<ImportedAsset[]> =>
-    ipcRenderer.invoke(IPC.assetImport, paths),
+  importAssets: (paths: string[], progressToken?: string): Promise<ImportedAsset[]> =>
+    ipcRenderer.invoke(IPC.assetImport, paths, progressToken),
   /**
    * Import dropped Files. Electron resolves them to filesystem paths; the
    * browser collab client replaces this whole api object with one that
    * uploads the bytes instead — the drop handler prefers this method so both
-   * environments share one code path.
+   * environments share one code path. `progressToken` keys the progress
+   * events pushed back over onAssetImportProgress.
    */
-  importAssetFiles: (files: File[]): Promise<ImportedAsset[]> =>
+  importAssetFiles: (files: File[], progressToken?: string): Promise<ImportedAsset[]> =>
     ipcRenderer.invoke(
       IPC.assetImport,
       files.map((file) => webUtils.getPathForFile(file)).filter(Boolean),
+      progressToken,
     ),
+  onAssetImportProgress: (fn: (p: AssetImportProgress) => void): (() => void) =>
+    on(IPC.assetImportProgress, fn),
   probeAsset: (src: string): Promise<MediaInfo> =>
     ipcRenderer.invoke(IPC.assetProbe, src),
 
@@ -78,6 +83,14 @@ const api = {
     ipcRenderer.invoke(IPC.agentContextPublish, context),
   respondAgentRequest: (response: AgentResponse): void =>
     ipcRenderer.send(IPC.agentResponse, response),
+
+  /**
+   * Share the open deck for live co-editing: the main process starts a
+   * single-deck collab server and swaps this window for the browser client
+   * pointed at it. Resolves to the invite URLs.
+   */
+  startCollab: (opts?: { agent?: boolean }): Promise<string[]> =>
+    ipcRenderer.invoke(IPC.collabStart, opts),
 
   present: (slideIndex: number): Promise<void> =>
     ipcRenderer.invoke(IPC.presentOpen, slideIndex),

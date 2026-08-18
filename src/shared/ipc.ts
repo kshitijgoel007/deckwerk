@@ -17,6 +17,7 @@ export const IPC = {
   deckState: 'deck:state',
   themeCss: 'deck:themeCss',
   assetImport: 'asset:import',
+  assetImportProgress: 'asset:importProgress',
   clipboardWrite: 'clipboard:write',
   clipboardRead: 'clipboard:read',
   assetProbe: 'asset:probe',
@@ -37,6 +38,7 @@ export const IPC = {
   agentRequest: 'agent:request',
   agentResponse: 'agent:response',
   workflowStart: 'workflow:start',
+  collabStart: 'collab:start',
 } as const;
 
 /** The workflow templates a UI action can instantiate (see workflows/). */
@@ -105,6 +107,19 @@ export interface ImportedAsset {
   height: number | null;
   /** Seconds, for video only. */
   duration: number | null;
+}
+
+/**
+ * Progress of one in-flight asset import, keyed by the caller's token (which
+ * is also the element's `pending:<token>` src, so the canvas can find the
+ * placeholder to update).
+ */
+export interface AssetImportProgress {
+  token: string;
+  /** 'upload' is browser-only; the desktop app skips straight to processing. */
+  phase: 'upload' | 'processing';
+  /** 0..1, or null when the phase has no measurable progress. */
+  ratio: number | null;
 }
 
 /** Probe results for a media file already inside the deck. */

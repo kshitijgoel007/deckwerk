@@ -113,11 +113,25 @@ describe('Magic Move matching', () => {
       arrow('shape-604', 367.12, 648.43, 167.14),
       arrow('shape-605', 611.75, 564.07, 329.8),
     ];
+    // shape-590 → shape-604 is a sub-epsilon drift the essential matcher
+    // already glides at runtime, so it needs no explicit pair suggestion.
     expect(suggestMagicMovePairs(previous, next).map(([source, target]) =>
       [source.id, target.id])).toEqual([
-      ['shape-590', 'shape-604'],
       ['shape-591', 'shape-605'],
     ]);
+  });
+
+  it('enables Magic Move from the panel button even with no matches to pair', () => {
+    const store = new EditorStore(twoSlideDeck(), '/tmp/magic');
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    new MagicMovePanel(host, store);
+    expect(host.querySelector('.magic-enable .field-check, .magic-enable')!.textContent)
+      .toContain('Enabled');
+    host.querySelector<HTMLButtonElement>('.magic-enable-pair')!.click();
+    expect(store.get().deck.slides[1].magicMoveFromPrevious).toBe(true);
+    expect(host.textContent).toContain('Enabled Magic Move');
+    host.remove();
   });
 
   it('pairs objects by clicking the two large slide previews in the modal', () => {

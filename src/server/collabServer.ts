@@ -4,12 +4,15 @@ import { createReadStream, existsSync } from 'node:fs';
 import { mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { networkInterfaces, tmpdir } from 'node:os';
-import { basename, extname, join, normalize, resolve } from 'node:path';
+import { basename, dirname, extname, join, normalize, resolve } from 'node:path';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { createDeck, importAsset, resolveAsset } from '../main/deckStore.js';
+import { AGENT_BRIEF } from './agentBrief.js';
+import { capabilities } from '../shared/capabilities.js';
 import { probeMedia } from '../main/ffmpeg.js';
 import { ClientMessageSchema, COLLAB_PROTOCOL_VERSION, type PresenceState, type ServerMessage } from '../shared/collab.js';
 import { CollabSession } from './collabSession.js';
+import { writeZip, type ZipFile } from './zip.js';
 
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -61,6 +64,19 @@ export interface CollabServerOptions {
   clientDir?: string;
   port?: number;
   host?: string;
+  /**
+   * Hosted-session mode: the desktop app sharing the one deck it has open.
+   * Only this deck id is joinable; listing shows nothing else, and creating
+   * or importing decks is disabled — joiners edit the host's presentation,
+   * they don't browse the host's disk.
+   */
+  hostedDeckId?: string;
+  /**
+   * Called when the host requests the session end (POST /api/end from
+   * loopback in a hosted session). The owner tears the server down; the
+   * endpoint itself only notifies peers.
+   */
+  onSessionEnd?: () => void;
 }
 
 export interface RunningCollabServer {
@@ -73,12 +89,18 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
   const rootDir = resolve(options.rootDir);
   const clientDir = options.clientDir;
   const host = options.host ?? '0.0.0.0';
+  const hostedDeckId = options.hostedDeckId;
   const rooms = new Map<string, Room>();
+  /** Known once listen() succeeds; /api/config reports the invite URLs. */
+  let boundPort: number | null = null;
 
   /** Deck ids are immediate-child directory names; reject anything else. */
   function deckDirOf(deckId: string): string {
     if (!deckId || deckId.includes('/') || deckId.includes('\\') || deckId === '.' || deckId === '..') {
       throw new Error(`invalid deck id: ${deckId}`);
+    }
+    if (hostedDeckId && deckId !== hostedDeckId) {
+      throw new Error(`this session only hosts "${hostedDeckId}"`);
     }
     const dir = resolve(rootDir, deckId);
     if (dir !== join(rootDir, deckId)) throw new Error(`invalid deck id: ${deckId}`);
@@ -89,6 +111,7 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
     const out: Array<{ id: string; title: string; slides: number }> = [];
     for (const entry of await readdir(rootDir, { withFileTypes: true })) {
       if (!entry.isDirectory()) continue;
+      if (hostedDeckId && entry.name !== hostedDeckId) continue;
       const deckPath = join(rootDir, entry.name, 'deck.json');
       if (!existsSync(deckPath)) continue;
       try {
@@ -160,8 +183,48 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
       return;
     }
 
+    // The feature cookbook: every editor capability with a minimal, valid
+    // example element. The antidote to agents hand-building what already
+    // exists (literal "•" bullets instead of <ul>, equations out of positioned
+    // text, re-encoded videos instead of sourceBox crops).
+    if (path === '/api/capabilities' && request.method === 'GET') {
+      const only = (url.searchParams.get('only') ?? '').split(',').filter(Boolean);
+      const all = capabilities();
+      const picked = only.length > 0 ? all.filter((c) => only.includes(c.id)) : all;
+      respondJson(response, 200, {
+        howToUse: [
+          'Copy an element from `elements` and change the ids, geometry and text.',
+          'Element ids must be unique across the whole deck.',
+          'Sizes and colours belong in theme.css via the class, not in inline style.',
+          'Filter with ?only=<id>,<id> once you know what you need.',
+        ],
+        capabilities: picked,
+      });
+      return;
+    }
+
+    if (path === '/api/brief' && request.method === 'GET') {
+      response.writeHead(200, { 'content-type': 'text/markdown; charset=utf-8' });
+      response.end(AGENT_BRIEF);
+      return;
+    }
+
+    if (path === '/api/config' && request.method === 'GET') {
+      respondJson(response, 200, {
+        hosted: Boolean(hostedDeckId),
+        deckId: hostedDeckId ?? null,
+        urls: boundPort === null ? [] : reachableUrls(host, boundPort),
+      });
+      return;
+    }
+
     if (path === '/api/decks' && request.method === 'GET') {
       respondJson(response, 200, await listDecks());
+      return;
+    }
+
+    if (hostedDeckId && (path === '/api/decks' || path === '/api/import-keynote') && request.method === 'POST') {
+      respondJson(response, 403, { error: 'this session hosts a single shared presentation' });
       return;
     }
 
@@ -222,6 +285,75 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
       } catch (error) {
         respondJson(response, 400, { error: String(error instanceof Error ? error.message : error) });
       }
+      return;
+    }
+
+    // Download the whole deck folder as a zip. Flushing the live session first
+    // means the archive holds exactly what everyone currently sees.
+    if (path === '/api/download' && request.method === 'GET') {
+      if (!deckParam) return respondJson(response, 400, { error: 'missing deck' });
+      let deckDir: string;
+      try {
+        deckDir = deckDirOf(deckParam);
+      } catch {
+        return respondJson(response, 403, { error: 'forbidden' });
+      }
+      if (!existsSync(join(deckDir, 'deck.json'))) {
+        return respondJson(response, 404, { error: 'no such deck' });
+      }
+      await rooms.get(deckParam)?.session.flush();
+      const files = await collectDeckFiles(deckDir);
+      response.writeHead(200, {
+        'content-type': 'application/zip',
+        'cache-control': 'no-store',
+        'content-disposition': `attachment; filename="${sanitizeFilename(deckParam)}.zip"`,
+      });
+      await writeZip(response, files);
+      response.end();
+      return;
+    }
+
+    // Host-only, hosted-session-only: end the collaboration. The desktop app's
+    // own window is the sole loopback client, so loopback is the auth check.
+    if (path === '/api/end' && request.method === 'POST') {
+      const remote = request.socket.remoteAddress ?? '';
+      const loopback = remote === '127.0.0.1' || remote === '::1' || remote === '::ffff:127.0.0.1';
+      if (!hostedDeckId || !loopback) {
+        return respondJson(response, 403, { error: 'only the host can end the session' });
+      }
+      for (const room of rooms.values()) broadcast(room, { kind: 'ended' });
+      respondJson(response, 200, { ok: true });
+      options.onSessionEnd?.();
+      return;
+    }
+
+    // The live deck as JSON — for agents that talk HTTP rather than driving
+    // the client page. Served from the room's session, so it is exactly what
+    // every connected client currently sees.
+    if (path === '/api/deck' && request.method === 'GET') {
+      if (!deckParam) return respondJson(response, 400, { error: 'missing deck' });
+      const room = await getRoom(deckParam);
+      respondJson(response, 200, room.session.deck);
+      return;
+    }
+
+    // Every comment in the deck, with 1-based slide numbers. This is the
+    // "see comments" entry point for agents: humans leave instructions as
+    // comments, an agent starts by reading this list.
+    if (path === '/api/comments' && request.method === 'GET') {
+      if (!deckParam) return respondJson(response, 400, { error: 'missing deck' });
+      const room = await getRoom(deckParam);
+      const rows: unknown[] = [];
+      room.session.deck.slides.forEach((slide, index) => {
+        const base = { slide: index + 1, slideId: slide.id, slideName: slide.name };
+        for (const comment of slide.comments ?? []) rows.push({ ...base, ...comment });
+        for (const element of slide.elements) {
+          for (const comment of element.comments ?? []) {
+            rows.push({ ...base, elementId: element.id, elementType: element.type, ...comment });
+          }
+        }
+      });
+      respondJson(response, 200, { commentCount: rows.length, comments: rows });
       return;
     }
 
@@ -388,6 +520,7 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
       resolvePromise(typeof address === 'object' && address ? address.port : options.port ?? 5800);
     });
   });
+  boundPort = port;
 
   return {
     port,
@@ -486,6 +619,28 @@ async function runKeynoteImport(keyFile: string, outDir: string): Promise<unknow
   return payload.report ?? null;
 }
 
+/**
+ * Every regular file under the deck folder, as lazy zip entries so only one
+ * file's bytes are in memory at a time. Dotfiles (.DS_Store & co) are noise
+ * in a download; skip them.
+ */
+async function collectDeckFiles(deckDir: string): Promise<ZipFile[]> {
+  const files: ZipFile[] = [];
+  async function walk(relative: string): Promise<void> {
+    const entries = await readdir(join(deckDir, relative), { withFileTypes: true });
+    for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+      if (entry.name.startsWith('.')) continue;
+      const relPath = relative ? `${relative}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) await walk(relPath);
+      else if (entry.isFile()) {
+        files.push({ name: relPath, load: () => readFile(join(deckDir, relPath)) });
+      }
+    }
+  }
+  await walk('');
+  return files;
+}
+
 /** Stream a file honouring HTTP Range requests, so <video> can seek. */
 async function serveFileWithRanges(
   request: IncomingMessage,
@@ -541,6 +696,15 @@ function reachableUrls(host: string, port: number): string[] {
 }
 
 export function defaultClientDir(repoRoot: string): string | undefined {
-  const dir = join(repoRoot, 'dist', 'collab');
-  return existsSync(dir) ? dir : undefined;
+  // app.getAppPath() is out/main when Electron is launched as
+  // `electron out/main/index.js`, so walk up looking for dist/collab.
+  let base = repoRoot;
+  for (let i = 0; i < 4; i++) {
+    const dir = join(base, 'dist', 'collab');
+    if (existsSync(join(dir, 'index.html'))) return dir;
+    const parent = dirname(base);
+    if (parent === base) break;
+    base = parent;
+  }
+  return undefined;
 }

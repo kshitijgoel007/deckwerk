@@ -45,6 +45,33 @@ export function createEditorWindow(): BrowserWindow {
 }
 
 /**
+ * The host's window while collaborating: the same browser collab client the
+ * joiners use, served over localhost. Deliberately NO preload — the collab
+ * client installs its own network-backed `window.api`, which the context
+ * bridge would otherwise make read-only.
+ */
+export function createCollabHostWindow(url: string): BrowserWindow {
+  const win = new BrowserWindow({
+    width: 1600,
+    height: 1000,
+    minWidth: 1100,
+    minHeight: 700,
+    backgroundColor: '#1c1c1e',
+    show: false,
+    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      autoplayPolicy: 'no-user-gesture-required',
+    },
+  });
+  win.once('ready-to-show', () => win.show());
+  void win.loadURL(url);
+  return win;
+}
+
+/**
  * Fullscreen presentation. Prefers an external display when one is attached,
  * which is the normal case at a talk, and keeps the editor usable behind it.
  */

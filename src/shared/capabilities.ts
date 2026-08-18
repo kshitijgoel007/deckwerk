@@ -53,6 +53,8 @@ export function capabilities(): Capability[] {
         'An inline `style` overrides the theme and should be a deliberate one-off.',
         'html may contain inline markup: <b>, <i>, <br>, <span>.',
         'paragraphSpacing (px) sets the gap between paragraphs and between bullets; unset keeps the theme default.',
+        "align sets the horizontal setting of the type — 'left', 'center', 'right' or 'justify'.",
+        "valign places the text inside its box — 'top', 'middle' or 'bottom' — which is what keeps a caption sitting against a figure rather than floating.",
       ],
       elements: [
         text('cap-roles-title', 'A title in the deck’s own type', TITLE, { class: ['role-title'] }),
@@ -84,6 +86,25 @@ export function capabilities(): Capability[] {
       ],
     },
     {
+      id: 'lists',
+      what: 'Bulleted lists as real <ul><li> markup inside a text element.',
+      when: 'Any list of points. Never type literal "•" or "-" characters — the theme styles real list markers, paragraphSpacing controls the gap between items, and by-paragraph builds reveal them one at a time.',
+      notes: [
+        'One <li> per point; inline markup (<b>, <i>) works inside items.',
+        'The whole list is one text element; the editor’s "Bulleted list" checkbox toggles the same markup.',
+        'paragraphSpacing (px) spaces the items; unset keeps the theme default.',
+      ],
+      elements: [
+        text('cap-lists-title', 'Lists are markup, not characters', { x: 160, y: 90, w: 1600, h: 150 }, { class: ['role-title'] }),
+        text(
+          'cap-lists-body',
+          '<ul><li>Real <b>list items</b>, styled by the theme</li><li>Spaced by paragraphSpacing</li><li>Revealed one at a time by a byParagraph build</li></ul>',
+          { x: 160, y: 320, w: 1600, h: 500 },
+          { paragraphSpacing: 24 },
+        ),
+      ],
+    },
+    {
       id: 'auto-fit',
       what: 'Text that shrinks to stay inside its box.',
       when: 'Titles and quotes whose length you cannot predict.',
@@ -101,6 +122,12 @@ export function capabilities(): Capability[] {
           { x: 160, y: 320, w: 1600, h: 200 },
           { autoFit: true, class: ['role-title'] },
         ),
+        text(
+          'cap-fit-condensed',
+          'One line, never wrapped — squeezed horizontally instead.',
+          { x: 160, y: 560, w: 1600, h: 160 },
+          { noWrap: true, noWrapMode: 'condense', class: ['role-title'] },
+        ),
       ],
     },
     {
@@ -108,7 +135,7 @@ export function capabilities(): Capability[] {
       what: 'An image, fitted inside its box.',
       when: 'Figures, screenshots, diagrams. PDFs and SVGs stay vector.',
       notes: [
-        'fit: contain preserves the whole figure; cover fills the box and clips.',
+        'fit: contain preserves the whole figure; cover crops to the box; fill stretches to it, distorting the picture — reach for it only deliberately.',
         'Import media with `slide-agent asset import` — never reference a path outside the deck.',
       ],
       elements: [
@@ -141,11 +168,40 @@ export function capabilities(): Capability[] {
       ],
     },
     {
+      id: 'mask',
+      what: 'Circular masks on images and video.',
+      when: 'Headshots, logos, any figure that should read as a disc rather than a rectangle. Never fake it with a cropped image file.',
+      notes: [
+        "maskShape: 'circle' clips the element box to its inscribed ellipse — a square box gives a true circle.",
+        "maskShape: 'rect', or leaving the field off, is the ordinary rectangular box.",
+        'Images and video behave identically here.',
+        'Combine with sourceBox to move and scale the picture behind the mask; the element box is the mask itself.',
+        'For merely rounded corners, use borderRadius (px) instead.',
+      ],
+      elements: [
+        text('cap-mask-title', 'Circular masks', TITLE, { class: ['role-title'] }),
+        {
+          id: 'cap-mask-image', type: 'image', x: 420, y: 320, w: 440, h: 440, rot: 0, z: 2,
+          opacity: 1, class: [], style: {}, src: 'assets/swatch.png', fit: 'cover', alt: 'A masked figure',
+          sourceBox: null, maskShape: 'circle',
+        },
+        {
+          id: 'cap-mask-video', type: 'video', x: 1060, y: 320, w: 440, h: 440, rot: 0, z: 2,
+          opacity: 1, class: [], style: {}, src: 'assets/testclip.mp4', fit: 'cover',
+          autoplay: true, loop: true, muted: true, controls: false,
+          start: 0, end: null, poster: null, sourceBox: null, maskShape: 'circle',
+        },
+        text('cap-mask-caption', 'An image and a video, same mask.', CAPTION, {
+          class: ['role-caption'], align: 'center', valign: 'middle',
+        }),
+      ],
+    },
+    {
       id: 'media-frame',
       what: 'Borders, rounded corners and visual effects on media.',
       when: 'Setting a figure off from the background, or de-emphasising it.',
       notes: [
-        'effects apply in array order: blur, posterize, grayscale.',
+        'effects apply in array order; the three are blur (radius px), posterize (levels) and grayscale (amount 0–1).',
         'borderWidth/borderColor/borderRadius work on both images and video.',
       ],
       elements: [
@@ -158,7 +214,8 @@ export function capabilities(): Capability[] {
         {
           id: 'cap-frame-effect', type: 'image', x: 1020, y: 320, w: 700, h: 440, rot: 0, z: 2,
           opacity: 1, class: [], style: {}, src: 'assets/swatch.png', fit: 'cover', alt: '',
-          sourceBox: null, effects: [{ type: 'blur', radius: 6 }, { type: 'grayscale', amount: 0.8 }],
+          sourceBox: null,
+          effects: [{ type: 'blur', radius: 6 }, { type: 'posterize', levels: 6 }, { type: 'grayscale', amount: 0.8 }],
         },
       ],
     },
@@ -168,20 +225,34 @@ export function capabilities(): Capability[] {
       when: 'Any result clip. This editor exists for this.',
       notes: [
         'start/end are seconds; end: null means the end of the file. Looping honours them.',
-        'autoplay/loop/muted default to true — a slide video normally plays itself.',
+        'autoplay/loop/muted default to true — a slide video normally plays itself. Set autoplay: false when a build starts it on a click instead.',
+        'controls: true hands the audience a scrubber; normally leave it off.',
+        'poster is a still shown before playback begins; null lets the first frame stand in.',
         'Only H.264/VP8/VP9/AV1 decode; `asset import` transcodes anything else.',
-        'A video can be cropped and framed exactly like an image.',
+        'A video can be cropped, masked and framed exactly like an image.',
       ],
       elements: [
         text('cap-video-title', 'Video, trimmed and framed', TITLE, { class: ['role-title'] }),
         {
           id: 'cap-video', type: 'video', x: 460, y: 300, w: 1000, h: 500, rot: 0, z: 2,
           opacity: 1, class: [], style: {}, src: 'assets/testclip.mp4', fit: 'contain',
-          autoplay: true, loop: true, muted: true, controls: false,
+          autoplay: false, loop: true, muted: true, controls: false,
           start: 1, end: 5, poster: null, sourceBox: null,
           borderColor: '#111111', borderWidth: 6, borderRadius: 12,
         },
         text('cap-video-caption', 'Seconds 1–5 of the source, looping, untouched on disk.', CAPTION, { class: ['role-caption'] }),
+      ],
+      timeline: [
+        {
+          id: 'cap-video-t1',
+          trigger: { on: 'click', ref: null, delay: 0 },
+          action: { type: 'play', target: 'cap-video', value: null },
+        },
+        {
+          id: 'cap-video-t2',
+          trigger: { on: 'mediaEnd', ref: 'cap-video', delay: 0 },
+          action: { type: 'appear', target: 'cap-video-caption', value: null },
+        },
       ],
     },
     {
@@ -190,26 +261,40 @@ export function capabilities(): Capability[] {
       when: 'Callouts, connectors, emphasis boxes.',
       notes: [
         'An arrow’s `control` is an absolute canvas-space point making it a quadratic curve.',
-        'shape: "path" carries real SVG path data, scaled from pathSize to the element box.',
+        'shape: "path" carries real SVG path data, scaled from pathSize to the element box — this is how imported vector art keeps its geometry.',
+        'arrowStart/arrowEnd put heads on a line or arrow at either end, or both.',
       ],
       elements: [
         text('cap-shape-title', 'Shapes and connectors', TITLE, { class: ['role-title'] }),
         {
-          id: 'cap-shape-box', type: 'shape', x: 200, y: 380, w: 460, h: 260, rot: 0, z: 2,
+          id: 'cap-shape-box', type: 'shape', x: 200, y: 330, w: 460, h: 240, rot: 0, z: 2,
           opacity: 1, class: [], style: {}, shape: 'rect', fill: null, stroke: '#2563eb',
           strokeWidth: 4, radius: 16, path: null, pathSize: null, arrowStart: false, arrowEnd: false,
         },
         {
-          id: 'cap-shape-arrow', type: 'shape', x: 700, y: 380, w: 500, h: 260, rot: 0, z: 2,
+          id: 'cap-shape-arrow', type: 'shape', x: 700, y: 330, w: 500, h: 240, rot: 0, z: 2,
           opacity: 1, class: [], style: {}, shape: 'arrow', fill: null, stroke: '#111111',
           strokeWidth: 6, radius: 0, path: null, pathSize: null, arrowStart: false, arrowEnd: true,
-          control: { x: 950, y: 300 },
+          control: { x: 950, y: 260 },
         },
         {
-          id: 'cap-shape-ellipse', type: 'shape', x: 1260, y: 380, w: 460, h: 260, rot: 0, z: 2,
+          id: 'cap-shape-ellipse', type: 'shape', x: 1260, y: 330, w: 460, h: 240, rot: 0, z: 2,
           opacity: 1, class: [], style: {}, shape: 'ellipse', fill: '#fde68a', stroke: null,
           strokeWidth: 2, radius: 0, path: null, pathSize: null, arrowStart: false, arrowEnd: false,
         },
+        {
+          id: 'cap-shape-line', type: 'shape', x: 200, y: 660, w: 700, h: 2, rot: 0, z: 2,
+          opacity: 1, class: [], style: {}, shape: 'line', fill: null, stroke: '#94a3b8',
+          strokeWidth: 2, radius: 0, path: null, pathSize: null, arrowStart: false, arrowEnd: false,
+        },
+        {
+          id: 'cap-shape-path', type: 'shape', x: 1000, y: 620, w: 720, h: 160, rot: 0, z: 2,
+          opacity: 1, class: [], style: {}, shape: 'path', fill: null, stroke: '#16a34a',
+          strokeWidth: 5, radius: 0, arrowStart: false, arrowEnd: false,
+          path: 'M0,140 C120,10 240,10 360,80 S600,150 720,20',
+          pathSize: { w: 720, h: 160 },
+        },
+        text('cap-shape-caption', 'A rule, and real SVG path data scaled to its box.', CAPTION, { class: ['role-caption'] }),
       ],
     },
     {
@@ -221,12 +306,20 @@ export function capabilities(): Capability[] {
         'Every timeline entry must target an element id on the same slide.',
         'Objects with no build are visible from the start.',
         "An appear with value: 'byParagraph' on a text element reveals it one paragraph (or list item) at a time, in document order — one click each, or a cascade when triggered afterPrev/withPrev.",
+        'withPrev fires together with the step before it; afterPrev fires on its own after that step, with an optional delay in ms.',
+        "The other actions are disappear, play/pause (media), seek (value: seconds) and addClass/removeClass (value: the class name) — the last two are the hook for anything theme.css can animate.",
       ],
       elements: [
         text('cap-build-title', 'Builds', TITLE, { class: ['role-title'] }),
-        text('cap-build-1', 'First this appears with the slide.', { x: 160, y: 340, w: 1600, h: 100 }),
-        text('cap-build-2', 'Then this, on a click.', { x: 160, y: 470, w: 1600, h: 100 }),
-        text('cap-build-3', 'And this, half a second later.', { x: 160, y: 600, w: 1600, h: 100 }),
+        text('cap-build-1', 'First this appears with the slide, then leaves.', { x: 160, y: 320, w: 1600, h: 100 }),
+        text('cap-build-2', 'Then this, on a click.', { x: 160, y: 440, w: 1600, h: 100 }),
+        text('cap-build-3', 'And this, half a second later.', { x: 160, y: 560, w: 1600, h: 100 }),
+        text(
+          'cap-build-list',
+          '<ul><li>Then these list items,</li><li>one click at a time,</li><li>from a single build entry.</li></ul>',
+          { x: 160, y: 680, w: 1600, h: 260 },
+          { paragraphSpacing: 16 },
+        ),
       ],
       timeline: [
         {
@@ -236,8 +329,18 @@ export function capabilities(): Capability[] {
         },
         {
           id: 'cap-build-t2',
+          trigger: { on: 'withPrev', ref: null, delay: 0 },
+          action: { type: 'disappear', target: 'cap-build-1', value: null },
+        },
+        {
+          id: 'cap-build-t3',
           trigger: { on: 'afterPrev', ref: null, delay: 500 },
           action: { type: 'appear', target: 'cap-build-3', value: null },
+        },
+        {
+          id: 'cap-build-t4',
+          trigger: { on: 'click', ref: null, delay: 0 },
+          action: { type: 'appear', target: 'cap-build-list', value: 'byParagraph' },
         },
       ],
     },
@@ -273,14 +376,83 @@ export function capabilities(): Capability[] {
     },
     {
       id: 'background',
-      what: 'A slide background colour or full-bleed image.',
-      when: 'Section dividers and full-bleed figures.',
-      notes: ['A background image covers the canvas; text on it needs contrast.'],
+      what: 'A slide background colour, and the other slide-level properties.',
+      when: 'Section dividers; hiding a slide; picking a geometry preset.',
+      notes: [
+        'A background image covers the canvas; text on it needs contrast.',
+        "layout is a geometry preset — 'freeform' (default), 'standard' (title + body) or 'title' — and themes may decorate it but never own its positions.",
+        'skipped: true keeps a slide in the deck and editable but steps over it when presenting. Use it instead of deleting a slide you may want back.',
+        'notes is the presenter-view script for the slide; name is the label in the slide rail.',
+      ],
       slide: { background: { color: '#0f172a', image: null } },
       elements: [
         text('cap-bg-title', 'Section divider', TITLE, {
           class: ['role-title'], style: { color: '#f8fafc' },
         }),
+      ],
+    },
+    {
+      id: 'background-image',
+      what: 'A full-bleed background photograph behind the whole slide.',
+      when: 'Title slides and section openers with an image behind the type.',
+      notes: [
+        'background.image is deck-relative, covers the canvas, and sits behind every element.',
+        'Type over a photograph needs its own contrast: set an explicit light colour, or lay a translucent shape between the picture and the text.',
+      ],
+      slide: { background: { color: null, image: 'assets/swatch.png' } },
+      elements: [
+        text('cap-bgimage-title', 'Full-bleed', TITLE, {
+          class: ['role-title'], style: { color: '#ffffff' },
+        }),
+      ],
+    },
+    {
+      id: 'comments',
+      what: 'Review comments, on a slide or on a single object.',
+      when: 'Humans leave you instructions here. Read them first, reply, resolve what you finish.',
+      notes: [
+        'comments: [{id, author, text, ts, resolved}] lives on a slide and on any element.',
+        'CLI: `slide-agent comments <deck>` lists every comment with its 1-based slide number; --resolve <id> marks one done; --add <text> --slide/--element <id> replies.',
+        'In a live collaboration session: window.agent.seeComments() and window.agent.resolveComment(id); GET /api/comments serves the same rows.',
+        'Resolve what you acted on. Never delete a human’s comment.',
+      ],
+      elements: [
+        text('cap-comments-title', 'Comments are instructions', TITLE, { class: ['role-title'] }),
+        text(
+          'cap-comments-body',
+          'This paragraph carries a comment asking for a rewrite.',
+          { x: 160, y: 320, w: 1600, h: 200 },
+          {
+            comments: [{
+              id: 'cap-comment-1',
+              author: 'vincent',
+              text: 'Tighten this to one line.',
+              ts: '2026-01-01T09:00:00.000Z',
+              resolved: false,
+            }],
+          },
+        ),
+      ],
+    },
+    {
+      id: 'html-element',
+      what: 'An escape hatch element holding arbitrary markup.',
+      when: 'A small structure the object model has no vocabulary for — a table, a tight two-column flow inside one box. Reach for real text/image/shape elements first.',
+      notes: [
+        'The markup renders as-is inside the element box. Nothing measures it, so overflow is yours to catch — render or screenshot the slide.',
+        'It is one opaque object to the editor: a human cannot select or restyle its parts with the inspector, and auto-fit does not apply.',
+        'theme.css applies to it like any other element, so use the deck’s own classes inside the markup.',
+      ],
+      elements: [
+        text('cap-html-title', 'Raw markup, when nothing else fits', TITLE, { class: ['role-title'] }),
+        {
+          id: 'cap-html-table', type: 'html', x: 160, y: 320, w: 1600, h: 400, rot: 0, z: 2,
+          opacity: 1, class: ['role-body'], style: {},
+          html: '<table style="width:100%;border-collapse:collapse">'
+            + '<tr><th style="text-align:left">Model</th><th style="text-align:left">FVD</th></tr>'
+            + '<tr><td>Ours</td><td>112</td></tr>'
+            + '<tr><td>Baseline</td><td>289</td></tr></table>',
+        },
       ],
     },
   ];
