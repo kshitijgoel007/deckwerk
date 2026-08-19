@@ -12,6 +12,7 @@ This folder is that deck:
 	theme.css   the design system: typography, colour, the role-* classes
 	edit/       your HTML files, watched by the editor
 	assets/     media, referenced as assets/…
+	agent-chats.json  saved embedded Agent conversation — editor-managed
 
 Do not read `deck.json` and do not compute pixel geometry — writing CSS and
 letting the browser measure is the entire point of this workflow.

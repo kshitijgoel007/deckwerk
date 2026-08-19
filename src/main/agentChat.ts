@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -44,6 +45,10 @@ interface ThreadStartResult {
   thread: { id: string };
 }
 
+interface ThreadResumeResult {
+  thread: { id: string };
+}
+
 interface TurnStartResult {
   turn: { id: string; status: string };
 }
@@ -82,6 +87,8 @@ interface AppServerLike {
 interface AgentChatSession {
   deckPath: string;
   threadId: string | null;
+  threadAttached: boolean;
+  threadAccount: string | null;
   activeTurnId: string | null;
   agentPrompt: string | null;
   runtimeDir: string | null;
@@ -107,6 +114,21 @@ export interface AgentChatControllerOptions {
   onDynamicToolCall?: (call: DynamicToolCall) => Promise<DynamicToolResult>;
   /** Keep this embedded agent's login separate from other Codex clients. */
   codexHome?: string;
+  /** Disable deck-side persistence in isolated tests. Enabled by default. */
+  persistence?: boolean;
+}
+
+export const AGENT_CHAT_FILE = 'agent-chats.json';
+
+interface PersistedAgentChat {
+  version: 1;
+  threadId: string | null;
+  threadAccount: string | null;
+  model: string | null;
+  reasoningEffort: string | null;
+  fastMode: boolean;
+  messages: AgentChatMessage[];
+  updatedAt: string;
 }
 
 /** Owns deck-scoped Codex threads and exposes only normalized chat state to Electron. */
@@ -122,6 +144,7 @@ export class AgentChatController {
   private loginError: string | null = null;
   private globalError: string | null = null;
   private sessions = new Map<string, AgentChatSession>();
+  private persistTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly runtimeDir = join(tmpdir(), 'deckwerk-agent-runtime');
 
   constructor(options: AgentChatControllerOptions = {}) {
@@ -186,6 +209,8 @@ export class AgentChatController {
       // after authentication changes, even when it targeted the same deck.
       for (const candidate of this.sessions.values()) {
         candidate.threadId = null;
+        candidate.threadAttached = false;
+        candidate.threadAccount = null;
         candidate.activeTurnId = null;
         candidate.agentPrompt = null;
         candidate.runtimeDir = null;
@@ -194,7 +219,6 @@ export class AgentChatController {
         candidate.fastMode = false;
         candidate.scratchpad = null;
         candidate.queuedFollowUps = [];
-        candidate.messages = [];
         candidate.activity = null;
         candidate.error = null;
       }
@@ -228,26 +252,9 @@ export class AgentChatController {
       session.error = null;
       this.emit(session);
 
-      if (!session.threadId) {
-        session.runtimeDir = join(this.runtimeDir, randomUUID());
-        await mkdir(session.runtimeDir, { recursive: true });
-        session.agentPrompt = await prepareAgentPrompt();
-        const started = await this.client!.request<ThreadStartResult>('thread/start', {
-          ...(session.model ? { model: session.model } : {}),
-          serviceTier: this.serviceTierFor(session),
-          // A neutral cwd keeps the dynamically wrapped HTTP brief as the
-          // thread's sole DeckWerk-specific instruction source.
-          cwd: session.runtimeDir,
-          approvalPolicy: 'never',
-          sandbox: 'workspace-write',
-          serviceName: 'deckwerk',
-          // This is the same complete, dynamically wrapped HTTP contract the
-          // Agent button historically copied to the user's clipboard.
-          developerInstructions: session.agentPrompt,
-          personality: 'friendly',
-          ...(this.options.onDynamicToolCall ? { dynamicTools: [BROWSER_OPEN_TOOL] } : {}),
-        });
-        session.threadId = started.thread.id;
+      if (!session.threadAttached) {
+        const previousMessages = session.messages.slice(0, -1);
+        await this.attachThread(session, prepareAgentPrompt, previousMessages);
       }
 
       session.activity = 'Thinking…';
@@ -406,6 +413,8 @@ export class AgentChatController {
     const session = this.session(deckPath);
     if (session.busy) await this.interrupt(deckPath);
     session.threadId = null;
+    session.threadAttached = false;
+    session.threadAccount = null;
     session.activeTurnId = null;
     session.agentPrompt = null;
     session.runtimeDir = null;
@@ -419,7 +428,25 @@ export class AgentChatController {
     return this.snapshot(session);
   }
 
+  /** Stop live work without erasing the deck's saved conversation. */
+  async suspend(deckPath: string): Promise<AgentChatState> {
+    const session = this.session(deckPath);
+    if (session.busy) await this.interrupt(deckPath);
+    session.activeTurnId = null;
+    session.queuedFollowUps = [];
+    session.busy = false;
+    session.activity = null;
+    // These URLs belong to the collaboration server that is about to close.
+    session.scratchpad = null;
+    this.persistNow(session);
+    this.emit(session);
+    return this.snapshot(session);
+  }
+
   close(): void {
+    for (const timer of this.persistTimers.values()) clearTimeout(timer);
+    this.persistTimers.clear();
+    for (const session of this.sessions.values()) this.persistNow(session);
     this.client?.close();
     this.client = null;
     this.starting = null;
@@ -644,6 +671,7 @@ export class AgentChatController {
       session.busy = false;
       session.activity = null;
       session.activeTurnId = null;
+      session.threadAttached = false;
     }
     this.emitAll();
   }
@@ -652,6 +680,7 @@ export class AgentChatController {
     this.connection = 'unavailable';
     this.globalError = message(error);
     this.client = null;
+    for (const session of this.sessions.values()) session.threadAttached = false;
     this.emitAll();
   }
 
@@ -659,20 +688,23 @@ export class AgentChatController {
     let session = this.sessions.get(deckPath);
     if (!session) {
       const selected = this.models.find((candidate) => candidate.isDefault) ?? this.models[0];
+      const persisted = this.loadPersisted(deckPath);
       session = {
         deckPath,
-        threadId: null,
+        threadId: persisted?.threadId ?? null,
+        threadAttached: false,
+        threadAccount: persisted?.threadAccount ?? null,
         activeTurnId: null,
         agentPrompt: null,
         runtimeDir: null,
-        model: selected?.model ?? null,
-        reasoningEffort: selected?.defaultReasoningEffort
+        model: persisted?.model ?? selected?.model ?? null,
+        reasoningEffort: persisted?.reasoningEffort ?? selected?.defaultReasoningEffort
           ?? selected?.reasoningEfforts[0]?.effort
           ?? null,
-        fastMode: defaultFastMode(selected),
+        fastMode: persisted?.fastMode ?? defaultFastMode(selected),
         scratchpad: null,
         queuedFollowUps: [],
-        messages: [],
+        messages: persisted?.messages.map((item) => ({ ...item })) ?? [],
         busy: false,
         activity: null,
         error: null,
@@ -701,6 +733,7 @@ export class AgentChatController {
   }
 
   private emit(session: AgentChatSession): void {
+    this.schedulePersist(session);
     this.options.onState?.(this.snapshot(session));
   }
 
@@ -715,6 +748,149 @@ export class AgentChatController {
   private serviceTierFor(session: AgentChatSession): string {
     return session.fastMode ? fastTier(this.selectedModel(session))?.id ?? 'default' : 'default';
   }
+
+  private async attachThread(
+    session: AgentChatSession,
+    prepareAgentPrompt: () => Promise<string>,
+    previousMessages: AgentChatMessage[],
+  ): Promise<void> {
+    session.runtimeDir = join(this.runtimeDir, randomUUID());
+    await mkdir(session.runtimeDir, { recursive: true });
+    const livePrompt = await prepareAgentPrompt();
+    session.agentPrompt = livePrompt;
+
+    const accountChanged = Boolean(
+      session.threadId
+      && session.threadAccount
+      && this.accountLabel
+      && session.threadAccount !== this.accountLabel,
+    );
+    if (accountChanged) session.threadId = null;
+
+    if (session.threadId) {
+      try {
+        const resumed = await this.client!.request<ThreadResumeResult>('thread/resume', {
+          threadId: session.threadId,
+          ...(session.model ? { model: session.model } : {}),
+          serviceTier: this.serviceTierFor(session),
+          cwd: session.runtimeDir,
+          runtimeWorkspaceRoots: [session.runtimeDir],
+          approvalPolicy: 'never',
+          sandbox: 'workspace-write',
+          developerInstructions: livePrompt,
+          personality: 'friendly',
+          excludeTurns: true,
+        });
+        session.threadId = resumed.thread.id;
+        session.threadAttached = true;
+        session.threadAccount = this.accountLabel;
+        return;
+      } catch {
+        // The saved transcript still provides continuity when the backing
+        // Codex thread was deleted, belongs to another account, or expired.
+        session.threadId = null;
+      }
+    }
+
+    const started = await this.client!.request<ThreadStartResult>('thread/start', {
+      ...(session.model ? { model: session.model } : {}),
+      serviceTier: this.serviceTierFor(session),
+      // A neutral cwd keeps the dynamically wrapped HTTP brief as the
+      // thread's sole DeckWerk-specific instruction source.
+      cwd: session.runtimeDir,
+      approvalPolicy: 'never',
+      sandbox: 'workspace-write',
+      serviceName: 'deckwerk',
+      // This is the same complete, dynamically wrapped HTTP contract the
+      // Agent button historically copied to the user's clipboard.
+      developerInstructions: promptWithTranscript(livePrompt, previousMessages),
+      personality: 'friendly',
+      ...(this.options.onDynamicToolCall ? { dynamicTools: [BROWSER_OPEN_TOOL] } : {}),
+    });
+    session.threadId = started.thread.id;
+    session.threadAttached = true;
+    session.threadAccount = this.accountLabel;
+  }
+
+  private loadPersisted(deckPath: string): PersistedAgentChat | null {
+    if (this.options.persistence === false) return null;
+    try {
+      return parsePersistedChat(JSON.parse(readFileSync(join(deckPath, AGENT_CHAT_FILE), 'utf8')));
+    } catch {
+      return null;
+    }
+  }
+
+  private schedulePersist(session: AgentChatSession): void {
+    if (this.options.persistence === false) return;
+    const current = this.persistTimers.get(session.deckPath);
+    if (current) clearTimeout(current);
+    this.persistTimers.set(session.deckPath, setTimeout(() => {
+      this.persistTimers.delete(session.deckPath);
+      this.persistNow(session);
+    }, 150));
+  }
+
+  private persistNow(session: AgentChatSession): void {
+    if (this.options.persistence === false) return;
+    const payload: PersistedAgentChat = {
+      version: 1,
+      threadId: session.threadId,
+      threadAccount: session.threadAccount,
+      model: session.model,
+      reasoningEffort: session.reasoningEffort,
+      fastMode: session.fastMode,
+      messages: session.messages.map((item) => ({ ...item })),
+      updatedAt: new Date().toISOString(),
+    };
+    const target = join(session.deckPath, AGENT_CHAT_FILE);
+    const temporary = join(session.deckPath, `.${AGENT_CHAT_FILE}.${randomUUID()}.tmp`);
+    try {
+      writeFileSync(temporary, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
+      renameSync(temporary, target);
+    } catch (error) {
+      console.error(`Could not save Agent chat for ${session.deckPath}:`, error);
+    }
+  }
+}
+
+function parsePersistedChat(value: unknown): PersistedAgentChat | null {
+  const input = record(value);
+  if (input.version !== 1 || !Array.isArray(input.messages)) return null;
+  const messages = input.messages.flatMap((candidate: unknown): AgentChatMessage[] => {
+    const item = record(candidate);
+    if (
+      typeof item.id !== 'string'
+      || !['user', 'assistant', 'system'].includes(item.role)
+      || typeof item.text !== 'string'
+    ) return [];
+    return [{
+      id: item.id,
+      role: item.role,
+      text: item.text,
+      ...(item.error === true ? { error: true } : {}),
+    } as AgentChatMessage];
+  });
+  return {
+    version: 1,
+    threadId: typeof input.threadId === 'string' ? input.threadId : null,
+    threadAccount: typeof input.threadAccount === 'string' ? input.threadAccount : null,
+    model: typeof input.model === 'string' ? input.model : null,
+    reasoningEffort: typeof input.reasoningEffort === 'string' ? input.reasoningEffort : null,
+    fastMode: input.fastMode === true,
+    messages,
+    updatedAt: typeof input.updatedAt === 'string' ? input.updatedAt : new Date(0).toISOString(),
+  };
+}
+
+function promptWithTranscript(prompt: string, messages: AgentChatMessage[]): string {
+  if (!messages.length) return prompt;
+  const transcript = messages
+    .filter((item) => !item.error)
+    .map((item) => `${item.role.toUpperCase()}: ${item.text}`)
+    .join('\n\n');
+  if (!transcript) return prompt;
+  return `${prompt}\n\n## Restored deck chat\n\nThe backing Codex thread could not be resumed, so continue from this saved transcript:\n\n${transcript}`;
 }
 
 function fastTier(model: AgentChatModel | undefined): AgentChatModel['serviceTiers'][number] | undefined {

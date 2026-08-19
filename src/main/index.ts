@@ -285,7 +285,7 @@ function returnFromCollaboration(): Promise<void> {
     collabServer = null;
     collabMode = null;
     try {
-      if (session) await agentChat.reset(session.dir);
+      if (session) await agentChat.suspend(session.dir);
       await closing?.close();
     } catch (error) {
       console.error('Could not close collaboration server cleanly:', error);
@@ -334,7 +334,7 @@ function endBackgroundAgentSession(): Promise<void> {
     collabServer = null;
     collabMode = null;
     try {
-      if (session) await agentChat.reset(session.dir);
+      if (session) await agentChat.suspend(session.dir);
       await closing?.close();
     } catch (error) {
       console.error('Could not close agent collaboration session cleanly:', error);

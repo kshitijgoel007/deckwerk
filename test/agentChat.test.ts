@@ -1,4 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
+import { readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { mkdtemp } from 'node:fs/promises';
 import type { AgentChatSendRequest } from '../src/shared/ipc.js';
 import {
   AgentChatController,
@@ -44,6 +48,7 @@ class FakeAppServer {
       nextCursor: null,
     } as T;
     if (method === 'thread/start') return { thread: { id: 'thread-1' } } as T;
+    if (method === 'thread/resume') return { thread: { id: (params as any).threadId } } as T;
     if (method === 'turn/start') return { turn: { id: 'turn-1', status: 'inProgress' } } as T;
     if (method === 'turn/steer') return { turnId: 'turn-1' } as T;
     if (method === 'account/login/start') return {
@@ -71,6 +76,7 @@ function fixture(account?: any) {
     },
     openExternal: async (url) => { opened.push(url); },
     onState: (state) => states.push(state),
+    persistence: false,
   };
   return { controller: new AgentChatController(options), server, states, opened, notify: (event: AppServerNotification) => notify(event) };
 }
@@ -156,6 +162,21 @@ describe('embedded agent chat controller', () => {
       .toEqual(['Polish this slide', 'Also tighten the body copy']);
   });
 
+  it('suspends a live session without clearing its transcript or thread', async () => {
+    const { controller, server } = fixture();
+    await controller.getState('/tmp/talk');
+    await controller.send('/tmp/talk', request, async () => 'HTTP session');
+    const suspended = await controller.suspend('/tmp/talk');
+    expect(suspended).toMatchObject({
+      busy: false,
+      messages: [expect.objectContaining({ role: 'user', text: 'Polish this slide' })],
+    });
+    expect(server.requests.find((entry) => entry.method === 'turn/interrupt')?.params)
+      .toMatchObject({ threadId: 'thread-1', turnId: 'turn-1' });
+    await controller.send('/tmp/talk', { text: 'Continue later' }, async () => 'unused');
+    expect(server.requests.filter((entry) => entry.method === 'thread/start')).toHaveLength(1);
+  });
+
   it('uses the standard service tier when fast mode is disabled', async () => {
     const { controller, server } = fixture();
     await controller.getState('/tmp/talk');
@@ -229,7 +250,7 @@ describe('embedded agent chat controller', () => {
     });
   });
 
-  it('logs out before starting a fresh account login and drops old-account threads', async () => {
+  it('logs out before a fresh login, drops the old thread, and preserves the deck transcript', async () => {
     const { controller, server, opened, notify } = fixture();
     await controller.getState('/tmp/talk');
     await controller.send('/tmp/talk', request, async () => 'old account prompt');
@@ -249,7 +270,7 @@ describe('embedded agent chat controller', () => {
     expect(await controller.getState('/tmp/talk')).toMatchObject({
       auth: 'signedIn',
       accountLabel: 'vsitzmann@rhoda.ai',
-      messages: [],
+      messages: [expect.objectContaining({ role: 'user', text: 'Polish this slide' })],
     });
   });
 
@@ -262,5 +283,56 @@ describe('embedded agent chat controller', () => {
     const starts = server.requests.filter((entry) => entry.method === 'thread/start');
     expect(starts.map((entry) => entry.params.developerInstructions))
       .toEqual(['first HTTP session', 'second HTTP session']);
+  });
+
+  it('saves chat with the deck and resumes its Codex thread after restart', async () => {
+    const deckPath = await mkdtemp(join(tmpdir(), 'deckwerk-agent-chat-'));
+    try {
+      const firstServer = new FakeAppServer();
+      let firstNotify: (event: AppServerNotification) => void = () => undefined;
+      const first = new AgentChatController({
+        clientFactory: (callbacks) => {
+          firstNotify = callbacks.onNotification;
+          return firstServer;
+        },
+      });
+      await first.getState(deckPath);
+      await first.send(deckPath, request, async () => 'first live HTTP session');
+      firstNotify({
+        method: 'item/agentMessage/delta',
+        params: { threadId: 'thread-1', turnId: 'turn-1', itemId: 'answer-1', delta: 'Saved reply' },
+      });
+      firstNotify({
+        method: 'turn/completed',
+        params: { threadId: 'thread-1', turn: { id: 'turn-1', status: 'completed' } },
+      });
+      first.close();
+
+      const saved = JSON.parse(await readFile(join(deckPath, 'agent-chats.json'), 'utf8'));
+      expect(saved).toMatchObject({
+        version: 1,
+        threadId: 'thread-1',
+        threadAccount: 'slides@example.com',
+      });
+      expect(saved.messages.map((message: any) => [message.role, message.text]))
+        .toEqual([['user', 'Polish this slide'], ['assistant', 'Saved reply']]);
+
+      const secondServer = new FakeAppServer();
+      const second = new AgentChatController({ clientFactory: () => secondServer });
+      const restored = await second.getState(deckPath);
+      expect(restored.messages.map((message) => [message.role, message.text]))
+        .toEqual([['user', 'Polish this slide'], ['assistant', 'Saved reply']]);
+      await second.send(deckPath, { text: 'Continue' }, async () => 'fresh live HTTP session');
+      expect(secondServer.requests.find((entry) => entry.method === 'thread/resume')?.params)
+        .toMatchObject({
+          threadId: 'thread-1',
+          developerInstructions: 'fresh live HTTP session',
+          runtimeWorkspaceRoots: [expect.stringContaining('deckwerk-agent-runtime')],
+        });
+      expect(secondServer.requests.filter((entry) => entry.method === 'thread/start')).toHaveLength(0);
+      second.close();
+    } finally {
+      await rm(deckPath, { recursive: true, force: true });
+    }
   });
 });
