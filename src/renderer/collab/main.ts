@@ -4,6 +4,7 @@ import './collab.css';
 import { emptyDeck } from '@shared/deck.js';
 import { setIdSuffix } from '@shared/geometry.js';
 import { EditorCanvas } from '../editor/canvas.js';
+import { createDeckWerkButton } from '../editor/aboutDialog.js';
 import { installAgentApi, setAgentName } from './agentApi.js';
 import { CssEditor } from '../editor/cssEditor.js';
 import { HistoryPanel } from '../editor/historyPanel.js';
@@ -300,6 +301,7 @@ function buildToolbar(): void {
 
   const left = document.createElement('div');
   left.className = 'bar-group';
+  left.append(createDeckWerkButton());
   // In a hosted session the server pins one deck; switching, creating or
   // importing presentations is the host's business, not a joiner's.
   if (!serverConfig.hosted) {

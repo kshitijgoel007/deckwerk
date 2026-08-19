@@ -496,6 +496,7 @@ export function elementFromNode(
   z: number,
 ): SlideElement | null {
   if (node.rect.w <= 0 || node.rect.h <= 0) return null;
+  const contentStyle = contentStyleFrom(node.dataset.contentStyle);
 
   const base = {
     id,
@@ -528,7 +529,10 @@ export function elementFromNode(
       sourceBox: cropFrom(node.dataset.crop),
     };
     if (node.dataset.element === 'image') {
-      return { ...common, type: 'image', alt: node.dataset.alt ?? '' };
+      return {
+        ...common, type: 'image', alt: node.dataset.alt ?? '',
+        ...(node.dataset.maskShape === 'circle' ? { maskShape: 'circle' as const } : {}),
+      };
     }
     const [start, end] = trimFrom(node.dataset.trim);
     return {
@@ -541,6 +545,7 @@ export function elementFromNode(
       start,
       end,
       poster: node.dataset.poster ?? null,
+      ...(node.dataset.maskShape === 'circle' ? { maskShape: 'circle' as const } : {}),
     };
   }
 
@@ -552,6 +557,7 @@ export function elementFromNode(
       fit: fitFrom(node.attrs.objectFit),
       alt: node.attrs.alt ?? '',
       sourceBox: cropFrom(node.dataset.crop),
+      ...(node.dataset.maskShape === 'circle' ? { maskShape: 'circle' as const } : {}),
     };
   }
 
@@ -570,6 +576,7 @@ export function elementFromNode(
       end,
       poster: node.attrs.poster ?? null,
       sourceBox: cropFrom(node.dataset.crop),
+      ...(node.dataset.maskShape === 'circle' ? { maskShape: 'circle' as const } : {}),
     };
   }
 
@@ -628,6 +635,7 @@ export function elementFromNode(
       : node.html.trim(),
     align: alignFrom(node.attrs.textAlign),
     valign: valignFrom(node.dataset.valign),
+    ...(contentStyle ? { contentStyle } : {}),
     ...(node.dataset.autofit !== undefined ? { autoFit: node.dataset.autofit !== 'false' } : {}),
     ...(node.dataset.nowrap !== undefined ? { noWrap: node.dataset.nowrap !== 'false' } : {}),
     ...(node.dataset.fitMode === 'condense' ? { noWrapMode: 'condense' as const } : {}),
@@ -737,10 +745,15 @@ function elementToHtml(element: SlideElement, build?: TimelineEntry): string {
           MIRRORED_TEXT_STYLE_PROPERTIES
             .filter((property) => element.style[property] !== undefined)
             .map((property) => `${property}:${element.style[property]};`)
+            .join(' '),
+          Object.entries(element.contentStyle ?? {})
+            .map(([property, value]) => `${property}:${value};`)
             .join(' '))}>`
         + `${element.html}</div></div>`;
       return `  <div ${attrs} class="element element-text${element.class.length > 0
         ? ` ${escape(element.class.join(' '))}` : ''}" data-valign="${element.valign}"`
+        + `${element.contentStyle && Object.keys(element.contentStyle).length > 0
+          ? ` data-content-style="${escape(encodeURIComponent(JSON.stringify(element.contentStyle)))}"` : ''}`
         + `${element.autoFit ? ' data-autofit="true"' : ''}`
         + `${element.noWrap ? ' data-nowrap="true"' : ''}`
         + `${element.noWrap && element.noWrapMode === 'condense' ? ' data-fit-mode="condense"' : ''}`
@@ -755,11 +768,13 @@ function elementToHtml(element: SlideElement, build?: TimelineEntry): string {
         return `  <div ${attrs} data-element="image"`
           + ` data-src="${escape(element.src)}" data-alt="${escape(element.alt)}"`
           + ` data-fit="${element.fit}" data-crop="${boxAttr(element.sourceBox)}"`
+          + `${element.maskShape === 'circle' ? ' data-mask-shape="circle"' : ''}`
           + ` ${styleAttr(position, inline, media(element), 'overflow:hidden;')}>`
           + `${notAnObject(croppedMedia('img', element.src, element.sourceBox,
             ` alt="${escape(element.alt)}"`))}</div>`;
       }
       return `  <img ${attrs} src="${escape(element.src)}" alt="${escape(element.alt)}"`
+        + `${element.maskShape === 'circle' ? ' data-mask-shape="circle"' : ''}`
         + ` ${styleAttr(position, inline, media(element), `object-fit:${element.fit};`)}>`;
     case 'video': {
       const flags = `${element.loop ? ' loop' : ''}${element.muted ? ' muted' : ''}`
@@ -769,6 +784,7 @@ function elementToHtml(element: SlideElement, build?: TimelineEntry): string {
         return `  <div ${attrs} data-element="video"`
           + ` data-src="${escape(element.src)}" data-fit="${element.fit}"${trim}`
           + ` data-crop="${boxAttr(element.sourceBox)}"`
+          + `${element.maskShape === 'circle' ? ' data-mask-shape="circle"' : ''}`
           + `${element.loop ? ' data-loop="true"' : ''}`
           + `${element.muted ? ' data-muted="true"' : ''}`
           + `${element.autoplay ? ' data-autoplay="true"' : ''}`
@@ -780,6 +796,7 @@ function elementToHtml(element: SlideElement, build?: TimelineEntry): string {
       // `#t=` is how a static page asks for the in-point: without it the file
       // shows frame zero while the player shows the frame the talk starts on.
       return `  <video ${attrs} src="${escape(mediaFragment(element))}"${trim}${flags}`
+        + `${element.maskShape === 'circle' ? ' data-mask-shape="circle"' : ''}`
         + `${element.poster ? ` poster="${escape(element.poster)}"` : ''}`
         + ` ${styleAttr(position, inline, media(element), `object-fit:${element.fit};`)}></video>`;
     }
@@ -811,6 +828,19 @@ function elementToHtml(element: SlideElement, build?: TimelineEntry): string {
     default:
       return `  <div ${attrs} data-element="html" ${styleAttr(position, inline)}>`
         + `${'html' in element ? element.html : ''}</div>`;
+  }
+}
+
+function contentStyleFrom(encoded: string | undefined): Record<string, string> | null {
+  if (!encoded) return null;
+  try {
+    const parsed: unknown = JSON.parse(decodeURIComponent(encoded));
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+    const entries = Object.entries(parsed);
+    if (!entries.every(([key, value]) => key.length > 0 && typeof value === 'string')) return null;
+    return Object.fromEntries(entries) as Record<string, string>;
+  } catch {
+    return null;
   }
 }
 
@@ -852,10 +882,15 @@ function mediaFragment(element: Extract<SlideElement, { type: 'video' }>): strin
 /** Border and effects, which the player puts on the element wrapper. */
 function media(element: SlideElement): string {
   if (element.type !== 'image' && element.type !== 'video') return '';
+  const radius = element.maskShape === 'circle'
+    ? '50%'
+    : (element.borderRadius ?? 0) > 0
+      ? `${element.borderRadius}px`
+      : element.style['border-radius'] ?? '';
   const border = (element.borderWidth ?? 0) > 0
     ? `border:${element.borderWidth}px solid ${element.borderColor ?? '#000000'};`
-      + ` border-radius:${element.borderRadius ?? 0}px; overflow:hidden;`
     : '';
+  const clip = radius ? ` border-radius:${radius}; overflow:hidden;` : '';
   // Posterise is an SVG filter the player defines per element; blur and
   // greyscale are plain CSS. Only the CSS pair is reproduced here, so a
   // posterised picture previews unposterised — visible, and not data loss.
@@ -864,7 +899,7 @@ function media(element: SlideElement): string {
       : effect.type === 'grayscale' ? `grayscale(${effect.amount})` : '')
     .filter(Boolean)
     .join(' ');
-  return border + (filters ? ` filter:${filters};` : '');
+  return border + clip + (filters ? ` filter:${filters};` : '');
 }
 
 /**

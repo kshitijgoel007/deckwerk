@@ -84,6 +84,26 @@ describe('measured nodes become deck objects', () => {
     expect(untrimmed).toMatchObject({ start: 3, end: null });
   });
 
+  it('previews and round-trips round media masks without requiring a border', () => {
+    const deck = emptyDeck('Masks');
+    deck.slides[0].elements = [{
+      id: 'video', type: 'video', x: 10, y: 20, w: 500, h: 300, rot: 0, z: 1,
+      opacity: 1, class: [], style: {}, src: 'assets/demo.mp4', fit: 'cover',
+      autoplay: true, loop: true, muted: true, controls: false, start: 0, end: null,
+      poster: null, sourceBox: null, maskShape: 'circle', effects: [{ type: 'blur', radius: 8 }],
+    }];
+    const html = slideToHtml(parseDeck(deck).slides[0], { w: 1920, h: 1080 });
+    expect(html).toContain('data-mask-shape="circle"');
+    expect(html).toContain('border-radius:50%');
+    expect(html).toContain('overflow:hidden');
+    expect(html).toContain('filter:blur(8px)');
+
+    const measured = elementFromNode(node({
+      tag: 'video', dataset: { maskShape: 'circle' }, attrs: { src: 'assets/demo.mp4' },
+    }), 'video', 1);
+    expect(measured).toMatchObject({ type: 'video', maskShape: 'circle' });
+  });
+
   it('reconstructs shapes from their parameters rather than flattening them', () => {
     const shape = elementFromNode(node({
       tag: 'div',
@@ -220,6 +240,26 @@ describe('deck objects become authored HTML', () => {
     expect(html).toMatch(/class="text-content"[^>]*style="[^"]*color:#ffffff/);
     // font-size stays off the content node — auto-fit owns it there.
     expect(html).not.toMatch(/class="text-content"[^>]*style="[^"]*font-size/);
+  });
+
+  it('round-trips advanced inner text CSS independently of wrapper CSS', () => {
+    const gradient = {
+      'background-image': 'linear-gradient(90deg, #ff4fa3, #52d273)',
+      'background-clip': 'text',
+      '-webkit-text-fill-color': 'transparent',
+    };
+    const element = elementFromNode(node({
+      dataset: { contentStyle: encodeURIComponent(JSON.stringify(gradient)) },
+      html: 'Gradient title',
+    }), 'gradient-title', 1);
+    expect(element).toMatchObject({ type: 'text', contentStyle: gradient });
+
+    const deck = emptyDeck('Gradient');
+    deck.slides[0].elements = [element!];
+    const html = slideToHtml(parseDeck(deck).slides[0], { w: 1920, h: 1080 });
+    expect(html).toContain('data-content-style=');
+    expect(html).toMatch(/class="text-content"[^>]*background-image:linear-gradient/);
+    expect(html).not.toMatch(/class="element element-text"[^>]*background-image:linear-gradient/);
   });
 
   it('round-trips paragraph spacing through the data attribute', () => {

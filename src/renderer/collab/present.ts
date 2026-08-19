@@ -3,6 +3,7 @@ import '../player/type.css';
 import { Player } from '../player/player.js';
 import { bindPresentKeys } from '../player/keys.js';
 import { CollabBridge } from './collabBridge.js';
+import { PlayerPaintReadiness } from './playerReadiness.js';
 
 /**
  * The collab Present view: the real Player in a fullscreen-able browser tab,
@@ -25,6 +26,21 @@ const themeTag = document.createElement('style');
 document.head.appendChild(themeTag);
 
 let player: Player | null = null;
+const readiness = new PlayerPaintReadiness({
+  root: document.documentElement,
+  fontsReady: document.fonts.ready,
+  requestFrame: (callback) => requestAnimationFrame(callback),
+  currentSlide: () => player ? player.getCursor().slide + 1 : null,
+  onPainted: (slide) => window.dispatchEvent(new CustomEvent('slide-player-painted', {
+    detail: { slide },
+  })),
+});
+readiness.connecting();
+
+function replaceDeck(deck: Parameters<Player['setDeck']>[0]): void {
+  player?.setDeck(deck);
+  readiness.painting();
+}
 
 const wsUrl = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws?deck=${encodeURIComponent(deckId)}`;
 const name = localStorage.getItem('collab-name');
@@ -40,6 +56,7 @@ const bridge = new CollabBridge(wsUrl, name ? `${name} (presenting)` : 'Presenti
           `/decks/${encodeURIComponent(deckId)}/${src.replace(/^\/+/, '').split('/').map(encodeURIComponent).join('/')}`,
       });
       player.goToSlide(startSlide);
+      readiness.painting();
       if (!agentViewer) {
         bindPresentKeys(window, player, { onExit: () => window.close() });
         // A click advances, like a presenter remote; double-click toggles fullscreen.
@@ -50,10 +67,10 @@ const bridge = new CollabBridge(wsUrl, name ? `${name} (presenting)` : 'Presenti
         });
       }
     } else {
-      player.setDeck(welcome.deck);
+      replaceDeck(welcome.deck);
     }
   },
-  onDeckReplaced: (deck) => player?.setDeck(deck),
+  onDeckReplaced: (deck) => replaceDeck(deck),
   onPeerPresence: () => {},
   onPeerCursor: () => {},
   onPeerLeft: () => {},

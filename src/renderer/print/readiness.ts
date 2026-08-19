@@ -23,6 +23,34 @@ async function settleImage(image: HTMLImageElement): Promise<void> {
   if (typeof image.decode === 'function') await image.decode().catch(() => {});
 }
 
+export function isAnimatedImageSource(src: string): boolean {
+  return /\.gif(?:$|[?#])/i.test(src);
+}
+
+/** PDF pages must be reproducible: an animated GIF otherwise advances while
+ * Chromium is laying out/printing and lands on an arbitrary frame. Decode the
+ * source as an ImageBitmap (whose GIF representation is frame zero), then pin
+ * that frame into an ordinary PNG data URL. */
+async function freezeAnimatedImage(image: HTMLImageElement): Promise<void> {
+  const src = image.currentSrc || image.src;
+  if (!isAnimatedImageSource(src) || typeof createImageBitmap !== 'function') return;
+  try {
+    const response = await fetch(src);
+    if (!response.ok) return;
+    const bitmap = await createImageBitmap(await response.blob());
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, bitmap.width);
+    canvas.height = Math.max(1, bitmap.height);
+    canvas.getContext('2d')?.drawImage(bitmap, 0, 0);
+    bitmap.close();
+    image.src = canvas.toDataURL('image/png');
+    await settleImage(image);
+  } catch {
+    // A failed still-frame decode is non-fatal: the original GIF remains and
+    // the normal image readiness path below still prevents a blank export.
+  }
+}
+
 async function settleVideo(video: HTMLVideoElement, at: number): Promise<void> {
   video.autoplay = false;
   video.pause();
@@ -34,7 +62,10 @@ async function settleVideo(video: HTMLVideoElement, at: number): Promise<void> {
   }
   if (!Number.isFinite(video.duration)) return;
   const target = Math.max(0, Math.min(at, Math.max(0, video.duration - 0.03)));
-  if (Math.abs(video.currentTime - target) > 0.02) {
+  // The PDF contract pins a video to its exact poster/in-point. A two-
+  // hundredths tolerance is visible on fast-motion clips and made repeated
+  // exports nondeterministic by one decoded frame.
+  if (Math.abs(video.currentTime - target) > 0.0001) {
     const sought = eventOrTimeout(video, 'seeked');
     try { video.currentTime = target; } catch { return; }
     await sought;
@@ -61,7 +92,9 @@ export async function waitForPdfPage(
   slide: Slide,
   state: SlideState,
 ): Promise<void> {
-  await Promise.all(deepImages(page).map(settleImage));
+  const images = deepImages(page);
+  await Promise.all(images.map(freezeAnimatedImage));
+  await Promise.all(images.map(settleImage));
   await Promise.all([...page.querySelectorAll<HTMLVideoElement>('video')].map((video) => {
     const id = video.closest<HTMLElement>('[data-element-id]')?.dataset.elementId;
     const element = slide.elements.find((candidate) => candidate.id === id);

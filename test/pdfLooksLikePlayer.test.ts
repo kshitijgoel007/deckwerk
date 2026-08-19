@@ -48,6 +48,7 @@ describe.skipIf(!runnable)('PDF pages, against the real Player', () => {
     work = await mkdtemp(join(tmpdir(), 'pdf-pixels-'));
     const deckRoot = join(process.cwd(), 'decks');
     const requested = process.env.PDF_PIXEL_DECK;
+    const requestedSlide = process.env.PDF_PIXEL_SLIDE;
     const names = (await readdir(deckRoot, { withFileTypes: true }))
       .filter((entry) => entry.isDirectory() && (!requested || entry.name === requested))
       .filter((entry) => existsSync(join(deckRoot, entry.name, 'deck.json')))
@@ -62,6 +63,7 @@ describe.skipIf(!runnable)('PDF pages, against the real Player', () => {
       await exportDeck(deckDir, deck, bundleDir);
       const pages = deck.slides.flatMap((slide, slideIndex) => {
         if (slide.skipped) return [];
+        if (requestedSlide && slide.id !== requestedSlide) return [];
         return pdfSteps(slide, 'every').map((step) => {
           const state = resolveState(slide, step);
           return {
@@ -76,7 +78,10 @@ describe.skipIf(!runnable)('PDF pages, against the real Player', () => {
         });
       });
       expectedPages += pages.length;
-      jobs.push({ name, deckDir, bundleDir, outDir, canvas: deck.canvas, mode: 'every', pages });
+      jobs.push({
+        name, deckDir, bundleDir, outDir, canvas: deck.canvas, mode: 'every', pages,
+        ...(requestedSlide ? { slideFilter: requestedSlide } : {}),
+      });
     }
     deckCount = jobs.length;
 

@@ -144,6 +144,13 @@ Arrows / space / click advance, `B` blanks, `Esc` exits.
 is the safest way to present on a machine you don't control. The deck is inlined
 into the HTML so it works straight off `file://`.
 
+## Future work
+
+- Add a validated, deck-scoped animation stylesheet interface for agents. It
+  should support scoped classes and `@keyframes` that timeline `addClass` and
+  `removeClass` actions can trigger, without permitting scripts, external
+  network dependencies, or unscoped CSS that can affect editor chrome.
+
 ## Testing
 
 ```bash

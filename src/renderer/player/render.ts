@@ -228,6 +228,9 @@ function renderBody(el: SlideElement, opts: RenderOptions): HTMLElement | SVGEle
         const value = el.style[property];
         if (value !== undefined) content.style.setProperty(property, value);
       }
+      for (const [property, value] of Object.entries(el.contentStyle ?? {})) {
+        content.style.setProperty(property, value);
+      }
       // KaTeX auto-render does not exclude escaped delimiter characters before
       // pairing `$...$`. Protect literal dollars, render, then restore them.
       const escapedDollar = '\uE000';

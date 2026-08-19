@@ -81,6 +81,13 @@ const TextElement = BaseElement.extend({
   type: z.literal('text'),
   /** Inline HTML. Fonts and sizes are expected to come from theme.css. */
   html: z.string().default(''),
+  /**
+   * CSS applied directly to the inner text-content node rather than the
+   * positioned element wrapper. This is the escape hatch for glyph paint
+   * such as gradient text, clipping and text strokes that cannot work through
+   * inherited wrapper CSS alone.
+   */
+  contentStyle: z.record(z.string()).optional(),
   /** Shrink text as needed to keep it inside its box; never enlarge past its authored size. */
   autoFit: z.boolean().optional(),
   /**

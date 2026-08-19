@@ -56,6 +56,26 @@ describe('text auto-fit', () => {
     expect(node.dataset.fitMode).toBeUndefined();
   });
 
+  it('applies advanced text paint to the content without painting the wrapper', () => {
+    const node = renderElement({
+      id: 'gradient', type: 'text', x: 0, y: 0, w: 800, h: 120, rot: 0, z: 1,
+      opacity: 1, class: [], style: { 'font-size': '72px' },
+      contentStyle: {
+        'background-image': 'linear-gradient(90deg, #ff4fa3, #52d273)',
+        'background-clip': 'text',
+        '-webkit-background-clip': 'text',
+        '-webkit-text-fill-color': 'transparent',
+      },
+      html: 'Gradient title', align: 'left', valign: 'top',
+    }, { resolveSrc: (src) => src });
+    const content = node.querySelector<HTMLElement>('.text-content')!;
+
+    expect(node.style.backgroundImage).toBe('');
+    expect(content.style.backgroundImage).toContain('linear-gradient');
+    expect(content.style.backgroundClip).toBe('text');
+    expect(content.style.webkitTextFillColor).toBe('transparent');
+  });
+
   it('condense mode keeps the font size and squeezes horizontally', () => {
     const node = renderElement({
       id: 'condense', type: 'text', x: 0, y: 0, w: 100, h: 50, rot: 0, z: 1,

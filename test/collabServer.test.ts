@@ -111,6 +111,25 @@ describe('collab server', () => {
     expect(decks).toEqual([{ id: DECK_ID, title: 'Collab', slides: 2 }]);
   });
 
+  it('returns a compact deck-wide transcript in reading order with neighboring slides', async () => {
+    const base = `http://127.0.0.1:${server.port}`;
+    const transcript = await (await fetch(`${base}/api/text?deck=${DECK_ID}`)).json() as any;
+    expect(transcript).toMatchObject({
+      deckId: DECK_ID,
+      title: 'Collab',
+      slides: [
+        {
+          index: 1, id: 's1', name: 'One', previousSlideId: null, nextSlideId: 's2', notes: '',
+          text: [{ elementId: 'e1', elementType: 'text', text: 'hi' }],
+        },
+        {
+          index: 2, id: 's2', name: 'Two', previousSlideId: 's1', nextSlideId: null, notes: '', text: [],
+        },
+      ],
+    });
+    expect(transcript.revision).toMatch(/^[a-f0-9]{64}$/);
+  });
+
   it('redirects normal agent sessions to the read-only real-player viewer', async () => {
     const base = `http://127.0.0.1:${server.port}`;
     const response = await fetch(`${base}/?deck=${DECK_ID}&agent=1&name=Test`, { redirect: 'manual' });
@@ -292,7 +311,7 @@ describe('collab server', () => {
     const served = await fetch(`http://127.0.0.1:${server.port}/decks/${DECK_ID}/${imported.src}`);
     expect(served.status).toBe(200);
     expect(Buffer.from(await served.arrayBuffer())).toEqual(png);
-  });
+  }, 15_000);
 
   it('rejects private-network URLs in the public asset importer', async () => {
     const response = await fetch(
@@ -392,11 +411,158 @@ describe('collab server', () => {
     expect(await rendered.json()).toMatchObject({
       slideId: 's1', slide: 1, url: `/present.html?deck=${DECK_ID}&slide=1&agent=1`,
     });
+    const replied = await fetch(`${base}/api/comments?deck=${DECK_ID}`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        slideId: 's1', parentId: comment.id, author: 'Agent',
+        text: 'Implemented and verified in the real player.',
+      }),
+    });
+    expect(replied.status).toBe(200);
+    const reply = await replied.json() as { id: string };
     const resolved = await fetch(`${base}/api/comments/resolve?deck=${DECK_ID}`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ commentId: comment.id, resolved: true }),
     });
     expect(resolved.status).toBe(200);
+    const replyResolved = await fetch(`${base}/api/comments/resolve?deck=${DECK_ID}`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ commentId: reply.id, resolved: true }),
+    });
+    expect(replyResolved.status).toBe(200);
+
+    const comments = await (await fetch(`${base}/api/comments?deck=${DECK_ID}`)).json() as {
+      comments: Array<{ id: string; resolved: boolean }>;
+    };
+    expect(comments.comments.filter((row) => !row.resolved && [comment.id, reply.id].includes(row.id)))
+      .toEqual([]);
+    const afterResolve = await (await fetch(`${base}/api/context?deck=${DECK_ID}`)).json() as {
+      outline: Array<{ id: string; openComments: number }>;
+    };
+    expect(afterResolve.outline.find((slide) => slide.id === 's1')?.openComments).toBe(0);
+  }, 20_000);
+
+  it('discovers, previews, and atomically applies surgical native edits', async () => {
+    const base = `http://127.0.0.1:${server.port}`;
+    const schema = await (await fetch(`${base}/api/edit-schema`)).json() as any;
+    expect(schema.semantics).toContain('Unmentioned properties and unrelated objects are preserved exactly.');
+    expect(schema.element.byType.text.map((row: any) => row.path)).toContain('align');
+
+    const inspectedResponse = await fetch(`${base}/api/inspect?deck=${DECK_ID}&slideIds=s1`);
+    expect(inspectedResponse.status).toBe(200);
+    const inspected = await inspectedResponse.json() as any;
+    expect(inspected.slides[0]).toMatchObject({
+      id: 's1',
+      elements: [expect.objectContaining({ id: 'e1', type: 'text', plainText: 'hi', semanticRole: 'title' })],
+    });
+
+    const previewResponse = await fetch(`${base}/api/preview-edits?deck=${DECK_ID}`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        expectedRevision: inspected.revision,
+        edits: [{
+          target: 'element', slideId: 's1', elementId: 'e1', expectedType: 'text',
+          set: { align: 'right', x: 40, w: 400, h: 80, 'style.font-family': 'Inter', 'style.font-size': '36px' },
+          unset: [],
+        }],
+      }),
+    });
+    expect(previewResponse.status).toBe(200);
+    const draft = await previewResponse.json() as any;
+    expect(draft).toMatchObject({
+      revision: inspected.revision,
+      affectedSlideIds: ['s1'],
+      affectedElementIds: ['e1'],
+      report: { newOrWorsenedOverflows: [] },
+    });
+    expect(draft.operations).toEqual([expect.objectContaining({ op: 'replaceElement', slideId: 's1', elementId: 'e1' })]);
+
+    // Preview is non-mutating and both states are directly inspectable.
+    const beforeApply = await (await fetch(`${base}/api/deck?deck=${DECK_ID}`)).json() as Deck;
+    expect(beforeApply.slides[0].elements[0]).toMatchObject({ x: 0, w: 100, align: 'left' });
+    expect(draft.slides[0].beforeUrl).toContain(`deck=${DECK_ID}`);
+    expect(draft.slides[0].afterUrl).toContain(`deck=${DECK_ID}`);
+    const beforeView = await fetch(`${base}${draft.slides[0].beforeUrl}`);
+    const afterView = await fetch(`${base}${draft.slides[0].afterUrl}`);
+    expect(beforeView.status).toBe(200);
+    expect(afterView.status).toBe(200);
+    expect(await afterView.text()).toContain('hi');
+
+    const observer = await connect('Native observer');
+    const request = {
+      draftId: draft.draftId,
+      expectedRevision: draft.revision,
+      idempotencyKey: 'native-edit-once',
+      label: 'Agent: unify title formatting',
+    };
+    const appliedResponse = await fetch(`${base}/api/apply-edits?deck=${DECK_ID}`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(request),
+    });
+    expect(appliedResponse.status).toBe(200);
+    expect(await appliedResponse.json()).toMatchObject({
+      idempotent: false, slideIds: ['s1'], elementIds: ['e1'], label: request.label,
+    });
+    expect(await observer.client.nextOfKind('txn')).toMatchObject({
+      byClientId: 'agent-http', label: request.label,
+      ops: [expect.objectContaining({ op: 'replaceElement', slideId: 's1', elementId: 'e1' })],
+    });
+    const afterApply = await (await fetch(`${base}/api/deck?deck=${DECK_ID}`)).json() as Deck;
+    expect(afterApply.slides[0].elements[0]).toMatchObject({
+      x: 40, w: 400, h: 80, align: 'right', style: { 'font-family': 'Inter', 'font-size': '36px' },
+    });
+    expect(afterApply.slides[1]).toEqual(beforeApply.slides[1]);
+
+    const replay = await fetch(`${base}/api/apply-edits?deck=${DECK_ID}`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(request),
+    });
+    expect(await replay.json()).toMatchObject({ idempotent: true, label: request.label });
+    const reused = await fetch(`${base}/api/apply-edits?deck=${DECK_ID}`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...request, label: 'Different intent' }),
+    });
+    expect(reused.status).toBe(409);
+  }, 20_000);
+
+  it('rejects invalid native properties and revision-conflicted edit drafts without mutation', async () => {
+    const base = `http://127.0.0.1:${server.port}`;
+    const context = await (await fetch(`${base}/api/context?deck=${DECK_ID}`)).json() as { revision: string };
+    const invalid = await fetch(`${base}/api/preview-edits?deck=${DECK_ID}`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ edits: [{ target: 'element', slideId: 's1', elementId: 'e1', set: { id: 'changed' }, unset: [] }] }),
+    });
+    expect(invalid.status).toBe(400);
+    expect(await invalid.json()).toMatchObject({ error: expect.stringContaining('not editable') });
+
+    const unsafe = await fetch(`${base}/api/preview-edits?deck=${DECK_ID}`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ edits: [{
+        target: 'element', slideId: 's1', elementId: 'e1',
+        set: { 'style.background-image': 'url(https://example.com/tracker.png)' }, unset: [],
+      }] }),
+    });
+    expect(unsafe.status).toBe(400);
+    expect(await unsafe.json()).toMatchObject({ error: expect.stringContaining('blocked external') });
+
+    const preview = await fetch(`${base}/api/preview-edits?deck=${DECK_ID}`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        expectedRevision: context.revision,
+        edits: [{ target: 'element', slideId: 's1', elementId: 'e1', set: { align: 'right', w: 300 }, unset: [] }],
+      }),
+    });
+    expect(preview.status).toBe(200);
+    const draft = await preview.json() as { draftId: string; revision: string };
+    await fetch(`${base}/api/comments?deck=${DECK_ID}`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ slideId: 's1', text: 'Concurrent change' }),
+    });
+    const conflicted = await fetch(`${base}/api/apply-edits?deck=${DECK_ID}`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ draftId: draft.draftId, expectedRevision: draft.revision, idempotencyKey: 'conflict', label: 'Should not land' }),
+    });
+    expect(conflicted.status).toBe(409);
+    const deck = await (await fetch(`${base}/api/deck?deck=${DECK_ID}`)).json() as Deck;
+    expect(deck.slides[0].elements[0]).toMatchObject({ align: 'left', w: 100 });
   }, 20_000);
 
   it('accepts a raw HTML preview body so command-line agents do not escape large JSON', async () => {

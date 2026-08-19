@@ -53,6 +53,7 @@ import {
 import {
   defaultClientDir, startCollabServer, type RunningCollabServer,
 } from '../server/collabServer.js';
+import { agentClipboardPrompt, collaborationInviteUrl } from '../server/agentBrief.js';
 
 /**
  * Main process: owns the filesystem, ffmpeg and the windows. The renderer never
@@ -61,6 +62,7 @@ import {
  */
 
 // Must happen before `ready`.
+app.setName('DeckWerk');
 registerAssetScheme();
 
 /** The one deck the app has open. Present and trim windows share it. */
@@ -210,6 +212,14 @@ function deckDirFromArgv(): string | null {
 }
 
 app.whenReady().then(async () => {
+  // Packaged macOS builds get this from the bundle's .icns. During local
+  // development Electron would otherwise keep its own icon in the Dock and
+  // app switcher, so set the matching high-resolution artwork explicitly.
+  if (process.platform === 'darwin' && !app.isPackaged) {
+    const developmentIcon = join(process.cwd(), 'resources', 'deckwerk-icon.png');
+    if (existsSync(developmentIcon)) app.dock.setIcon(developmentIcon);
+  }
+
   installAssetProtocol();
   registerHandlers();
 
@@ -598,16 +608,17 @@ function registerHandlers(): void {
    * ordinary editor back.
    */
   // Joiners need a URL reachable from their machine, so prefer a LAN
-  // address over the loopback one the host window itself uses.
+  // address. A desktop agent runs on this machine and should prefer loopback:
+  // browser sandboxes commonly block private-LAN navigation while allowing
+  // localhost, which is exactly the surface the editor has launched for it.
   const copyJoinLink = (urls: string[], deckId: string, agent = false): void => {
-    const base = urls.find((u) => !u.includes('127.0.0.1')) ?? urls[0];
-    if (base) clipboard.writeText(`${base}?deck=${encodeURIComponent(deckId)}${agent ? '&agent=1' : ''}`);
+    const joinUrl = collaborationInviteUrl(urls, deckId, agent);
+    if (!joinUrl) return;
+    clipboard.writeText(agent ? agentClipboardPrompt(joinUrl, deckId) : joinUrl);
   };
 
-  // "Agent…" runs the same session unpinned: the server hosts the deck's
-  // whole parent directory and refuses nothing, so an agent joining by URL
-  // can list, create, and import decks exactly like a human peer. The host
-  // hands the printed invite URL to the agent of their choice.
+  // "Agent…" runs the same deck-scoped session and copies a complete,
+  // task-neutral API brief for the user to paste into an agent chat.
   ipcMain.handle(IPC.collabStart, async (_e, opts?: { agent?: boolean }): Promise<string[]> => {
     const s = requireSession();
     if (collabServer) {

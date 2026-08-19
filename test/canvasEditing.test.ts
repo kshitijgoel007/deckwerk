@@ -145,6 +145,102 @@ function setup() {
 const bodyOf = (host: HTMLElement, id: string): HTMLElement =>
   host.querySelector(`[data-element-id="${id}"] .text-content`)! as HTMLElement;
 
+function setupViewport() {
+  installDomShims();
+  const host = document.createElement('div');
+  host.getBoundingClientRect = () => ({
+    x: 40, y: 20, left: 40, top: 20, right: 1320, bottom: 820,
+    width: 1280, height: 800, toJSON: () => ({}),
+  }) as DOMRect;
+  document.body.replaceChildren(host);
+  const store = new EditorStore(emptyDeck('Viewport'), '/tmp/viewport');
+  const canvas = new EditorCanvas(host, store);
+  const stage = host.querySelector<HTMLElement>('.stage')!;
+  return { canvas, host, stage };
+}
+
+const stageScale = (stage: HTMLElement): number =>
+  Number.parseFloat(stage.style.transform.match(/scale\(([^)]+)\)/)?.[1] ?? '0');
+
+describe('canvas zoom viewport', () => {
+  beforeEach(() => document.body.replaceChildren());
+
+  it('offers compact buttons and accepts a directly edited percentage', () => {
+    const { canvas, host } = setupViewport();
+    const input = host.querySelector<HTMLInputElement>('.zoom-value')!;
+    const buttons = [...host.querySelectorAll<HTMLButtonElement>('.zoom-button')];
+
+    expect(input.value).toBe('100%');
+    expect(buttons.map((button) => button.getAttribute('aria-label'))).toEqual([
+      'Zoom out', 'Zoom in', 'Re-center slide',
+    ]);
+
+    input.value = '175%';
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    expect(canvas.zoomPercent()).toBe(175);
+    expect(input.value).toBe('175%');
+
+    buttons[1].click();
+    expect(canvas.zoomPercent()).toBe(200);
+    buttons[0].click();
+    expect(canvas.zoomPercent()).toBe(175);
+  });
+
+  it('maps a macOS pinch wheel gesture to pointer-anchored zoom', () => {
+    const { canvas, host, stage } = setupViewport();
+    const anchor = { x: 300, y: 250 };
+    const beforeScale = stageScale(stage);
+    const beforePoint = {
+      x: (anchor.x - Number.parseFloat(stage.style.left)) / beforeScale,
+      y: (anchor.y - Number.parseFloat(stage.style.top)) / beforeScale,
+    };
+
+    const pinch = new WheelEvent('wheel', {
+      clientX: anchor.x + 40,
+      clientY: anchor.y + 20,
+      deltaY: -10,
+      ctrlKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    host.dispatchEvent(pinch);
+
+    const afterScale = stageScale(stage);
+    const afterPoint = {
+      x: (anchor.x - Number.parseFloat(stage.style.left)) / afterScale,
+      y: (anchor.y - Number.parseFloat(stage.style.top)) / afterScale,
+    };
+    expect(pinch.defaultPrevented).toBe(true);
+    expect(canvas.zoomPercent()).toBeGreaterThan(100);
+    expect(afterPoint.x).toBeCloseTo(beforePoint.x, 6);
+    expect(afterPoint.y).toBeCloseTo(beforePoint.y, 6);
+  });
+
+  it('pans with two-finger scrolling and resets to a centred 100% view', () => {
+    const { canvas, host, stage } = setupViewport();
+    canvas.setZoomPercent(200);
+    const enlargedLeft = Number.parseFloat(stage.style.left);
+    const enlargedTop = Number.parseFloat(stage.style.top);
+
+    const pan = new WheelEvent('wheel', {
+      deltaX: 30,
+      deltaY: 40,
+      bubbles: true,
+      cancelable: true,
+    });
+    host.dispatchEvent(pan);
+    expect(pan.defaultPrevented).toBe(true);
+    expect(Number.parseFloat(stage.style.left)).toBeCloseTo(enlargedLeft - 30);
+    expect(Number.parseFloat(stage.style.top)).toBeCloseTo(enlargedTop - 40);
+
+    host.querySelector<HTMLButtonElement>('[aria-label="Re-center slide"]')!.click();
+    expect(canvas.zoomPercent()).toBe(100);
+    expect(host.querySelector<HTMLInputElement>('.zoom-value')!.value).toBe('100%');
+    expect(Number.parseFloat(stage.style.left)).toBeCloseTo(32);
+    expect(Number.parseFloat(stage.style.top)).toBeCloseTo(58);
+  });
+});
+
 describe('inline text editing', () => {
   beforeEach(() => {
     document.body.replaceChildren();

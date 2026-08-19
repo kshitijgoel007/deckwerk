@@ -29,12 +29,13 @@
     "eval:agent": "npm run build:collab && vite-node --config vitest.config.ts scripts/eval-agent.mts",
     "eval:agent:serve": "npm run build:collab && vite-node --config vitest.config.ts scripts/serve-agent-benchmark.mts",
     "eval:papers:serve": "npm run build:collab && vite-node --config vitest.config.ts scripts/serve-paper-benchmark.mts",
+    "eval:edits:serve": "npm run build:collab && vite-node --config vitest.config.ts scripts/serve-edit-benchmark.mts",
     "eval:importer": "npm run build:export && vite-node --config vitest.config.ts scripts/eval-importer-regressions.mts",
     "build:katex": "vite-node --config vitest.config.ts scripts/build-katex-inline.mts"
   },
   "build": {
     "appId": "com.scenerepresentations.slide-editor",
-    "productName": "Slide Editor",
+    "productName": "DeckWerk",
     "files": [
       "out/**/*",
       "dist/collab/**/*",
@@ -53,6 +54,7 @@
     ],
     "mac": {
       "category": "public.app-category.productivity",
+      "icon": "resources/deckwerk-icon.icns",
       "target": [
         "dmg",
         "zip"

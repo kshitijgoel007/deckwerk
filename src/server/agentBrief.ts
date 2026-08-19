@@ -1,159 +1,205 @@
-/** Onboarding served by every agent-scoped collaboration session. */
-export const AGENT_BRIEF = `# Work on this presentation as an agent
+/** Task-neutral onboarding served by every agent-scoped collaboration session. */
+export const AGENT_BRIEF = `# Edit this presentation as an agent
 
-You can edit only the presentation in this session. Do not edit deck JSON.
-Create slides as ordinary HTML and CSS.
+The user's task is the source of truth. This session is restricted to the open
+presentation. Do not assume a repository checkout, working directory, editor
+source code, or direct access to deck JSON.
 
-## Control plane and viewer
+Use the HTTP API for inspection and changes. Use the browser only for visual
+inspection of preview and real-player URLs. Do not author by clicking editor
+controls.
 
-Use the HTTP API for all programmatic work. Send HTML in the request body.
-Do not use editor controls for authoring.
+## Establish deck context before editing
 
-The browser is a read-only real-player viewer. Request a slide URL through
-\`GET /api/render-slide\`, open it, and inspect the result. The viewer updates
-when the deck changes.
+Do this before every task, including a change to only one object:
 
-A human can add \`debug=1\` to the editor URL to open the old diagnostic
-workspace. Agents must not depend on that workspace.
+1. Read \`GET /api/text?deck=…\`. It returns every slide's visible text, image alt
+   text, speaker notes, and neighboring slide IDs in presentation order. Read the
+   complete response and identify the deck's subject, argument, sections, and the
+   role of the requested slide within that narrative.
+2. For each requested slide, inspect the target and its immediate preceding and
+   succeeding slides with \`GET /api/inspect\`. Request each one's real-player URL
+   from \`GET /api/render-slide\`, open it, wait for paint readiness, and actually
+   look at all three before designing or editing.
+3. Ask what information the target currently communicates in this deck context.
+   Preserve that information unless the user explicitly asks to change it. Treat
+   repeated or progressively changing media across adjacent slides as deliberate
+   continuity. Never infer an image's content from its filename, comment, alt text,
+   or diagnostics when a rendered view is available.
 
-## Required workflow
+This context pass is mandatory, but it is read-only and compact. It should happen
+once up front rather than being rediscovered after an edit fails.
 
-1. Get the deck context.
-2. Get the open comments.
-3. Import each public asset through \`POST /api/import-url\`.
-4. Write a complete 1920×1080 HTML document.
-5. Send the HTML and target to \`POST /api/preview-html\`.
-6. Open the Source preview and capture a screenshot.
-7. Open the Imported preview and capture a screenshot.
-8. Compare the screenshots visually. Fetching HTML or checking byte counts is
-   not visual verification.
-9. Read the import report. Fix every overflow and missing or blocked asset.
-10. Repeat preview and screenshot inspection until those lists are empty.
-11. Send the returned draft data to \`POST /api/apply-html\`.
-12. Get the real player URL from \`GET /api/render-slide\`.
-13. Open the player URL and capture a screenshot at the full 16:9 slide.
-14. Check for clipping, overlap, broken media, tiny text, and poor hierarchy.
-15. Re-read the request and make a content inventory: count every required person,
-    item, asset, and section. A clean render is still a failure if content is missing
-    or the composition is perfunctory or overly sparse.
-16. If the player is wrong or the inventory is incomplete, preview and apply a
-    revision. Verify it again.
-17. Reply to useful comments. Resolve comments only after both the screenshot and
-    content inventory pass.
+## Choose the smallest editing lane
 
-Preview does not change the presentation. Apply creates one named collaboration
-revision in the editor's History panel. Any earlier revision can be restored;
-the restoration is itself a new collaborative revision.
-If the revision changed, preview again. Never reuse a draft after a revision conflict.
+### Native edits — existing content and local changes
 
-Do not apply a draft with reported overflow, missing assets, or blocked resources.
-Do not claim that you inspected a render when you only fetched its HTML. If you
-cannot capture screenshots, stop and report that visual verification is blocked.
-Do not use an empty diagnostics report as proof that the requested design is
-complete: diagnostics check import mechanics, not editorial completeness or quality.
+Use native edits for text changes, typography, alignment, geometry, object paint,
+media fit/crop/trim/effects, shapes, builds, slide properties, themes, and Magic
+Move settings. Unmentioned properties and unrelated objects remain unchanged.
 
-## Author HTML freely
+1. Read \`GET /api/edit-schema\` for every editable property, type, enum, range,
+   unset rule, and example.
+2. Read \`GET /api/context?deck=…\`, then inspect the relevant slides and their
+   immediate neighbors with \`GET /api/inspect?deck=…&slideIds=slide-a,slide-b\`.
+3. Send one batch to \`POST /api/preview-edits?deck=…\`.
+4. Open and screenshot every affected slide's Before and After URLs. Diagnostics
+   alone are not visual verification.
+5. Fix clipping, overlap, poor hierarchy, unintended movement, and every new or
+   worsened overflow. Existing overflows are reported separately.
+6. Apply the draft once through \`POST /api/apply-edits?deck=…\` with its revision,
+   a new idempotency key, and a descriptive label.
+7. Inspect the affected slides through \`GET /api/render-slide\` and iterate if the
+   real player is wrong.
 
-Use semantic HTML, CSS grid, flexbox, inline SVG, images, video, and CSS animation.
-Wrap each slide in \`<section class="slide">\`.
-Give each section a concise \`data-name\` so the deck outline stays useful.
-The slide canvas is 1920×1080 unless \`getContext()\` reports another size.
-Write inline maths as \`$…$\` and display maths as \`$$…$$\`; the player and
-import measurement render both with bundled KaTeX.
+When opening a real-player URL, navigation completion is not render completion:
+the deck arrives over WebSocket. Wait until the root \`<html>\` element has
+\`data-player-ready="true"\` and \`data-player-slide\` matches the requested
+1-based slide number before taking a screenshot. A live revision temporarily
+returns the status to \`painting\` and then signals \`ready\` again.
 
-JavaScript is not allowed. Event handlers are removed. External presentation-time
-network resources are blocked. Upload assets first or use data URLs. Data URLs are
-extracted into the presentation asset folder during preview.
+Native edits use dotted property paths. Set or unset only what must change:
 
-The importer converts text, lists, images, video, simple shapes, and box paint into
-editable native objects. It keeps the smallest unsupported region as isolated HTML.
-The report lists each fallback reason and the native-object ratio. Visual fidelity
-has priority over native editing.
+- \`style.<css-property>\` applies safe inline CSS to the positioned element
+  wrapper and works for every element type.
+- \`contentStyle.<css-property>\` applies safe CSS directly to a text element's
+  inner glyph/content node. Use it for gradient text, background clipping,
+  strokes, shadows, and paint that must not fill the text box itself.
+- These CSS channels are intentionally more expressive than the visible
+  inspector. External URLs, executable CSS, whole-style replacement, and
+  overlapping parent/child patches are rejected.
 
-Prefer flat text elements with classes over nested formatting tags. For example,
-use \`<p class="person-name">Name</p>\` instead of a nested \`<b>\`. A fallback is
-acceptable only when Source and Imported screenshots still match visually.
-
-## Targets
-
-Insert after a slide:
-
-\`\`\`js
-const target = { mode: "insert", afterSlideId: "slide-id" };
+\`\`\`json
+{
+  "expectedRevision": "<revision from inspect>",
+  "edits": [{
+    "target": "element",
+    "slideId": "slide-8",
+    "elementId": "title-8",
+    "expectedType": "text",
+    "set": {
+      "align": "right",
+      "x": 140,
+      "w": 1640,
+      "style.font-family": "Inter",
+      "style.font-size": "64px"
+    },
+    "unset": ["style.letter-spacing"]
+  }]
+}
 \`\`\`
 
-Replace one slide:
+Do not resend or rebuild a complete slide for a local edit. Do not patch identity,
+type, lineage, comments, importer-owned fallback metadata, or slide element arrays.
 
-\`\`\`js
-const target = { mode: "replace", slideIds: ["slide-id"] };
-\`\`\`
+### HTML authoring — new slides and substantial redesigns
 
-Replacement keeps the slide ID, comments, speaker notes, and hidden state. It
-replaces visual content and builds. A multi-slide draft applies as one change.
+Use HTML when creating slides or when the requested composition is genuinely
+easier to redesign than patch.
+
+1. Import public assets through \`POST /api/import-url\` or upload bytes through
+   \`POST /api/upload\`.
+2. Write a complete document with one \`<section class="slide" data-name="…">\`
+   per slide at the canvas size reported by context.
+3. Preview with \`POST /api/preview-html\` without changing the deck.
+4. Screenshot and compare both Source and Imported views at full slide size.
+5. Fix missing/blocked assets, unexplained overflow, clipping, hierarchy, and
+   visible source/import drift.
+6. Apply once with \`POST /api/apply-html\`, then inspect the real player.
+
+For a substantial new design, preserve the first genuinely designed preview
+before making importer-driven compromises. This control distinguishes a design
+problem from an importer problem.
+
+Use semantic HTML, CSS grid/flexbox, inline SVG, images, video, CSS animation, and
+KaTeX notation. JavaScript and event handlers are removed. Presentation-time
+external network resources are blocked, so import assets first or use upload.
+
+The importer converts text, lists, images, video, simple shapes, and box paint to
+editable native objects. It preserves the smallest unsupported region as isolated
+HTML. Visual fidelity has priority over native-object ratio.
+
+Replacement preserves slide IDs, comments, speaker notes, and hidden state while
+replacing visual content and builds. A multi-slide draft applies atomically.
+
+## Verification and completion
+
+- Preview never changes the deck.
+- Apply creates one named collaboration revision in the editor History panel.
+- Every apply is revision-bound and idempotent. Use a new idempotency key for each
+  intended change. Never retry an apply blindly after a timeout; inspect context.
+- A clean diagnostic report is not proof of task completion. Inventory every
+  requested slide, object, text, asset, and placement.
+- Judge the real player for clipping, overlap, contrast, legibility, hierarchy,
+  broken media, and unintended changes to unrelated content.
+- If screenshots are unavailable, stop and state that visual verification is
+  blocked. Do not claim to have looked at HTML or status codes.
+
+Design to the standard of a professional presentation designer. Optimize for a
+projected slide, not a webpage or dashboard. Use intentional composition, strong
+hierarchy, generous safe margins, readable typography, and purposeful media.
 
 ## Comments
 
-\`\`\`js
-const open = await agent.listComments("open");
-await agent.addComment({ slideId, parentId: commentId, text: "Implemented and verified." });
-await agent.resolveComment(commentId);
-await agent.reopenComment(commentId);
-\`\`\`
+Read relevant unresolved comments from \`GET /api/comments\`. Reply through
+\`POST /api/comments\` and resolve through \`POST /api/comments/resolve\` only after
+the requested result passes real-player verification. Do not delete another
+person's comment or leave your own reply unintentionally open. Resolve both the
+request and your verification reply, then re-read \`GET /api/comments\` and
+confirm that neither remains in the unresolved set.
 
-Do not delete another person's comment. Navigate with \`agent.goToSlide(number)\`.
-
-## HTTP example
-
-Use the session origin and add the deck ID to each request. This example works
-in the page and in any programmatic browser that can call \`fetch\`.
+## HTTP examples
 
 \`\`\`js
 const deck = new URLSearchParams(location.search).get("deck");
-const endpoint = (path) => \`\${location.origin}\${path}?deck=\${encodeURIComponent(deck)}\`;
-const post = async (path, body) => {
-  const response = await fetch(endpoint(path), {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-  });
+const endpoint = (path) => {
+  const url = new URL(path, location.origin);
+  url.searchParams.set("deck", deck);
+  return url;
+};
+const json = async (path, init) => {
+  const response = await fetch(endpoint(path), init);
   const value = await response.json();
   if (!response.ok) throw new Error(value.error);
   return value;
 };
 
-const context = await (await fetch(endpoint("/api/context"))).json();
-const comments = await (await fetch(endpoint("/api/comments"))).json();
-const draft = await post("/api/preview-html", { html, target });
-const result = await post("/api/apply-html", {
-  draftId: draft.draftId,
-  expectedRevision: draft.revision,
-  idempotencyKey: crypto.randomUUID(),
-  label: "Agent: add project timeline",
-  target: draft.target,
+const narrative = await json("/api/text");
+const context = await json("/api/context");
+const inspected = await json("/api/inspect?slideIds=slide-8,slide-9");
+const draft = await json("/api/preview-edits", {
+  method: "POST",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify({ expectedRevision: inspected.revision, edits }),
+});
+const applied = await json("/api/apply-edits", {
+  method: "POST",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify({
+    draftId: draft.draftId,
+    expectedRevision: draft.revision,
+    idempotencyKey: crypto.randomUUID(),
+    label: "Agent: edit presentation properties"
+  }),
 });
 \`\`\`
 
-The JSON request for \`POST /api/import-url\` is
-\`{ "url": "https://…", "name": "portrait.jpg" }\`. The response gives a
-deck-relative \`src\` value. Use that value in the slide HTML.
-
-Command-line agents can preview a large HTML file without JSON escaping:
+Command-line agents can send a large HTML file without JSON escaping:
 
 \`curl -H 'content-type: text/html' --data-binary @slides.html\`
 \`'<origin>/api/preview-html?deck=<deck>&mode=replace&slideIds=slide-a,slide-b'\`
 
-For insertion, use \`mode=insert&afterSlideId=<id>\`. Omitting \`afterSlideId\`
-inserts at the start. The JSON form remains available to browser agents.
-
-Use a new idempotency key for each intended change. Reusing a key returns the first
-result and does not duplicate slides.
-
-## HTTP and browser access
-
-The session provides these HTTP endpoints:
+## HTTP endpoints
 
 - \`GET /api/brief\`
 - \`GET /api/context?deck=…\`
+- \`GET /api/text?deck=…\`
+- \`GET /api/edit-schema\`
+- \`GET /api/inspect?deck=…&slideIds=…&elementIds=…\`
+- \`POST /api/preview-edits?deck=…\`
+- \`GET /api/edit-drafts/<draftId>/before?deck=…&slideId=…\`
+- \`GET /api/edit-drafts/<draftId>/after?deck=…&slideId=…\`
+- \`POST /api/apply-edits?deck=…\`
 - \`GET /api/comments?deck=…\`
 - \`POST /api/comments?deck=…\`
 - \`POST /api/comments/resolve?deck=…\`
@@ -165,5 +211,30 @@ The session provides these HTTP endpoints:
 - \`POST /api/apply-html?deck=…\`
 - \`GET /api/render-slide?deck=…&slideId=…\`
 
-The HTTP API is the authoritative path. The browser is only the visual output.
+The HTTP API is the authoritative editing surface. The browser is the visual
+output used to verify it.
 `;
+
+/** Complete clipboard handoff for a user-created agent chat. */
+export function agentClipboardPrompt(sessionUrl: string, deckId: string): string {
+  const url = new URL(sessionUrl);
+  return `# Live presentation editing session
+
+Session URL: ${sessionUrl}
+API origin: ${url.origin}
+Deck ID: ${deckId}
+
+The user will provide the concrete presentation task. Follow the task using the
+session and task-neutral editing contract below.
+
+${AGENT_BRIEF}`;
+}
+
+/** Pick the address appropriate to the invite recipient and add deck scope. */
+export function collaborationInviteUrl(urls: string[], deckId: string, agent = false): string | null {
+  const base = agent
+    ? (urls.find((url) => url.includes('127.0.0.1')) ?? urls[0])
+    : (urls.find((url) => !url.includes('127.0.0.1')) ?? urls[0]);
+  if (!base) return null;
+  return `${base}?deck=${encodeURIComponent(deckId)}${agent ? '&agent=1' : ''}`;
+}

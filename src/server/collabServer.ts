@@ -3,7 +3,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { lookup } from 'node:dns/promises';
 import { createReadStream, existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { networkInterfaces, tmpdir } from 'node:os';
 import { basename, dirname, extname, join, normalize, resolve } from 'node:path';
 import { isIP } from 'node:net';
@@ -18,9 +18,11 @@ import { writeZip, type ZipFile } from './zip.js';
 import { compileHtmlToSlides, measureBuiltTextOverflows } from '../cli/compileHtml.js';
 import { slidesToHtml } from '../shared/htmlSlides.js';
 import { PLAYER_TYPE_CSS } from '../shared/playerTypeCss.js';
-import { authoringPageHtml } from '../shared/htmlMeasure.js';
+import { authoringPageHtml, type TextOverflow } from '../shared/htmlMeasure.js';
 import { deckRevision } from '../main/agentRuntime.js';
-import type { AgentOperation } from '../shared/agent.js';
+import { applyAgentTransaction, type AgentOperation } from '../shared/agent.js';
+import { NativeEditRequestSchema, applyNativeEdits, nativeEditContract } from '../shared/nativeEdits.js';
+import type { Deck, Slide, SlideElement } from '../shared/deck.js';
 
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -73,6 +75,23 @@ interface HttpHtmlDraft {
   createdAt: number;
 }
 
+interface HttpNativeDraft {
+  id: string;
+  deckId: string;
+  revision: string;
+  before: Deck;
+  after: Deck;
+  operations: AgentOperation[];
+  affectedSlideIds: string[];
+  affectedElementIds: string[];
+  report: {
+    beforeOverflows: unknown[];
+    afterOverflows: unknown[];
+    newOrWorsenedOverflows: unknown[];
+  };
+  createdAt: number;
+}
+
 export interface CollabServerOptions {
   /**
    * The single directory this server exposes. Every immediate subdirectory
@@ -117,6 +136,10 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
   const rooms = new Map<string, Room>();
   const htmlDrafts = new Map<string, HttpHtmlDraft>();
   const htmlIdempotency = new Map<string, { revision: string; slideIds: string[]; label: string }>();
+  const nativeDrafts = new Map<string, HttpNativeDraft>();
+  const nativeIdempotency = new Map<string, {
+    digest: string; revision: string; slideIds: string[]; elementIds: string[]; label: string;
+  }>();
   /** Known once listen() succeeds; /api/config reports the invite URLs. */
   let boundPort: number | null = null;
 
@@ -434,6 +457,230 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
             .filter((comment) => !comment.resolved).length,
         })),
       });
+      return;
+    }
+
+    // Compact reading-order transcript for building deck-wide narrative
+    // context without exposing deck.json or forcing one inspect request per
+    // slide. Agents should read this before deciding what a local visual means.
+    if (path === '/api/text' && request.method === 'GET') {
+      if (!deckParam) return respondJson(response, 400, { error: 'missing deck' });
+      const room = await getRoom(deckParam);
+      respondJson(response, 200, {
+        deckId: deckParam,
+        title: room.session.deck.title,
+        revision: deckRevision(room.session.deck),
+        slides: room.session.deck.slides.map((slide, index) => ({
+          index: index + 1,
+          id: slide.id,
+          name: slide.name,
+          hidden: Boolean(slide.skipped),
+          previousSlideId: room.session.deck.slides[index - 1]?.id ?? null,
+          nextSlideId: room.session.deck.slides[index + 1]?.id ?? null,
+          notes: slide.notes,
+          text: slide.elements
+            .map((element, elementIndex) => ({ element, elementIndex }))
+            .sort((a, b) => a.element.y - b.element.y
+              || a.element.x - b.element.x
+              || a.element.z - b.element.z
+              || a.elementIndex - b.elementIndex)
+            .flatMap(({ element }) => {
+              const text = element.type === 'text' || element.type === 'html'
+                ? plainText(element.html)
+                : element.type === 'image' ? element.alt.trim() : '';
+              return text ? [{ elementId: element.id, elementType: element.type, text }] : [];
+            }),
+        })),
+      });
+      return;
+    }
+
+    if (path === '/api/edit-schema' && request.method === 'GET') {
+      respondJson(response, 200, nativeEditContract());
+      return;
+    }
+
+    if (path === '/api/inspect' && request.method === 'GET') {
+      if (!deckParam) return respondJson(response, 400, { error: 'missing deck' });
+      const room = await getRoom(deckParam);
+      const slideIds = new Set((url.searchParams.get('slideIds') ?? '').split(',').map((id) => id.trim()).filter(Boolean));
+      const elementIds = new Set((url.searchParams.get('elementIds') ?? '').split(',').map((id) => id.trim()).filter(Boolean));
+      const all = url.searchParams.get('all') === '1';
+      if (!all && slideIds.size === 0 && elementIds.size === 0) {
+        return respondJson(response, 400, { error: 'provide slideIds, elementIds, or all=1' });
+      }
+      const selected = room.session.deck.slides.filter((slide) =>
+        all || slideIds.has(slide.id) || slide.elements.some((element) => elementIds.has(element.id)));
+      const missingSlides = [...slideIds].filter((id) => !room.session.deck.slides.some((slide) => slide.id === id));
+      const allElementIds = new Set(room.session.deck.slides.flatMap((slide) => slide.elements.map((element) => element.id)));
+      const missingElements = [...elementIds].filter((id) => !allElementIds.has(id));
+      if (missingSlides.length > 0 || missingElements.length > 0) {
+        return respondJson(response, 404, { error: 'some requested objects do not exist', missingSlides, missingElements });
+      }
+      respondJson(response, 200, {
+        revision: deckRevision(room.session.deck),
+        deck: {
+          title: room.session.deck.title,
+          canvas: room.session.deck.canvas,
+          theme: room.session.deck.theme,
+          themePreset: room.session.deck.themePreset,
+          themeStyle: room.session.deck.themeStyle,
+          magicMoveDuration: room.session.deck.magicMoveDuration,
+          magicMoveEasing: room.session.deck.magicMoveEasing,
+        },
+        slides: selected.map((slide) => inspectNativeSlide(room.session.deck, slide)),
+      });
+      return;
+    }
+
+    if (path === '/api/preview-edits' && request.method === 'POST') {
+      if (!deckParam) return respondJson(response, 400, { error: 'missing deck' });
+      const raw = JSON.parse((await readBody(request)).toString('utf8')) as unknown;
+      const parsed = NativeEditRequestSchema.safeParse(raw);
+      if (!parsed.success) {
+        return respondJson(response, 400, {
+          error: 'invalid native edit request',
+          issues: parsed.error.issues.map((issue) => ({ path: issue.path.join('.'), message: issue.message })),
+        });
+      }
+      const room = await getRoom(deckParam);
+      const revision = deckRevision(room.session.deck);
+      if (parsed.data.expectedRevision && parsed.data.expectedRevision !== revision) {
+        return respondJson(response, 409, { error: 'revision conflict', expected: parsed.data.expectedRevision, current: revision });
+      }
+      let edited: ReturnType<typeof applyNativeEdits>;
+      try {
+        edited = applyNativeEdits(room.session.deck, parsed.data.edits);
+        validateNativeEditSafety(room.session.deck, edited.deck, room.session.dir);
+      } catch (error) {
+        return respondJson(response, 400, { error: error instanceof Error ? error.message : String(error) });
+      }
+      const beforeSlides = edited.affectedSlideIds
+        .map((id) => room.session.deck.slides.find((slide) => slide.id === id))
+        .filter((slide): slide is Slide => Boolean(slide));
+      const afterSlides = edited.affectedSlideIds
+        .map((id) => edited.deck.slides.find((slide) => slide.id === id))
+        .filter((slide): slide is Slide => Boolean(slide));
+      const [beforeOverflows, afterOverflows] = await Promise.all([
+        measureBuiltTextOverflows(room.session.dir, room.session.deck, beforeSlides),
+        measureBuiltTextOverflows(room.session.dir, edited.deck, afterSlides),
+      ]);
+      const report = {
+        beforeOverflows,
+        afterOverflows,
+        newOrWorsenedOverflows: newOrWorsenedOverflows(beforeOverflows, afterOverflows),
+      };
+      const id = randomUUID();
+      const draft: HttpNativeDraft = {
+        id,
+        deckId: deckParam,
+        revision,
+        before: structuredClone(room.session.deck),
+        after: edited.deck,
+        operations: edited.operations,
+        affectedSlideIds: edited.affectedSlideIds,
+        affectedElementIds: edited.affectedElementIds,
+        report,
+        createdAt: Date.now(),
+      };
+      nativeDrafts.set(id, draft);
+      const draftViewUrl = (side: 'before' | 'after', slideId?: string): string => {
+        const params = new URLSearchParams({ deck: deckParam });
+        if (slideId) params.set('slideId', slideId);
+        return `/api/edit-drafts/${id}/${side}?${params.toString()}`;
+      };
+      respondJson(response, 200, {
+        draftId: id,
+        revision,
+        affectedSlideIds: draft.affectedSlideIds,
+        affectedElementIds: draft.affectedElementIds,
+        operations: draft.operations,
+        beforeUrl: draftViewUrl('before'),
+        afterUrl: draftViewUrl('after'),
+        slides: draft.affectedSlideIds.map((slideId) => ({
+          slideId,
+          beforeUrl: draftViewUrl('before', slideId),
+          afterUrl: draftViewUrl('after', slideId),
+        })),
+        report,
+      });
+      return;
+    }
+
+    const nativeDraftView = /^\/api\/edit-drafts\/([^/]+)\/(before|after)$/.exec(path);
+    if (nativeDraftView && request.method === 'GET') {
+      const draft = nativeDrafts.get(nativeDraftView[1]);
+      if (!draft || draft.deckId !== deckParam) return respondJson(response, 404, { error: 'draft not found' });
+      const deck = nativeDraftView[2] === 'before' ? draft.before : draft.after;
+      const requestedSlide = url.searchParams.get('slideId');
+      const ids = requestedSlide ? [requestedSlide] : draft.affectedSlideIds;
+      const slides = ids.map((id) => deck.slides.find((slide) => slide.id === id)).filter((slide): slide is Slide => Boolean(slide));
+      if (requestedSlide && slides.length === 0) return respondJson(response, 404, { error: `no affected slide ${requestedSlide}` });
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+      response.end(slidesToHtml(slides, deck.canvas, {
+        typeCss: PLAYER_TYPE_CSS,
+        base: `/decks/${encodeURIComponent(deckParam)}/`,
+        theme: `/api/theme?deck=${encodeURIComponent(deckParam)}`,
+      }));
+      return;
+    }
+
+    if (path === '/api/apply-edits' && request.method === 'POST') {
+      if (!deckParam) return respondJson(response, 400, { error: 'missing deck' });
+      const payload = JSON.parse((await readBody(request)).toString('utf8')) as {
+        draftId?: string; expectedRevision?: string; idempotencyKey?: string; label?: string;
+      };
+      if (!payload.idempotencyKey) return respondJson(response, 400, { error: 'missing idempotencyKey' });
+      const key = `${deckParam}:${payload.idempotencyKey}`;
+      const digest = createHash('sha256').update(JSON.stringify(payload)).digest('hex');
+      const prior = nativeIdempotency.get(key);
+      if (prior) {
+        if (prior.digest !== digest) return respondJson(response, 409, { error: 'idempotency key reused for a different request' });
+        return respondJson(response, 200, { ...prior, idempotent: true, digest: undefined });
+      }
+      const draft = payload.draftId ? nativeDrafts.get(payload.draftId) : null;
+      if (!draft || draft.deckId !== deckParam) return respondJson(response, 404, { error: 'draft not found' });
+      if (draft.report.newOrWorsenedOverflows.length > 0) {
+        return respondJson(response, 422, {
+          error: 'native edit introduces or worsens text overflow; revise the patch before applying',
+          report: draft.report,
+        });
+      }
+      const room = await getRoom(deckParam);
+      const current = deckRevision(room.session.deck);
+      const expected = payload.expectedRevision ?? draft.revision;
+      if (current !== expected || draft.revision !== expected) {
+        return respondJson(response, 409, { error: 'revision conflict', expected, current });
+      }
+      // Validate against the strict transaction engine before the collaboration
+      // layer applies its intentionally lenient replay semantics.
+      const strict = applyAgentTransaction(room.session.deck, {
+        version: 1,
+        expectedRevision: current,
+        label: payload.label?.trim().slice(0, 200) || 'Agent: edit presentation properties',
+        operations: draft.operations,
+      });
+      if (JSON.stringify(strict) !== JSON.stringify(draft.after)) {
+        return respondJson(response, 409, { error: 'draft no longer reproduces the previewed deck', current });
+      }
+      const label = payload.label?.trim().slice(0, 200) || 'Agent: edit presentation properties';
+      const applied = room.session.applyOps(draft.operations);
+      if (applied.skipped.length > 0) {
+        return respondJson(response, 409, { error: 'native edit could not apply atomically', skipped: applied.skipped });
+      }
+      broadcast(room, {
+        kind: 'txn', seq: applied.seq, txnId: `agent-http-${randomUUID()}`,
+        byClientId: 'agent-http', label, ops: draft.operations,
+      });
+      const result = {
+        digest,
+        revision: deckRevision(applied.deck),
+        slideIds: draft.affectedSlideIds,
+        elementIds: draft.affectedElementIds,
+        label,
+      };
+      nativeIdempotency.set(key, result);
+      respondJson(response, 200, { ...result, idempotent: false, digest: undefined });
       return;
     }
 
@@ -948,6 +1195,137 @@ function isPrivateAddress(address: string): boolean {
     || (a === 172 && b >= 16 && b <= 31)
     || (a === 192 && b === 168)
     || (a === 198 && (b === 18 || b === 19));
+}
+
+function inspectNativeSlide(deck: Deck, slide: Slide): Record<string, unknown> {
+  const index = deck.slides.findIndex((candidate) => candidate.id === slide.id);
+  const texts = slide.elements.filter((element): element is Extract<SlideElement, { type: 'text' }> => element.type === 'text');
+  const inferredTitle = texts
+    .filter((element) => plainText(element.html).length > 0 && element.y < deck.canvas.h * 0.48)
+    .sort((a, b) => titleScore(b) - titleScore(a))[0]?.id ?? null;
+  const { elements: _elements, comments: _comments, ...properties } = structuredClone(slide);
+  return {
+    index: index + 1,
+    id: slide.id,
+    properties,
+    elements: slide.elements.map((element) => {
+      const explicit = element.class.find((name) => /^role-(title|heading|body|caption)$/.test(name));
+      const role = explicit?.slice('role-'.length)
+        ?? (element.type === 'text' && element.id === inferredTitle ? 'title' : element.type === 'text' ? 'body' : null);
+      const roleStyle = role && deck.themeStyle
+        ? deck.themeStyle.fonts[role as keyof typeof deck.themeStyle.fonts] ?? deck.themeStyle.fonts.base
+        : deck.themeStyle?.fonts.base;
+      return {
+        ...structuredClone(element),
+        ...(element.type === 'text' ? {
+          plainText: plainText(element.html),
+          semanticRole: role,
+          roleSource: explicit ? 'class' : element.id === inferredTitle ? 'inferred' : 'default',
+          effectiveTypography: {
+            family: element.style['font-family'] ?? roleStyle?.family ?? null,
+            size: Number.parseFloat(element.style['font-size'] ?? '') || roleStyle?.size || null,
+            weight: Number.parseFloat(element.style['font-weight'] ?? '') || roleStyle?.weight || null,
+            lineHeight: element.style['line-height'] ?? roleStyle?.lineHeight ?? null,
+            letterSpacing: element.style['letter-spacing'] ?? roleStyle?.letterSpacing ?? null,
+            color: element.style.color ?? roleStyle?.color ?? deck.themeStyle?.colors.text ?? null,
+          },
+        } : {}),
+      };
+    }),
+  };
+}
+
+function titleScore(element: Extract<SlideElement, { type: 'text' }>): number {
+  const size = Number.parseFloat(element.style['font-size'] ?? '') || 0;
+  return size * 20 + element.w - element.y * 0.5;
+}
+
+function plainText(html: string): string {
+  return html
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/p\s*>/gi, '\n')
+    .replace(/<[^>]*>/g, '')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function newOrWorsenedOverflows(before: TextOverflow[], after: TextOverflow[]): TextOverflow[] {
+  const prior = new Map(before.map((overflow) => [`${overflow.slideId ?? ''}:${overflow.elementId ?? ''}`, overflow]));
+  return after.filter((overflow) => {
+    const previous = prior.get(`${overflow.slideId ?? ''}:${overflow.elementId ?? ''}`);
+    if (!previous) return true;
+    if (overflow.overflowX && !previous.overflowX) return true;
+    if (overflow.overflowY && !previous.overflowY) return true;
+    return overflow.beyond.x > previous.beyond.x + 1 || overflow.beyond.y > previous.beyond.y + 1;
+  });
+}
+
+function validateNativeEditSafety(before: Deck, after: Deck, deckDir: string): void {
+  const beforeSlides = new Map(before.slides.map((slide) => [slide.id, slide]));
+  for (const slide of after.slides) {
+    const previousSlide = beforeSlides.get(slide.id);
+    if (previousSlide && slide.background.image !== previousSlide.background.image) {
+      validateEditedAsset(slide.background.image, deckDir, `slide ${slide.id} background.image`);
+    }
+    const beforeElements = new Map(previousSlide?.elements.map((element) => [element.id, element]) ?? []);
+    for (const element of slide.elements) {
+      const previous = beforeElements.get(element.id);
+      if (!previous || JSON.stringify(previous) === JSON.stringify(element)) continue;
+      for (const [property, value] of Object.entries(element.style)) {
+        if (/(?:javascript\s*:|@import\b|https?:|data:)/i.test(value)) {
+          throw new Error(`element ${element.id} style.${property} contains a blocked external or executable resource`);
+        }
+      }
+      if (element.type === 'text') {
+        for (const [property, value] of Object.entries(element.contentStyle ?? {})) {
+          if (/(?:javascript\s*:|@import\b|https?:|data:)/i.test(value)) {
+            throw new Error(`element ${element.id} contentStyle.${property} contains a blocked external or executable resource`);
+          }
+        }
+      }
+      if (element.type === 'text' || element.type === 'html') {
+        if (unsafePatchedMarkup(element.html)) {
+          throw new Error(`element ${element.id} HTML contains scripts, event handlers, embedded documents, or external runtime resources`);
+        }
+      }
+      if (element.type === 'html' && element.css
+        && /(?:javascript\s*:|@import\b|https?:|data:)/i.test(element.css)) {
+        throw new Error(`element ${element.id} CSS contains a blocked external or executable resource`);
+      }
+      if (element.type === 'image' || element.type === 'video') {
+        const old = previous && (previous.type === 'image' || previous.type === 'video') ? previous : null;
+        if (element.src !== old?.src) validateEditedAsset(element.src, deckDir, `element ${element.id} src`);
+        if (element.type === 'video' && element.poster !== (old?.type === 'video' ? old.poster : null)) {
+          validateEditedAsset(element.poster, deckDir, `element ${element.id} poster`);
+        }
+      }
+    }
+  }
+}
+
+function unsafePatchedMarkup(html: string): boolean {
+  return /<\s*(?:script|style|link|base|meta|iframe|object|embed)\b/i.test(html)
+    || /\son[a-z]+\s*=/i.test(html)
+    || /(?:src|poster)\s*=\s*['"]\s*(?:https?:|data:|javascript:)/i.test(html);
+}
+
+function validateEditedAsset(src: string | null | undefined, deckDir: string, label: string): void {
+  if (src === null || src === undefined || src === '') return;
+  const normalized = src.replaceAll('\\', '/');
+  if (!normalized.startsWith('assets/')) throw new Error(`${label} must use a deck-relative assets/ path`);
+  let absolute: string;
+  try {
+    absolute = resolveAsset(deckDir, normalized);
+  } catch {
+    throw new Error(`${label} is outside the deck asset folder`);
+  }
+  if (!existsSync(absolute)) throw new Error(`${label} does not exist: ${normalized}`);
 }
 
 /** Conservative Node-side sanitizer for the HTTP HTML import path. */

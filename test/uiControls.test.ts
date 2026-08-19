@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { closePopover, helpButton, menuButton } from '../src/renderer/editor/ui.js';
 import { createExportPicker } from '../src/renderer/editor/exportPicker.js';
 import { showPdfExportDialog } from '../src/renderer/editor/pdfExportDialog.js';
+import { createDeckWerkButton } from '../src/renderer/editor/aboutDialog.js';
 
 describe('shared editor controls', () => {
   beforeEach(() => {
@@ -25,6 +26,20 @@ describe('shared editor controls', () => {
     expect(help.getAttribute('aria-haspopup')).toBe('true');
     help.click();
     expect(document.querySelector('[role="tooltip"]')?.textContent).toContain('Start here: Select slides.');
+  });
+
+  it('opens an accessible DeckWerk About dialog from the toolbar wordmark', () => {
+    const brand = createDeckWerkButton();
+    document.body.appendChild(brand);
+    expect(brand.textContent).toBe('DeckWerk');
+    expect(brand.getAttribute('aria-label')).toBe('About DeckWerk');
+
+    brand.click();
+    const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!;
+    expect(dialog.getAttribute('aria-labelledby')).toBe('deckwerk-about-title');
+    expect(dialog.textContent).toContain('Modern cross-platform slide editor by Vincent Sitzmann');
+    dialog.querySelector<HTMLButtonElement>('button')!.click();
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
   });
 
   it('gives toolbar menus roles and closes after an action', () => {
@@ -49,6 +64,14 @@ describe('shared editor controls', () => {
       expect(source).not.toContain("menuButton('File'");
       expect(source).not.toContain("menuButton('Insert'");
     }
+  });
+
+  it('moves centered insert controls into the toolbar flow at narrow widths', () => {
+    const styles = readFileSync(join(process.cwd(), 'src/renderer/editor/editor.css'), 'utf8');
+    const responsiveToolbar = styles.match(/@media \(max-width: 1100px\) \{[\s\S]*?\.bar-center \{[\s\S]*?\n  \}\n\}/)?.[0];
+    expect(responsiveToolbar).toContain('flex-wrap: wrap');
+    expect(responsiveToolbar).toContain('position: static');
+    expect(responsiveToolbar).toContain('transform: none');
   });
 
   it('groups only PDF and web export in the classic toolbar menu', () => {

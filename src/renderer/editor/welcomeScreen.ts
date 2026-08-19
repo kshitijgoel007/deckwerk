@@ -18,7 +18,7 @@ export class WelcomeScreen {
 
     const mark = document.createElement('div');
     mark.className = 'welcome-mark';
-    mark.textContent = 'S';
+    mark.textContent = 'DW';
     mark.setAttribute('aria-hidden', 'true');
 
     const title = document.createElement('h1');

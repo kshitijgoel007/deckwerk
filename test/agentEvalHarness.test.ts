@@ -9,10 +9,23 @@ const workspaceSource = readFileSync(join(process.cwd(), 'src/renderer/collab/ag
 const agentApiSource = readFileSync(join(process.cwd(), 'src/renderer/collab/agentApi.ts'), 'utf8');
 const collabCss = readFileSync(join(process.cwd(), 'src/renderer/collab/collab.css'), 'utf8');
 const presentSource = readFileSync(join(process.cwd(), 'src/renderer/collab/present.ts'), 'utf8');
+const playerReadinessSource = readFileSync(
+  join(process.cwd(), 'src/renderer/collab/playerReadiness.ts'),
+  'utf8',
+);
 const serverSource = readFileSync(join(process.cwd(), 'src/server/collabServer.ts'), 'utf8');
 const paperServeSource = readFileSync(join(process.cwd(), 'scripts/serve-paper-benchmark.mts'), 'utf8');
+const editServeSource = readFileSync(join(process.cwd(), 'scripts/serve-edit-benchmark.mts'), 'utf8');
 const paperPrompt = readFileSync(
   join(process.cwd(), 'test/fixtures/agent-eval/paper-showcase-prompt.md'),
+  'utf8',
+);
+const editPrompt = readFileSync(
+  join(process.cwd(), 'test/fixtures/agent-eval/native-reformatting-prompt.md'),
+  'utf8',
+);
+const cssLayoutPrompt = readFileSync(
+  join(process.cwd(), 'test/fixtures/agent-eval/native-css-layout-prompt.md'),
   'utf8',
 );
 
@@ -40,10 +53,10 @@ describe('workspace-independent agent evaluation harness', () => {
   });
 
   it('requires both visual and editorial acceptance in the reusable agent brief', () => {
-    expect(briefSource).toContain('capture a screenshot');
-    expect(briefSource).toContain('make a content inventory');
-    expect(briefSource).toContain('A clean render is still a failure if content is missing');
-    expect(briefSource).toContain('diagnostics check import mechanics, not editorial completeness or quality');
+    expect(briefSource).toContain("Open and screenshot every affected slide's Before and After URLs");
+    expect(briefSource).toContain('Inventory every');
+    expect(briefSource).toContain('A clean diagnostic report is not proof of task completion');
+    expect(briefSource).toContain('Judge the real player');
   });
 
   it('closes the hidden browser gracefully before using a signal fallback', () => {
@@ -72,6 +85,11 @@ describe('workspace-independent agent evaluation harness', () => {
     expect(serverSource).toContain("new URL('/present.html'");
     expect(presentSource).toContain("const agentViewer = params.get('agent') === '1'");
     expect(presentSource).toContain('if (!agentViewer)');
+    expect(presentSource).toContain("new CustomEvent('slide-player-painted'");
+    expect(presentSource).toContain('readiness.painting()');
+    expect(playerReadinessSource).toContain("dataset.playerStatus = 'connecting'");
+    expect(playerReadinessSource).toContain("dataset.playerReady = 'true'");
+    expect(playerReadinessSource).toContain('this.options.requestFrame(() => this.options.requestFrame(');
     expect(workspaceSource).toContain("params.get('debug') !== '1'");
     expect(workspaceSource).toContain("request<HtmlDraft>('/api/preview-html'");
     expect(workspaceSource).toContain("request<{ slideIds: string[] }>('/api/apply-html'");
@@ -80,6 +98,8 @@ describe('workspace-independent agent evaluation harness', () => {
     expect(workspaceSource).toContain("oldSide.insertAdjacentElement('afterend', panel)");
     expect(workspaceSource).toContain("button('API brief'");
     expect(agentApiSource).toContain("previewHtml: (body) => request<HtmlDraft>('/api/preview-html'");
+    expect(agentApiSource).toContain("previewEdits: (body) => request<NativeEditDraft>('/api/preview-edits'");
+    expect(agentApiSource).toContain("applyEdits: (body) => request('/api/apply-edits'");
     expect(agentApiSource).not.toContain('store.commit(');
     expect(collabCss).toContain('.agent-session #body');
     expect(collabCss).toContain('.agent-session #side[hidden] { display: none !important; }');
@@ -95,5 +115,38 @@ describe('workspace-independent agent evaluation harness', () => {
     expect(paperPrompt).toContain('native conversion in this first draft');
     expect(paperPrompt).toContain('Apply all four replacements atomically');
     expect(paperPrompt).toContain('initial and final draft IDs');
+  });
+
+  it('keeps the all-hands native editing benchmark and prompt separation durable', () => {
+    expect(editServeSource).toContain('2608_all_HANDS.key');
+    expect(editServeSource).toContain('agentClipboardPrompt(agentUrl, deckId)');
+    expect(editServeSource).toContain('# Concrete task');
+    expect(editServeSource).toContain('general-prompt.txt');
+    expect(editServeSource).toContain('combined-prompt.txt');
+    expect(editPrompt).toContain('slides 2 through 8');
+    expect(editPrompt).toMatch(/Do not rebuild or\s+replace slides through HTML/);
+    expect(editPrompt).toContain('Avenir Next');
+    expect(editPrompt).toContain('Right-align all seven titles');
+    expect(editPrompt).toContain('Preserve all wording');
+  });
+
+  it('keeps the advanced CSS/layout task native, atomic, and visually verified', () => {
+    expect(cssLayoutPrompt).toContain('Do not rebuild or replace any');
+    expect(cssLayoutPrompt).toContain('contentStyle.<css-property>');
+    expect(cssLayoutPrompt).toContain('maskShape: "circle"');
+    expect(cssLayoutPrompt).toContain('8-pixel radius');
+    expect(cssLayoutPrompt).toContain('one revision-bound native preview batch');
+    expect(cssLayoutPrompt).toContain('verify every affected slide in the real player');
+  });
+
+  it('keeps the comment-driven media replacement benchmark durable', () => {
+    expect(editServeSource).toContain('comment-media-replacement-prompt.md');
+    expect(editServeSource).toContain('commentSlideIndex = commentMedia ? 3 : 1');
+    expect(editServeSource).toContain('replace the low-resolution minecraft+noise grid');
+    const prompt = readFileSync(
+      join(process.cwd(), 'test/fixtures/agent-eval/comment-media-replacement-prompt.md'), 'utf8');
+    expect(prompt).toContain('discover it through the comments API');
+    expect(prompt).toMatch(/resolve the\s+original comment and your reply/);
+    expect(prompt).toContain('Preview before applying');
   });
 });

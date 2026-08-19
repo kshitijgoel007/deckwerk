@@ -38,6 +38,9 @@ const SNAP_SCREEN_PX = 6;
 const LINE_HIT_SCREEN_PX = 8;
 /** Screen-pixel movement before a press becomes a drag rather than a click. */
 const DRAG_THRESHOLD_PX = 3;
+const MIN_ZOOM = 0.25;
+const MAX_ZOOM = 8;
+const ZOOM_STEP = 0.25;
 const HANDLE_NAMES = Object.keys(HANDLES);
 type MoveOrigin = Rect & { control?: { x: number; y: number } };
 
@@ -62,8 +65,14 @@ export class EditorCanvas {
   private stage: HTMLElement;
   private slideLayer: HTMLElement;
   private overlay: HTMLElement;
+  private zoomInput: HTMLInputElement;
 
+  /** Final canvas-pixel to screen-pixel scale (fit scale × user zoom). */
   private scale = 1;
+  /** User zoom relative to the editor's normal fitted view. */
+  private zoom = 1;
+  /** Screen-pixel displacement from the centred stage position. */
+  private pan = { x: 0, y: 0 };
   private drag: DragMode = { kind: 'none' };
   /**
    * Whether the pointer has moved far enough to count as a drag.
@@ -143,10 +152,13 @@ export class EditorCanvas {
     this.overlay = document.createElement('div');
     this.overlay.className = 'overlay-layer';
     this.stage.append(this.slideLayer, this.overlay);
-    this.host.replaceChildren(this.stage);
+    const zoomControls = this.createZoomControls();
+    this.zoomInput = zoomControls.querySelector<HTMLInputElement>('.zoom-value')!;
+    this.host.replaceChildren(this.stage, zoomControls);
 
     new ResizeObserver(() => this.rescale()).observe(this.host);
     this.bindPointer();
+    this.bindViewportGestures();
     this.bindDrop();
     document.addEventListener('selectionchange', () => this.captureTextSelection());
 
@@ -452,7 +464,8 @@ export class EditorCanvas {
     const r = this.host.getBoundingClientRect();
     if (r.width === 0 || r.height === 0) return;
     // Leave a margin so handles on the outer edge stay grabbable.
-    const scale = fitScale(deck.canvas, { w: r.width - 64, h: r.height - 64 });
+    const fitted = fitScale(deck.canvas, { w: r.width - 64, h: r.height - 64 });
+    const scale = fitted * this.zoom;
     this.scale = scale;
 
     for (const layer of [this.slideLayer, this.overlay]) {
@@ -464,9 +477,153 @@ export class EditorCanvas {
     this.stage.style.transform = `scale(${scale})`;
     this.stage.style.setProperty('--editor-inv-scale', String(1 / scale));
     this.stage.style.transformOrigin = 'top left';
-    this.stage.style.left = `${(r.width - deck.canvas.w * scale) / 2}px`;
-    this.stage.style.top = `${(r.height - deck.canvas.h * scale) / 2}px`;
+    this.stage.style.left = `${(r.width - deck.canvas.w * scale) / 2 + this.pan.x}px`;
+    this.stage.style.top = `${(r.height - deck.canvas.h * scale) / 2 + this.pan.y}px`;
+    this.syncZoomInput();
     this.onViewportChange?.();
+  }
+
+  /** User-visible zoom percentage, relative to the normal fitted view. */
+  zoomPercent(): number {
+    return Math.round(this.zoom * 100);
+  }
+
+  /** Set zoom around the viewport centre. Exposed for shell actions and tests. */
+  setZoomPercent(percent: number): void {
+    this.setZoom(percent / 100);
+  }
+
+  /** Restore the normal fitted view and put the slide back in the middle. */
+  recenter(): void {
+    this.zoom = 1;
+    this.pan = { x: 0, y: 0 };
+    this.rescale();
+  }
+
+  private createZoomControls(): HTMLElement {
+    const controls = document.createElement('div');
+    controls.className = 'zoom-controls deck-only';
+    controls.setAttribute('role', 'group');
+    controls.setAttribute('aria-label', 'Canvas zoom');
+
+    const button = (text: string, label: string, action: () => void) => {
+      const node = document.createElement('button');
+      node.type = 'button';
+      node.className = 'zoom-button';
+      node.textContent = text;
+      node.title = label;
+      node.setAttribute('aria-label', label);
+      node.addEventListener('click', action);
+      return node;
+    };
+
+    const input = document.createElement('input');
+    input.className = 'zoom-value';
+    input.type = 'text';
+    input.inputMode = 'numeric';
+    input.setAttribute('aria-label', 'Zoom percentage');
+    input.value = '100%';
+    input.spellcheck = false;
+    input.addEventListener('focus', () => input.select());
+    input.addEventListener('change', () => this.commitZoomInput(input));
+    input.addEventListener('blur', () => this.commitZoomInput(input));
+    input.addEventListener('keydown', (event) => {
+      event.stopPropagation();
+      if (event.key === 'Enter') input.blur();
+      if (event.key === 'Escape') {
+        this.syncZoomInput();
+        input.blur();
+      }
+    });
+
+    controls.append(
+      button('−', 'Zoom out', () => this.setZoom(this.zoom - ZOOM_STEP)),
+      input,
+      button('+', 'Zoom in', () => this.setZoom(this.zoom + ZOOM_STEP)),
+      button('⌖', 'Re-center slide', () => this.recenter()),
+    );
+    return controls;
+  }
+
+  private commitZoomInput(input: HTMLInputElement): void {
+    const percent = Number.parseFloat(input.value.replace('%', '').trim());
+    if (Number.isFinite(percent)) this.setZoomPercent(percent);
+    else this.syncZoomInput();
+  }
+
+  private syncZoomInput(): void {
+    if (this.zoomInput) this.zoomInput.value = `${this.zoomPercent()}%`;
+  }
+
+  /**
+   * Zoom while keeping the canvas point under `anchor` fixed on screen.
+   * Without an anchor, the viewport centre is used (buttons and direct input).
+   */
+  private setZoom(next: number, anchor?: { x: number; y: number }): void {
+    const r = this.host.getBoundingClientRect();
+    const { deck } = this.store.get();
+    const bounded = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, next));
+    if (r.width === 0 || r.height === 0) {
+      this.zoom = bounded;
+      this.syncZoomInput();
+      return;
+    }
+
+    const point = anchor ?? { x: r.width / 2, y: r.height / 2 };
+    const oldLeft = (r.width - deck.canvas.w * this.scale) / 2 + this.pan.x;
+    const oldTop = (r.height - deck.canvas.h * this.scale) / 2 + this.pan.y;
+    const canvasPoint = {
+      x: (point.x - oldLeft) / this.scale,
+      y: (point.y - oldTop) / this.scale,
+    };
+
+    this.zoom = bounded;
+    const fitted = fitScale(deck.canvas, { w: r.width - 64, h: r.height - 64 });
+    const nextScale = fitted * this.zoom;
+    const centredLeft = (r.width - deck.canvas.w * nextScale) / 2;
+    const centredTop = (r.height - deck.canvas.h * nextScale) / 2;
+    this.pan = {
+      x: point.x - canvasPoint.x * nextScale - centredLeft,
+      y: point.y - canvasPoint.y * nextScale - centredTop,
+    };
+
+    // Returning to the fitted view should always recover the slide, even if it
+    // had previously been panned far away.
+    if (this.zoom === 1) this.pan = { x: 0, y: 0 };
+    this.rescale();
+    this.drawOverlay(deck, this.store.slide?.elements ?? [], this.store.get().selection);
+  }
+
+  private bindViewportGestures(): void {
+    this.host.addEventListener('wheel', (event) => {
+      if ((event.target as HTMLElement).closest('.zoom-controls')) return;
+
+      // Chromium represents a macOS trackpad pinch as a wheel event with the
+      // control modifier set. Anchoring it at the pointer makes the gesture
+      // feel native and keeps the detail the user is inspecting under hand.
+      if (event.ctrlKey) {
+        event.preventDefault();
+        const unit = event.deltaMode === WheelEvent.DOM_DELTA_LINE ? 16
+          : event.deltaMode === WheelEvent.DOM_DELTA_PAGE ? this.host.clientHeight
+            : 1;
+        const factor = Math.exp(-event.deltaY * unit * 0.01);
+        const hostRect = this.host.getBoundingClientRect();
+        this.setZoom(this.zoom * factor, {
+          x: event.clientX - hostRect.left,
+          y: event.clientY - hostRect.top,
+        });
+        return;
+      }
+
+      // At an enlarged view, ordinary two-finger scrolling moves the viewport
+      // so every part of the slide remains reachable.
+      if (this.zoom > 1) {
+        event.preventDefault();
+        this.pan.x -= event.deltaX;
+        this.pan.y -= event.deltaY;
+        this.rescale();
+      }
+    }, { passive: false });
   }
 
   /**
@@ -731,7 +888,7 @@ export class EditorCanvas {
     // are ordinary application controls. Capturing their pointer on the canvas
     // changes the pointer-up target and prevents Chromium from synthesising a
     // click, which made all three welcome actions appear inert.
-    if (target.closest('.welcome-screen')) return;
+    if (target.closest('.welcome-screen, .zoom-controls')) return;
     const slide = this.store.slide;
     if (!slide) return;
 

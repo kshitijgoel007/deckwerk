@@ -40,6 +40,26 @@ export interface HtmlDraft {
   target: HtmlTarget;
 }
 
+export interface NativeEdit {
+  target: 'deck' | 'slide' | 'element';
+  slideId?: string;
+  elementId?: string;
+  expectedType?: 'text' | 'image' | 'video' | 'shape' | 'html' | 'unsupported';
+  set?: Record<string, unknown>;
+  unset?: string[];
+}
+
+export interface NativeEditDraft {
+  draftId: string;
+  revision: string;
+  affectedSlideIds: string[];
+  affectedElementIds: string[];
+  beforeUrl: string;
+  afterUrl: string;
+  slides: Array<{ slideId: string; beforeUrl: string; afterUrl: string }>;
+  report: { beforeOverflows: unknown[]; afterOverflows: unknown[]; newOrWorsenedOverflows: unknown[] };
+}
+
 export interface AgentApiOptions { theme: () => string }
 
 export function installAgentApi(store: EditorStore, deckId: string, _options: AgentApiOptions): void {
@@ -82,6 +102,16 @@ export function installAgentApi(store: EditorStore, deckId: string, _options: Ag
     addComment: (body) => request('/api/comments', { method: 'POST', body: JSON.stringify({ ...body, author: agentName() }) }),
     resolveComment: (commentId) => request('/api/comments/resolve', { method: 'POST', body: JSON.stringify({ commentId, resolved: true }) }),
     reopenComment: (commentId) => request('/api/comments/resolve', { method: 'POST', body: JSON.stringify({ commentId, resolved: false }) }),
+    editSchema: () => request('/api/edit-schema'),
+    inspect: ({ slideIds = [], elementIds = [], all = false } = {}) => {
+      const url = new URL('/api/inspect', location.origin);
+      if (slideIds.length > 0) url.searchParams.set('slideIds', slideIds.join(','));
+      if (elementIds.length > 0) url.searchParams.set('elementIds', elementIds.join(','));
+      if (all) url.searchParams.set('all', '1');
+      return request(`${url.pathname}${url.search}`);
+    },
+    previewEdits: (body) => request<NativeEditDraft>('/api/preview-edits', { method: 'POST', body: JSON.stringify(body) }),
+    applyEdits: (body) => request('/api/apply-edits', { method: 'POST', body: JSON.stringify(body) }),
     previewHtml: (body) => request<HtmlDraft>('/api/preview-html', { method: 'POST', body: JSON.stringify(body) }),
     applyHtml: (body) => request('/api/apply-html', { method: 'POST', body: JSON.stringify(body) }),
     renderSlide: (slideId) => {
@@ -108,6 +138,10 @@ declare global {
       seeComments: () => Promise<AgentCommentRow[]>;
       addComment: (request: { slideId?: string; elementId?: string; parentId?: string; text: string }) => Promise<unknown>;
       resolveComment: (id: string) => Promise<unknown>; reopenComment: (id: string) => Promise<unknown>;
+      editSchema: () => Promise<unknown>;
+      inspect: (request?: { slideIds?: string[]; elementIds?: string[]; all?: boolean }) => Promise<unknown>;
+      previewEdits: (request: { expectedRevision?: string; edits: NativeEdit[] }) => Promise<NativeEditDraft>;
+      applyEdits: (request: { draftId: string; expectedRevision?: string; idempotencyKey: string; label?: string }) => Promise<{ revision: string; slideIds: string[]; elementIds: string[]; idempotent: boolean }>;
       previewHtml: (request: { html: string; target?: HtmlTarget }) => Promise<HtmlDraft>;
       applyHtml: (request: { draftId: string; expectedRevision?: string; idempotencyKey: string; label?: string; target?: HtmlTarget }) => Promise<{ revision: string; slideIds: string[]; idempotent: boolean }>;
       renderSlide: (slideId: string) => string;

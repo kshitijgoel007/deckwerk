@@ -11,6 +11,7 @@ const mode = params.get('mode') === 'initial' || params.get('mode') === 'every'
   ? params.get('mode') as 'initial' | 'every'
   : 'final';
 const includeHidden = params.get('includeHidden') === '1';
+const slideFilter = params.get('slide');
 const jobId = params.get('job') ?? '';
 
 void (async () => {
@@ -40,6 +41,7 @@ void (async () => {
   }> = [];
   for (const slide of deck.slides) {
     if (slide.skipped && !includeHidden) continue;
+    if (slideFilter && slide.id !== slideFilter) continue;
     const states = pdfSteps(slide, mode);
     for (const step of states) {
       const page = document.createElement('section');

@@ -12,6 +12,7 @@ import {
   withThemeBlock,
 } from '@shared/themes.js';
 import { AgentBridge } from './agentBridge.js';
+import { createDeckWerkButton } from './aboutDialog.js';
 import { EditorCanvas } from './canvas.js';
 import { CssEditor } from './cssEditor.js';
 import { Inspector } from './inspector.js';
@@ -149,6 +150,7 @@ function buildToolbar(): void {
   const left = document.createElement('div');
   left.className = 'bar-group';
   left.append(
+    createDeckWerkButton(),
     barButton('New', newPresentation),
     barButton('Open', openPresentation),
     barButton('Import Keynote…', importKeynotePresentation),
@@ -215,6 +217,7 @@ async function startSharing(agent: boolean): Promise<void> {
     await cssEditor.flush();
     await save();
     await window.api.startCollab({ agent });
+    setStatusMessage(agent ? 'Agent session started; API brief copied to clipboard.' : 'Collaboration link copied to clipboard.');
   } catch (err) {
     setStatusMessage(`${agent ? 'Agent session' : 'Collaboration'} failed: ${err instanceof Error ? err.message : err}`);
   }
