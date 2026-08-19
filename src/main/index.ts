@@ -19,6 +19,7 @@ import type {
   AgentContextDraft,
   AgentChatSendRequest,
   AgentChatSetModelRequest,
+  AgentChatSetReasoningEffortRequest,
   AgentChatSetFastModeRequest,
   AgentChatState,
   AgentSessionConnection,
@@ -45,6 +46,7 @@ import { startWorkflow } from './workflow.js';
 import { handoffWhenReady } from './windowHandoff.js';
 import { AgentRuntime } from './agentRuntime.js';
 import { AgentChatController } from './agentChat.js';
+import type { DynamicToolCall, DynamicToolResult } from './codexAppServer.js';
 import { installAssetProtocol, registerAssetScheme, setDeckDir } from './assetProtocol.js';
 import {
   createDeck,
@@ -66,7 +68,7 @@ import {
   captureWindowContinuity, createCollabHostWindow, createEditorWindow, createPdfWindow, createPresentWindow, createPresenterWindow, createRasterWindow, createTrimWindow,
 } from './windows.js';
 import {
-  defaultClientDir, startCollabServer, type RunningCollabServer,
+  defaultClientDir, startCollabServer, type HtmlDraftPreview, type RunningCollabServer,
 } from '../server/collabServer.js';
 import { agentClipboardPrompt, collaborationInviteUrl } from '../server/agentBrief.js';
 import {
@@ -120,7 +122,72 @@ const agentChat = new AgentChatController({
       editorWindow.webContents.send(IPC.agentChatState, state);
     }
   },
+  onDynamicToolCall: openAgentBrowser,
 });
+
+async function openAgentBrowser(call: DynamicToolCall): Promise<DynamicToolResult> {
+  if (call.tool !== 'browser_open') throw new Error(`Unknown DeckWerk tool: ${call.tool}`);
+  const args = call.arguments && typeof call.arguments === 'object'
+    ? call.arguments as Record<string, unknown>
+    : {};
+  if (typeof args.url !== 'string') throw new Error('browser_open requires an absolute URL');
+  const url = new URL(args.url);
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new Error(`browser_open only supports HTTP(S), not ${url.protocol}`);
+  }
+  const numberInRange = (value: unknown, fallback: number, min: number, max: number) => {
+    const number = typeof value === 'number' && Number.isFinite(value) ? Math.round(value) : fallback;
+    return Math.min(max, Math.max(min, number));
+  };
+  const width = numberInRange(args.width, 1440, 320, 2560);
+  const height = numberInRange(args.height, 900, 240, 1600);
+  const waitMs = numberInRange(args.waitMs, 250, 0, 5000);
+  const win = new BrowserWindow({
+    width,
+    height,
+    show: false,
+    useContentSize: true,
+    webPreferences: {
+      offscreen: true,
+      backgroundThrottling: false,
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  });
+  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  try {
+    await Promise.race([
+      win.loadURL(url.href),
+      new Promise<never>((_resolve, reject) => setTimeout(
+        () => reject(new Error(`Timed out opening ${url.href}`)),
+        30_000,
+      )),
+    ]);
+    await win.webContents.executeJavaScript('document.fonts.ready.then(() => true)');
+    await win.webContents.executeJavaScript(
+      'Promise.all([...document.images].map((image) => image.decode().catch(() => null))).then(() => true)',
+    );
+    if (waitMs > 0) await new Promise((resolvePromise) => setTimeout(resolvePromise, waitMs));
+    const metadata = await win.webContents.executeJavaScript(`(() => ({
+      title: document.title,
+      url: location.href,
+      text: (document.body?.innerText || '').slice(0, 12000),
+      viewport: { width: innerWidth, height: innerHeight },
+      document: { width: document.documentElement.scrollWidth, height: document.documentElement.scrollHeight },
+    }))()`);
+    const screenshot = (await win.webContents.capturePage()).toDataURL();
+    return {
+      success: true,
+      contentItems: [
+        { type: 'inputText', text: JSON.stringify(metadata) },
+        { type: 'inputImage', imageUrl: screenshot },
+      ],
+    };
+  } finally {
+    if (!win.isDestroyed()) win.destroy();
+  }
+}
 
 function speakerWindowBounds(display: Display): Rectangle {
   const area = display.workArea;
@@ -517,6 +584,16 @@ function registerHandlers(): void {
       const s = requireSession();
       if (!request || typeof request.model !== 'string') throw new Error('A model is required');
       return agentChat.setModel(s.dir, request.model);
+    },
+  );
+  ipcMain.handle(
+    IPC.agentChatSetReasoningEffort,
+    async (_event, request: AgentChatSetReasoningEffortRequest): Promise<AgentChatState> => {
+      const s = requireSession();
+      if (!request || typeof request.effort !== 'string') {
+        throw new Error('A reasoning effort is required');
+      }
+      return agentChat.setReasoningEffort(s.dir, request.effort);
     },
   );
   ipcMain.handle(
@@ -934,6 +1011,16 @@ function registerHandlers(): void {
       agentMode,
       clientDir,
       onSessionEnd,
+      onHtmlDraft: agentMode ? (draft: HtmlDraftPreview) => {
+        agentChat.setScratchpad(s.dir, {
+          draftId: draft.draftId,
+          slideCount: draft.slideCount,
+          sourceUrl: draft.sourceUrl,
+          importedUrl: draft.importedUrl,
+          sourceContactSheetUrl: draft.sourceContactSheetUrl,
+          importedContactSheetUrl: draft.importedContactSheetUrl,
+        });
+      } : undefined,
     };
     try {
       return await startCollabServer(base);

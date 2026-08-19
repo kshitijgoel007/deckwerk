@@ -11,16 +11,28 @@ const ready = (over: Partial<AgentChatState> = {}): AgentChatState => ({
   models: [
     {
       model: 'gpt-5.6-sol', displayName: 'GPT-5.6 Sol', description: 'Frontier', isDefault: true,
+      reasoningEfforts: [
+        { effort: 'low', description: 'Lighter reasoning' },
+        { effort: 'medium', description: 'Balanced reasoning' },
+      ],
+      defaultReasoningEffort: 'medium',
       serviceTiers: [{ id: 'priority', name: 'Fast', description: 'Faster responses' }],
       defaultServiceTier: 'priority',
     },
     {
       model: 'gpt-5.6-terra', displayName: 'GPT-5.6 Terra', description: 'Balanced', isDefault: false,
+      reasoningEfforts: [
+        { effort: 'low', description: 'Lighter reasoning' },
+        { effort: 'medium', description: 'Balanced reasoning' },
+      ],
+      defaultReasoningEffort: 'medium',
       serviceTiers: [], defaultServiceTier: null,
     },
   ],
   selectedModel: 'gpt-5.6-sol',
+  selectedReasoningEffort: 'medium',
   fastMode: true,
+  scratchpad: null,
   busy: false,
   activity: null,
   messages: [],
@@ -54,6 +66,7 @@ describe('agent chat panel', () => {
       loginAgentChat: async () => ready(),
       switchAgentChatAccount: async () => ready(),
       setAgentChatModel: async ({ model }) => ready({ selectedModel: model }),
+      setAgentChatReasoningEffort: async ({ effort }) => ready({ selectedReasoningEffort: effort }),
       setAgentChatFastMode: async ({ enabled }) => ready({ fastMode: enabled }),
       interruptAgentChat: async () => ready(),
       resetAgentChat: async () => ready(),
@@ -87,6 +100,7 @@ describe('agent chat panel', () => {
       loginAgentChat: async () => ready(),
       switchAgentChatAccount: async () => ready(),
       setAgentChatModel: async ({ model }) => ready({ selectedModel: model }),
+      setAgentChatReasoningEffort: async ({ effort }) => ready({ selectedReasoningEffort: effort }),
       setAgentChatFastMode: async ({ enabled }) => ready({ fastMode: enabled }),
       interruptAgentChat: interrupt,
       resetAgentChat: async () => ready(),
@@ -116,6 +130,7 @@ describe('agent chat panel', () => {
       loginAgentChat: async () => ready(),
       switchAgentChatAccount: async () => ready(),
       setAgentChatModel: async ({ model }) => ready({ selectedModel: model }),
+      setAgentChatReasoningEffort: async ({ effort }) => ready({ selectedReasoningEffort: effort }),
       setAgentChatFastMode: async ({ enabled }) => ready({ fastMode: enabled }),
       interruptAgentChat: async () => ready(),
       resetAgentChat: async () => ready(),
@@ -149,6 +164,7 @@ describe('agent chat panel', () => {
       loginAgentChat: async () => ready(),
       switchAgentChatAccount: switchAccount,
       setAgentChatModel: async ({ model }) => ready({ selectedModel: model }),
+      setAgentChatReasoningEffort: async ({ effort }) => ready({ selectedReasoningEffort: effort }),
       setAgentChatFastMode: async ({ enabled }) => ready({ fastMode: enabled }),
       interruptAgentChat: async () => ready(),
       resetAgentChat: async () => ready(),
@@ -168,6 +184,8 @@ describe('agent chat panel', () => {
   it('shows the account model catalog and applies a selection', async () => {
     let listener: (state: AgentChatState) => void = () => undefined;
     const setModel = vi.fn(async ({ model }: { model: string }) => ready({ selectedModel: model }));
+    const setReasoningEffort = vi.fn(async ({ effort }: { effort: string }) =>
+      ready({ selectedReasoningEffort: effort }));
     const setFastMode = vi.fn(async ({ enabled }: { enabled: boolean }) => ready({ fastMode: enabled }));
     const api: AgentChatApi = {
       getAgentChatState: async () => ready(),
@@ -175,6 +193,7 @@ describe('agent chat panel', () => {
       loginAgentChat: async () => ready(),
       switchAgentChatAccount: async () => ready(),
       setAgentChatModel: setModel,
+      setAgentChatReasoningEffort: setReasoningEffort,
       setAgentChatFastMode: setFastMode,
       interruptAgentChat: async () => ready(),
       resetAgentChat: async () => ready(),
@@ -192,11 +211,60 @@ describe('agent chat panel', () => {
     expect(select.value).toBe('gpt-5.6-terra');
 
     listener(ready());
+    const effort = panel.element.querySelector<HTMLSelectElement>('.agent-chat-effort-select')!;
+    expect([...effort.options].map((option) => option.textContent))
+      .toEqual(['low', 'medium']);
+    effort.value = 'low';
+    effort.dispatchEvent(new window.Event('change', { bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(setReasoningEffort).toHaveBeenCalledWith({ effort: 'low' });
+
     const fast = panel.element.querySelector<HTMLButtonElement>('.agent-chat-fast-mode')!;
     expect(fast.hidden).toBe(false);
     expect(fast.getAttribute('aria-pressed')).toBe('true');
     fast.click();
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(setFastMode).toHaveBeenCalledWith({ enabled: false });
+  });
+
+  it('automatically opens the newest HTML draft as an agent scratchpad', () => {
+    let listener: (state: AgentChatState) => void = () => undefined;
+    const api: AgentChatApi = {
+      getAgentChatState: async () => ready(),
+      sendAgentChatMessage: async () => ready(),
+      loginAgentChat: async () => ready(),
+      switchAgentChatAccount: async () => ready(),
+      setAgentChatModel: async ({ model }) => ready({ selectedModel: model }),
+      setAgentChatReasoningEffort: async ({ effort }) => ready({ selectedReasoningEffort: effort }),
+      setAgentChatFastMode: async ({ enabled }) => ready({ fastMode: enabled }),
+      interruptAgentChat: async () => ready(),
+      resetAgentChat: async () => ready(),
+      onAgentChatState: (fn) => { listener = fn; return () => undefined; },
+    };
+    const panel = new AgentChatPanel({ api, currentDeckPath: () => '/tmp/talk' });
+    listener(ready({
+      scratchpad: {
+        draftId: 'draft-1',
+        slideCount: 8,
+        sourceUrl: 'http://127.0.0.1:5800/api/html-drafts/draft-1/source?deck=talk',
+        importedUrl: 'http://127.0.0.1:5800/api/html-drafts/draft-1/imported?deck=talk',
+        sourceContactSheetUrl: 'http://127.0.0.1:5800/source.png',
+        importedContactSheetUrl: 'http://127.0.0.1:5800/imported.png',
+      },
+    }));
+    expect(panel.element.querySelector('.agent-chat-scratchpad-bar')?.textContent)
+      .toContain('8 slides');
+    const scratchpad = document.querySelector<HTMLElement>('.agent-scratchpad-panel')!;
+    expect(scratchpad.hidden).toBe(false);
+    const frame = scratchpad.querySelector('iframe')!;
+    expect(frame.getAttribute('src')).toContain('/source?deck=talk&scratchpad=slides');
+    expect(frame.getAttribute('sandbox')).toContain('allow-scripts');
+
+    [...scratchpad.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent === 'Contact sheet')!.click();
+    expect(frame.getAttribute('src')).toContain('scratchpad=contact');
+    [...scratchpad.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent === 'Imported')!.click();
+    expect(frame.getAttribute('src')).toContain('/imported?deck=talk&scratchpad=contact');
   });
 });

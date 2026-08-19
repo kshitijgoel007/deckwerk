@@ -2,6 +2,7 @@ import type {
   AgentChatSendRequest,
   AgentChatSetFastModeRequest,
   AgentChatSetModelRequest,
+  AgentChatSetReasoningEffortRequest,
   AgentChatState,
 } from '@shared/ipc.js';
 
@@ -11,6 +12,7 @@ export interface AgentChatApi {
   loginAgentChat: () => Promise<AgentChatState>;
   switchAgentChatAccount: () => Promise<AgentChatState>;
   setAgentChatModel: (request: AgentChatSetModelRequest) => Promise<AgentChatState>;
+  setAgentChatReasoningEffort: (request: AgentChatSetReasoningEffortRequest) => Promise<AgentChatState>;
   setAgentChatFastMode: (request: AgentChatSetFastModeRequest) => Promise<AgentChatState>;
   interruptAgentChat: () => Promise<AgentChatState>;
   resetAgentChat: () => Promise<AgentChatState>;
@@ -36,7 +38,19 @@ export class AgentChatPanel {
   private readonly switchAccount: HTMLButtonElement;
   private readonly modelRow: HTMLElement;
   private readonly modelSelect: HTMLSelectElement;
+  private readonly effortSelect: HTMLSelectElement;
   private readonly fastMode: HTMLButtonElement;
+  private readonly scratchpadBar: HTMLElement;
+  private readonly scratchpadLabel: HTMLElement;
+  private readonly scratchpadPanel: HTMLElement;
+  private readonly scratchpadFrame: HTMLIFrameElement;
+  private readonly scratchpadSource: HTMLButtonElement;
+  private readonly scratchpadImported: HTMLButtonElement;
+  private readonly scratchpadSlides: HTMLButtonElement;
+  private readonly scratchpadContact: HTMLButtonElement;
+  private scratchpadView: 'source' | 'imported' = 'source';
+  private scratchpadMode: 'slides' | 'contact' = 'slides';
+  private lastScratchpadId: string | null = null;
   private readonly input: HTMLTextAreaElement;
   private readonly action: HTMLButtonElement;
   private readonly stop: HTMLButtonElement;
@@ -94,11 +108,63 @@ export class AgentChatPanel {
     this.modelSelect.id = 'agent-chat-model-select';
     this.modelSelect.setAttribute('aria-label', 'Agent model');
     this.modelSelect.addEventListener('change', () => void this.changeModel());
+    const effortLabel = document.createElement('label');
+    effortLabel.textContent = 'Effort';
+    effortLabel.htmlFor = 'agent-chat-effort-select';
+    this.effortSelect = document.createElement('select');
+    this.effortSelect.id = 'agent-chat-effort-select';
+    this.effortSelect.className = 'agent-chat-effort-select';
+    this.effortSelect.setAttribute('aria-label', 'Agent reasoning effort');
+    this.effortSelect.addEventListener('change', () => void this.changeReasoningEffort());
     this.fastMode = smallButton('⚡', () => void this.changeFastMode());
     this.fastMode.classList.add('agent-chat-fast-mode');
     this.fastMode.setAttribute('aria-label', 'Enable fast mode');
     this.fastMode.setAttribute('aria-pressed', 'false');
-    this.modelRow.append(modelLabel, this.modelSelect, this.fastMode);
+    this.modelRow.append(
+      modelLabel,
+      this.modelSelect,
+      effortLabel,
+      this.effortSelect,
+      this.fastMode,
+    );
+
+    this.scratchpadBar = document.createElement('div');
+    this.scratchpadBar.className = 'agent-chat-scratchpad-bar';
+    this.scratchpadBar.hidden = true;
+    this.scratchpadLabel = document.createElement('span');
+    this.scratchpadLabel.textContent = 'Scratchpad';
+    const showScratchpad = smallButton('Show draft', () => this.showScratchpad('source'));
+    this.scratchpadBar.append(this.scratchpadLabel, showScratchpad);
+
+    this.scratchpadPanel = document.createElement('aside');
+    this.scratchpadPanel.className = 'agent-scratchpad-panel';
+    this.scratchpadPanel.hidden = true;
+    const scratchHeader = document.createElement('header');
+    const scratchTitle = document.createElement('strong');
+    scratchTitle.textContent = 'Agent scratchpad';
+    const scratchActions = document.createElement('div');
+    this.scratchpadSource = smallButton('Source', () => this.showScratchpad('source'));
+    this.scratchpadImported = smallButton('Imported', () => this.showScratchpad('imported'));
+    this.scratchpadSlides = smallButton('Slides', () => this.showScratchpad(undefined, 'slides'));
+    this.scratchpadContact = smallButton(
+      'Contact sheet',
+      () => this.showScratchpad(undefined, 'contact'),
+    );
+    const hideScratchpad = smallButton('Hide', () => { this.scratchpadPanel.hidden = true; });
+    scratchActions.append(
+      this.scratchpadSource,
+      this.scratchpadImported,
+      this.scratchpadSlides,
+      this.scratchpadContact,
+      hideScratchpad,
+    );
+    scratchHeader.append(scratchTitle, scratchActions);
+    this.scratchpadFrame = document.createElement('iframe');
+    this.scratchpadFrame.title = 'Agent HTML scratchpad';
+    // Agent-authored scripts are removed during preview. Scripts are enabled
+    // here only for DeckWerk's own fitted slide navigator and contact sheet.
+    this.scratchpadFrame.setAttribute('sandbox', 'allow-same-origin allow-scripts');
+    this.scratchpadPanel.append(scratchHeader, this.scratchpadFrame);
 
     this.messages = document.createElement('div');
     this.messages.className = 'agent-chat-messages';
@@ -150,8 +216,16 @@ export class AgentChatPanel {
     composeRow.append(hint, composerActions);
     composer.append(this.input, composeRow);
 
-    panel.append(header, this.account, this.modelRow, this.messages, this.error, composer);
-    document.body.appendChild(panel);
+    panel.append(
+      header,
+      this.account,
+      this.modelRow,
+      this.scratchpadBar,
+      this.messages,
+      this.error,
+      composer,
+    );
+    document.body.append(panel, this.scratchpadPanel);
     this.element = panel;
     options.api.onAgentChatState((state) => this.applyState(state));
     this.syncControls();
@@ -164,6 +238,7 @@ export class AgentChatPanel {
 
   show(): void {
     this.element.hidden = false;
+    if (this.state?.scratchpad) this.scratchpadPanel.hidden = false;
     this.input.focus();
     void this.options.api.getAgentChatState()
       .then((state) => this.applyState(state))
@@ -172,6 +247,7 @@ export class AgentChatPanel {
 
   hide(): void {
     this.element.hidden = true;
+    this.scratchpadPanel.hidden = true;
   }
 
   private async submit(): Promise<void> {
@@ -250,6 +326,21 @@ export class AgentChatPanel {
     }
   }
 
+  private async changeReasoningEffort(): Promise<void> {
+    const previous = this.state?.selectedReasoningEffort ?? '';
+    this.effortSelect.disabled = true;
+    try {
+      this.applyState(await this.options.api.setAgentChatReasoningEffort({
+        effort: this.effortSelect.value,
+      }));
+    } catch (error) {
+      this.effortSelect.value = previous;
+      this.showLocalError(error);
+    } finally {
+      this.syncControls();
+    }
+  }
+
   private async newChat(): Promise<void> {
     this.reset.disabled = true;
     try {
@@ -283,6 +374,7 @@ export class AgentChatPanel {
     }
 
     this.renderModels(state);
+    this.renderScratchpad(state);
 
     this.error.hidden = !state.error;
     this.error.textContent = state.error ?? '';
@@ -290,10 +382,51 @@ export class AgentChatPanel {
     this.syncControls();
   }
 
+  private renderScratchpad(state: AgentChatState): void {
+    const scratchpad = state.scratchpad;
+    this.scratchpadBar.hidden = !scratchpad;
+    this.scratchpadLabel.textContent = scratchpad
+      ? `Scratchpad · ${scratchpad.slideCount} slide${scratchpad.slideCount === 1 ? '' : 's'}`
+      : 'Scratchpad';
+    if (!scratchpad) {
+      this.lastScratchpadId = null;
+      this.scratchpadPanel.hidden = true;
+      this.scratchpadFrame.removeAttribute('src');
+      return;
+    }
+    if (scratchpad.draftId !== this.lastScratchpadId) {
+      this.lastScratchpadId = scratchpad.draftId;
+      this.scratchpadView = 'source';
+      this.scratchpadMode = 'slides';
+      this.showScratchpad();
+    }
+  }
+
+  private showScratchpad(
+    view?: 'source' | 'imported',
+    mode?: 'slides' | 'contact',
+  ): void {
+    const scratchpad = this.state?.scratchpad;
+    if (!scratchpad) return;
+    if (view) this.scratchpadView = view;
+    if (mode) this.scratchpadMode = mode;
+    const raw = this.scratchpadView === 'source' ? scratchpad.sourceUrl : scratchpad.importedUrl;
+    const url = new URL(raw, window.location.href);
+    url.searchParams.set('scratchpad', this.scratchpadMode);
+    if (this.scratchpadFrame.src !== url.href) this.scratchpadFrame.src = url.href;
+    this.scratchpadSource.classList.toggle('active', this.scratchpadView === 'source');
+    this.scratchpadImported.classList.toggle('active', this.scratchpadView === 'imported');
+    this.scratchpadSlides.classList.toggle('active', this.scratchpadMode === 'slides');
+    this.scratchpadContact.classList.toggle('active', this.scratchpadMode === 'contact');
+    this.scratchpadPanel.hidden = false;
+  }
+
   private renderModels(state: AgentChatState): void {
     this.modelRow.hidden = state.auth !== 'signedIn' || state.models.length === 0;
     const signature = state.models.map((model) => [
       model.model, model.displayName, model.description, model.isDefault,
+      model.defaultReasoningEffort,
+      ...model.reasoningEfforts.flatMap((effort) => [effort.effort, effort.description]),
       model.defaultServiceTier,
       ...model.serviceTiers.flatMap((tier) => [tier.id, tier.name, tier.description]),
     ].join('\u0000')).join('\u0001');
@@ -309,6 +442,20 @@ export class AgentChatPanel {
     }
     if (state.selectedModel) this.modelSelect.value = state.selectedModel;
     const selected = state.models.find((model) => model.model === state.selectedModel);
+    const effortSignature = selected?.reasoningEfforts
+      .flatMap((effort) => [effort.effort, effort.description]).join('\u0000') ?? '';
+    if (this.effortSelect.dataset.signature !== effortSignature) {
+      this.effortSelect.replaceChildren(...(selected?.reasoningEfforts ?? []).map((effort) => {
+        const option = document.createElement('option');
+        option.value = effort.effort;
+        option.textContent = effort.effort;
+        option.title = effort.description;
+        return option;
+      }));
+      this.effortSelect.dataset.signature = effortSignature;
+    }
+    this.effortSelect.hidden = !selected?.reasoningEfforts.length;
+    if (state.selectedReasoningEffort) this.effortSelect.value = state.selectedReasoningEffort;
     const tier = selected?.serviceTiers.find((candidate) => {
       const id = candidate.id.toLowerCase();
       return id === 'priority' || id === 'fast' || candidate.name.toLowerCase() === 'fast';
@@ -366,6 +513,7 @@ export class AgentChatPanel {
     this.reset.disabled = state?.busy === true;
     this.switchAccount.disabled = state?.busy === true;
     this.modelSelect.disabled = state?.busy === true || state?.auth !== 'signedIn';
+    this.effortSelect.disabled = state?.busy === true || state?.auth !== 'signedIn';
     this.fastMode.disabled = state?.busy === true || state?.auth !== 'signedIn';
   }
 

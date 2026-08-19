@@ -31,6 +31,15 @@ describe('agent clipboard brief', () => {
     expect(AGENT_BRIEF).toContain('neither remains in the unresolved set');
   });
 
+  it('teaches both visual routes and the exact KaTeX convention', () => {
+    expect(AGENT_BRIEF).toContain('browser_open');
+    expect(AGENT_BRIEF).toContain('contact-sheet PNG');
+    expect(AGENT_BRIEF).toContain('$f_\\theta(x)$');
+    expect(AGENT_BRIEF).toContain('$$\\int p(x)\\,dx = 1$$');
+    expect(AGENT_BRIEF).toContain('Never imitate equations with Unicode subscripts');
+    expect(AGENT_BRIEF).not.toContain('Never install');
+  });
+
   it('uses localhost for desktop agents and the LAN address for people', () => {
     const urls = ['http://127.0.0.1:5800/', 'http://10.0.0.4:5800/'];
     expect(collaborationInviteUrl(urls, 'research deck', true))

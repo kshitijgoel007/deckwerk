@@ -1928,6 +1928,92 @@ button.magic-object-hit.selected-source:hover:not(:disabled) {
   color: #fbbf24;
 }
 
+.agent-chat-scratchpad-bar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.agent-chat-scratchpad-bar[hidden] { display: none; }
+
+.agent-chat-scratchpad-bar button {
+  padding: 4px 7px;
+  border-color: var(--line);
+  background: transparent;
+  font-size: 11px;
+}
+
+.agent-scratchpad-panel {
+  position: fixed;
+  z-index: 8999;
+  top: 52px;
+  right: 424px;
+  display: flex;
+  width: min(760px, calc(100vw - 460px));
+  height: min(620px, calc(100vh - 88px));
+  min-width: 420px;
+  overflow: hidden;
+  flex-direction: column;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: 0 20px 70px rgb(0 0 0 / 58%);
+}
+
+.agent-scratchpad-panel[hidden] { display: none; }
+
+.agent-scratchpad-panel header {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+}
+
+.agent-scratchpad-panel header > div {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.agent-scratchpad-panel header button {
+  padding: 4px 7px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.agent-scratchpad-panel header button.active {
+  background: var(--selected);
+  color: var(--text);
+}
+
+.agent-scratchpad-panel iframe {
+  width: 100%;
+  min-height: 0;
+  flex: 1;
+  border: 0;
+  background: #111;
+}
+
+@media (max-width: 900px) {
+  .agent-scratchpad-panel {
+    right: 12px;
+    width: calc(100vw - 24px);
+  }
+}
+
 .agent-chat-switch-account {
   flex: none;
   padding: 4px 7px;

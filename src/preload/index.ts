@@ -6,6 +6,7 @@ import type {
   AgentContextDraft,
   AgentChatSendRequest,
   AgentChatSetModelRequest,
+  AgentChatSetReasoningEffortRequest,
   AgentChatSetFastModeRequest,
   AgentChatState,
   AgentSessionConnection,
@@ -110,6 +111,8 @@ const api = {
     ipcRenderer.invoke(IPC.agentChatSwitchAccount),
   setAgentChatModel: (request: AgentChatSetModelRequest): Promise<AgentChatState> =>
     ipcRenderer.invoke(IPC.agentChatSetModel, request),
+  setAgentChatReasoningEffort: (request: AgentChatSetReasoningEffortRequest): Promise<AgentChatState> =>
+    ipcRenderer.invoke(IPC.agentChatSetReasoningEffort, request),
   setAgentChatFastMode: (request: AgentChatSetFastModeRequest): Promise<AgentChatState> =>
     ipcRenderer.invoke(IPC.agentChatSetFastMode, request),
   interruptAgentChat: (): Promise<AgentChatState> =>

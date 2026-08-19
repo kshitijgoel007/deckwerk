@@ -57,7 +57,11 @@ describe('Codex App Server stdio client', () => {
     });
 
     await client.start();
-    expect(child.messages[0]).toMatchObject({ method: 'initialize', id: 1 });
+    expect(child.messages[0]).toMatchObject({
+      method: 'initialize',
+      id: 1,
+      params: { capabilities: { experimentalApi: true, requestAttestation: false } },
+    });
     expect(child.messages[1]).toEqual({ method: 'initialized' });
 
     const account = await client.request('account/read', { refreshToken: false });
@@ -77,6 +81,31 @@ describe('Codex App Server stdio client', () => {
     child.serverRequest('item/commandExecution/requestApproval', 42, {});
     await tick();
     expect(child.messages.at(-1)).toEqual({ id: 42, result: { decision: 'decline' } });
+    client.close();
+  });
+
+  it('answers host-provided dynamic tool calls', async () => {
+    const child = new FakeChild();
+    const client = new CodexAppServerClient({
+      spawn: () => child as unknown as ChildProcessWithoutNullStreams,
+      onDynamicToolCall: async (call) => ({
+        success: true,
+        contentItems: [{ type: 'inputText', text: `opened ${String((call.arguments as any).url)}` }],
+      }),
+    });
+    await client.start();
+    child.serverRequest('item/tool/call', 43, {
+      threadId: 'thread-1', turnId: 'turn-1', callId: 'call-1',
+      namespace: null, tool: 'browser_open', arguments: { url: 'http://127.0.0.1:5800/' },
+    });
+    await tick();
+    expect(child.messages.at(-1)).toEqual({
+      id: 43,
+      result: {
+        success: true,
+        contentItems: [{ type: 'inputText', text: 'opened http://127.0.0.1:5800/' }],
+      },
+    });
     client.close();
   });
 

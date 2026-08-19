@@ -15,7 +15,11 @@ import { probeMedia } from '../main/ffmpeg.js';
 import { ClientMessageSchema, COLLAB_PROTOCOL_VERSION, type PresenceState, type ServerMessage } from '../shared/collab.js';
 import { CollabSession } from './collabSession.js';
 import { writeZip, type ZipFile } from './zip.js';
-import { compileHtmlToSlides, measureBuiltTextOverflows } from '../cli/compileHtml.js';
+import {
+  compileHtmlToSlides,
+  measureBuiltTextOverflows,
+  renderHtmlDraftPng,
+} from '../cli/compileHtml.js';
 import { slidesToHtml } from '../shared/htmlSlides.js';
 import { PLAYER_TYPE_CSS } from '../shared/playerTypeCss.js';
 import { authoringPageHtml, type TextOverflow } from '../shared/htmlMeasure.js';
@@ -77,6 +81,17 @@ interface HttpHtmlDraft {
   createdAt: number;
 }
 
+export interface HtmlDraftPreview {
+  draftId: string;
+  deckId: string;
+  slideCount: number;
+  sourceUrl: string;
+  importedUrl: string;
+  sourceContactSheetUrl: string;
+  importedContactSheetUrl: string;
+  report: Record<string, unknown>;
+}
+
 interface HttpNativeDraft {
   id: string;
   deckId: string;
@@ -116,6 +131,8 @@ export interface CollabServerOptions {
   agentMode?: boolean;
   /** Optional evaluation-only folder that receives every submitted HTML draft. */
   draftArchiveDir?: string;
+  /** Publish the newest HTML work-in-progress to the embedded agent chat. */
+  onHtmlDraft?: (draft: HtmlDraftPreview) => void;
   /**
    * Called when the host requests the session end (POST /api/end from
    * loopback in a hosted session). The owner tears the server down; the
@@ -138,6 +155,7 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
   const agentMode = Boolean(options.agentMode);
   const rooms = new Map<string, Room>();
   const htmlDrafts = new Map<string, HttpHtmlDraft>();
+  const latestHtmlDrafts = new Map<string, string>();
   const htmlIdempotency = new Map<string, { revision: string; slideIds: string[]; label: string }>();
   const nativeDrafts = new Map<string, HttpNativeDraft>();
   const nativeIdempotency = new Map<string, {
@@ -851,11 +869,31 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
           report, createdAt: Date.now(),
         };
         htmlDrafts.set(id, draft);
+        latestHtmlDrafts.set(deckParam, id);
+        const query = `?deck=${encodeURIComponent(deckParam)}`;
+        const sourcePath = `/api/html-drafts/${id}/source`;
+        const importedPath = `/api/html-drafts/${id}/imported`;
+        const sourceContactSheetPath = `/api/html-drafts/${id}/source/contact-sheet.png`;
+        const importedContactSheetPath = `/api/html-drafts/${id}/imported/contact-sheet.png`;
+        const preview: HtmlDraftPreview = {
+          draftId: id,
+          deckId: deckParam,
+          slideCount: draft.slides.length,
+          sourceUrl: `http://127.0.0.1:${boundPort}${sourcePath}${query}`,
+          importedUrl: `http://127.0.0.1:${boundPort}${importedPath}${query}`,
+          sourceContactSheetUrl: `http://127.0.0.1:${boundPort}${sourceContactSheetPath}${query}`,
+          importedContactSheetUrl: `http://127.0.0.1:${boundPort}${importedContactSheetPath}${query}`,
+          report,
+        };
+        options.onHtmlDraft?.(preview);
         respondJson(response, 200, {
           draftId: id,
           revision: draft.revision,
-          sourceUrl: `/api/html-drafts/${id}/source`,
-          importedUrl: `/api/html-drafts/${id}/imported`,
+          slideCount: draft.slides.length,
+          sourceUrl: sourcePath,
+          importedUrl: importedPath,
+          sourceContactSheetUrl: sourceContactSheetPath,
+          importedContactSheetUrl: importedContactSheetPath,
           diffUrl: null,
           report,
           target,
@@ -866,12 +904,56 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
       return;
     }
 
+    if (path === '/api/html-drafts/latest' && request.method === 'GET') {
+      if (!deckParam) return respondJson(response, 400, { error: 'missing deck' });
+      const id = latestHtmlDrafts.get(deckParam);
+      const draft = id ? htmlDrafts.get(id) : null;
+      if (!draft) return respondJson(response, 404, { error: 'draft not found' });
+      const query = `?deck=${encodeURIComponent(deckParam)}`;
+      respondJson(response, 200, {
+        draftId: draft.id,
+        revision: draft.revision,
+        slideCount: draft.slides.length,
+        sourceUrl: `/api/html-drafts/${draft.id}/source${query}`,
+        importedUrl: `/api/html-drafts/${draft.id}/imported${query}`,
+        sourceContactSheetUrl: `/api/html-drafts/${draft.id}/source/contact-sheet.png${query}`,
+        importedContactSheetUrl: `/api/html-drafts/${draft.id}/imported/contact-sheet.png${query}`,
+        report: draft.report,
+        target: draft.target,
+      });
+      return;
+    }
+
     const draftView = /^\/api\/html-drafts\/([^/]+)\/(source|imported)$/.exec(path);
     if (draftView && request.method === 'GET') {
       const draft = htmlDrafts.get(draftView[1]);
       if (!draft || draft.deckId !== deckParam) return respondJson(response, 404, { error: 'draft not found' });
       response.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
-      response.end(draftView[2] === 'source' ? draft.sourceHtml : draft.importedHtml);
+      const html = draftView[2] === 'source' ? draft.sourceHtml : draft.importedHtml;
+      const scratchpad = url.searchParams.get('scratchpad');
+      response.end(scratchpad === 'slides' || scratchpad === 'contact'
+        ? scratchpadDocument(html, scratchpad)
+        : html);
+      return;
+    }
+
+    const draftRender = /^\/api\/html-drafts\/([^/]+)\/(source|imported)\/(contact-sheet|slide-(\d+))\.png$/.exec(path);
+    if (draftRender && request.method === 'GET') {
+      const draft = htmlDrafts.get(draftRender[1]);
+      if (!draft || draft.deckId !== deckParam) return respondJson(response, 404, { error: 'draft not found' });
+      const room = await getRoom(draft.deckId);
+      const slideNumber = draftRender[4] ? Number(draftRender[4]) : null;
+      const png = await renderHtmlDraftPng(
+        draftRender[2] === 'source' ? draft.sourceHtml : draft.importedHtml,
+        room.session.deck.canvas,
+        slideNumber === null ? null : slideNumber - 1,
+      );
+      response.writeHead(200, {
+        'content-type': 'image/png',
+        'cache-control': 'no-store',
+        'content-length': String(png.length),
+      });
+      response.end(png);
       return;
     }
 
@@ -937,6 +1019,29 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
       return;
     }
 
+    if (path === '/api/render-slide.png' && request.method === 'GET') {
+      if (!deckParam) return respondJson(response, 400, { error: 'missing deck' });
+      const slideId = url.searchParams.get('slideId');
+      if (!slideId) return respondJson(response, 400, { error: 'missing slideId' });
+      const room = await getRoom(deckParam);
+      const slide = room.session.deck.slides.find((candidate) => candidate.id === slideId);
+      if (!slide) return respondJson(response, 404, { error: `no slide ${slideId}` });
+      publishAgentPresence(room, slideId);
+      const html = slidesToHtml([slide], room.session.deck.canvas, {
+        typeCss: PLAYER_TYPE_CSS,
+        base: `/decks/${encodeURIComponent(deckParam)}/`,
+        theme: `/api/theme?deck=${encodeURIComponent(deckParam)}`,
+      });
+      const png = await renderHtmlDraftPng(html, room.session.deck.canvas, 0);
+      response.writeHead(200, {
+        'content-type': 'image/png',
+        'cache-control': 'no-store',
+        'content-length': String(png.length),
+      });
+      response.end(png);
+      return;
+    }
+
     if (path === '/api/render-slide' && request.method === 'GET') {
       if (!deckParam) return respondJson(response, 400, { error: 'missing deck' });
       const slideId = url.searchParams.get('slideId');
@@ -951,6 +1056,7 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
         slideId,
         slide: index + 1,
         url: `/present.html?deck=${encodeURIComponent(deckParam)}&slide=${index + 1}&agent=1`,
+        pngUrl: `/api/render-slide.png?deck=${encodeURIComponent(deckParam)}&slideId=${encodeURIComponent(slideId)}`,
       });
       return;
     }
@@ -1405,6 +1511,157 @@ function extensionForMime(mime: string): string {
   if (mime.includes('mp4')) return 'mp4';
   if (mime.includes('webm')) return 'webm';
   return 'png';
+}
+
+/**
+ * Add DeckWerk-owned controls to a sanitized HTML draft. Slide mode fits one
+ * authored 1920×1080 section to the viewport; contact mode lays every slide
+ * out as a zoomable grid. The underlying draft remains unchanged.
+ */
+function scratchpadDocument(html: string, mode: 'slides' | 'contact'): string {
+  const common = String.raw`<style data-agent-scratchpad>
+    html, body { margin: 0 !important; width: 100% !important; min-width: 0 !important; min-height: 100% !important; background: #111318 !important; }
+    .agent-scratchpad-controls {
+      position: fixed; z-index: 2147483647; left: 50%; bottom: 12px;
+      display: flex; align-items: center; gap: 8px; padding: 6px 8px;
+      border: 1px solid rgb(255 255 255 / 18%); border-radius: 9px;
+      background: rgb(20 22 27 / 88%); color: #f5f5f5;
+      box-shadow: 0 8px 30px rgb(0 0 0 / 45%);
+      font: 600 13px/1 -apple-system, BlinkMacSystemFont, sans-serif;
+      transform: translateX(-50%); backdrop-filter: blur(12px);
+    }
+    .agent-scratchpad-controls button {
+      min-width: 30px; height: 28px; padding: 0 8px; border: 0; border-radius: 6px;
+      background: rgb(255 255 255 / 10%); color: inherit; font: inherit; cursor: pointer;
+    }
+    .agent-scratchpad-controls button:hover { background: rgb(255 255 255 / 18%); }
+    .agent-scratchpad-controls button:disabled { opacity: .35; cursor: default; }
+  </style>`;
+  const slides = String.raw`<style data-agent-scratchpad-mode>
+    html, body { overflow: hidden !important; }
+    body.agent-scratchpad-slides > .slide {
+      display: none !important; position: absolute !important;
+      left: 50% !important; top: 50% !important; margin: 0 !important;
+      transform: translate(-50%, -50%) scale(var(--agent-scratchpad-scale, 1)) !important;
+      transform-origin: center center !important;
+    }
+    body.agent-scratchpad-slides > .slide.agent-scratchpad-active { display: block !important; }
+  </style><script data-agent-scratchpad-script>
+    (() => {
+      const start = () => {
+        const deck = [...document.querySelectorAll('body > section.slide, body > .slide')];
+        if (!deck.length) return;
+        document.body.classList.add('agent-scratchpad-slides');
+        let index = Math.max(0, Math.min(deck.length - 1, Number(new URL(location.href).searchParams.get('slide') || 1) - 1));
+        const controls = document.createElement('nav');
+        controls.className = 'agent-scratchpad-controls';
+        controls.setAttribute('aria-label', 'Scratchpad slide navigation');
+        const previous = document.createElement('button');
+        previous.type = 'button'; previous.textContent = '←'; previous.title = 'Previous slide';
+        const counter = document.createElement('span');
+        const next = document.createElement('button');
+        next.type = 'button'; next.textContent = '→'; next.title = 'Next slide';
+        controls.append(previous, counter, next);
+        document.body.append(controls);
+        const fit = () => {
+          const slide = deck[index];
+          const width = slide.offsetWidth || 1920;
+          const height = slide.offsetHeight || 1080;
+          const scale = Math.min((innerWidth - 24) / width, (innerHeight - 24) / height);
+          document.documentElement.style.setProperty('--agent-scratchpad-scale', String(Math.max(.05, scale)));
+        };
+        const show = (nextIndex) => {
+          index = Math.max(0, Math.min(deck.length - 1, nextIndex));
+          deck.forEach((slide, slideIndex) => slide.classList.toggle('agent-scratchpad-active', slideIndex === index));
+          counter.textContent = String(index + 1) + ' / ' + String(deck.length);
+          previous.disabled = index === 0; next.disabled = index === deck.length - 1;
+          const url = new URL(location.href); url.searchParams.set('slide', String(index + 1));
+          history.replaceState(null, '', url);
+          fit();
+        };
+        previous.addEventListener('click', () => show(index - 1));
+        next.addEventListener('click', () => show(index + 1));
+        addEventListener('resize', fit);
+        addEventListener('keydown', (event) => {
+          if (event.metaKey || event.ctrlKey || event.altKey || /^(INPUT|TEXTAREA|SELECT)$/.test(event.target?.tagName || '')) return;
+          if (['ArrowRight', 'ArrowDown', 'PageDown', ' '].includes(event.key)) { event.preventDefault(); show(index + 1); }
+          else if (['ArrowLeft', 'ArrowUp', 'PageUp'].includes(event.key)) { event.preventDefault(); show(index - 1); }
+          else if (event.key === 'Home') { event.preventDefault(); show(0); }
+          else if (event.key === 'End') { event.preventDefault(); show(deck.length - 1); }
+        });
+        document.fonts?.ready.then(fit);
+        show(index);
+      };
+      if (document.readyState === 'loading') addEventListener('DOMContentLoaded', start, { once: true }); else start();
+    })();
+  </script>`;
+  const contact = String.raw`<style data-agent-scratchpad-mode>
+    html, body { overflow: auto !important; }
+    body.agent-scratchpad-contact { padding: 54px 14px 18px !important; }
+    .agent-scratchpad-grid {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(var(--agent-scratchpad-thumb, 340px), 1fr));
+      align-items: start; gap: 18px; width: 100%;
+    }
+    .agent-scratchpad-cell { position: relative; min-width: 0; overflow: hidden; background: #090a0d; box-shadow: 0 3px 18px rgb(0 0 0 / 38%); }
+    .agent-scratchpad-cell > .slide {
+      position: absolute !important; left: 0 !important; top: 0 !important; margin: 0 !important;
+      transform: scale(var(--agent-cell-scale, 1)) !important; transform-origin: left top !important;
+      pointer-events: none;
+    }
+    .agent-scratchpad-number {
+      position: absolute; z-index: 3; right: 6px; bottom: 6px; padding: 3px 6px;
+      border-radius: 5px; background: rgb(0 0 0 / 72%); color: #fff;
+      font: 600 12px/1 -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+    body.agent-scratchpad-contact .agent-scratchpad-controls { top: 10px; bottom: auto; }
+  </style><script data-agent-scratchpad-script>
+    (() => {
+      const start = () => {
+        const deck = [...document.querySelectorAll('body > section.slide, body > .slide')];
+        if (!deck.length) return;
+        document.body.classList.add('agent-scratchpad-contact');
+        const grid = document.createElement('main'); grid.className = 'agent-scratchpad-grid';
+        const cells = deck.map((slide, index) => {
+          const cell = document.createElement('div'); cell.className = 'agent-scratchpad-cell';
+          const number = document.createElement('span'); number.className = 'agent-scratchpad-number'; number.textContent = String(index + 1);
+          cell.append(slide, number); grid.append(cell); return { cell, slide };
+        });
+        document.body.prepend(grid);
+        const controls = document.createElement('nav'); controls.className = 'agent-scratchpad-controls';
+        controls.setAttribute('aria-label', 'Contact sheet zoom');
+        const smaller = document.createElement('button'); smaller.type = 'button'; smaller.textContent = '−'; smaller.title = 'Zoom out';
+        const label = document.createElement('span');
+        const larger = document.createElement('button'); larger.type = 'button'; larger.textContent = '+'; larger.title = 'Zoom in';
+        controls.append(smaller, label, larger); document.body.append(controls);
+        let zoom = 1;
+        const fit = () => cells.forEach(({ cell, slide }) => {
+          const width = slide.offsetWidth || 1920; const height = slide.offsetHeight || 1080;
+          const scale = cell.clientWidth / width;
+          cell.style.height = String(Math.round(height * scale)) + 'px';
+          cell.style.setProperty('--agent-cell-scale', String(scale));
+        });
+        const setZoom = (value) => {
+          zoom = Math.max(.45, Math.min(2.5, value));
+          document.documentElement.style.setProperty('--agent-scratchpad-thumb', String(Math.round(340 * zoom)) + 'px');
+          label.textContent = String(Math.round(zoom * 100)) + '%';
+          requestAnimationFrame(fit);
+        };
+        smaller.addEventListener('click', () => setZoom(zoom / 1.2));
+        larger.addEventListener('click', () => setZoom(zoom * 1.2));
+        addEventListener('wheel', (event) => {
+          if (!event.ctrlKey) return;
+          event.preventDefault(); setZoom(zoom * Math.exp(-event.deltaY * .004));
+        }, { passive: false });
+        new ResizeObserver(fit).observe(grid);
+        document.fonts?.ready.then(fit);
+        setZoom(1);
+      };
+      if (document.readyState === 'loading') addEventListener('DOMContentLoaded', start, { once: true }); else start();
+    })();
+  </script>`;
+  const injection = common + (mode === 'slides' ? slides : contact);
+  if (/<\/body>/i.test(html)) return html.replace(/<\/body>/i, `${injection}</body>`);
+  return `${html}${injection}`;
 }
 
 /** A new deck's folder name: human-typed, so normalise instead of rejecting. */

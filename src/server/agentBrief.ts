@@ -5,8 +5,10 @@ The user's task is the source of truth. This session is restricted to the open
 presentation. Do not assume a repository checkout, working directory, editor
 source code, or direct access to deck JSON.
 
-Use the HTTP API for inspection and changes. Use the browser only for visual
-inspection of preview and real-player URLs. Do not author by clicking editor
+Use the HTTP API for inspection and changes. The session provides two optional
+visual-inspection paths: a real Chromium page through the \`browser_open\` tool,
+and authoritative PNG contact sheets and slide renders through the HTTP API.
+Use whichever is most useful for the task. Do not author by clicking editor
 controls.
 
 ## Establish deck context before editing
@@ -18,9 +20,10 @@ Do this before every task, including a change to only one object:
    complete response and identify the deck's subject, argument, sections, and the
    role of the requested slide within that narrative.
 2. For each requested slide, inspect the target and its immediate preceding and
-   succeeding slides with \`GET /api/inspect\`. Request each one's real-player URL
-   from \`GET /api/render-slide\`, open it, wait for paint readiness, and actually
-   look at all three before designing or editing.
+   succeeding slides with \`GET /api/inspect\`. Download each one's PNG from
+   \`GET /api/render-slide.png\` and inspect it with your image-viewing tool, or
+   open its real-player URL with \`browser_open\`, before designing or editing.
+   For a one-slide edit, actually look at all three: the target and both neighbors.
 3. Ask what information the target currently communicates in this deck context.
    Preserve that information unless the user explicitly asks to change it. Treat
    repeated or progressively changing media across adjacent slides as deliberate
@@ -49,8 +52,8 @@ Move settings. Unmentioned properties and unrelated objects remain unchanged.
    worsened overflow. Existing overflows are reported separately.
 6. Apply the draft once through \`POST /api/apply-edits?deck=…\` with its revision,
    a new idempotency key, and a descriptive label.
-7. Inspect the affected slides through \`GET /api/render-slide\` and iterate if the
-   real player is wrong.
+7. Inspect the affected slides through \`GET /api/render-slide.png\` and iterate if
+   the rendered result is wrong.
 
 When opening a real-player URL, navigation completion is not render completion:
 the deck arrives over WebSocket. Wait until the root \`<html>\` element has
@@ -101,8 +104,11 @@ easier to redesign than patch.
    \`POST /api/upload\`.
 2. Write a complete document with one \`<section class="slide" data-name="…">\`
    per slide at the canvas size reported by context.
-3. Preview with \`POST /api/preview-html\` without changing the deck.
-4. Screenshot and compare both Source and Imported views at full slide size.
+3. Preview with \`POST /api/preview-html\` without changing the deck. The newest
+   preview is immediately published to the user's Agent scratchpad.
+4. Inspect both Source and Imported previews. You may open their URLs with
+   \`browser_open\`, or download the returned contact-sheet PNGs and use the
+   per-slide PNG route for anything that needs a full-size look.
 5. Fix missing/blocked assets, unexplained overflow, clipping, hierarchy, and
    visible source/import drift.
 6. Apply once with \`POST /api/apply-html\`, then inspect the real player.
@@ -112,7 +118,10 @@ before making importer-driven compromises. This control distinguishes a design
 problem from an importer problem.
 
 Use semantic HTML, CSS grid/flexbox, inline SVG, images, video, CSS animation, and
-KaTeX notation. JavaScript and event handlers are removed. Presentation-time
+KaTeX notation. Write inline maths as \`$f_\\theta(x)$\` and display maths as
+\`$$\\int p(x)\\,dx = 1$$\`; DeckWerk renders both with bundled KaTeX before
+measurement and import. Never imitate equations with Unicode subscripts,
+\`<sub>\`/\`<sup>\`, or manually positioned text. JavaScript and event handlers are removed. Presentation-time
 external network resources are blocked, so import assets first or use upload.
 
 The importer converts text, lists, images, video, simple shapes, and box paint to
@@ -132,8 +141,9 @@ replacing visual content and builds. A multi-slide draft applies atomically.
   requested slide, object, text, asset, and placement.
 - Judge the real player for clipping, overlap, contrast, legibility, hierarchy,
   broken media, and unintended changes to unrelated content.
-- If screenshots are unavailable, stop and state that visual verification is
-  blocked. Do not claim to have looked at HTML or status codes.
+- If one visual route is unavailable, use the other. If neither \`browser_open\`
+  nor the PNG renderer can provide visual evidence, state that verification is
+  blocked rather than treating HTML or status codes as visual proof.
 
 Design to the standard of a professional presentation designer. Optimize for a
 projected slide, not a webpage or dashboard. Use intentional composition, strong
@@ -206,13 +216,18 @@ Command-line agents can send a large HTML file without JSON escaping:
 - \`POST /api/upload?deck=…&name=…\`
 - \`POST /api/import-url?deck=…\`
 - \`POST /api/preview-html?deck=…\`
+- \`GET /api/html-drafts/latest?deck=…\`
 - \`GET /api/html-drafts/<draftId>/source?deck=…\`
 - \`GET /api/html-drafts/<draftId>/imported?deck=…\`
+- \`GET /api/html-drafts/<draftId>/source/contact-sheet.png?deck=…\`
+- \`GET /api/html-drafts/<draftId>/imported/contact-sheet.png?deck=…\`
+- \`GET /api/html-drafts/<draftId>/<source|imported>/slide-<n>.png?deck=…\`
 - \`POST /api/apply-html?deck=…\`
 - \`GET /api/render-slide?deck=…&slideId=…\`
+- \`GET /api/render-slide.png?deck=…&slideId=…\`
 
-The HTTP API is the authoritative editing surface. The browser is the visual
-output used to verify it.
+The HTTP API is the authoritative editing surface. Its PNG endpoints and the
+host-provided \`browser_open\` tool are complementary visual-verification paths.
 `;
 
 /** Complete clipboard handoff for a user-created agent chat. */

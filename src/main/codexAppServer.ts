@@ -17,6 +17,24 @@ export interface AppServerNotification {
   params?: unknown;
 }
 
+export interface DynamicToolCall {
+  threadId: string;
+  turnId: string;
+  callId: string;
+  namespace: string | null;
+  tool: string;
+  arguments: unknown;
+}
+
+export interface DynamicToolResult {
+  success: boolean;
+  contentItems: Array<
+    | { type: 'inputText'; text: string }
+    | { type: 'inputImage'; imageUrl: string }
+    | { type: 'inputAudio'; audioUrl: string }
+  >;
+}
+
 export interface AppServerClientOptions {
   binaryPath?: string;
   /** Isolated Codex configuration/auth root for an embedding application. */
@@ -25,6 +43,7 @@ export interface AppServerClientOptions {
   requestTimeoutMs?: number;
   onNotification?: (notification: AppServerNotification) => void;
   onExit?: (message: string) => void;
+  onDynamicToolCall?: (call: DynamicToolCall) => Promise<DynamicToolResult>;
 }
 
 /**
@@ -91,7 +110,12 @@ export class CodexAppServerClient {
     try {
       await this.request('initialize', {
         clientInfo: { name: 'deckwerk', title: 'DeckWerk', version: '0.1.0' },
-        capabilities: null,
+        capabilities: {
+          // Dynamic tools are an experimental App Server surface. DeckWerk
+          // opts in so the host can provide the embedded agent a browser.
+          experimentalApi: true,
+          requestAttestation: false,
+        },
       });
       this.notify('initialized');
     } catch (error) {
@@ -163,15 +187,27 @@ export class CodexAppServerClient {
 
     if (typeof message.method !== 'string') return;
     if ('id' in message) {
-      this.answerServerRequest(message.method, message.id as RpcId);
+      this.answerServerRequest(message.method, message.id as RpcId, message.params);
       return;
     }
     this.options.onNotification?.({ method: message.method, params: message.params });
   }
 
   /** No approval UI ships in v1; sandboxed requests fail closed rather than hanging. */
-  private answerServerRequest(method: string, id: RpcId): void {
+  private answerServerRequest(method: string, id: RpcId, params: unknown): void {
     if (!this.process) return;
+    if (method === 'item/tool/call' && this.options.onDynamicToolCall) {
+      void this.options.onDynamicToolCall(params as DynamicToolCall)
+        .then((result) => this.sendServerResponse(id, result))
+        .catch((error) => this.sendServerResponse(id, {
+          success: false,
+          contentItems: [{
+            type: 'inputText',
+            text: error instanceof Error ? error.message : String(error),
+          }],
+        }));
+      return;
+    }
     let result: unknown;
     if (method === 'item/commandExecution/requestApproval'
       || method === 'item/fileChange/requestApproval') {
@@ -185,7 +221,11 @@ export class CodexAppServerClient {
       })}\n`);
       return;
     }
-    this.process.stdin.write(`${JSON.stringify({ id, result })}\n`);
+    this.sendServerResponse(id, result);
+  }
+
+  private sendServerResponse(id: RpcId, result: unknown): void {
+    this.process?.stdin.write(`${JSON.stringify({ id, result })}\n`);
   }
 
   private handleExit(message: string): void {

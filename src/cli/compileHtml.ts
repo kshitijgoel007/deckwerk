@@ -130,12 +130,119 @@ export async function measureSavedPages(
   return runPages(pagePaths, canvas, script);
 }
 
+/**
+ * Render one authored/imported HTML slide, or a contact sheet of every slide,
+ * inside the Electron process that is already hosting the collaboration API.
+ * This gives HTTP agents visual evidence without installing their own browser.
+ */
+export async function renderHtmlDraftPng(
+  html: string,
+  canvas: { w: number; h: number },
+  slideIndex: number | null,
+): Promise<Buffer> {
+  const electronModule = createRequire(import.meta.url)('electron') as
+    | string
+    | typeof import('electron');
+  if (typeof electronModule === 'string') {
+    throw new Error('HTML draft rendering requires the native editor');
+  }
+  const work = await mkdtemp(join(tmpdir(), 'slide-agent-draft-render-'));
+  const pagePath = join(work, 'draft.html');
+  await writeFile(pagePath, html, 'utf8');
+  const win = new electronModule.BrowserWindow({
+    width: canvas.w,
+    height: canvas.h,
+    show: false,
+    useContentSize: true,
+    webPreferences: { offscreen: true, backgroundThrottling: false },
+  });
+  try {
+    await win.loadURL(pathToFileURL(pagePath).href);
+    await win.webContents.executeJavaScript('document.fonts.ready.then(() => true)');
+    await win.webContents.executeJavaScript(
+      'Promise.all([...document.images].map((image) => image.decode().catch(() => null))).then(() => true)',
+    );
+    const count = await win.webContents.executeJavaScript(
+      'document.querySelectorAll("section.slide, .slide").length',
+    ) as number;
+    if (count === 0) throw new Error('No slides found in HTML draft');
+
+    const capture = async (index: number) => {
+      await win.webContents.executeJavaScript(`(() => {
+        const slides = [...document.querySelectorAll('section.slide, .slide')];
+        slides.forEach((slide, i) => { slide.style.display = i === ${index} ? '' : 'none'; });
+        document.documentElement.style.margin = '0';
+        document.documentElement.style.width = '${canvas.w}px';
+        document.documentElement.style.height = '${canvas.h}px';
+        document.documentElement.style.overflow = 'hidden';
+        document.body.style.margin = '0';
+        document.body.style.width = '${canvas.w}px';
+        document.body.style.height = '${canvas.h}px';
+        document.body.style.overflow = 'hidden';
+        return new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
+      })()`);
+      return win.webContents.capturePage({ x: 0, y: 0, width: canvas.w, height: canvas.h });
+    };
+
+    if (slideIndex !== null) {
+      if (slideIndex < 0 || slideIndex >= count) throw new Error(`No draft slide ${slideIndex + 1}`);
+      return (await capture(slideIndex)).toPNG();
+    }
+
+    const columns = Math.min(4, Math.max(2, Math.ceil(Math.sqrt(count))));
+    const thumbWidth = 420;
+    const thumbHeight = Math.round((thumbWidth * canvas.h) / canvas.w);
+    const gap = 12;
+    const labelHeight = 28;
+    const rows = Math.ceil(count / columns);
+    const sheetWidth = columns * thumbWidth + (columns + 1) * gap;
+    const sheetHeight = rows * (thumbHeight + labelHeight) + (rows + 1) * gap;
+    const cells: string[] = [];
+    for (let index = 0; index < count; index += 1) {
+      const image = (await capture(index)).resize({ width: thumbWidth, height: thumbHeight });
+      cells.push(`<figure><img src="${image.toDataURL()}" width="${thumbWidth}" height="${thumbHeight}"><figcaption>${index + 1}</figcaption></figure>`);
+    }
+    const sheetPath = join(work, 'contact-sheet.html');
+    await writeFile(sheetPath, `<!doctype html><style>
+      *{box-sizing:border-box}html,body{margin:0;background:#17181c;color:#fff}
+      body{display:grid;grid-template-columns:repeat(${columns},${thumbWidth}px);gap:${gap}px;padding:${gap}px}
+      figure{margin:0}img{display:block;outline:1px solid #555}figcaption{height:${labelHeight}px;font:600 16px/${labelHeight}px -apple-system,sans-serif}
+    </style>${cells.join('')}`, 'utf8');
+    win.setContentSize(sheetWidth, sheetHeight);
+    await win.loadURL(pathToFileURL(sheetPath).href);
+    await win.webContents.executeJavaScript(
+      'Promise.all([...document.images].map((image) => image.decode().catch(() => null))).then(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))))',
+    );
+    return (await win.webContents.capturePage({
+      x: 0, y: 0, width: sheetWidth, height: sheetHeight,
+    })).toPNG();
+  } finally {
+    if (!win.isDestroyed()) win.destroy();
+  }
+}
+
 /** Hand a list of pages to the offscreen browser and collect what it measured. */
 async function runPages(
   pages: string[],
   canvas: { w: number; h: number },
   script: string = measureSlidesSource(),
 ): Promise<unknown[]> {
+  // The collaboration server is hosted by Electron when the native editor is
+  // open. In that case `require('electron')` is the API object, not the path
+  // returned by the npm launcher package, so spawning it as a binary fails as
+  // `[object Object]`. Reuse the app's browser process directly; this is both
+  // correct in packaged builds and avoids paying for a second Electron launch.
+  const electronModule = createRequire(import.meta.url)('electron') as
+    | string
+    | typeof import('electron');
+  if (typeof electronModule !== 'string') {
+    return runPagesInCurrentElectron(
+      pages,
+      canvas,
+      script,
+      electronModule.BrowserWindow,
+    );
+  }
   const work = await mkdtemp(join(tmpdir(), 'slide-agent-measure-'));
   const outPath = join(work, 'measured.json');
   const jobPath = join(work, 'job.json');
@@ -145,6 +252,32 @@ async function runPages(
   await writeFile(jobPath, JSON.stringify({ pages, outPath, canvas, script }), 'utf8');
   await runElectron(compilerScript(), jobPath);
   return (JSON.parse(await readFile(outPath, 'utf8')) as { results: unknown[] }).results;
+}
+
+async function runPagesInCurrentElectron(
+  pages: string[],
+  canvas: { w: number; h: number },
+  script: string,
+  BrowserWindow: typeof import('electron').BrowserWindow,
+): Promise<unknown[]> {
+  const win = new BrowserWindow({
+    width: canvas.w,
+    height: canvas.h,
+    show: false,
+    useContentSize: true,
+    webPreferences: { offscreen: true, backgroundThrottling: false },
+  });
+  try {
+    const results: unknown[] = [];
+    for (const page of pages) {
+      await win.loadURL(pathToFileURL(page).href);
+      await win.webContents.executeJavaScript('document.fonts.ready.then(() => true)');
+      results.push(await win.webContents.executeJavaScript(script));
+    }
+    return results;
+  } finally {
+    if (!win.isDestroyed()) win.destroy();
+  }
 }
 
 function compilerScript(): string {

@@ -636,6 +636,18 @@ describe('collab server', () => {
     expect(source).toContain('.from-deck-theme { color: rgb(1, 2, 3); }');
     expect(source).toContain('src="assets/pixel.png"');
 
+    const fitted = await (await fetch(
+      `${base}${draft.sourceUrl}?deck=${DECK_ID}&scratchpad=slides`,
+    )).text();
+    expect(fitted).toContain('data-agent-scratchpad-script');
+    expect(fitted).toContain("'ArrowRight'");
+    expect(fitted).toContain('--agent-scratchpad-scale');
+    const contact = await (await fetch(
+      `${base}${draft.sourceUrl}?deck=${DECK_ID}&scratchpad=contact`,
+    )).text();
+    expect(contact).toContain('agent-scratchpad-grid');
+    expect(contact).toContain('Contact sheet zoom');
+
     const asset = await fetch(`${base}/decks/${DECK_ID}/assets/pixel.png`);
     expect(asset.status).toBe(200);
     expect(Buffer.from(await asset.arrayBuffer())).toEqual(pixel);

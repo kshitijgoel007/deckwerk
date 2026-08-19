@@ -5,13 +5,33 @@ import { join } from 'node:path';
 import type {
   AgentChatMessage,
   AgentChatModel,
+  AgentChatScratchpad,
   AgentChatSendRequest,
   AgentChatState,
 } from '@shared/ipc.js';
 import {
   CodexAppServerClient,
   type AppServerNotification,
+  type DynamicToolCall,
+  type DynamicToolResult,
 } from './codexAppServer.js';
+
+const BROWSER_OPEN_TOOL = {
+  type: 'function',
+  name: 'browser_open',
+  description: 'Open an HTTP(S) page in DeckWerk\'s Chromium browser and return a screenshot plus page metadata. Use it for visual inspection when a live browser view is more useful than the presentation PNG endpoints.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      url: { type: 'string', description: 'Absolute http:// or https:// URL to open.' },
+      width: { type: 'integer', minimum: 320, maximum: 2560, default: 1440 },
+      height: { type: 'integer', minimum: 240, maximum: 1600, default: 900 },
+      waitMs: { type: 'integer', minimum: 0, maximum: 5000, default: 250 },
+    },
+    required: ['url'],
+    additionalProperties: false,
+  },
+} as const;
 
 interface AccountReadResult {
   account: null | { type: 'apiKey' }
@@ -45,6 +65,8 @@ interface ModelListResult {
     description: string;
     hidden: boolean;
     isDefault: boolean;
+    supportedReasoningEfforts: Array<{ reasoningEffort: string; description: string }>;
+    defaultReasoningEffort: string | null;
     serviceTiers: Array<{ id: string; name: string; description: string }>;
     defaultServiceTier: string | null;
   }>;
@@ -62,8 +84,11 @@ interface AgentChatSession {
   threadId: string | null;
   activeTurnId: string | null;
   agentPrompt: string | null;
+  runtimeDir: string | null;
   model: string | null;
+  reasoningEffort: string | null;
   fastMode: boolean;
+  scratchpad: AgentChatScratchpad | null;
   queuedFollowUps: string[];
   messages: AgentChatMessage[];
   busy: boolean;
@@ -75,9 +100,11 @@ export interface AgentChatControllerOptions {
   clientFactory?: (callbacks: {
     onNotification: (notification: AppServerNotification) => void;
     onExit: (message: string) => void;
+    onDynamicToolCall?: (call: DynamicToolCall) => Promise<DynamicToolResult>;
   }) => AppServerLike;
   openExternal?: (url: string) => Promise<unknown>;
   onState?: (state: AgentChatState) => void;
+  onDynamicToolCall?: (call: DynamicToolCall) => Promise<DynamicToolResult>;
   /** Keep this embedded agent's login separate from other Codex clients. */
   codexHome?: string;
 }
@@ -161,8 +188,11 @@ export class AgentChatController {
         candidate.threadId = null;
         candidate.activeTurnId = null;
         candidate.agentPrompt = null;
+        candidate.runtimeDir = null;
         candidate.model = null;
+        candidate.reasoningEffort = null;
         candidate.fastMode = false;
+        candidate.scratchpad = null;
         candidate.queuedFollowUps = [];
         candidate.messages = [];
         candidate.activity = null;
@@ -199,14 +229,15 @@ export class AgentChatController {
       this.emit(session);
 
       if (!session.threadId) {
-        await mkdir(this.runtimeDir, { recursive: true });
+        session.runtimeDir = join(this.runtimeDir, randomUUID());
+        await mkdir(session.runtimeDir, { recursive: true });
         session.agentPrompt = await prepareAgentPrompt();
         const started = await this.client!.request<ThreadStartResult>('thread/start', {
           ...(session.model ? { model: session.model } : {}),
           serviceTier: this.serviceTierFor(session),
           // A neutral cwd keeps the dynamically wrapped HTTP brief as the
           // thread's sole DeckWerk-specific instruction source.
-          cwd: this.runtimeDir,
+          cwd: session.runtimeDir,
           approvalPolicy: 'never',
           sandbox: 'workspace-write',
           serviceName: 'deckwerk',
@@ -214,6 +245,7 @@ export class AgentChatController {
           // Agent button historically copied to the user's clipboard.
           developerInstructions: session.agentPrompt,
           personality: 'friendly',
+          ...(this.options.onDynamicToolCall ? { dynamicTools: [BROWSER_OPEN_TOOL] } : {}),
         });
         session.threadId = started.thread.id;
       }
@@ -223,15 +255,16 @@ export class AgentChatController {
       const turn = await this.client!.request<TurnStartResult>('turn/start', {
         threadId: session.threadId,
         ...(session.model ? { model: session.model } : {}),
+        ...(session.reasoningEffort ? { effort: session.reasoningEffort } : {}),
         serviceTier: this.serviceTierFor(session),
         input: [{ type: 'text', text, text_elements: [] }],
-        cwd: this.runtimeDir,
+        cwd: session.runtimeDir,
         approvalPolicy: 'never',
         sandboxPolicy: {
           // Only neutral scratch space is writable; the deck itself is not in
           // the sandbox. Loopback networking is the editing capability.
           type: 'workspaceWrite',
-          writableRoots: [this.runtimeDir],
+          writableRoots: [session.runtimeDir],
           networkAccess: true,
           excludeTmpdirEnvVar: false,
           excludeSlashTmp: false,
@@ -298,7 +331,29 @@ export class AgentChatController {
         throw new Error('That model is not available for this account');
       }
       session.model = model;
-      session.fastMode = defaultFastMode(this.models.find((candidate) => candidate.model === model));
+      const selected = this.models.find((candidate) => candidate.model === model);
+      session.reasoningEffort = selected?.defaultReasoningEffort
+        ?? selected?.reasoningEfforts[0]?.effort
+        ?? null;
+      session.fastMode = defaultFastMode(selected);
+      session.error = null;
+    } catch (error) {
+      session.error = message(error);
+    }
+    this.emit(session);
+    return this.snapshot(session);
+  }
+
+  async setReasoningEffort(deckPath: string, effort: string): Promise<AgentChatState> {
+    const session = this.session(deckPath);
+    try {
+      await this.ensureClient();
+      if (session.busy) throw new Error('Reasoning effort can be changed after the active turn finishes');
+      const selected = this.selectedModel(session);
+      if (!selected?.reasoningEfforts.some((candidate) => candidate.effort === effort)) {
+        throw new Error('That reasoning effort is not available for the selected model');
+      }
+      session.reasoningEffort = effort;
       session.error = null;
     } catch (error) {
       session.error = message(error);
@@ -320,6 +375,13 @@ export class AgentChatController {
     } catch (error) {
       session.error = message(error);
     }
+    this.emit(session);
+    return this.snapshot(session);
+  }
+
+  setScratchpad(deckPath: string, scratchpad: AgentChatScratchpad | null): AgentChatState {
+    const session = this.session(deckPath);
+    session.scratchpad = scratchpad;
     this.emit(session);
     return this.snapshot(session);
   }
@@ -346,6 +408,8 @@ export class AgentChatController {
     session.threadId = null;
     session.activeTurnId = null;
     session.agentPrompt = null;
+    session.runtimeDir = null;
+    session.scratchpad = null;
     session.queuedFollowUps = [];
     session.messages = [];
     session.busy = false;
@@ -375,6 +439,7 @@ export class AgentChatController {
       const callbacks = {
         onNotification: (notification: AppServerNotification) => this.onNotification(notification),
         onExit: (exitMessage: string) => this.onExit(exitMessage),
+        onDynamicToolCall: this.options.onDynamicToolCall,
       };
       this.client = this.options.clientFactory?.(callbacks)
         ?? new CodexAppServerClient({ ...callbacks, codexHome: this.options.codexHome });
@@ -421,6 +486,7 @@ export class AgentChatController {
       this.models = [];
       for (const session of this.sessions.values()) {
         session.model = null;
+        session.reasoningEffort = null;
         session.fastMode = false;
       }
       return;
@@ -444,6 +510,11 @@ export class AgentChatController {
           displayName: candidate.displayName,
           description: candidate.description,
           isDefault: candidate.isDefault,
+          reasoningEfforts: (candidate.supportedReasoningEfforts ?? []).map((effort) => ({
+            effort: effort.reasoningEffort,
+            description: effort.description,
+          })),
+          defaultReasoningEffort: candidate.defaultReasoningEffort ?? null,
           serviceTiers: candidate.serviceTiers.map((tier) => ({ ...tier })),
           defaultServiceTier: candidate.defaultServiceTier,
         });
@@ -458,11 +529,20 @@ export class AgentChatController {
       const selected = models.find((candidate) => candidate.model === session.model);
       if (!selected) {
         session.model = fallback;
+        const replacement = models.find((candidate) => candidate.model === fallback);
+        session.reasoningEffort = replacement?.defaultReasoningEffort
+          ?? replacement?.reasoningEfforts[0]?.effort
+          ?? null;
         session.fastMode = defaultFastMode(
-          models.find((candidate) => candidate.model === fallback),
+          replacement,
         );
-      } else if (!fastTier(selected)) {
-        session.fastMode = false;
+      } else {
+        if (!selected.reasoningEfforts.some((effort) => effort.effort === session.reasoningEffort)) {
+          session.reasoningEffort = selected.defaultReasoningEffort
+            ?? selected.reasoningEfforts[0]?.effort
+            ?? null;
+        }
+        if (!fastTier(selected)) session.fastMode = false;
       }
     }
   }
@@ -578,17 +658,19 @@ export class AgentChatController {
   private session(deckPath: string): AgentChatSession {
     let session = this.sessions.get(deckPath);
     if (!session) {
+      const selected = this.models.find((candidate) => candidate.isDefault) ?? this.models[0];
       session = {
         deckPath,
         threadId: null,
         activeTurnId: null,
         agentPrompt: null,
-        model: this.models.find((candidate) => candidate.isDefault)?.model
-          ?? this.models[0]?.model
+        runtimeDir: null,
+        model: selected?.model ?? null,
+        reasoningEffort: selected?.defaultReasoningEffort
+          ?? selected?.reasoningEfforts[0]?.effort
           ?? null,
-        fastMode: defaultFastMode(
-          this.models.find((candidate) => candidate.isDefault) ?? this.models[0],
-        ),
+        fastMode: defaultFastMode(selected),
+        scratchpad: null,
         queuedFollowUps: [],
         messages: [],
         busy: false,
@@ -608,7 +690,9 @@ export class AgentChatController {
       accountLabel: this.accountLabel,
       models: this.models.map((model) => ({ ...model })),
       selectedModel: session.model,
+      selectedReasoningEffort: session.reasoningEffort,
       fastMode: session.fastMode,
+      scratchpad: session.scratchpad ? { ...session.scratchpad } : null,
       busy: session.busy,
       activity: session.activity,
       messages: session.messages.map((item) => ({ ...item })),

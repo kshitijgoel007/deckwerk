@@ -21,12 +21,22 @@ class FakeAppServer {
         {
           model: 'gpt-5.6-sol', displayName: 'GPT-5.6 Sol', description: 'Frontier',
           hidden: false, isDefault: true,
+          supportedReasoningEfforts: [
+            { reasoningEffort: 'low', description: 'Lighter reasoning' },
+            { reasoningEffort: 'medium', description: 'Balanced reasoning' },
+          ],
+          defaultReasoningEffort: 'medium',
           serviceTiers: [{ id: 'priority', name: 'Fast', description: 'Faster responses' }],
           defaultServiceTier: 'priority',
         },
         {
           model: 'gpt-5.6-terra', displayName: 'GPT-5.6 Terra', description: 'Balanced',
           hidden: false, isDefault: false,
+          supportedReasoningEfforts: [
+            { reasoningEffort: 'low', description: 'Lighter reasoning' },
+            { reasoningEffort: 'medium', description: 'Balanced reasoning' },
+          ],
+          defaultReasoningEffort: 'medium',
           serviceTiers: [{ id: 'priority', name: 'Fast', description: 'Faster responses' }],
           defaultServiceTier: null,
         },
@@ -78,6 +88,7 @@ describe('embedded agent chat controller', () => {
       auth: 'signedIn',
       accountLabel: 'slides@example.com',
       selectedModel: 'gpt-5.6-sol',
+      selectedReasoningEffort: 'medium',
       fastMode: true,
     });
 
@@ -106,6 +117,7 @@ describe('embedded agent chat controller', () => {
     });
     expect(turn.params.input[0].text).toBe('Polish this slide');
     expect(turn.params.model).toBe('gpt-5.6-sol');
+    expect(turn.params.effort).toBe('medium');
     expect(turn.params.serviceTier).toBe('priority');
 
     notify({
@@ -153,6 +165,28 @@ describe('embedded agent chat controller', () => {
       .toBe('default');
     expect(server.requests.find((entry) => entry.method === 'turn/start')?.params.serviceTier)
       .toBe('default');
+  });
+
+  it('uses the selected reasoning effort for the turn', async () => {
+    const { controller, server } = fixture();
+    await controller.getState('/tmp/talk');
+    expect((await controller.setReasoningEffort('/tmp/talk', 'low')).selectedReasoningEffort)
+      .toBe('low');
+    await controller.send('/tmp/talk', request, async () => 'HTTP session');
+    expect(server.requests.find((entry) => entry.method === 'turn/start')?.params.effort)
+      .toBe('low');
+  });
+
+  it('advertises the host browser when a dynamic-tool handler is available', async () => {
+    const server = new FakeAppServer();
+    const controller = new AgentChatController({
+      clientFactory: () => server,
+      onDynamicToolCall: async () => ({ success: true, contentItems: [] }),
+    });
+    await controller.getState('/tmp/talk');
+    await controller.send('/tmp/talk', request, async () => 'HTTP session');
+    expect(server.requests.find((entry) => entry.method === 'thread/start')?.params.dynamicTools)
+      .toEqual([expect.objectContaining({ type: 'function', name: 'browser_open' })]);
   });
 
   it('opens managed ChatGPT sign-in when no account is available', async () => {
