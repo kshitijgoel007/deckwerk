@@ -33,21 +33,27 @@ ship it in `dist/collab`.
 
 ## Agent sessions
 
-The **Agent…** toolbar button starts the same in-process server *unpinned*:
-it hosts the open deck's whole parent directory, and no controls disappear —
-an agent joining by URL can list, create, and import decks exactly like a
-human peer. Hand the invite URL (copied to the clipboard, shown in the status
-bar) to the agent of your choice; that URL is the entire integration.
+The **Agent…** toolbar button starts the established deck-scoped collaboration
+server and opens a small companion chat window backed by Codex App Server. The
+editor hands off to the collaboration shell, so the HTTP API remains the one
+authoritative writer while the chat is active.
 
-An agent landing on the client page finds:
+On the first message in a chat, DeckWerk:
 
-- `GET /api/brief` — a markdown onboarding document: the deck schema, how to
-  edit through `window.store.commit`, how to upload media, comment etiquette.
-- `window.agent` — a documented console API: `brief()`, `getDeck()`,
-  `goToSlide(n)`, `commit(fn, label)`, `seeComments()` (every comment with its
-  1-based slide number), `addComment()`, `resolveComment()`,
-  `uploadAsset(name, data)`.
-- a `console.info` pointer to both, for agents that arrive cold.
+1. Wraps `AGENT_BRIEF` with the loopback session URL, API origin, and hosted
+   deck ID using `agentClipboardPrompt`—the exact prompt copied by the previous
+   Agent workflow.
+2. Passes that complete prompt as the Codex thread's developer instructions.
+3. Runs turns from a neutral scratch workspace with approvals disabled and
+   network access enabled. The live deck is reachable only through the
+   loopback HTTP API.
+4. Streams text and activity into the companion window while API transactions
+   appear in the collaboration shell and History panel.
+
+Follow-up messages reuse both the Codex thread and live HTTP session. **New
+chat** clears only the Codex thread; **Stop** interrupts the active turn.
+Closing the companion window ends the hosted session, flushes the server, and
+hands the presentation back to the ordinary editor.
 
 ## Comments
 

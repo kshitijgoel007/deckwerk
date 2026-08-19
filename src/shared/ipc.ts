@@ -45,9 +45,41 @@ export const IPC = {
   agentContextPublish: 'agent:contextPublish',
   agentRequest: 'agent:request',
   agentResponse: 'agent:response',
+  agentChatGetState: 'agentChat:getState',
+  agentChatSend: 'agentChat:send',
+  agentChatLogin: 'agentChat:login',
+  agentChatInterrupt: 'agentChat:interrupt',
+  agentChatReset: 'agentChat:reset',
+  agentChatState: 'agentChat:state',
   workflowStart: 'workflow:start',
   collabStart: 'collab:start',
 } as const;
+
+export type AgentChatConnection = 'connecting' | 'ready' | 'unavailable';
+export type AgentChatAuth = 'unknown' | 'signedOut' | 'signedIn';
+
+export interface AgentChatMessage {
+  id: string;
+  role: 'user' | 'assistant' | 'system';
+  text: string;
+  error?: boolean;
+}
+
+/** Complete renderer snapshot for one open deck's embedded agent conversation. */
+export interface AgentChatState {
+  deckPath: string;
+  connection: AgentChatConnection;
+  auth: AgentChatAuth;
+  accountLabel: string | null;
+  busy: boolean;
+  activity: string | null;
+  messages: AgentChatMessage[];
+  error: string | null;
+}
+
+export interface AgentChatSendRequest {
+  text: string;
+}
 
 /** The workflow templates a UI action can instantiate (see workflows/). */
 export type WorkflowKind = 'rework-selected-slides' | 'beautify-deck' | 'draft-new-slides';

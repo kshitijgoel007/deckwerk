@@ -4,6 +4,8 @@ import type { ClipboardPayload, ClipboardWriteRequest } from '@shared/clipboard.
 import { IPC } from '@shared/ipc.js';
 import type {
   AgentContextDraft,
+  AgentChatSendRequest,
+  AgentChatState,
   AgentRequest,
   AssetImportProgress,
   AgentResponse,
@@ -94,6 +96,16 @@ const api = {
     ipcRenderer.invoke(IPC.agentContextPublish, context),
   respondAgentRequest: (response: AgentResponse): void =>
     ipcRenderer.send(IPC.agentResponse, response),
+  getAgentChatState: (): Promise<AgentChatState> =>
+    ipcRenderer.invoke(IPC.agentChatGetState),
+  sendAgentChatMessage: (request: AgentChatSendRequest): Promise<AgentChatState> =>
+    ipcRenderer.invoke(IPC.agentChatSend, request),
+  loginAgentChat: (): Promise<AgentChatState> =>
+    ipcRenderer.invoke(IPC.agentChatLogin),
+  interruptAgentChat: (): Promise<AgentChatState> =>
+    ipcRenderer.invoke(IPC.agentChatInterrupt),
+  resetAgentChat: (): Promise<AgentChatState> =>
+    ipcRenderer.invoke(IPC.agentChatReset),
 
   /**
    * Share the open deck for live co-editing: the main process starts a
@@ -133,6 +145,8 @@ const api = {
   onThemeCss: (fn: (css: string) => void): (() => void) => on(IPC.themeCss, fn),
   onAgentRequest: (fn: (request: AgentRequest) => void): (() => void) =>
     on(IPC.agentRequest, fn),
+  onAgentChatState: (fn: (state: AgentChatState) => void): (() => void) =>
+    on(IPC.agentChatState, fn),
   /** A file under the deck's `edit/` folder was saved and wants compiling. */
   onHtmlEdit: (fn: (file: AuthoredHtmlFile) => void): (() => void) =>
     on(IPC.htmlEdit, fn),

@@ -17,6 +17,8 @@ import {
 import { IPC } from '@shared/ipc.js';
 import type {
   AgentContextDraft,
+  AgentChatSendRequest,
+  AgentChatState,
   AgentResponse,
   CollabStartRequest,
   DeckSession,
@@ -38,6 +40,7 @@ import { encodeEditorView, type EditorViewSnapshot } from '@shared/editorView.js
 import { startWorkflow } from './workflow.js';
 import { handoffWhenReady } from './windowHandoff.js';
 import { AgentRuntime } from './agentRuntime.js';
+import { AgentChatController } from './agentChat.js';
 import { installAssetProtocol, registerAssetScheme, setDeckDir } from './assetProtocol.js';
 import {
   createDeck,
@@ -56,7 +59,7 @@ import { probeMedia, runTrim } from './ffmpeg.js';
 import { importKeynote } from './keynoteImport.js';
 import { HTML_EDIT_DIR, writeHtmlScope } from './htmlAuthoring.js';
 import {
-  captureWindowContinuity, createCollabHostWindow, createEditorWindow, createPdfWindow, createPresentWindow, createPresenterWindow, createRasterWindow, createTrimWindow,
+  captureWindowContinuity, createAgentChatWindow, createCollabHostWindow, createEditorWindow, createPdfWindow, createPresentWindow, createPresenterWindow, createRasterWindow, createTrimWindow,
 } from './windows.js';
 import {
   defaultClientDir, startCollabServer, type RunningCollabServer,
@@ -92,9 +95,24 @@ let rasterWindow: BrowserWindow | null = null;
 /** Live while the open deck is being shared for co-editing. */
 let collabServer: RunningCollabServer | null = null;
 let collabWindow: BrowserWindow | null = null;
+let agentChatWindow: BrowserWindow | null = null;
 let collabReturn: Promise<void> | null = null;
 let quitting = false;
 const agentRuntime = new AgentRuntime(() => editorWindow);
+const agentChat = new AgentChatController({
+  openExternal: async (url) => {
+    const parsed = new URL(url);
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+      throw new Error(`Refusing to open unsupported sign-in URL: ${parsed.protocol}`);
+    }
+    await shell.openExternal(url);
+  },
+  onState: (state) => {
+    for (const win of [editorWindow, agentChatWindow]) {
+      if (win && !win.isDestroyed()) win.webContents.send(IPC.agentChatState, state);
+    }
+  },
+});
 
 function speakerWindowBounds(display: Display): Rectangle {
   const area = display.workArea;
@@ -186,11 +204,15 @@ function returnFromCollaboration(): Promise<void> {
   if (!host || host.isDestroyed() || quitting) return Promise.resolve();
 
   collabReturn = (async () => {
+    const chat = agentChatWindow;
+    agentChatWindow = null;
+    if (chat && !chat.isDestroyed()) chat.destroy();
     const continuity = captureWindowContinuity(host);
     const view = await readCollabView(host);
     const closing = collabServer;
     collabServer = null;
     try {
+      if (session) await agentChat.reset(session.dir);
       await closing?.close();
     } catch (error) {
       console.error('Could not close collaboration server cleanly:', error);
@@ -393,6 +415,8 @@ app.on('window-all-closed', () => {
 app.on('before-quit', () => {
   quitting = true;
   void agentRuntime.close();
+  agentChat.close();
+  agentChatWindow?.destroy();
   void collabServer?.close();
 });
 
@@ -429,6 +453,36 @@ function registerHandlers(): void {
   });
   ipcMain.on(IPC.agentResponse, (_event, response: AgentResponse) => {
     void agentRuntime.respond(response);
+  });
+  ipcMain.handle(IPC.agentChatGetState, async (): Promise<AgentChatState> => {
+    const s = requireSession();
+    return agentChat.getState(s.dir);
+  });
+  ipcMain.handle(IPC.agentChatLogin, async (): Promise<AgentChatState> => {
+    const s = requireSession();
+    return agentChat.login(s.dir);
+  });
+  ipcMain.handle(
+    IPC.agentChatSend,
+    async (_event, request: AgentChatSendRequest): Promise<AgentChatState> => {
+      const s = requireSession();
+      if (!request || typeof request.text !== 'string') throw new Error('A message is required');
+      return agentChat.send(s.dir, request, async () => {
+        if (!collabServer) throw new Error('The deck-scoped agent session is not running');
+        const deckId = basename(s.dir);
+        const joinUrl = collaborationInviteUrl(collabServer.urls, deckId, true);
+        if (!joinUrl) throw new Error('The agent session has no reachable URL');
+        return agentClipboardPrompt(joinUrl, deckId);
+      });
+    },
+  );
+  ipcMain.handle(IPC.agentChatInterrupt, async (): Promise<AgentChatState> => {
+    const s = requireSession();
+    return agentChat.interrupt(s.dir);
+  });
+  ipcMain.handle(IPC.agentChatReset, async (): Promise<AgentChatState> => {
+    const s = requireSession();
+    return agentChat.reset(s.dir);
   });
 
   ipcMain.handle(
@@ -851,6 +905,15 @@ function registerHandlers(): void {
       : undefined;
     const host = createCollabHostWindow(hostUrl.toString(), continuity);
     collabWindow = host;
+
+    if (opts?.agent) {
+      const chat = createAgentChatWindow(host);
+      agentChatWindow = chat;
+      chat.on('closed', () => {
+        if (agentChatWindow === chat) agentChatWindow = null;
+        if (!quitting && !collabReturn) void returnFromCollaboration();
+      });
+    }
 
     // Native close controls mean "end collaboration". Intercept the close so
     // the current window remains visible until its replacement is ready.

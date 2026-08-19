@@ -76,6 +76,36 @@ export function createEditorWindow(query = '', state?: WindowContinuityState): B
   return win;
 }
 
+/** Small companion chat kept beside the authoritative collaboration shell. */
+export function createAgentChatWindow(owner: BrowserWindow): BrowserWindow {
+  const bounds = owner.getBounds();
+  const width = 420;
+  const height = Math.min(700, Math.max(560, bounds.height - 100));
+  const win = new BrowserWindow({
+    parent: owner,
+    modal: false,
+    x: Math.max(bounds.x + 12, bounds.x + bounds.width - width - 20),
+    y: bounds.y + 52,
+    width,
+    height,
+    minWidth: 360,
+    minHeight: 480,
+    backgroundColor: '#1c1c1e',
+    show: false,
+    autoHideMenuBar: true,
+    title: 'DeckWerk Agent',
+    webPreferences: {
+      preload: preload(),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
+    },
+  });
+  revealWindow(win);
+  loadRenderer(win, 'agent-chat');
+  return win;
+}
+
 /**
  * The host's window while collaborating: the same browser collab client the
  * joiners use, served over localhost. Deliberately NO preload — the collab

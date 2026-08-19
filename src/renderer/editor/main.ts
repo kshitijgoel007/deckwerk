@@ -237,12 +237,12 @@ async function exportPdf(): Promise<void> {
 }
 
 async function startSharing(agent: boolean): Promise<void> {
-  setStatusMessage(agent ? 'Starting deck-scoped agent session…' : 'Starting collaboration…');
+  setStatusMessage(agent ? 'Starting embedded agent session…' : 'Starting collaboration…');
   try {
     await cssEditor.flush();
     await save();
     await window.api.startCollab({ agent, ...captureEditorView(store) });
-    setStatusMessage(agent ? 'Agent session started; API brief copied to clipboard.' : 'Collaboration link copied to clipboard.');
+    setStatusMessage(agent ? 'Agent chat opened; HTTP API brief copied to clipboard.' : 'Collaboration link copied to clipboard.');
   } catch (err) {
     setStatusMessage(`${agent ? 'Agent session' : 'Collaboration'} failed: ${err instanceof Error ? err.message : err}`);
   }

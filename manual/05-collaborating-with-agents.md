@@ -1,13 +1,15 @@
 # Collaborating with agents
 
-Click **Agent…**. DeckWerk starts a session for the open presentation and copies a complete agent handoff to your clipboard.
+Click **Agent…** to start a deck-scoped agent session. DeckWerk moves the presentation into its live collaboration shell and opens a small companion chat window with the message box focused. Type a request and press **Enter** to send it; use **Shift+Enter** for a new line.
 
-Paste that handoff into a new agent task, then add what you want changed. The handoff contains the session address and the instructions the agent needs to inspect, preview, and edit the deck.
+Sign in with ChatGPT if DeckWerk asks you to. The agent receives the same complete HTTP API onboarding that the Agent button copies to the clipboard: the loopback session URL, deck ID, inspection endpoints, native-edit and HTML-authoring lanes, and the preview/apply/verification contract.
 
-> Screenshot placeholder: Starting an agent session and pasting the handoff into an agent task.
+> Screenshot placeholder: Asking the embedded HTTP agent to polish the presentation.
 
-The agent works through DeckWerk's editing API while you watch the results appear live. Its applied changes show up as named revisions under **History**, so you can review or restore them.
+The agent works through the revision-bound HTTP API while you watch changes appear live. Applied drafts become named, undoable changes in **History**. The collaboration shell remains the deck's only writer while the agent session is open.
 
-Agents can also read and reply to comments. This makes a comment a useful way to leave a precise request on a slide or object before starting the session.
+Choose **Stop** to interrupt a turn or **New chat** to discard the current conversation while keeping the same live session. Closing the companion chat ends the agent session and returns DeckWerk to the ordinary editor.
 
-Keep DeckWerk open while the agent works. Close the collaboration window or end the session when the work is done.
+Agents can also read and reply to comments. This makes a comment a useful way to leave a precise request on a slide or object before opening the chat.
+
+Keep DeckWerk open while the agent works so the loopback API and live player remain available.
