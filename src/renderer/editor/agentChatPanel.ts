@@ -16,6 +16,7 @@ export interface AgentChatApi {
   setAgentChatFastMode: (request: AgentChatSetFastModeRequest) => Promise<AgentChatState>;
   interruptAgentChat: () => Promise<AgentChatState>;
   resetAgentChat: () => Promise<AgentChatState>;
+  selectAgentChat?: (request: { chatId: string }) => Promise<AgentChatState>;
   onAgentChatState: (fn: (state: AgentChatState) => void) => () => void;
 }
 
@@ -55,6 +56,7 @@ export class AgentChatPanel {
   private readonly action: HTMLButtonElement;
   private readonly stop: HTMLButtonElement;
   private readonly reset: HTMLButtonElement;
+  private readonly conversationSelect: HTMLSelectElement;
   private state: AgentChatState | null = null;
 
   constructor(options: AgentChatPanelOptions) {
@@ -80,13 +82,18 @@ export class AgentChatPanel {
 
     const headerActions = document.createElement('div');
     headerActions.className = 'agent-chat-header-actions';
+    this.conversationSelect = document.createElement('select');
+    this.conversationSelect.className = 'agent-chat-conversation-select';
+    this.conversationSelect.setAttribute('aria-label', 'Saved Agent chats');
+    this.conversationSelect.title = 'Current and past chats saved with this deck';
+    this.conversationSelect.addEventListener('change', () => void this.changeConversation());
     this.reset = smallButton('New chat', () => void this.newChat());
     const close = smallButton('Close', () => {
       if (options.onClose) options.onClose();
       else this.hide();
     });
     close.setAttribute('aria-label', 'Close agent chat');
-    headerActions.append(this.reset, close);
+    headerActions.append(this.conversationSelect, this.reset, close);
     header.append(titleWrap, headerActions);
 
     this.account = document.createElement('div');
@@ -353,6 +360,20 @@ export class AgentChatPanel {
     }
   }
 
+  private async changeConversation(): Promise<void> {
+    const chatId = this.conversationSelect.value;
+    if (!chatId || !this.options.api.selectAgentChat) return;
+    this.conversationSelect.disabled = true;
+    try {
+      this.applyState(await this.options.api.selectAgentChat({ chatId }));
+      this.input.focus();
+    } catch (error) {
+      this.showLocalError(error);
+    } finally {
+      this.syncControls();
+    }
+  }
+
   private applyState(state: AgentChatState): void {
     const currentDeck = this.options.currentDeckPath();
     if (currentDeck && state.deckPath !== currentDeck) return;
@@ -374,6 +395,7 @@ export class AgentChatPanel {
     }
 
     this.renderModels(state);
+    this.renderConversations(state);
     this.renderScratchpad(state);
 
     this.error.hidden = !state.error;
@@ -400,6 +422,31 @@ export class AgentChatPanel {
       this.scratchpadMode = 'slides';
       this.showScratchpad();
     }
+  }
+
+  private renderConversations(state: AgentChatState): void {
+    const signature = state.conversations
+      .map((chat) => [chat.chatId, chat.title, chat.updatedAt, chat.messageCount].join('\u0000'))
+      .join('\u0001');
+    if (this.conversationSelect.dataset.signature !== signature) {
+      const empty = document.createElement('option');
+      empty.value = '';
+      empty.textContent = state.conversations.length ? 'Saved chats…' : 'No past chats';
+      empty.disabled = state.conversations.length > 0;
+      this.conversationSelect.replaceChildren(
+        empty,
+        ...state.conversations.map((chat) => {
+          const option = document.createElement('option');
+          option.value = chat.chatId;
+          option.textContent = `${chat.title} · ${chat.messageCount}`;
+          option.title = new Date(chat.updatedAt).toLocaleString();
+          return option;
+        }),
+      );
+      this.conversationSelect.dataset.signature = signature;
+    }
+    this.conversationSelect.value = state.chatId ?? '';
+    this.conversationSelect.hidden = state.conversations.length === 0;
   }
 
   private showScratchpad(
@@ -511,6 +558,7 @@ export class AgentChatPanel {
     this.stop.hidden = state?.busy !== true;
     this.stop.disabled = state?.busy !== true;
     this.reset.disabled = state?.busy === true;
+    this.conversationSelect.disabled = state?.busy === true;
     this.switchAccount.disabled = state?.busy === true;
     this.modelSelect.disabled = state?.busy === true || state?.auth !== 'signedIn';
     this.effortSelect.disabled = state?.busy === true || state?.auth !== 'signedIn';

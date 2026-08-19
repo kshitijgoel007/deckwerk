@@ -5,10 +5,12 @@ import { IPC } from '@shared/ipc.js';
 import type {
   AgentContextDraft,
   AgentChatSendRequest,
+  AgentChatSelectRequest,
   AgentChatSetModelRequest,
   AgentChatSetReasoningEffortRequest,
   AgentChatSetFastModeRequest,
   AgentChatState,
+  AgentChatTranscript,
   AgentSessionConnection,
   AgentSessionState,
   AgentRequest,
@@ -103,6 +105,10 @@ const api = {
     ipcRenderer.send(IPC.agentResponse, response),
   getAgentChatState: (): Promise<AgentChatState> =>
     ipcRenderer.invoke(IPC.agentChatGetState),
+  getAgentChatTranscript: (request: AgentChatSelectRequest): Promise<AgentChatTranscript | null> =>
+    ipcRenderer.invoke(IPC.agentChatGetTranscript, request),
+  selectAgentChat: (request: AgentChatSelectRequest): Promise<AgentChatState> =>
+    ipcRenderer.invoke(IPC.agentChatSelect, request),
   sendAgentChatMessage: (request: AgentChatSendRequest): Promise<AgentChatState> =>
     ipcRenderer.invoke(IPC.agentChatSend, request),
   loginAgentChat: (): Promise<AgentChatState> =>

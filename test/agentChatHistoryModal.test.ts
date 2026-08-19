@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { AgentChatState } from '../src/shared/ipc.js';
+import type { AgentChatTranscript } from '../src/shared/ipc.js';
 import { AgentChatHistoryModal } from '../src/renderer/editor/agentChatHistoryModal.js';
 
 describe('Agent chat history modal', () => {
@@ -17,27 +17,17 @@ describe('Agent chat history modal', () => {
   });
 
   it('opens the saved transcript associated with a history edit', async () => {
-    const state: AgentChatState = {
-      deckPath: '/tmp/talk',
+    const transcript: AgentChatTranscript = {
       chatId: 'thread-1',
-      connection: 'ready',
-      auth: 'signedIn',
       accountLabel: 'slides@example.com',
-      models: [],
-      selectedModel: 'gpt-5.6-sol',
-      selectedReasoningEffort: 'low',
-      fastMode: false,
-      scratchpad: null,
-      busy: false,
-      activity: null,
+      updatedAt: '2026-08-19T12:00:00Z',
       messages: [
         { id: 'u1', role: 'user', text: 'Make the opening clearer' },
         { id: 'a1', role: 'assistant', text: 'I revised slides 2 and 3.' },
       ],
-      error: null,
     };
     const modal = new AgentChatHistoryModal({
-      getAgentChatState: vi.fn(async () => state),
+      getAgentChatTranscript: vi.fn(async () => transcript),
     });
     await modal.open('thread-1');
     expect(modal.element.open).toBe(true);

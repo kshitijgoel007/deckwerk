@@ -7,8 +7,10 @@ import type {
   AgentChatMessage,
   AgentChatModel,
   AgentChatScratchpad,
+  AgentChatConversationSummary,
   AgentChatSendRequest,
   AgentChatState,
+  AgentChatTranscript,
 } from '@shared/ipc.js';
 import {
   CodexAppServerClient,
@@ -98,6 +100,8 @@ interface AgentChatSession {
   scratchpad: AgentChatScratchpad | null;
   queuedFollowUps: string[];
   messages: AgentChatMessage[];
+  updatedAt: string;
+  archivedChats: PersistedConversation[];
   busy: boolean;
   activity: string | null;
   error: string | null;
@@ -120,8 +124,7 @@ export interface AgentChatControllerOptions {
 
 export const AGENT_CHAT_FILE = 'agent-chats.json';
 
-interface PersistedAgentChat {
-  version: 1;
+interface PersistedConversation {
   threadId: string | null;
   threadAccount: string | null;
   model: string | null;
@@ -129,6 +132,12 @@ interface PersistedAgentChat {
   fastMode: boolean;
   messages: AgentChatMessage[];
   updatedAt: string;
+}
+
+interface PersistedAgentChats {
+  version: 2;
+  active: PersistedConversation;
+  archived: PersistedConversation[];
 }
 
 /** Owns deck-scoped Codex threads and exposes only normalized chat state to Electron. */
@@ -208,6 +217,7 @@ export class AgentChatController {
       // Threads belong to the account that created them. Never resume one
       // after authentication changes, even when it targeted the same deck.
       for (const candidate of this.sessions.values()) {
+        this.archiveActive(candidate);
         candidate.threadId = null;
         candidate.threadAttached = false;
         candidate.threadAccount = null;
@@ -247,6 +257,7 @@ export class AgentChatController {
       if (session.busy) return await this.steer(session, text);
 
       session.messages.push({ id: randomUUID(), role: 'user', text });
+      session.updatedAt = new Date().toISOString();
       session.busy = true;
       session.activity = 'Starting the deck API session…';
       session.error = null;
@@ -299,6 +310,7 @@ export class AgentChatController {
 
   private async steer(session: AgentChatSession, text: string): Promise<AgentChatState> {
     session.messages.push({ id: randomUUID(), role: 'user', text });
+    session.updatedAt = new Date().toISOString();
     if (!session.threadId || !session.activeTurnId) {
       session.queuedFollowUps.push(text);
       session.activity = 'Queueing follow-up…';
@@ -398,6 +410,33 @@ export class AgentChatController {
     return this.session(deckPath).threadId;
   }
 
+  getTranscript(deckPath: string, chatId: string): AgentChatTranscript | null {
+    const session = this.session(deckPath);
+    const conversation = session.threadId === chatId
+      ? conversationFromSession(session)
+      : session.archivedChats.find((candidate) => candidate.threadId === chatId);
+    if (!conversation) return null;
+    return {
+      chatId,
+      accountLabel: conversation.threadAccount,
+      updatedAt: conversation.updatedAt,
+      messages: conversation.messages.map((item) => ({ ...item })),
+    };
+  }
+
+  async select(deckPath: string, chatId: string): Promise<AgentChatState> {
+    const session = this.session(deckPath);
+    if (session.busy) throw new Error('Stop the active agent turn before switching chats');
+    if (session.threadId === chatId) return this.snapshot(session);
+    const conversation = session.archivedChats.find((candidate) => candidate.threadId === chatId);
+    if (!conversation) throw new Error('That Agent chat is no longer available in this deck');
+    this.archiveActive(session);
+    session.archivedChats = session.archivedChats.filter((candidate) => candidate.threadId !== chatId);
+    loadConversation(session, conversation);
+    this.emit(session);
+    return this.snapshot(session);
+  }
+
   async interrupt(deckPath: string): Promise<AgentChatState> {
     const session = this.session(deckPath);
     if (!session.threadId || !session.activeTurnId || !session.busy) return this.snapshot(session);
@@ -417,6 +456,7 @@ export class AgentChatController {
   async reset(deckPath: string): Promise<AgentChatState> {
     const session = this.session(deckPath);
     if (session.busy) await this.interrupt(deckPath);
+    this.archiveActive(session);
     session.threadId = null;
     session.threadAttached = false;
     session.threadAccount = null;
@@ -426,6 +466,7 @@ export class AgentChatController {
     session.scratchpad = null;
     session.queuedFollowUps = [];
     session.messages = [];
+    session.updatedAt = new Date().toISOString();
     session.busy = false;
     session.activity = null;
     session.error = null;
@@ -610,6 +651,7 @@ export class AgentChatController {
         session.messages.push(assistant);
       }
       assistant.text += delta;
+      session.updatedAt = new Date().toISOString();
       session.activity = 'Responding…';
       this.emit(session);
       return;
@@ -694,22 +736,25 @@ export class AgentChatController {
     if (!session) {
       const selected = this.models.find((candidate) => candidate.isDefault) ?? this.models[0];
       const persisted = this.loadPersisted(deckPath);
+      const active = persisted?.active;
       session = {
         deckPath,
-        threadId: persisted?.threadId ?? null,
+        threadId: active?.threadId ?? null,
         threadAttached: false,
-        threadAccount: persisted?.threadAccount ?? null,
+        threadAccount: active?.threadAccount ?? null,
         activeTurnId: null,
         agentPrompt: null,
         runtimeDir: null,
-        model: persisted?.model ?? selected?.model ?? null,
-        reasoningEffort: persisted?.reasoningEffort ?? selected?.defaultReasoningEffort
+        model: active?.model ?? selected?.model ?? null,
+        reasoningEffort: active?.reasoningEffort ?? selected?.defaultReasoningEffort
           ?? selected?.reasoningEfforts[0]?.effort
           ?? null,
-        fastMode: persisted?.fastMode ?? defaultFastMode(selected),
+        fastMode: active?.fastMode ?? defaultFastMode(selected),
         scratchpad: null,
         queuedFollowUps: [],
-        messages: persisted?.messages.map((item) => ({ ...item })) ?? [],
+        messages: active?.messages.map((item) => ({ ...item })) ?? [],
+        updatedAt: active?.updatedAt ?? new Date().toISOString(),
+        archivedChats: persisted?.archived.map(cloneConversation) ?? [],
         busy: false,
         activity: null,
         error: null,
@@ -723,6 +768,7 @@ export class AgentChatController {
     return {
       deckPath: session.deckPath,
       chatId: session.threadId,
+      conversations: conversationSummaries(session),
       connection: this.connection,
       auth: this.auth,
       accountLabel: this.accountLabel,
@@ -818,7 +864,16 @@ export class AgentChatController {
     session.threadAccount = this.accountLabel;
   }
 
-  private loadPersisted(deckPath: string): PersistedAgentChat | null {
+  private archiveActive(session: AgentChatSession): void {
+    const conversation = conversationFromSession(session);
+    if (!conversation.threadId || conversation.messages.length === 0) return;
+    session.archivedChats = session.archivedChats
+      .filter((candidate) => candidate.threadId !== conversation.threadId);
+    session.archivedChats.push(conversation);
+    session.archivedChats.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  }
+
+  private loadPersisted(deckPath: string): PersistedAgentChats | null {
     if (this.options.persistence === false) return null;
     try {
       return parsePersistedChat(JSON.parse(readFileSync(join(deckPath, AGENT_CHAT_FILE), 'utf8')));
@@ -839,15 +894,10 @@ export class AgentChatController {
 
   private persistNow(session: AgentChatSession): void {
     if (this.options.persistence === false) return;
-    const payload: PersistedAgentChat = {
-      version: 1,
-      threadId: session.threadId,
-      threadAccount: session.threadAccount,
-      model: session.model,
-      reasoningEffort: session.reasoningEffort,
-      fastMode: session.fastMode,
-      messages: session.messages.map((item) => ({ ...item })),
-      updatedAt: new Date().toISOString(),
+    const payload: PersistedAgentChats = {
+      version: 2,
+      active: conversationFromSession(session),
+      archived: session.archivedChats.map(cloneConversation),
     };
     const target = join(session.deckPath, AGENT_CHAT_FILE);
     const temporary = join(session.deckPath, `.${AGENT_CHAT_FILE}.${randomUUID()}.tmp`);
@@ -860,9 +910,27 @@ export class AgentChatController {
   }
 }
 
-function parsePersistedChat(value: unknown): PersistedAgentChat | null {
+function parsePersistedChat(value: unknown): PersistedAgentChats | null {
   const input = record(value);
-  if (input.version !== 1 || !Array.isArray(input.messages)) return null;
+  if (input.version === 1) {
+    const active = parseConversation(input);
+    return active ? { version: 2, active, archived: [] } : null;
+  }
+  if (input.version !== 2) return null;
+  const active = parseConversation(input.active);
+  if (!active) return null;
+  const archived = Array.isArray(input.archived)
+    ? input.archived.flatMap((candidate: unknown) => {
+      const parsed = parseConversation(candidate);
+      return parsed?.threadId ? [parsed] : [];
+    })
+    : [];
+  return { version: 2, active, archived };
+}
+
+function parseConversation(value: unknown): PersistedConversation | null {
+  const input = record(value);
+  if (!Array.isArray(input.messages)) return null;
   const messages = input.messages.flatMap((candidate: unknown): AgentChatMessage[] => {
     const item = record(candidate);
     if (
@@ -878,7 +946,6 @@ function parsePersistedChat(value: unknown): PersistedAgentChat | null {
     } as AgentChatMessage];
   });
   return {
-    version: 1,
     threadId: typeof input.threadId === 'string' ? input.threadId : null,
     threadAccount: typeof input.threadAccount === 'string' ? input.threadAccount : null,
     model: typeof input.model === 'string' ? input.model : null,
@@ -887,6 +954,64 @@ function parsePersistedChat(value: unknown): PersistedAgentChat | null {
     messages,
     updatedAt: typeof input.updatedAt === 'string' ? input.updatedAt : new Date(0).toISOString(),
   };
+}
+
+function conversationFromSession(session: AgentChatSession): PersistedConversation {
+  return {
+    threadId: session.threadId,
+    threadAccount: session.threadAccount,
+    model: session.model,
+    reasoningEffort: session.reasoningEffort,
+    fastMode: session.fastMode,
+    messages: session.messages.map((item) => ({ ...item })),
+    updatedAt: session.updatedAt,
+  };
+}
+
+function cloneConversation(conversation: PersistedConversation): PersistedConversation {
+  return {
+    ...conversation,
+    messages: conversation.messages.map((item) => ({ ...item })),
+  };
+}
+
+function loadConversation(session: AgentChatSession, conversation: PersistedConversation): void {
+  session.threadId = conversation.threadId;
+  session.threadAttached = false;
+  session.threadAccount = conversation.threadAccount;
+  session.activeTurnId = null;
+  session.agentPrompt = null;
+  session.runtimeDir = null;
+  session.model = conversation.model;
+  session.reasoningEffort = conversation.reasoningEffort;
+  session.fastMode = conversation.fastMode;
+  session.scratchpad = null;
+  session.queuedFollowUps = [];
+  session.messages = conversation.messages.map((item) => ({ ...item }));
+  session.updatedAt = conversation.updatedAt;
+  session.busy = false;
+  session.activity = null;
+  session.error = null;
+}
+
+function conversationSummaries(session: AgentChatSession): AgentChatConversationSummary[] {
+  const conversations = [conversationFromSession(session), ...session.archivedChats]
+    .filter((conversation): conversation is PersistedConversation & { threadId: string } =>
+      Boolean(conversation.threadId && conversation.messages.length));
+  return conversations
+    .map((conversation) => ({
+      chatId: conversation.threadId,
+      title: conversationTitle(conversation.messages),
+      updatedAt: conversation.updatedAt,
+      messageCount: conversation.messages.length,
+      active: conversation.threadId === session.threadId,
+    }))
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+}
+
+function conversationTitle(messages: AgentChatMessage[]): string {
+  const first = messages.find((item) => item.role === 'user' && item.text.trim());
+  return first ? shorten(first.text.replace(/\s+/g, ' ').trim(), 54) : 'Untitled chat';
 }
 
 function promptWithTranscript(prompt: string, messages: AgentChatMessage[]): string {

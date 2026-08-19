@@ -6,6 +6,7 @@ import { AgentChatPanel, type AgentChatApi } from '../src/renderer/editor/agentC
 const ready = (over: Partial<AgentChatState> = {}): AgentChatState => ({
   deckPath: '/tmp/talk',
   chatId: 'thread-1',
+  conversations: [],
   connection: 'ready',
   auth: 'signedIn',
   accountLabel: 'slides@example.com',
@@ -180,6 +181,42 @@ describe('agent chat panel', () => {
     expect(switchAccount).toHaveBeenCalledOnce();
     expect(panel.element.querySelector('.agent-chat-account')?.textContent)
       .toContain('vsitzmann@rhoda.ai');
+  });
+
+  it('lists saved deck chats and switches to a past conversation', async () => {
+    let listener: (state: AgentChatState) => void = () => undefined;
+    const selectAgentChat = vi.fn(async ({ chatId }: { chatId: string }) => ready({
+      chatId,
+      messages: [{ id: 'old-user', role: 'user', text: 'Earlier request' }],
+    }));
+    const api: AgentChatApi = {
+      getAgentChatState: async () => ready(),
+      sendAgentChatMessage: async () => ready(),
+      loginAgentChat: async () => ready(),
+      switchAgentChatAccount: async () => ready(),
+      setAgentChatModel: async ({ model }) => ready({ selectedModel: model }),
+      setAgentChatReasoningEffort: async ({ effort }) => ready({ selectedReasoningEffort: effort }),
+      setAgentChatFastMode: async ({ enabled }) => ready({ fastMode: enabled }),
+      interruptAgentChat: async () => ready(),
+      resetAgentChat: async () => ready(),
+      selectAgentChat,
+      onAgentChatState: (fn) => { listener = fn; return () => undefined; },
+    };
+    const panel = new AgentChatPanel({ api, currentDeckPath: () => '/tmp/talk' });
+    listener(ready({
+      conversations: [
+        { chatId: 'thread-1', title: 'Current request', updatedAt: '2026-08-19T12:00:00Z', messageCount: 4, active: true },
+        { chatId: 'thread-old', title: 'Earlier request', updatedAt: '2026-08-18T12:00:00Z', messageCount: 2, active: false },
+      ],
+    }));
+    const select = panel.element.querySelector<HTMLSelectElement>('.agent-chat-conversation-select')!;
+    expect([...select.options].map((option) => option.textContent))
+      .toEqual(['Saved chats…', 'Current request · 4', 'Earlier request · 2']);
+    select.value = 'thread-old';
+    select.dispatchEvent(new window.Event('change', { bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(selectAgentChat).toHaveBeenCalledWith({ chatId: 'thread-old' });
+    expect(panel.element.textContent).toContain('Earlier request');
   });
 
   it('shows the account model catalog and applies a selection', async () => {

@@ -1,7 +1,7 @@
-import type { AgentChatState } from '@shared/ipc.js';
+import type { AgentChatTranscript } from '@shared/ipc.js';
 
 export interface AgentChatHistoryApi {
-  getAgentChatState: () => Promise<AgentChatState>;
+  getAgentChatTranscript: (request: { chatId: string }) => Promise<AgentChatTranscript | null>;
 }
 
 /** Read-only conversation viewer opened from an Agent-authored history item. */
@@ -44,13 +44,13 @@ export class AgentChatHistoryModal {
     this.messages.replaceChildren();
     if (!this.element.open) this.element.showModal();
     try {
-      const state = await this.api.getAgentChatState();
-      if (state.chatId !== chatId) {
-        this.status.textContent = 'This edit belongs to an older Agent chat that is not available in the active deck transcript.';
+      const transcript = await this.api.getAgentChatTranscript({ chatId });
+      if (!transcript) {
+        this.status.textContent = 'This saved Agent chat is no longer available in the deck.';
         return;
       }
-      this.status.textContent = `${state.accountLabel ?? 'Agent'} · ${state.messages.length} messages`;
-      for (const message of state.messages) {
+      this.status.textContent = `${transcript.accountLabel ?? 'Agent'} · ${transcript.messages.length} messages`;
+      for (const message of transcript.messages) {
         const item = document.createElement('article');
         item.className = `agent-history-message agent-history-message-${message.role}`;
         const role = document.createElement('strong');

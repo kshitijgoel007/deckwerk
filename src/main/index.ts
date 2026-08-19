@@ -18,10 +18,12 @@ import { IPC } from '@shared/ipc.js';
 import type {
   AgentContextDraft,
   AgentChatSendRequest,
+  AgentChatSelectRequest,
   AgentChatSetModelRequest,
   AgentChatSetReasoningEffortRequest,
   AgentChatSetFastModeRequest,
   AgentChatState,
+  AgentChatTranscript,
   AgentSessionConnection,
   AgentSessionState,
   AgentResponse,
@@ -570,6 +572,22 @@ function registerHandlers(): void {
     const s = requireSession();
     return agentChat.getState(s.dir);
   });
+  ipcMain.handle(
+    IPC.agentChatGetTranscript,
+    async (_event, request: AgentChatSelectRequest): Promise<AgentChatTranscript | null> => {
+      const s = requireSession();
+      if (!request || typeof request.chatId !== 'string') throw new Error('A chat id is required');
+      return agentChat.getTranscript(s.dir, request.chatId);
+    },
+  );
+  ipcMain.handle(
+    IPC.agentChatSelect,
+    async (_event, request: AgentChatSelectRequest): Promise<AgentChatState> => {
+      const s = requireSession();
+      if (!request || typeof request.chatId !== 'string') throw new Error('A chat id is required');
+      return agentChat.select(s.dir, request.chatId);
+    },
+  );
   ipcMain.handle(IPC.agentChatLogin, async (): Promise<AgentChatState> => {
     const s = requireSession();
     return agentChat.login(s.dir);

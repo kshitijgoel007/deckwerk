@@ -1941,6 +1941,18 @@ button.magic-object-hit.selected-source:hover:not(:disabled) {
   font-size: 11px;
 }
 
+.agent-chat-conversation-select {
+  width: 148px;
+  min-width: 0;
+  padding: 4px 22px 4px 7px;
+  border-color: var(--line);
+  color: var(--muted);
+  font-size: 10.5px;
+  text-overflow: ellipsis;
+}
+
+.agent-chat-conversation-select[hidden] { display: none; }
+
 .agent-chat-account {
   display: flex;
   flex: none;

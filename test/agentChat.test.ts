@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { readFile, rm } from 'node:fs/promises';
+import { readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { mkdtemp } from 'node:fs/promises';
@@ -14,6 +14,7 @@ import { agentClipboardPrompt } from '../src/server/agentBrief.js';
 class FakeAppServer {
   readonly requests: Array<{ method: string; params: any }> = [];
   account: any = { type: 'chatgpt', email: 'slides@example.com', planType: 'plus' };
+  nextThreadId = 'thread-1';
   async start(): Promise<void> {}
   async request<T>(method: string, params?: unknown): Promise<T> {
     this.requests.push({ method, params });
@@ -47,7 +48,7 @@ class FakeAppServer {
       ],
       nextCursor: null,
     } as T;
-    if (method === 'thread/start') return { thread: { id: 'thread-1' } } as T;
+    if (method === 'thread/start') return { thread: { id: this.nextThreadId } } as T;
     if (method === 'thread/resume') return { thread: { id: (params as any).threadId } } as T;
     if (method === 'turn/start') return { turn: { id: 'turn-1', status: 'inProgress' } } as T;
     if (method === 'turn/steer') return { turnId: 'turn-1' } as T;
@@ -310,11 +311,13 @@ describe('embedded agent chat controller', () => {
 
       const saved = JSON.parse(await readFile(join(deckPath, 'agent-chats.json'), 'utf8'));
       expect(saved).toMatchObject({
-        version: 1,
-        threadId: 'thread-1',
-        threadAccount: 'slides@example.com',
+        version: 2,
+        active: {
+          threadId: 'thread-1',
+          threadAccount: 'slides@example.com',
+        },
       });
-      expect(saved.messages.map((message: any) => [message.role, message.text]))
+      expect(saved.active.messages.map((message: any) => [message.role, message.text]))
         .toEqual([['user', 'Polish this slide'], ['assistant', 'Saved reply']]);
 
       const secondServer = new FakeAppServer();
@@ -331,6 +334,70 @@ describe('embedded agent chat controller', () => {
         });
       expect(secondServer.requests.filter((entry) => entry.method === 'thread/start')).toHaveLength(0);
       second.close();
+    } finally {
+      await rm(deckPath, { recursive: true, force: true });
+    }
+  });
+
+  it('migrates the original single-chat deck file into conversation history', async () => {
+    const deckPath = await mkdtemp(join(tmpdir(), 'deckwerk-agent-chat-v1-'));
+    try {
+      await writeFile(join(deckPath, 'agent-chats.json'), JSON.stringify({
+        version: 1,
+        threadId: 'legacy-thread',
+        threadAccount: 'slides@example.com',
+        model: 'gpt-5.6-sol',
+        reasoningEffort: 'low',
+        fastMode: false,
+        messages: [{ id: 'legacy-user', role: 'user', text: 'Legacy deck request' }],
+        updatedAt: '2026-08-18T12:00:00Z',
+      }));
+      const controller = new AgentChatController({ clientFactory: () => new FakeAppServer() });
+      const restored = await controller.getState(deckPath);
+      expect(restored.chatId).toBe('legacy-thread');
+      expect(restored.conversations[0]).toMatchObject({
+        chatId: 'legacy-thread', title: 'Legacy deck request', active: true,
+      });
+      controller.close();
+    } finally {
+      await rm(deckPath, { recursive: true, force: true });
+    }
+  });
+
+  it('archives chats with the deck and can reopen an earlier conversation', async () => {
+    const deckPath = await mkdtemp(join(tmpdir(), 'deckwerk-agent-chat-history-'));
+    try {
+      const server = new FakeAppServer();
+      let notify: (event: AppServerNotification) => void = () => undefined;
+      const controller = new AgentChatController({
+        clientFactory: (callbacks) => {
+          notify = callbacks.onNotification;
+          return server;
+        },
+      });
+      await controller.getState(deckPath);
+      await controller.send(deckPath, request, async () => 'first session');
+      notify({
+        method: 'turn/completed',
+        params: { threadId: 'thread-1', turn: { id: 'turn-1', status: 'completed' } },
+      });
+      await controller.reset(deckPath);
+      server.nextThreadId = 'thread-2';
+      await controller.send(deckPath, { text: 'Second conversation' }, async () => 'second session');
+      notify({
+        method: 'turn/completed',
+        params: { threadId: 'thread-2', turn: { id: 'turn-1', status: 'completed' } },
+      });
+
+      const current = await controller.getState(deckPath);
+      expect(current.conversations.map((chat) => chat.chatId))
+        .toEqual(['thread-2', 'thread-1']);
+      expect(controller.getTranscript(deckPath, 'thread-1')?.messages[0]?.text)
+        .toBe('Polish this slide');
+      const reopened = await controller.select(deckPath, 'thread-1');
+      expect(reopened.chatId).toBe('thread-1');
+      expect(reopened.messages[0]?.text).toBe('Polish this slide');
+      controller.close();
     } finally {
       await rm(deckPath, { recursive: true, force: true });
     }

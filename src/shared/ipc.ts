@@ -46,6 +46,8 @@ export const IPC = {
   agentRequest: 'agent:request',
   agentResponse: 'agent:response',
   agentChatGetState: 'agentChat:getState',
+  agentChatGetTranscript: 'agentChat:getTranscript',
+  agentChatSelect: 'agentChat:select',
   agentChatSend: 'agentChat:send',
   agentChatLogin: 'agentChat:login',
   agentChatSwitchAccount: 'agentChat:switchAccount',
@@ -70,6 +72,21 @@ export interface AgentChatMessage {
   role: 'user' | 'assistant' | 'system';
   text: string;
   error?: boolean;
+}
+
+export interface AgentChatConversationSummary {
+  chatId: string;
+  title: string;
+  updatedAt: string;
+  messageCount: number;
+  active: boolean;
+}
+
+export interface AgentChatTranscript {
+  chatId: string;
+  accountLabel: string | null;
+  updatedAt: string;
+  messages: AgentChatMessage[];
 }
 
 export interface AgentChatModel {
@@ -97,6 +114,8 @@ export interface AgentChatState {
   deckPath: string;
   /** Stable Codex thread id used to link Agent-authored history entries. */
   chatId: string | null;
+  /** Current and archived conversations saved with this deck. */
+  conversations: AgentChatConversationSummary[];
   connection: AgentChatConnection;
   auth: AgentChatAuth;
   accountLabel: string | null;
@@ -113,6 +132,10 @@ export interface AgentChatState {
 
 export interface AgentChatSendRequest {
   text: string;
+}
+
+export interface AgentChatSelectRequest {
+  chatId: string;
 }
 
 export interface AgentChatSetModelRequest {
