@@ -39,6 +39,7 @@ describe('agent chat panel', () => {
         return ready({ messages: [{ id: 'u1', role: 'user', text: request.text }], busy: true });
       },
       loginAgentChat: async () => ready(),
+      switchAgentChatAccount: async () => ready(),
       interruptAgentChat: async () => ready(),
       resetAgentChat: async () => ready(),
       onAgentChatState: (fn) => { listener = fn; return () => undefined; },
@@ -69,6 +70,7 @@ describe('agent chat panel', () => {
       getAgentChatState: async () => ready(),
       sendAgentChatMessage: async () => ready(),
       loginAgentChat: async () => ready(),
+      switchAgentChatAccount: async () => ready(),
       interruptAgentChat: interrupt,
       resetAgentChat: async () => ready(),
       onAgentChatState: (fn) => { listener = fn; return () => undefined; },
@@ -91,6 +93,7 @@ describe('agent chat panel', () => {
       getAgentChatState: async () => ready(),
       sendAgentChatMessage: async () => ready(),
       loginAgentChat: async () => ready(),
+      switchAgentChatAccount: async () => ready(),
       interruptAgentChat: async () => ready(),
       resetAgentChat: async () => ready(),
       onAgentChatState: () => () => undefined,
@@ -112,5 +115,28 @@ describe('agent chat panel', () => {
       .find((button) => button.textContent === 'Close')!
       .click();
     expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it('offers account switching beside the signed-in identity', async () => {
+    let listener: (state: AgentChatState) => void = () => undefined;
+    const switchAccount = vi.fn(async () => ready({ accountLabel: 'vsitzmann@rhoda.ai' }));
+    const api: AgentChatApi = {
+      getAgentChatState: async () => ready(),
+      sendAgentChatMessage: async () => ready(),
+      loginAgentChat: async () => ready(),
+      switchAgentChatAccount: switchAccount,
+      interruptAgentChat: async () => ready(),
+      resetAgentChat: async () => ready(),
+      onAgentChatState: (fn) => { listener = fn; return () => undefined; },
+    };
+    const panel = new AgentChatPanel({ api, currentDeckPath: () => '/tmp/talk' });
+    listener(ready());
+    const button = panel.element.querySelector<HTMLButtonElement>('.agent-chat-switch-account')!;
+    expect(button.textContent).toBe('Switch account');
+    button.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(switchAccount).toHaveBeenCalledOnce();
+    expect(panel.element.querySelector('.agent-chat-account')?.textContent)
+      .toContain('vsitzmann@rhoda.ai');
   });
 });

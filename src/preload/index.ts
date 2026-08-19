@@ -104,6 +104,8 @@ const api = {
     ipcRenderer.invoke(IPC.agentChatSend, request),
   loginAgentChat: (): Promise<AgentChatState> =>
     ipcRenderer.invoke(IPC.agentChatLogin),
+  switchAgentChatAccount: (): Promise<AgentChatState> =>
+    ipcRenderer.invoke(IPC.agentChatSwitchAccount),
   interruptAgentChat: (): Promise<AgentChatState> =>
     ipcRenderer.invoke(IPC.agentChatInterrupt),
   resetAgentChat: (): Promise<AgentChatState> =>

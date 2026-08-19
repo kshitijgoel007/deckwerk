@@ -48,6 +48,7 @@ export const IPC = {
   agentChatGetState: 'agentChat:getState',
   agentChatSend: 'agentChat:send',
   agentChatLogin: 'agentChat:login',
+  agentChatSwitchAccount: 'agentChat:switchAccount',
   agentChatInterrupt: 'agentChat:interrupt',
   agentChatReset: 'agentChat:reset',
   agentChatState: 'agentChat:state',

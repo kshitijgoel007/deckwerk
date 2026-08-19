@@ -41,6 +41,14 @@ const api: AgentChatApi = {
     return state;
   },
   loginAgentChat: async () => publish({ ...state, auth: 'signedIn', accountLabel: 'slides@example.com' }),
+  switchAgentChatAccount: async () => publish({
+    ...state,
+    auth: 'signedIn',
+    accountLabel: state.accountLabel === 'slides@example.com'
+      ? 'vsitzmann@rhoda.ai'
+      : 'slides@example.com',
+    messages: [],
+  }),
   interruptAgentChat: async () => publish({ ...state, busy: false, activity: null }),
   resetAgentChat: async () => publish({ ...state, busy: false, activity: null, messages: [] }),
   onAgentChatState: (fn) => { listener = fn; return () => undefined; },

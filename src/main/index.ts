@@ -103,6 +103,9 @@ let agentSessionReturn: Promise<void> | null = null;
 let quitting = false;
 const agentRuntime = new AgentRuntime(() => editorWindow);
 const agentChat = new AgentChatController({
+  // DeckWerk owns its embedded agent login. Switching it must not sign the
+  // user's other Codex clients in or out.
+  codexHome: join(app.getPath('userData'), 'agent-codex'),
   openExternal: async (url) => {
     const parsed = new URL(url);
     if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
@@ -501,6 +504,10 @@ function registerHandlers(): void {
   ipcMain.handle(IPC.agentChatLogin, async (): Promise<AgentChatState> => {
     const s = requireSession();
     return agentChat.login(s.dir);
+  });
+  ipcMain.handle(IPC.agentChatSwitchAccount, async (): Promise<AgentChatState> => {
+    const s = requireSession();
+    return agentChat.switchAccount(s.dir);
   });
   ipcMain.handle(
     IPC.agentChatSend,

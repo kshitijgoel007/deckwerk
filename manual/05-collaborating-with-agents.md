@@ -4,6 +4,8 @@ Click **Agent…** to start a deck-scoped agent session. A compact chat panel dr
 
 Sign in with ChatGPT if DeckWerk asks you to. The agent receives the same complete HTTP API onboarding that the Agent button copies to the clipboard: the loopback session URL, deck ID, inspection endpoints, native-edit and HTML-authoring lanes, and the preview/apply/verification contract.
 
+The signed-in email appears at the top of the panel. Choose **Switch account** to use a different ChatGPT account; DeckWerk keeps this login isolated from other Codex clients on the computer.
+
 > Screenshot placeholder: Asking the embedded HTTP agent to polish the presentation.
 
 The agent works through the revision-bound HTTP API while you watch changes appear live. Applied drafts become named changes in **History**. In the background, the editor is a peer of the same authoritative collaboration session, so local and agent edits stay synchronized.

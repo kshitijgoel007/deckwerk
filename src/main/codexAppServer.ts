@@ -19,6 +19,8 @@ export interface AppServerNotification {
 
 export interface AppServerClientOptions {
   binaryPath?: string;
+  /** Isolated Codex configuration/auth root for an embedding application. */
+  codexHome?: string;
   spawn?: (binary: string, args: string[]) => ChildProcessWithoutNullStreams;
   requestTimeoutMs?: number;
   onNotification?: (notification: AppServerNotification) => void;
@@ -58,6 +60,9 @@ export class CodexAppServerClient {
     const spawn = this.options.spawn ?? ((command, args) => spawnChild(command, args, {
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
+      env: this.options.codexHome
+        ? { ...process.env, CODEX_HOME: this.options.codexHome }
+        : process.env,
     }));
     this.intentionalClose = false;
     this.stderr = '';

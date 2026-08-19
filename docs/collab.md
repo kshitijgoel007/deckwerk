@@ -56,6 +56,10 @@ chat** clears only the Codex thread; **Stop** interrupts the active turn.
 Choosing **Close** in the panel ends the hosted session, flushes the server, and
 returns the already-open editor to ordinary file-backed persistence.
 
+The panel displays the ChatGPT email used by its embedded agent. **Switch
+account** signs out only DeckWerk's isolated Codex profile, discards threads
+created by the previous account, and opens the managed ChatGPT sign-in flow.
+
 ## Comments
 
 Slides and elements carry `comments: [{id, author, text, ts, resolved}]`

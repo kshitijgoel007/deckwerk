@@ -1874,9 +1874,24 @@ button.magic-object-hit.selected-source:hover:not(:disabled) {
 }
 
 .agent-chat-account {
+  display: flex;
   flex: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
   padding: 8px 12px;
   border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.agent-chat-account[hidden] { display: none; }
+
+.agent-chat-switch-account {
+  flex: none;
+  padding: 4px 7px;
+  border-color: var(--line);
+  background: transparent;
   color: var(--muted);
   font-size: 11px;
 }

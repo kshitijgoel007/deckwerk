@@ -4,6 +4,7 @@ export interface AgentChatApi {
   getAgentChatState: () => Promise<AgentChatState>;
   sendAgentChatMessage: (request: AgentChatSendRequest) => Promise<AgentChatState>;
   loginAgentChat: () => Promise<AgentChatState>;
+  switchAgentChatAccount: () => Promise<AgentChatState>;
   interruptAgentChat: () => Promise<AgentChatState>;
   resetAgentChat: () => Promise<AgentChatState>;
   onAgentChatState: (fn: (state: AgentChatState) => void) => () => void;
@@ -25,6 +26,7 @@ export class AgentChatPanel {
   private readonly account: HTMLElement;
   private readonly error: HTMLElement;
   private readonly signIn: HTMLButtonElement;
+  private readonly switchAccount: HTMLButtonElement;
   private readonly input: HTMLTextAreaElement;
   private readonly action: HTMLButtonElement;
   private readonly reset: HTMLButtonElement;
@@ -67,6 +69,8 @@ export class AgentChatPanel {
     this.account.hidden = true;
     this.signIn = smallButton('Sign in with ChatGPT', () => void this.login());
     this.signIn.classList.add('agent-chat-sign-in');
+    this.switchAccount = smallButton('Switch account', () => void this.changeAccount());
+    this.switchAccount.classList.add('agent-chat-switch-account');
     this.account.append(this.signIn);
 
     this.messages = document.createElement('div');
@@ -168,6 +172,17 @@ export class AgentChatPanel {
     }
   }
 
+  private async changeAccount(): Promise<void> {
+    this.switchAccount.disabled = true;
+    try {
+      this.applyState(await this.options.api.switchAgentChatAccount());
+    } catch (error) {
+      this.showLocalError(error);
+    } finally {
+      this.switchAccount.disabled = false;
+    }
+  }
+
   private async newChat(): Promise<void> {
     this.reset.disabled = true;
     try {
@@ -195,7 +210,7 @@ export class AgentChatPanel {
       this.account.replaceChildren();
       const label = document.createElement('span');
       label.textContent = state.accountLabel;
-      this.account.append(label);
+      this.account.append(label, this.switchAccount);
     } else if (state.auth === 'signedOut') {
       this.account.replaceChildren(this.signIn);
     }
@@ -245,6 +260,7 @@ export class AgentChatPanel {
         || state.auth !== 'signedIn';
     this.input.disabled = state?.busy === true || state?.connection === 'unavailable';
     this.reset.disabled = state?.busy === true;
+    this.switchAccount.disabled = state?.busy === true;
   }
 
   private showLocalError(error: unknown): void {

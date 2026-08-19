@@ -56,6 +56,8 @@ export interface AgentChatControllerOptions {
   }) => AppServerLike;
   openExternal?: (url: string) => Promise<unknown>;
   onState?: (state: AgentChatState) => void;
+  /** Keep this embedded agent's login separate from other Codex clients. */
+  codexHome?: string;
 }
 
 /** Owns deck-scoped Codex threads and exposes only normalized chat state to Electron. */
@@ -105,6 +107,36 @@ export class AgentChatController {
       this.emit(session);
     }
     return this.snapshot(session);
+  }
+
+  async switchAccount(deckPath: string): Promise<AgentChatState> {
+    const session = this.session(deckPath);
+    try {
+      await this.ensureClient();
+      if ([...this.sessions.values()].some((candidate) => candidate.busy)) {
+        throw new Error('Stop the active agent turn before switching accounts');
+      }
+      await this.client!.request('account/logout');
+      this.auth = 'signedOut';
+      this.accountLabel = null;
+      // Threads belong to the account that created them. Never resume one
+      // after authentication changes, even when it targeted the same deck.
+      for (const candidate of this.sessions.values()) {
+        candidate.threadId = null;
+        candidate.activeTurnId = null;
+        candidate.agentPrompt = null;
+        candidate.messages = [];
+        candidate.activity = null;
+        candidate.error = null;
+      }
+      this.emitAll();
+      return this.login(deckPath);
+    } catch (error) {
+      session.error = message(error);
+      session.activity = null;
+      this.emit(session);
+      return this.snapshot(session);
+    }
   }
 
   async send(
@@ -222,12 +254,15 @@ export class AgentChatController {
     this.globalError = null;
     this.emitAll();
     this.starting = (async () => {
+      if (this.options.codexHome) {
+        await mkdir(this.options.codexHome, { recursive: true });
+      }
       const callbacks = {
         onNotification: (notification: AppServerNotification) => this.onNotification(notification),
         onExit: (exitMessage: string) => this.onExit(exitMessage),
       };
       this.client = this.options.clientFactory?.(callbacks)
-        ?? new CodexAppServerClient(callbacks);
+        ?? new CodexAppServerClient({ ...callbacks, codexHome: this.options.codexHome });
       await this.client.start();
       this.connection = 'ready';
       await this.refreshAccount();

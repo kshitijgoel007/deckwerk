@@ -21,6 +21,10 @@ class FakeAppServer {
     if (method === 'account/login/start') return {
       type: 'chatgpt', loginId: 'login-1', authUrl: 'https://chatgpt.com/auth',
     } as T;
+    if (method === 'account/logout') {
+      this.account = null;
+      return {} as T;
+    }
     return {} as T;
   }
   close(): void {}
@@ -95,6 +99,30 @@ describe('embedded agent chat controller', () => {
     expect(await controller.getState('/tmp/talk')).toMatchObject({ auth: 'signedOut' });
     await controller.login('/tmp/talk');
     expect(opened).toEqual(['https://chatgpt.com/auth']);
+  });
+
+  it('logs out before starting a fresh account login and drops old-account threads', async () => {
+    const { controller, server, opened, notify } = fixture();
+    await controller.getState('/tmp/talk');
+    await controller.send('/tmp/talk', request, async () => 'old account prompt');
+    notify({
+      method: 'turn/completed',
+      params: { threadId: 'thread-1', turn: { id: 'turn-1', status: 'completed' } },
+    });
+    await controller.switchAccount('/tmp/talk');
+    expect(server.requests.map((entry) => entry.method)).toContain('account/logout');
+    expect(server.requests.findIndex((entry) => entry.method === 'account/logout'))
+      .toBeLessThan(server.requests.findIndex((entry) => entry.method === 'account/login/start'));
+    expect(opened).toEqual(['https://chatgpt.com/auth']);
+
+    server.account = { type: 'chatgpt', email: 'vsitzmann@rhoda.ai', planType: 'team' };
+    notify({ method: 'account/login/completed', params: { success: true } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(await controller.getState('/tmp/talk')).toMatchObject({
+      auth: 'signedIn',
+      accountLabel: 'vsitzmann@rhoda.ai',
+      messages: [],
+    });
   });
 
   it('requests a fresh live-session prompt after the chat is reset', async () => {
