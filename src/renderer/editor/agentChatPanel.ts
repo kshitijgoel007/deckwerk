@@ -5,6 +5,7 @@ import type {
   AgentChatSetReasoningEffortRequest,
   AgentChatState,
 } from '@shared/ipc.js';
+import { makePanelResizable } from './panelResize.js';
 
 export interface AgentChatApi {
   getAgentChatState: () => Promise<AgentChatState>;
@@ -233,6 +234,48 @@ export class AgentChatPanel {
       composer,
     );
     document.body.append(panel, this.scratchpadPanel);
+    makePanelResizable(panel, {
+      storageKey: 'deckwerk.editor.agent-chat-size',
+      sizeTarget: document.documentElement,
+      width: {
+        property: '--agent-chat-width',
+        initial: 400,
+        min: 320,
+        max: () => window.innerWidth <= 900
+          ? window.innerWidth - 24
+          : Math.min(720, window.innerWidth - 468),
+        edge: 'left',
+      },
+      height: {
+        property: '--agent-chat-height',
+        initial: 620,
+        min: 360,
+        max: () => window.innerHeight - 88,
+        edge: 'bottom',
+      },
+    });
+    makePanelResizable(this.scratchpadPanel, {
+      storageKey: 'deckwerk.editor.agent-scratchpad-size',
+      sizeTarget: document.documentElement,
+      width: {
+        property: '--agent-scratchpad-width',
+        initial: 760,
+        min: 420,
+        max: () => window.innerWidth <= 900
+          ? window.innerWidth - 24
+          : window.innerWidth
+            - (Number.parseFloat(document.documentElement.style.getPropertyValue('--agent-chat-width')) || 400)
+            - 48,
+        edge: 'left',
+      },
+      height: {
+        property: '--agent-scratchpad-height',
+        initial: 620,
+        min: 300,
+        max: () => window.innerHeight - 88,
+        edge: 'bottom',
+      },
+    });
     this.element = panel;
     options.api.onAgentChatState((state) => this.applyState(state));
     this.syncControls();

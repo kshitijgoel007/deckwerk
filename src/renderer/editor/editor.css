@@ -125,8 +125,9 @@ body.welcome-mode .deck-only { display: none; }
 /* --- layout --- */
 
 #body {
+  position: relative;
   display: grid;
-  grid-template-columns: 220px 1fr 320px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   min-height: 0;
 }
 
@@ -137,8 +138,81 @@ body.welcome-mode .deck-only { display: none; }
   background: var(--panel);
 }
 
-#rail { border-right: 1px solid var(--line); }
-#side { border-left: 1px solid var(--line); overflow: hidden; }
+#rail {
+  width: var(--rail-width, 220px);
+  border-right: 1px solid var(--line);
+}
+#side {
+  width: var(--sidebar-width, 320px);
+  overflow: hidden;
+  border-left: 1px solid var(--line);
+}
+
+.panel-resize-handle {
+  position: absolute;
+  z-index: 50;
+  touch-action: none;
+}
+
+.panel-resize-divider {
+  position: absolute;
+  z-index: 100;
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  pointer-events: none;
+}
+
+.panel-resize-divider .panel-resize-handle { pointer-events: auto; }
+.panel-resize-rail { left: calc(var(--rail-width, 220px) - 4px); }
+.panel-resize-side { right: calc(var(--sidebar-width, 320px) - 4px); }
+
+.panel-resize-left,
+.panel-resize-right {
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  cursor: ew-resize;
+}
+
+.panel-resize-left { left: 0; }
+.panel-resize-right { right: 0; }
+
+.panel-resize-top,
+.panel-resize-bottom {
+  right: 0;
+  left: 0;
+  height: 8px;
+  cursor: ns-resize;
+}
+
+.panel-resize-top { top: 0; }
+.panel-resize-bottom { bottom: 0; }
+
+.panel-resize-top-left,
+.panel-resize-top-right,
+.panel-resize-bottom-left,
+.panel-resize-bottom-right {
+  width: 16px;
+  height: 16px;
+}
+
+.panel-resize-top-left { top: 0; left: 0; cursor: nwse-resize; }
+.panel-resize-top-right { top: 0; right: 0; cursor: nesw-resize; }
+.panel-resize-bottom-left { bottom: 0; left: 0; cursor: nesw-resize; }
+.panel-resize-bottom-right { right: 0; bottom: 0; cursor: nwse-resize; }
+
+.panel-resize-handle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -3px;
+}
+
+body.panel-resizing {
+  cursor: grabbing;
+  user-select: none;
+}
+
+body.panel-resizing iframe { pointer-events: none; }
 
 /* --- slide rail --- */
 
@@ -254,7 +328,8 @@ body.welcome-mode .deck-only { display: none; }
 
 #body.welcome-mode { grid-template-columns: 1fr; }
 #body.welcome-mode > #rail,
-#body.welcome-mode > #side { display: none; }
+#body.welcome-mode > #side,
+#body.welcome-mode > .panel-resize-divider { display: none; }
 .canvas-host.welcome-mode .stage { display: none; }
 
 .welcome-screen {
@@ -2071,8 +2146,9 @@ button.magic-object-hit.selected-source:hover:not(:disabled) {
   top: 52px;
   right: 12px;
   display: flex;
-  width: min(400px, calc(100vw - 24px));
-  height: min(620px, calc(100vh - 88px));
+  width: min(var(--agent-chat-width, 400px), calc(100vw - 24px));
+  height: min(var(--agent-chat-height, 620px), calc(100vh - 88px));
+  min-width: min(320px, calc(100vw - 24px));
   min-height: 360px;
   overflow: hidden;
   flex-direction: column;
@@ -2234,11 +2310,15 @@ button.magic-object-hit.selected-source:hover:not(:disabled) {
   position: fixed;
   z-index: 8999;
   top: 52px;
-  right: 424px;
+  right: calc(var(--agent-chat-width, 400px) + 24px);
   display: flex;
-  width: min(760px, calc(100vw - 460px));
-  height: min(620px, calc(100vh - 88px));
-  min-width: 420px;
+  width: min(
+    var(--agent-scratchpad-width, 760px),
+    calc(100vw - var(--agent-chat-width, 400px) - 48px)
+  );
+  height: min(var(--agent-scratchpad-height, 620px), calc(100vh - 88px));
+  min-width: min(420px, calc(100vw - 24px));
+  min-height: min(300px, calc(100vh - 88px));
   overflow: hidden;
   flex-direction: column;
   border: 1px solid var(--line);
@@ -2291,7 +2371,7 @@ button.magic-object-hit.selected-source:hover:not(:disabled) {
 @media (max-width: 900px) {
   .agent-scratchpad-panel {
     right: 12px;
-    width: calc(100vw - 24px);
+    width: min(var(--agent-scratchpad-width, 760px), calc(100vw - 24px));
   }
 }
 
@@ -2411,7 +2491,7 @@ button.magic-object-hit.selected-source:hover:not(:disabled) {
 @media (max-width: 560px) {
   .agent-chat-panel {
     right: 8px;
-    width: calc(100vw - 16px);
+    width: min(var(--agent-chat-width, 400px), calc(100vw - 16px));
     height: calc(100vh - 84px);
   }
   .agent-chat-hint { display: none; }
