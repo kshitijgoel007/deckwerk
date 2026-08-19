@@ -135,7 +135,7 @@ describe('measured nodes become deck objects', () => {
     const deck = emptyDeck('Borders');
     deck.slides[0].elements = [{
       id: 'image', type: 'image', x: 10, y: 20, w: 500, h: 300, rot: 0, z: 1,
-      opacity: 1, class: [], style: {}, src: 'assets/demo.png', fit: 'cover', alt: '',
+      opacity: 1, class: [], style: { border: '8px solid #ff3366' }, src: 'assets/demo.png', fit: 'cover', alt: '',
       sourceBox: null, borderColor: '#ff3366', borderWidth: 8, borderRadius: 14,
     }];
     const html = slideToHtml(parseDeck(deck).slides[0], { w: 1920, h: 1080 });
@@ -145,6 +145,11 @@ describe('measured nodes become deck objects', () => {
     expect(html).toContain('outline:8px solid #ff3366');
     expect(html).toContain('outline-offset:-8px');
     expect(html).not.toContain('border:8px solid #ff3366');
+
+    deck.slides[0].elements[0] = { ...deck.slides[0].elements[0], borderWidth: 0 } as SlideElement;
+    const withoutBorder = slideToHtml(parseDeck(deck).slides[0], { w: 1920, h: 1080 });
+    expect(withoutBorder).not.toContain('outline:');
+    expect(withoutBorder).not.toContain('border:8px solid #ff3366');
 
     const measured = elementFromNode(node({
       tag: 'img',

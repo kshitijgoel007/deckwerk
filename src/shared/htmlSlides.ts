@@ -718,7 +718,10 @@ function elementToHtml(element: SlideElement, build?: TimelineEntry): string {
     + ` width:${element.w}px; height:${element.h}px;`
     + (element.rot ? ` transform:rotate(${element.rot}deg);` : '')
     + (element.opacity !== 1 ? ` opacity:${element.opacity};` : '');
+  const typedMediaBorder = (element.type === 'image' || element.type === 'video')
+    && element.borderWidth !== undefined;
   const inline = Object.entries(element.style)
+    .filter(([property]) => !typedMediaBorder || !isMediaBorderPaint(property))
     .map(([property, value]) => ` ${property}:${value};`)
     .join('');
   const attrs = [
