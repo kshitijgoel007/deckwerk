@@ -6,7 +6,7 @@ import { THEMES } from '../src/shared/themes.js';
 describe('theme gallery', () => {
   beforeEach(() => document.body.replaceChildren());
 
-  it('shows every theme with its palette and role-specific font examples', () => {
+  it('shows every theme with its palette and the three current text roles', () => {
     const gallery = createThemeGallery(THEMES, 'basic', vi.fn());
     document.body.appendChild(gallery.element);
 
@@ -14,10 +14,13 @@ describe('theme gallery', () => {
     expect(cards).toHaveLength(THEMES.length);
     for (const [index, card] of [...cards].entries()) {
       expect(card.querySelectorAll('.theme-card-swatch')).toHaveLength(THEMES[index].palette.length);
+      expect(card.querySelector('.theme-card-heading > .theme-card-swatches')).not.toBeNull();
+      expect(card.querySelector('.theme-card-preview > .theme-card-swatches')).toBeNull();
       expect(card.querySelector('.theme-font-title')?.textContent).toContain('The big idea');
-      expect(card.querySelector('.theme-font-heading')?.textContent).toContain('A clear section');
       expect(card.querySelector('.theme-font-body')?.textContent).toContain('Readable body copy');
       expect(card.querySelector('.theme-font-caption')?.textContent).toContain('Supporting detail');
+      expect(card.querySelector('.theme-font-heading')).toBeNull();
+      expect(card.querySelector('.theme-card-description')).toBeNull();
     }
   });
 

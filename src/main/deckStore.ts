@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { copyFile, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
-import { basename, extname, join, resolve } from 'node:path';
+import { copyFile, cp, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { basename, extname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { type Deck, emptyDeck, parseDeck } from '@shared/deck.js';
 import type { ImportedAsset } from '@shared/ipc.js';
@@ -77,6 +77,22 @@ export async function createDeck(dir: string, title?: string): Promise<Deck> {
   await saveDeck(dir, deck);
   await writeFile(join(dir, deck.theme), DEFAULT_THEME, 'utf8');
   await ensureAgentGuide(dir);
+  return deck;
+}
+
+/** Copy a complete deck folder without overwriting an existing destination. */
+export async function copyDeck(sourceDir: string, targetDir: string): Promise<Deck> {
+  const source = resolve(sourceDir);
+  const target = resolve(targetDir);
+  if (target === source) throw new Error('Choose a different folder for Save As');
+  if (target.startsWith(source + sep)) {
+    throw new Error('A saved copy cannot be placed inside the open deck');
+  }
+  if (existsSync(target)) throw new Error(`A file or folder already exists at ${target}`);
+
+  await cp(source, target, { recursive: true, force: false, errorOnExist: true });
+  const deck = await loadDeck(target);
+  await ensureAgentGuide(target);
   return deck;
 }
 
@@ -205,15 +221,16 @@ export async function derivedAssetPath(
   deckDir: string,
   src: string,
   suffix: string,
+  extension = '.mp4',
 ): Promise<{ absolute: string; relative: string }> {
   const assetsDir = join(deckDir, ASSETS_DIR);
   await mkdir(assetsDir, { recursive: true });
   const stem = sanitize(basename(src, extname(src)));
   const existing = new Set(await readdir(assetsDir).catch(() => []));
-  // Always .mp4: a crop forces a re-encode anyway, and H.264 in MP4 is the one
-  // combination Chromium plays identically on macOS and Linux.
+  // Trim callers keep the .mp4 default; raster edits opt into .png.
   for (let n = 1; ; n++) {
-    const name = `${stem}.${suffix}${n}.mp4`;
+    const ext = extension.startsWith('.') ? extension : `.${extension}`;
+    const name = `${stem}.${suffix}${n}${ext}`;
     if (!existing.has(name)) {
       return { absolute: join(assetsDir, name), relative: `${ASSETS_DIR}/${name}` };
     }

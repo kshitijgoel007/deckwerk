@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy"
+          content="default-src 'self'; img-src 'self' deck: data:; style-src 'self' 'unsafe-inline'; script-src 'self'" />
+    <title>Raster Paint</title>
+  </head>
+  <body>
+    <main id="app">
+      <div id="toolbar" aria-label="Raster paint tools">
+        <label class="color-control">
+          <span>Color</span>
+          <input id="color" type="color" value="#ff3b30" />
+        </label>
+        <button id="eyedropper" title="Pick a color from the screen">Pick color</button>
+        <label>
+          <span>Brush</span>
+          <select id="shape">
+            <option value="round">Round</option>
+            <option value="square">Square</option>
+          </select>
+        </label>
+        <label class="size-control">
+          <span>Size</span>
+          <input id="size" type="range" min="1" max="200" value="24" />
+          <output id="size-value">24 px</output>
+        </label>
+        <div class="toolbar-spacer"></div>
+        <button id="undo" disabled>Undo</button>
+        <button id="redo" disabled>Redo</button>
+        <button id="reset" disabled>Reset</button>
+      </div>
+
+      <div id="viewer">
+        <div id="canvas-frame">
+          <canvas id="canvas" aria-label="Editable image"></canvas>
+          <div id="brush-cursor" hidden></div>
+        </div>
+      </div>
+
+      <footer id="actions">
+        <span id="status">Choose an image in the slide editor.</span>
+        <button id="close">Close</button>
+        <button id="apply" class="primary" disabled>Apply as new image</button>
+      </footer>
+    </main>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

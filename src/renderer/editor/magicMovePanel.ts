@@ -60,7 +60,8 @@ export class MagicMovePanel {
 
     const header = document.createElement('div');
     header.className = 'panel-header';
-    const title = document.createElement('h3');
+    const title = document.createElement('h4');
+    title.className = 'insp-subtitle';
     title.textContent = 'Magic Move';
     header.appendChild(title);
     this.host.appendChild(header);
@@ -187,7 +188,8 @@ export class MagicMovePanel {
 
     const header = document.createElement('div');
     header.className = 'panel-header';
-    const title = document.createElement('h3');
+    const title = document.createElement('h4');
+    title.className = 'insp-subtitle';
     title.textContent = 'Magic Move';
     header.appendChild(title);
 
@@ -571,4 +573,3 @@ export function pairMagicMoveObjects(
   next.magicMoveFromPrevious = true;
   return true;
 }
-

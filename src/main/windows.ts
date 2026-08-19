@@ -1,5 +1,6 @@
 import { join } from 'node:path';
 import { BrowserWindow, screen } from 'electron';
+import type { Rectangle } from 'electron';
 import { chooseAudienceDisplay, chooseDisplayById } from './presentationDisplays.js';
 
 /**
@@ -12,6 +13,36 @@ import { chooseAudienceDisplay, chooseDisplayById } from './presentationDisplays
 
 const preload = () => join(import.meta.dirname, '../preload/index.mjs');
 
+export interface WindowContinuityState {
+  bounds: Rectangle;
+  maximized: boolean;
+  fullScreen: boolean;
+}
+
+export function captureWindowContinuity(win: BrowserWindow): WindowContinuityState {
+  const maximized = win.isMaximized();
+  const fullScreen = win.isFullScreen();
+  return {
+    // Retain the window's restore geometry too: getBounds() while maximized
+    // would make a later unmaximize fill the entire screen.
+    bounds: maximized || fullScreen ? win.getNormalBounds() : win.getBounds(),
+    maximized,
+    fullScreen,
+  };
+}
+
+function continuityOptions(state?: WindowContinuityState): Partial<Rectangle> {
+  return state?.bounds ?? {};
+}
+
+function revealWindow(win: BrowserWindow, state?: WindowContinuityState): void {
+  win.once('ready-to-show', () => {
+    if (state?.fullScreen) win.setFullScreen(true);
+    else if (state?.maximized) win.maximize();
+    win.show();
+  });
+}
+
 function loadRenderer(win: BrowserWindow, name: string, query = ''): void {
   const devUrl = process.env['ELECTRON_RENDERER_URL'];
   if (devUrl) {
@@ -23,10 +54,11 @@ function loadRenderer(win: BrowserWindow, name: string, query = ''): void {
   }
 }
 
-export function createEditorWindow(): BrowserWindow {
+export function createEditorWindow(query = '', state?: WindowContinuityState): BrowserWindow {
   const win = new BrowserWindow({
     width: 1600,
     height: 1000,
+    ...continuityOptions(state),
     minWidth: 1100,
     minHeight: 700,
     backgroundColor: '#1c1c1e',
@@ -39,8 +71,8 @@ export function createEditorWindow(): BrowserWindow {
       sandbox: false,
     },
   });
-  win.once('ready-to-show', () => win.show());
-  loadRenderer(win, 'editor');
+  revealWindow(win, state);
+  loadRenderer(win, 'editor', query);
   return win;
 }
 
@@ -50,10 +82,11 @@ export function createEditorWindow(): BrowserWindow {
  * client installs its own network-backed `window.api`, which the context
  * bridge would otherwise make read-only.
  */
-export function createCollabHostWindow(url: string): BrowserWindow {
+export function createCollabHostWindow(url: string, state?: WindowContinuityState): BrowserWindow {
   const win = new BrowserWindow({
     width: 1600,
     height: 1000,
+    ...continuityOptions(state),
     minWidth: 1100,
     minHeight: 700,
     backgroundColor: '#1c1c1e',
@@ -66,7 +99,7 @@ export function createCollabHostWindow(url: string): BrowserWindow {
       autoplayPolicy: 'no-user-gesture-required',
     },
   });
-  win.once('ready-to-show', () => win.show());
+  revealWindow(win, state);
   void win.loadURL(url);
   return win;
 }
@@ -75,7 +108,11 @@ export function createCollabHostWindow(url: string): BrowserWindow {
  * Fullscreen presentation. Prefers an external display when one is attached,
  * which is the normal case at a talk, and keeps the editor usable behind it.
  */
-export function createPresentWindow(cursorSlide = 0, displayId?: number): BrowserWindow {
+export function createPresentWindow(
+  cursorSlide = 0,
+  displayId?: number,
+  endSlideIndex?: number,
+): BrowserWindow {
   const displays = screen.getAllDisplays();
   const primary = screen.getPrimaryDisplay();
   const target = chooseDisplayById(displays, displayId, chooseAudienceDisplay(displays, primary));
@@ -100,7 +137,9 @@ export function createPresentWindow(cursorSlide = 0, displayId?: number): Browse
     },
   });
   win.once('ready-to-show', () => win.show());
-  loadRenderer(win, 'present', `?slide=${cursorSlide}`);
+  const query = new URLSearchParams({ slide: String(cursorSlide) });
+  if (endSlideIndex !== undefined) query.set('endSlide', String(endSlideIndex));
+  loadRenderer(win, 'present', `?${query.toString()}`);
   return win;
 }
 
@@ -116,7 +155,7 @@ export function createPresenterWindow(displayId?: number): BrowserWindow {
     minWidth: 900,
     minHeight: 620,
     backgroundColor: '#111218',
-    title: 'Presenter View',
+    title: 'Speaker View',
     show: false,
     webPreferences: {
       preload: preload(), contextIsolation: true, nodeIntegration: false, sandbox: false,
@@ -165,5 +204,27 @@ export function createTrimWindow(): BrowserWindow {
   });
   win.once('ready-to-show', () => win.show());
   loadRenderer(win, 'trim');
+  return win;
+}
+
+/** Destructive pixel editor. Like trim, it writes a derived asset on Apply. */
+export function createRasterWindow(): BrowserWindow {
+  const win = new BrowserWindow({
+    width: 1180,
+    height: 860,
+    minWidth: 760,
+    minHeight: 580,
+    backgroundColor: '#1c1c1e',
+    title: 'Raster Paint',
+    show: false,
+    webPreferences: {
+      preload: preload(),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
+    },
+  });
+  win.once('ready-to-show', () => win.show());
+  loadRenderer(win, 'raster');
   return win;
 }

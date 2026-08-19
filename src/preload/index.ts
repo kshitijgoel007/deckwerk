@@ -8,6 +8,7 @@ import type {
   AssetImportProgress,
   AgentResponse,
   AuthoredHtmlFile,
+  CollabStartRequest,
   DeckSession,
   ImportedAsset,
   KeynoteImportResult,
@@ -16,6 +17,9 @@ import type {
   PresentationCommand,
   PresentationState,
   PresentOptions,
+  RasterResult,
+  RasterSaveRequest,
+  RasterTarget,
   DisplayInfo,
   TrimProgress,
   TrimRequest,
@@ -35,6 +39,7 @@ const api = {
   openDeckPath: (dir: string): Promise<DeckSession> =>
     ipcRenderer.invoke(IPC.deckOpenPath, dir),
   saveDeck: (deck: Deck): Promise<void> => ipcRenderer.invoke(IPC.deckSave, deck),
+  saveDeckAs: (): Promise<DeckSession | null> => ipcRenderer.invoke(IPC.deckSaveAs),
 
   loadTheme: (): Promise<string> => ipcRenderer.invoke(IPC.deckLoadTheme),
   saveTheme: (css: string): Promise<void> => ipcRenderer.invoke(IPC.deckSaveTheme, css),
@@ -95,7 +100,7 @@ const api = {
    * single-deck collab server and swaps this window for the browser client
    * pointed at it. Resolves to the invite URLs.
    */
-  startCollab: (opts?: { agent?: boolean }): Promise<string[]> =>
+  startCollab: (opts: CollabStartRequest): Promise<string[]> =>
     ipcRenderer.invoke(IPC.collabStart, opts),
 
   listDisplays: (): Promise<DisplayInfo[]> => ipcRenderer.invoke(IPC.displayList),
@@ -114,6 +119,10 @@ const api = {
     ipcRenderer.invoke(IPC.trimOpen, payload),
   runTrim: (req: TrimRequest): Promise<TrimResult> =>
     ipcRenderer.invoke(IPC.trimRun, req),
+  openRaster: (payload: RasterTarget): Promise<void> =>
+    ipcRenderer.invoke(IPC.rasterOpen, payload),
+  saveRaster: (req: RasterSaveRequest): Promise<RasterResult> =>
+    ipcRenderer.invoke(IPC.rasterSave, req),
 
   /** Deck-relative asset path -> a URL this window can load. */
   assetUrl: (src: string): string =>
@@ -139,6 +148,10 @@ const api = {
   onTrimProgress: (fn: (p: TrimProgress) => void): (() => void) =>
     on(IPC.trimProgress, fn),
   onTrimDone: (fn: (r: TrimResult) => void): (() => void) => on(IPC.trimDone, fn),
+  onRasterTarget: (fn: (target: RasterTarget) => void): (() => void) =>
+    on(IPC.rasterOpen, fn),
+  onRasterDone: (fn: (result: RasterResult) => void): (() => void) =>
+    on(IPC.rasterDone, fn),
 };
 
 /** Subscribe to a main-process push, returning an unsubscribe function. */

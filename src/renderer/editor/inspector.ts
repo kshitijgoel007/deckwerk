@@ -19,8 +19,8 @@ const VIDEO_FLAG_LABELS = {
  *
  * It covers geometry and per-type behaviour — the things that are awkward or
  * impossible to express by dragging (exact coordinates, autoplay, loop, fit).
- * Typography and colour deliberately are *not* here: those belong in theme.css,
- * reached through the `class` field.
+ * Typography and colour are exposed through dedicated controls below; broader
+ * deck styling belongs in the theme editor.
  */
 export class Inspector {
   private host: HTMLElement;
@@ -29,6 +29,8 @@ export class Inspector {
   private durations = new Map<string, number>();
 
   onTrimRequest?: (el: Extract<SlideElement, { type: 'video' }>) => void;
+  /** Open the desktop-only raster paint window for an image. */
+  onRasterRequest?: (el: Extract<SlideElement, { type: 'image' }>) => void;
   /** Play/pause the video on the editing canvas; returns the new playing state. */
   onTogglePlay?: (elementId: string) => boolean;
   /** Start editing a text element in place on the canvas. */
@@ -52,6 +54,8 @@ export class Inspector {
   private lastSelection = '';
   private lastSlide = -1;
   private lastSlideSelection = '';
+  /** Keep the opacity slider mounted while its live drag updates the deck. */
+  private changingOpacity = false;
   private magicMoveHost = document.createElement('section');
   private magicMovePanel: MagicMovePanel;
 
@@ -68,6 +72,24 @@ export class Inspector {
       const { deck, selection, slideIndex, slideSelection } = this.store.get();
       const sel = [...selection].sort().join(',');
       const slideSel = [...slideSelection].sort().join(',');
+      // Opacity previews continuously on the canvas. Those transient deck
+      // updates must not replace the range input currently under the pointer.
+      // A genuine selection change still rebuilds the panel as usual.
+      if (
+        this.changingOpacity
+        && sel === this.lastSelection
+        && slideIndex === this.lastSlide
+        && slideSel === this.lastSlideSelection
+      ) {
+        return;
+      }
+      if (this.changingOpacity) {
+        // A selection change can remove the focused slider before its normal
+        // pointerup/blur cleanup. Close the drag transaction before rendering
+        // the newly selected object's controls.
+        this.store.endTransaction();
+        this.changingOpacity = false;
+      }
       if (
         deck === this.lastDeck
         && sel === this.lastSelection
@@ -92,19 +114,20 @@ export class Inspector {
     this.host.replaceChildren();
     if (selected.length > 0) this.magicMovePanel.dismiss();
     if (slideSelection.size > 1 && selected.length === 0) {
+      this.host.appendChild(sectionTitle('slides'));
       this.host.appendChild(hint(`${slideSelection.size} slides selected`));
       this.appendMagicMove();
       return;
     }
 
     if (selected.length === 0) {
-      this.host.appendChild(hint('Nothing selected'));
-      const slideGroup = group('Slide');
+      this.host.appendChild(sectionTitle('slide'));
+      const layoutSection = optionSection('Layout', 'slide-layout-options');
       const slide = deck.slides[slideIndex];
       const layout = document.createElement('label');
       layout.className = 'field';
       const layoutLabel = document.createElement('span');
-      layoutLabel.textContent = 'Layout';
+      layoutLabel.textContent = 'Preset';
       const layoutSelect = document.createElement('select');
       for (const [value, label] of LAYOUT_LABELS) {
         const option = document.createElement('option');
@@ -119,15 +142,15 @@ export class Inspector {
         }, { label: `Apply ${layoutSelect.selectedOptions[0]?.textContent ?? 'slide'} layout` });
       });
       layout.append(layoutLabel, layoutSelect);
-      slideGroup.appendChild(layout);
-      slideGroup.appendChild(
+      layoutSection.content.appendChild(layout);
+      layoutSection.content.appendChild(
         colorField('Background (clear = theme)', slide?.background.color ?? null, (value) => {
           this.store.commit((next) => {
             next.slides[slideIndex].background = { color: value, image: null };
           });
         }),
       );
-      this.host.appendChild(slideGroup);
+      this.host.appendChild(layoutSection.section);
       this.appendMagicMove();
       return;
     }
@@ -137,7 +160,6 @@ export class Inspector {
       this.host.appendChild(this.geometrySection(selected));
       const first = selected[0];
       const sameType = selected.every((element) => element.type === first.type);
-      if (sameType) this.host.appendChild(this.styleSection(first, selected));
       if (
         first.type === 'shape' &&
         selected.every((element) => element.type === 'shape' && element.shape === first.shape)
@@ -158,9 +180,15 @@ export class Inspector {
     }
 
     const el = selected[0];
-    this.host.appendChild(sectionTitle(el.type));
+    if (el.type === 'image' || el.type === 'video') {
+      const header = document.createElement('div');
+      header.className = 'type-heading-row';
+      header.append(sectionTitle(el.type), mediaSourceButton(el.src));
+      this.host.appendChild(header);
+    } else {
+      this.host.appendChild(sectionTitle(el.type));
+    }
     this.host.appendChild(this.geometrySection(selected));
-    this.host.appendChild(this.styleSection(el));
     const specific = this.typeSection(el);
     if (specific) this.host.appendChild(specific);
   }
@@ -176,49 +204,65 @@ export class Inspector {
    */
   private maskButton(elementId: string): HTMLElement {
     const wrap = document.createElement('div');
+    wrap.className = 'mask-action-row';
     const active = this.maskingElement?.() === elementId;
 
-    wrap.appendChild(
-      button(
-        active ? 'Done editing mask' : 'Edit mask',
-        () => this.onToggleMask?.(elementId),
-        'primary panel-action',
-      ),
-    );
-    wrap.appendChild(
-      hint(
-        active
-          ? 'Drag the handles to change the visible area. The picture stays where it is.'
-          : 'Crop with the handles on the slide. Non-destructive — the file is not re-encoded.',
-      ),
-    );
+    wrap.appendChild(button(
+      active ? 'Done editing mask' : 'Edit mask',
+      () => this.onToggleMask?.(elementId),
+      'primary panel-action',
+    ));
 
     const el = this.store
       .selectedElements()
       .find((e) => e.id === elementId);
-    if (el && (el.type === 'image' || el.type === 'video')) {
-      // The mask's shape. Circle clips the element box to its inscribed
-      // ellipse; "Edit mask" then moves/scales the picture behind it and the
-      // box handles resize the mask itself — Keynote's circular-mask workflow.
-      wrap.appendChild(checkboxField('Circular mask', el.maskShape === 'circle', (on) =>
+    if (el && (el.type === 'image' || el.type === 'video') && el.sourceBox && !active) {
+      const reset = smallButton(
+        '×',
+        'Reset mask',
+        () => this.store.updateSelected((target) => {
+          if (target.type === 'image' || target.type === 'video') target.sourceBox = null;
+        }, { label: 'Reset mask' }),
+      );
+      reset.classList.add('primary', 'mask-reset-segment');
+      wrap.classList.add('has-reset');
+      wrap.appendChild(reset);
+    }
+    return wrap;
+  }
+
+  /** Rounded corners clip media, so keep them with the other mask controls. */
+  private mediaMaskControls(elementId: string): HTMLElement {
+    const el = this.store.selectedElements().find((element) => element.id === elementId);
+    const masking = optionSection(
+      'Masking - non-destructive & revertible',
+      'media-masking-options',
+    );
+    if (!el || (el.type !== 'image' && el.type !== 'video')) return masking.section;
+
+    const settings = document.createElement('div');
+    settings.className = 'media-mask-settings';
+    settings.appendChild(
+      numberField('Corner radius', el.borderRadius ?? 0, (value) =>
+        this.store.updateSelected((target) => {
+          if (target.type === 'image' || target.type === 'video') {
+            target.borderRadius = Math.max(0, value);
+          }
+        })),
+    );
+    // Circle clips the element box to its inscribed ellipse. Mask editing then
+    // moves and scales the media behind that fixed window.
+    settings.appendChild(
+      checkboxField('Circular mask', el.maskShape === 'circle', (on) =>
         this.store.updateSelected((target) => {
           if (target.type === 'image' || target.type === 'video') {
             target.maskShape = on ? 'circle' : undefined;
           }
-        }, { label: on ? 'Circular mask' : 'Rectangular mask' }),
-      ));
-    }
-    if (el && (el.type === 'image' || el.type === 'video') && el.sourceBox) {
-      wrap.appendChild(
-        button('Reset crop', () =>
-          this.store.updateSelected((e) => {
-            if (e.type === 'image' || e.type === 'video') e.sourceBox = null;
-          }),
-          'primary panel-action',
-        ),
-      );
-    }
-    return wrap;
+        }, { label: on ? 'Circular mask' : 'Rectangular mask' })),
+    );
+    masking.content.appendChild(settings);
+    masking.content.appendChild(this.maskButton(elementId));
+    return masking.section;
   }
 
   /**
@@ -229,14 +273,15 @@ export class Inspector {
    * it always restarts at zero.
    */
   private trimSection(el: Extract<SlideElement, { type: 'video' }>): HTMLElement {
-    const wrap = group('Trim');
+    const trim = optionSection('Trim', 'video-trim-options');
+    const wrap = trim.content;
     const duration = this.durations.get(el.id) ?? null;
 
     if (duration === null) {
       // Probed once per element and cached; the value is needed to scale the
-      // sliders and is not stored in the deck. ffprobe occasionally fails on
-      // containers Chromium itself can read (.m4v among them), so the video
-      // element's own metadata is the fallback — without one, this panel says
+      // range control and is not stored in the deck. ffprobe occasionally
+      // fails on containers Chromium itself can read (.m4v among them), so
+      // the video element's own metadata is the fallback — without one, this panel says
       // "Reading clip length" forever and the trim cannot be touched.
       void window.api.probeAsset(el.src).then((info) => {
         const fromProbe = info.duration && info.duration > 0 ? info.duration : null;
@@ -248,7 +293,7 @@ export class Inspector {
         }
       });
       wrap.appendChild(hint('Reading clip length…'));
-      return wrap;
+      return trim.section;
     }
 
     const end = el.end ?? duration;
@@ -269,31 +314,20 @@ export class Inspector {
       });
     };
 
-    // While the handle moves: readout + live frame preview only. The store is
+    // While either handle moves: readout + live frame preview only. The store is
     // NOT touched — a commit re-renders this panel, which would destroy the
     // slider mid-drag and make it impossible to move at all. The value commits
     // once, on release.
-    const startSlider = rangeSlider(
-      'Start',
+    const range = trimRangeSlider(
       el.start,
-      duration,
-      (v) => {
-        setReadout(v, end);
-        this.trimPreviewSeek?.(v);
-        this.onSeekPreview?.(el.id, v);
-      },
-      (v) => commit(v, end),
-    );
-    const endSlider = rangeSlider(
-      'End',
       end,
       duration,
-      (v) => {
-        setReadout(el.start, v);
+      (_edge, v, start, stop) => {
+        setReadout(start, stop);
         this.trimPreviewSeek?.(v);
         this.onSeekPreview?.(el.id, v);
       },
-      (v) => commit(el.start, v),
+      commit,
     );
 
     // The frame under the handle, previewed right here in the sidebar. The
@@ -314,7 +348,7 @@ export class Inspector {
     seekPreview(el.start);
     this.trimPreviewSeek = seekPreview;
 
-    wrap.append(preview, startSlider, endSlider, readout);
+    wrap.append(preview, range, readout);
     wrap.appendChild(
       button('Reset trim', () =>
         this.store.updateSelected((e) => {
@@ -325,7 +359,7 @@ export class Inspector {
         'primary panel-action',
       ),
     );
-    return wrap;
+    return trim.section;
   }
 
   /** Align / distribute / match-size for a multi-selection, one undo entry. */
@@ -368,7 +402,9 @@ export class Inspector {
 
   /** x/y/w/h, plus opacity and rotation. Applies to the whole selection. */
   private geometrySection(selected: SlideElement[]): HTMLElement {
-    const wrap = group('Geometry');
+    const geometry = optionSection('Geometry', 'geometry-options');
+    geometry.section.classList.add('geometry-section');
+    const wrap = geometry.content;
     const first = selected[0];
     const multi = selected.length > 1;
 
@@ -395,7 +431,7 @@ export class Inspector {
     wrap.appendChild(row);
 
     const row2 = document.createElement('div');
-    row2.className = 'field-grid';
+    row2.className = 'field-grid field-grid-2';
     row2.appendChild(
       numberField('ROT', multi ? commonValue(selected.map((element) => element.rot)) : first.rot, (v) =>
         this.store.updateSelected((el) => (el.rot = v)),
@@ -406,19 +442,25 @@ export class Inspector {
         this.store.updateSelected((el) => (el.z = Math.round(v))),
       ),
     );
-    row2.appendChild(
-      numberField(
-        'OPACITY',
-        multi ? commonValue(selected.map((element) => element.opacity)) : first.opacity,
-        (v) => this.store.updateSelected((el) =>
-          (el.opacity = Math.min(1, Math.max(0, v)))),
-        { step: 0.05 },
-      ),
-    );
     wrap.appendChild(row2);
 
+    wrap.appendChild(opacityField(
+      multi ? commonValue(selected.map((element) => element.opacity)) : first.opacity,
+      () => {
+        this.changingOpacity = true;
+        this.store.beginTransaction('Change opacity');
+      },
+      (value) => this.store.updateSelected((element) => {
+        element.opacity = clamp(value, 0, 1);
+      }, { label: 'Change opacity' }),
+      () => {
+        this.store.endTransaction();
+        this.changingOpacity = false;
+      },
+    ));
+
     const order = document.createElement('div');
-    order.className = 'button-row';
+    order.className = 'button-row z-order-row';
     order.append(
       button('Front', () => this.reorder('front')),
       button('Forward', () => this.reorder('forward')),
@@ -426,7 +468,7 @@ export class Inspector {
       button('To back', () => this.reorder('back')),
     );
     wrap.appendChild(order);
-    return wrap;
+    return geometry.section;
   }
 
   private reorder(dir: 'front' | 'forward' | 'backward' | 'back'): void {
@@ -441,42 +483,6 @@ export class Inspector {
       else if (dir === 'forward') el.z += 1;
       else el.z -= 1;
     });
-  }
-
-  /** The hook into theme.css, plus the inline-style escape hatch. */
-  private styleSection(el: SlideElement, selected: SlideElement[] = [el]): HTMLElement {
-    const wrap = group('Style');
-    const classValues = selected.map((element) => element.class.join(' '));
-    const commonClasses = commonValue(classValues);
-    wrap.appendChild(
-      textField('CSS classes', commonClasses ?? '', (v) => {
-        const classes = v.split(/\s+/).filter(Boolean);
-        this.store.updateSelected((e) => (e.class = classes));
-      }, commonClasses === null ? 'Mixed — enter to replace all' : 'Space-separated, defined in theme.css'),
-    );
-    const inlineValues = selected.map((element) => Object.entries(element.style)
-      .map(([k, v]) => `${k}: ${v}`)
-      .join('; '));
-    const commonInline = commonValue(inlineValues);
-    wrap.appendChild(
-      textField(
-        'Inline style',
-        commonInline ?? '',
-        (v) => {
-          const style: Record<string, string> = {};
-          for (const decl of v.split(';')) {
-            const idx = decl.indexOf(':');
-            if (idx <= 0) continue;
-            style[decl.slice(0, idx).trim()] = decl.slice(idx + 1).trim();
-          }
-          this.store.updateSelected((e) => (e.style = style));
-        },
-        commonInline === null
-          ? 'Mixed — enter to replace all'
-          : 'e.g. color: #e33; letter-spacing: -0.02em',
-      ),
-    );
-    return wrap;
   }
 
   /** Shared, safe style controls for a same-kind shape multi-selection. */
@@ -597,27 +603,40 @@ export class Inspector {
         element.style = style;
       }),
       'px',
+      { min: 6, max: 400 },
     );
     if (sizes.mixed) sizeField.querySelector('input')!.placeholder = 'Mixed';
     wrap.appendChild(sizeField);
 
-    wrap.appendChild(mixedSelectField(
-      'Font weight',
-      ['inherit', '100', '200', '300', '400', '500', '600', '700', '800', '900'],
-      commonValue(texts.map((text) => text.style['font-weight'] ?? 'inherit')),
+    const weights = sharedValue(texts.map((text) => {
+      const weight = Number.parseFloat(text.style['font-weight'] ?? '');
+      return Number.isFinite(weight) ? weight : null;
+    }));
+    const weightField = optionalNumberField(
+      'Font weight', weights.mixed ? null : weights.value,
       (value) => this.store.updateSelected((element) => {
         if (element.type !== 'text') return;
+        element.style = {
+          ...element.style,
+          'font-weight': String(Math.max(1, Math.min(1000, value))),
+        };
+      }),
+      () => this.store.updateSelected((element) => {
+        if (element.type !== 'text') return;
         const style = { ...element.style };
-        if (value === 'inherit') delete style['font-weight'];
-        else style['font-weight'] = value;
+        delete style['font-weight'];
         element.style = style;
       }),
-    ));
+      '',
+      { min: 1, max: 1000, step: 25 },
+    );
+    if (weights.mixed) weightField.querySelector('input')!.placeholder = 'Mixed';
+    wrap.appendChild(weightField);
 
     const roles = texts.map((text) =>
-      text.class.find((name) => /^role-(title|heading|body|caption)$/.test(name)) ?? 'none');
+      text.class.find((name) => /^role-(title|body|caption)$/.test(name)) ?? 'none');
     wrap.appendChild(mixedSelectField(
-      'Role', ['none', 'role-title', 'role-heading', 'role-body', 'role-caption'],
+      'Role', ['none', 'role-title', 'role-body', 'role-caption'],
       commonValue(roles),
       (value) => this.store.updateSelected((element) => {
         if (element.type !== 'text') return;
@@ -676,9 +695,19 @@ export class Inspector {
         if (element.type === 'text') delete element.paragraphSpacing;
       }),
       'px',
+      { min: 0 },
     );
     if (spacings.mixed) spacingField.querySelector('input')!.placeholder = 'Mixed';
     wrap.appendChild(spacingField);
+    if (commonValue(texts.map((element) => JSON.stringify(element.effects ?? []))) !== null) {
+      wrap.appendChild(this.mediaEffectsControls());
+    } else {
+      const effects = optionSection('Effects', 'media-effects-controls');
+      effects.content.appendChild(
+        hint('Effects differ across the selection. Clear or align them individually first.'),
+      );
+      wrap.appendChild(effects.section);
+    }
     return wrap;
   }
 
@@ -689,8 +718,9 @@ export class Inspector {
     const wrap = group(kind === 'image' ? 'Image' : 'Video');
     wrap.appendChild(hint(`Changes apply to all ${media.length} selected ${kind}s.`));
     if (kind === 'video') {
+      const playback = optionSection('Playback', 'video-checkbox-grid');
       for (const key of ['autoplay', 'loop', 'muted', 'controls'] as const) {
-        wrap.appendChild(mixedCheckboxField(
+        playback.content.appendChild(mixedCheckboxField(
           VIDEO_FLAG_LABELS[key],
           commonValue(media.map((element) => element.type === 'video' && element[key])),
           (value) => this.store.updateSelected((element) => {
@@ -698,8 +728,10 @@ export class Inspector {
           }),
         ));
       }
+      wrap.appendChild(playback.section);
     }
-    wrap.appendChild(mixedCheckboxField(
+    const sizing = optionSection('Sizing', 'media-sizing-options');
+    sizing.content.appendChild(mixedCheckboxField(
       'Keep aspect ratio',
       commonValue(media.map((element) => element.fit !== 'fill')),
       (value) => this.store.updateSelected((element) => {
@@ -708,31 +740,61 @@ export class Inspector {
         }
       }),
     ));
+    wrap.appendChild(sizing.section);
+
+    const masking = optionSection(
+      'Masking - non-destructive & revertible',
+      'media-masking-options',
+    );
+    const maskSettings = document.createElement('div');
+    maskSettings.className = 'media-mask-settings';
+    maskSettings.append(
+      numberField(
+        'Corner radius',
+        commonValue(media.map((element) => element.borderRadius ?? 0)),
+        (value) => this.store.updateSelected((element) => {
+          if (element.type === 'image' || element.type === 'video') {
+            element.borderRadius = Math.max(0, value);
+          }
+        }),
+      ),
+      mixedCheckboxField(
+        'Circular mask',
+        commonValue(media.map((element) => element.maskShape === 'circle')),
+        (on) => this.store.updateSelected((element) => {
+          if (element.type === 'image' || element.type === 'video') {
+            element.maskShape = on ? 'circle' : undefined;
+          }
+        }),
+      ),
+    );
+    masking.content.appendChild(maskSettings);
+    wrap.appendChild(masking.section);
+
     const borderColors = commonValue(media.map((element) => element.borderColor ?? ''));
-    wrap.appendChild(colorField(
-      borderColors === null ? 'Border colour (mixed)' : 'Border colour',
+    const border = optionSection('Border', 'media-border-options');
+    border.content.appendChild(colorField(
+      borderColors === null ? 'Color (mixed)' : 'Color',
       borderColors === null ? (media[0].borderColor ?? null) : (borderColors || null),
       (value) => this.store.updateSelected((element) => {
         if (element.type === 'image' || element.type === 'video') element.borderColor = value;
       }),
     ));
-    const numbers = document.createElement('div');
-    numbers.className = 'field-grid';
-    numbers.append(
-      numberField('WIDTH', commonValue(media.map((element) => element.borderWidth ?? 0)), (value) =>
+    border.content.appendChild(
+      numberField('Width', commonValue(media.map((element) => element.borderWidth ?? 0)), (value) =>
         this.store.updateSelected((element) => {
           if (element.type === 'image' || element.type === 'video') element.borderWidth = Math.max(0, value);
         })),
-      numberField('RADIUS', commonValue(media.map((element) => element.borderRadius ?? 0)), (value) =>
-        this.store.updateSelected((element) => {
-          if (element.type === 'image' || element.type === 'video') element.borderRadius = Math.max(0, value);
-        })),
     );
-    wrap.appendChild(numbers);
+    wrap.appendChild(border.section);
     if (commonValue(media.map((element) => JSON.stringify(element.effects ?? []))) !== null) {
       wrap.appendChild(this.mediaEffectsControls());
     } else {
-      wrap.appendChild(hint('Effects differ across the selection. Clear or align them individually first.'));
+      const effects = optionSection('Effects', 'media-effects-controls');
+      effects.content.appendChild(
+        hint('Effects differ across the selection. Clear or align them individually first.'),
+      );
+      wrap.appendChild(effects.section);
     }
     return wrap;
   }
@@ -740,8 +802,9 @@ export class Inspector {
   private typeSection(el: SlideElement): HTMLElement | null {
     switch (el.type) {
       case 'video': {
-        const wrap = group('Video');
-        wrap.appendChild(hint(el.src));
+        const wrap = typeSections();
+
+        const playback = optionSection('Playback', 'video-playback-options');
 
         // Preview in place. Double-clicking the video on the canvas does the
         // same thing; this is the discoverable version.
@@ -754,10 +817,12 @@ export class Inspector {
         play.addEventListener('click', () => {
           setLabel(this.onTogglePlay?.(el.id) ?? false);
         });
-        wrap.appendChild(play);
+        playback.content.appendChild(play);
 
+        const flags = document.createElement('div');
+        flags.className = 'video-checkbox-grid';
         for (const key of ['autoplay', 'loop', 'muted', 'controls'] as const) {
-          wrap.appendChild(
+          flags.appendChild(
             checkboxField(VIDEO_FLAG_LABELS[key], el[key], (v) =>
               this.store.updateSelected((e) => {
                 if (e.type === 'video') e[key] = v;
@@ -765,7 +830,11 @@ export class Inspector {
             ),
           );
         }
-        wrap.appendChild(
+        playback.content.appendChild(flags);
+        wrap.appendChild(playback.section);
+
+        const sizing = optionSection('Sizing', 'media-sizing-options');
+        sizing.content.appendChild(
           checkboxField('Keep aspect ratio', el.fit !== 'fill', (on) =>
             this.store.updateSelected((e) => {
               // 'contain' letterboxes inside the box (AR fixed); 'fill'
@@ -775,10 +844,10 @@ export class Inspector {
             }),
           ),
         );
+        wrap.appendChild(sizing.section);
+        wrap.appendChild(this.mediaMaskControls(el.id));
         wrap.appendChild(this.mediaBorderControls());
         wrap.appendChild(this.mediaEffectsControls());
-
-        wrap.appendChild(this.maskButton(el.id));
         wrap.appendChild(this.trimSection(el));
 
         // Last resort: the destructive ffmpeg editor. Writes a new file and
@@ -786,46 +855,61 @@ export class Inspector {
         // Desktop only: shells that can't spawn ffmpeg leave onTrimRequest unset.
         if (this.onTrimRequest) {
           const request = this.onTrimRequest;
-          wrap.appendChild(button('Edit w/ ffmpeg…', () => request(el), 'primary panel-action'));
-          wrap.appendChild(hint('Re-encodes to a new file. The original is kept.'));
+          const advanced = optionSection('Advanced', 'media-advanced-options');
+          const edit = button('Edit w/ ffmpeg…', () => request(el), 'panel-action');
+          edit.title = 'Re-encodes to a new file; the original is kept';
+          advanced.content.appendChild(edit);
+          wrap.appendChild(advanced.section);
         }
         return wrap;
       }
 
       case 'image': {
-        const wrap = group('Image');
-        wrap.appendChild(hint(el.src));
-        wrap.appendChild(
+        const wrap = typeSections();
+        const sizing = optionSection('Sizing', 'media-sizing-options');
+        sizing.content.appendChild(
           checkboxField('Keep aspect ratio', el.fit !== 'fill', (on) =>
             this.store.updateSelected((e) => {
               if (e.type === 'image') e.fit = on ? 'contain' : 'fill';
             }),
           ),
         );
+        wrap.appendChild(sizing.section);
+        wrap.appendChild(this.mediaMaskControls(el.id));
         wrap.appendChild(this.mediaBorderControls());
         wrap.appendChild(this.mediaEffectsControls());
-        // Same order as the video section: options, border, effects, then crop.
-        wrap.appendChild(this.maskButton(el.id));
+        // PDF is rendered by Chromium's document viewer rather than an image
+        // decoder, so it cannot be used as a canvas source here.
+        if (this.onRasterRequest && !/\.pdf(?:$|[?#])/i.test(el.src)) {
+          const request = this.onRasterRequest;
+          const advanced = optionSection('Advanced', 'media-advanced-options');
+          const edit = button('Rasterize & paint…', () => request(el), 'panel-action');
+          edit.title = 'Paints pixels into a new PNG; the original is kept';
+          advanced.content.appendChild(edit);
+          wrap.appendChild(advanced.section);
+        }
         return wrap;
       }
 
       case 'text': {
-        const wrap = group('Text');
+        const wrap = typeSections();
+        const typography = optionSection('Typography', 'text-typography-options');
+        const layout = optionSection('Layout', 'text-layout-options');
 
-        wrap.appendChild(checkboxField('Auto-fit text to box', Boolean(el.autoFit), (on) =>
+        layout.content.appendChild(checkboxField('Auto-fit text to box', Boolean(el.autoFit), (on) =>
           this.store.updateSelected((target) => {
             if (target.type === 'text') target.autoFit = on;
           }, { label: on ? 'Enable text auto-fit' : 'Disable text auto-fit' }),
         ));
 
-        wrap.appendChild(checkboxField('Disable automatic line breaks', Boolean(el.noWrap), (on) =>
+        layout.content.appendChild(checkboxField('Disable automatic line breaks', Boolean(el.noWrap), (on) =>
           this.store.updateSelected((target) => {
             if (target.type === 'text') target.noWrap = on;
           }, { label: on ? 'Disable automatic line breaks' : 'Enable automatic line breaks' }),
         ));
 
         if (el.noWrap) {
-          wrap.appendChild(selectField(
+          layout.content.appendChild(selectField(
             'Compress by', ['shrink', 'condense'], el.noWrapMode ?? 'shrink',
             (v) => this.store.updateSelected((target) => {
               if (target.type === 'text') target.noWrapMode = v as 'shrink' | 'condense';
@@ -833,7 +917,7 @@ export class Inspector {
           ));
         }
 
-        wrap.appendChild(fontFamilyField(
+        typography.content.appendChild(fontFamilyField(
           'Font family', el.style['font-family'] ?? '',
           (value) => this.store.updateSelected((target) => {
             if (target.type !== 'text') return;
@@ -844,7 +928,9 @@ export class Inspector {
           }, { label: 'Change font family' }),
         ));
 
-        wrap.appendChild(optionalNumberField(
+        const fontMetrics = document.createElement('div');
+        fontMetrics.className = 'compact-field-row';
+        fontMetrics.appendChild(optionalNumberField(
           'Font size',
           Number.parseFloat(el.style['font-size'] ?? '') || null,
           (value) => this.store.updateSelected((target) => {
@@ -856,18 +942,26 @@ export class Inspector {
             target.style = style;
           }, { label: 'Use theme font size' }),
           'px',
+          { min: 6, max: 400 },
         ));
-        wrap.appendChild(selectField(
+        fontMetrics.appendChild(optionalNumberField(
           'Font weight',
-          ['inherit', '100', '200', '300', '400', '500', '600', '700', '800', '900'],
-          el.style['font-weight'] ?? 'inherit',
+          Number.parseFloat(el.style['font-weight'] ?? '') || null,
           (value) => this.store.updateSelected((target) => {
-            const style = { ...target.style };
-            if (value === 'inherit') delete style['font-weight'];
-            else style['font-weight'] = value;
-            target.style = style;
+            target.style = {
+              ...target.style,
+              'font-weight': String(Math.max(1, Math.min(1000, value))),
+            };
           }, { label: 'Change font weight' }),
+          () => this.store.updateSelected((target) => {
+            const style = { ...target.style };
+            delete style['font-weight'];
+            target.style = style;
+          }, { label: 'Use theme font weight' }),
+          '',
+          { min: 1, max: 1000, step: 25 },
         ));
+        typography.content.appendChild(fontMetrics);
 
         if (this.editingText?.()) {
           const selectionStyle = document.createElement('div');
@@ -884,7 +978,7 @@ export class Inspector {
             buttons.appendChild(choice);
           }
           selectionStyle.append(selectionLabel, buttons);
-          wrap.appendChild(selectionStyle);
+          typography.content.appendChild(selectionStyle);
         }
 
         // Semantic role, orthogonal to the free-form class field: the role is
@@ -892,7 +986,6 @@ export class Inspector {
         // lands on the right elements.
         const ROLES: Array<[string, string]> = [
           ['role-title', 'Title'],
-          ['role-heading', 'Subtitle'],
           ['role-body', 'Body'],
           ['role-caption', 'Caption'],
           ['', 'None'],
@@ -917,12 +1010,12 @@ export class Inspector {
           }),
         );
         roleSelect.append(roleSpan, roleDrop);
-        wrap.appendChild(roleSelect);
+        typography.content.appendChild(roleSelect);
 
         // Bulleted list: stored as real markup so the player needs no special
         // case and theme.css can style markers.
         const isList = el.html.trimStart().startsWith('<ul');
-        wrap.appendChild(
+        layout.content.appendChild(
           checkboxField('Bulleted list', isList, (on) =>
             this.store.updateSelected((e) => {
               if (e.type !== 'text') return;
@@ -935,8 +1028,7 @@ export class Inspector {
           ),
         );
 
-        wrap.appendChild(hint('Double-click the text on the slide to edit it.'));
-        wrap.appendChild(
+        typography.content.appendChild(
           colorField(
             'Colour',
             el.style['color'] ?? null,
@@ -949,21 +1041,24 @@ export class Inspector {
             this.effectiveTextColor(el),
           ),
         );
-        wrap.appendChild(
+        const alignment = document.createElement('div');
+        alignment.className = 'compact-field-row';
+        alignment.appendChild(
           selectField('Align', ['left', 'center', 'right', 'justify'], el.align, (v) =>
             this.store.updateSelected((e) => {
               if (e.type === 'text') e.align = v as 'left';
             }),
           ),
         );
-        wrap.appendChild(
+        alignment.appendChild(
           selectField('Vertical', ['top', 'middle', 'bottom'], el.valign, (v) =>
             this.store.updateSelected((e) => {
               if (e.type === 'text') e.valign = v as 'top';
             }),
           ),
         );
-        wrap.appendChild(optionalNumberField(
+        layout.content.appendChild(alignment);
+        layout.content.appendChild(optionalNumberField(
           'Paragraph spacing',
           el.paragraphSpacing ?? null,
           (value) => this.store.updateSelected((e) => {
@@ -973,25 +1068,30 @@ export class Inspector {
             if (e.type === 'text') delete e.paragraphSpacing;
           }, { label: 'Use theme paragraph spacing' }),
           'px',
+          { min: 0 },
         ));
+        wrap.append(typography.section, layout.section, this.mediaEffectsControls());
         return wrap;
       }
 
       case 'html': {
-        const wrap = group('HTML');
-        wrap.appendChild(
+        const wrap = typeSections();
+        const markup = optionSection('Markup', 'html-markup-options');
+        markup.content.appendChild(
           textAreaField('Markup', el.html, (v) =>
             this.store.updateSelected((e) => {
               if (e.type === 'html') e.html = v;
             }),
           ),
         );
+        wrap.appendChild(markup.section);
         return wrap;
       }
 
       case 'shape': {
-        const wrap = group('Shape');
-        wrap.appendChild(
+        const wrap = typeSections();
+        const style = optionSection('Style', 'shape-style-options');
+        style.content.appendChild(
           selectField('Kind', ['rect', 'ellipse', 'line', 'arrow'], el.shape, (v) =>
             this.store.updateSelected((e) => {
               if (e.type === 'shape') e.shape = v as 'rect';
@@ -999,7 +1099,7 @@ export class Inspector {
           ),
         );
         if (el.shape === 'line' || el.shape === 'arrow') {
-          wrap.appendChild(
+          style.content.appendChild(
             checkboxField('Curved', Boolean(el.control), (on) =>
               this.store.updateSelected((e) => {
                 if (e.type !== 'shape') return;
@@ -1010,22 +1110,25 @@ export class Inspector {
             ),
           );
         }
-        wrap.appendChild(
+        const colors = document.createElement('div');
+        colors.className = 'compact-field-row';
+        colors.appendChild(
           colorField('Fill', el.fill, (v) =>
             this.store.updateSelected((e) => {
               if (e.type === 'shape') e.fill = v;
             }),
           ),
         );
-        wrap.appendChild(
+        colors.appendChild(
           colorField('Stroke', el.stroke, (v) =>
             this.store.updateSelected((e) => {
               if (e.type === 'shape') e.stroke = v;
             }),
           ),
         );
+        style.content.appendChild(colors);
         const nums = document.createElement('div');
-        nums.className = 'field-grid';
+        nums.className = 'compact-field-row';
         nums.appendChild(
           numberField('WIDTH', el.strokeWidth, (v) =>
             this.store.updateSelected((e) => {
@@ -1040,17 +1143,20 @@ export class Inspector {
             }),
           ),
         );
-        wrap.appendChild(nums);
+        style.content.appendChild(nums);
+        wrap.appendChild(style.section);
         return wrap;
       }
 
       case 'unsupported': {
-        const wrap = group('Unsupported');
-        wrap.appendChild(
+        const wrap = typeSections();
+        const details = optionSection('Details', 'unsupported-details');
+        details.content.appendChild(
           hint(
             `Imported from ${el.originalType}. Geometry was preserved; replace it with a native element.`,
           ),
         );
+        wrap.appendChild(details.section);
         return wrap;
       }
     }
@@ -1080,64 +1186,54 @@ export class Inspector {
 
   private mediaBorderControls(): HTMLElement {
     const el = this.store.selectedElements()[0];
-    const wrap = document.createElement('div');
-    wrap.className = 'media-border-controls';
-    if (!el || (el.type !== 'image' && el.type !== 'video')) return wrap;
-    wrap.appendChild(colorField('Border colour', el.borderColor ?? null, (value) =>
+    const border = optionSection('Border', 'media-border-options');
+    if (!el || (el.type !== 'image' && el.type !== 'video')) return border.section;
+    border.content.appendChild(colorField('Color', el.borderColor ?? null, (value) =>
       this.store.updateSelected((target) => {
         if (target.type === 'image' || target.type === 'video') target.borderColor = value;
       })));
-    const numbers = document.createElement('div');
-    numbers.className = 'field-grid';
-    numbers.append(
-      numberField('WIDTH', el.borderWidth ?? 0, (value) =>
+    border.content.appendChild(
+      numberField('Width', el.borderWidth ?? 0, (value) =>
         this.store.updateSelected((target) => {
           if (target.type === 'image' || target.type === 'video') {
             target.borderWidth = Math.max(0, value);
           }
         })),
-      numberField('RADIUS', el.borderRadius ?? 0, (value) =>
-        this.store.updateSelected((target) => {
-          if (target.type === 'image' || target.type === 'video') {
-            target.borderRadius = Math.max(0, value);
-          }
-        })),
     );
-    wrap.appendChild(numbers);
-    return wrap;
+    return border.section;
   }
 
   private mediaEffectsControls(): HTMLElement {
     const el = this.store.selectedElements()[0];
-    const wrap = document.createElement('div');
-    wrap.className = 'media-effects-controls';
-    if (!el || (el.type !== 'image' && el.type !== 'video')) return wrap;
-
-    const title = document.createElement('div');
-    title.className = 'insp-subtitle';
-    title.textContent = 'Effects';
-    wrap.appendChild(title);
+    const effects = optionSection('Effects', 'media-effects-controls');
+    const wrap = effects.content;
+    if (!el || !supportsVisualEffects(el)) return effects.section;
 
     for (const [index, effect] of (el.effects ?? []).entries()) {
       const row = document.createElement('div');
-      row.className = 'media-effect-row';
+      row.className = effect.type === 'gaussianNoise'
+        ? 'media-effect-row media-effect-row-noise'
+        : 'media-effect-row';
       row.dataset.effectIndex = String(index);
       const name = document.createElement('span');
       name.textContent = effect.type === 'grayscale' ? 'Greyscale' :
-        effect.type[0].toUpperCase() + effect.type.slice(1);
+        effect.type === 'gaussianNoise' ? 'Gaussian Noise' :
+          effect.type[0].toUpperCase() + effect.type.slice(1);
       const value = document.createElement('input');
       value.type = 'number';
       value.min = effect.type === 'posterize' ? '2' : '0';
       value.max = effect.type === 'blur' ? '200' : effect.type === 'posterize' ? '32' : '1';
-      value.step = effect.type === 'grayscale' ? '0.05' : '1';
+      value.step = effect.type === 'grayscale' || effect.type === 'gaussianNoise'
+        ? '0.05' : '1';
       value.value = String(effectValue(effect));
       value.title = effect.type === 'blur' ? 'Blur radius in pixels' :
         effect.type === 'posterize' ? 'Number of colour levels' : 'Amount from 0 to 1';
+      value.setAttribute('aria-label', value.title);
       value.addEventListener('change', () => {
         const next = Number(value.value);
         if (!Number.isFinite(next)) return;
         this.store.updateSelected((target) => {
-          if (target.type !== 'image' && target.type !== 'video') return;
+          if (!supportsVisualEffects(target)) return;
           const current = target.effects?.[index];
           if (!current) return;
           if (current.type === 'blur') current.radius = clamp(next, 0, 200);
@@ -1146,24 +1242,52 @@ export class Inspector {
         }, { label: `Adjust ${effect.type} effect` });
       });
 
+      const cutoff = document.createElement('input');
+      if (effect.type === 'gaussianNoise') {
+        cutoff.type = 'number';
+        cutoff.min = '0.001';
+        cutoff.max = '1';
+        cutoff.step = '0.01';
+        cutoff.value = String(effect.frequencyCutoff);
+        cutoff.title = 'Frequency cutoff from 0.001 to 1; higher values make finer grain';
+        cutoff.setAttribute('aria-label', 'Frequency cutoff');
+        cutoff.addEventListener('change', () => {
+          const next = Number(cutoff.value);
+          if (!Number.isFinite(next)) return;
+          this.store.updateSelected((target) => {
+            if (!supportsVisualEffects(target)) return;
+            const current = target.effects?.[index];
+            if (current?.type === 'gaussianNoise') {
+              current.frequencyCutoff = clamp(next, 0.001, 1);
+            }
+          }, { label: 'Adjust Gaussian noise frequency cutoff' });
+        });
+      }
+
       const up = smallButton('↑', 'Move effect earlier', () => this.moveMediaEffect(index, -1));
       const down = smallButton('↓', 'Move effect later', () => this.moveMediaEffect(index, 1));
       up.disabled = index === 0;
       down.disabled = index === (el.effects?.length ?? 0) - 1;
       const remove = smallButton('×', 'Remove effect', () => {
         this.store.updateSelected((target) => {
-          if (target.type !== 'image' && target.type !== 'video') return;
+          if (!supportsVisualEffects(target)) return;
           target.effects = (target.effects ?? []).filter((_, candidate) => candidate !== index);
         }, { label: `Remove ${effect.type} effect` });
       });
-      row.append(name, value, up, down, remove);
+      row.append(name, value);
+      if (effect.type === 'gaussianNoise') row.appendChild(cutoff);
+      row.append(up, down, remove);
       wrap.appendChild(row);
     }
 
     const add = document.createElement('select');
     add.className = 'effect-add panel-action-select';
     for (const [value, label] of [
-      ['', '+ Add effect'], ['blur', 'Blur'], ['posterize', 'Posterize'], ['grayscale', 'Greyscale'],
+      ['', '+ Add effect'],
+      ['blur', 'Blur'],
+      ['posterize', 'Posterize'],
+      ['grayscale', 'Greyscale'],
+      ['gaussianNoise', 'Gaussian Noise'],
     ]) {
       const option = document.createElement('option');
       option.value = value;
@@ -1176,21 +1300,23 @@ export class Inspector {
         ? { type: 'blur', radius: 8 }
         : add.value === 'posterize'
           ? { type: 'posterize', levels: 4 }
-          : { type: 'grayscale', amount: 1 };
+          : add.value === 'gaussianNoise'
+            ? { type: 'gaussianNoise', amount: 0.35, frequencyCutoff: 0.12 }
+            : { type: 'grayscale', amount: 1 };
       this.store.updateSelected((target) => {
-        if (target.type === 'image' || target.type === 'video') {
+        if (supportsVisualEffects(target)) {
           target.effects = [...(target.effects ?? []), structuredClone(effect)];
         }
       }, { label: `Add ${effect.type} effect` });
       add.value = '';
     });
     wrap.appendChild(add);
-    return wrap;
+    return effects.section;
   }
 
   private moveMediaEffect(index: number, delta: -1 | 1): void {
     this.store.updateSelected((target) => {
-      if (target.type !== 'image' && target.type !== 'video') return;
+      if (!supportsVisualEffects(target)) return;
       const effects = [...(target.effects ?? [])];
       const destination = index + delta;
       if (!effects[index] || destination < 0 || destination >= effects.length) return;
@@ -1211,6 +1337,55 @@ function group(title: string): HTMLElement {
   return el;
 }
 
+/** Type-specific sections; the selected element type is already named above. */
+function typeSections(): HTMLElement {
+  const el = document.createElement('div');
+  el.className = 'insp-type-sections';
+  return el;
+}
+
+/** A compact, ellipsized media path that reveals and copies its full value. */
+function mediaSourceButton(source: string): HTMLButtonElement {
+  const control = document.createElement('button');
+  control.type = 'button';
+  control.className = 'media-source';
+  control.textContent = source;
+  const defaultTitle = `${source}\nClick to copy path`;
+  control.title = defaultTitle;
+  control.setAttribute('aria-label', `Copy media path: ${source}`);
+  control.addEventListener('click', () => {
+    void copyText(source).then((copied) => {
+      control.classList.toggle('copied', copied);
+      control.title = copied ? `Copied: ${source}` : `Could not copy: ${source}`;
+      window.setTimeout(() => {
+        control.classList.remove('copied');
+        control.title = defaultTitle;
+      }, 1200);
+    });
+  });
+  return control;
+}
+
+async function copyText(text: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+    const scratch = document.createElement('textarea');
+    scratch.value = text;
+    scratch.style.position = 'fixed';
+    scratch.style.opacity = '0';
+    document.body.appendChild(scratch);
+    scratch.select();
+    const copied = document.execCommand('copy');
+    scratch.remove();
+    return copied;
+  } catch {
+    return false;
+  }
+}
+
 function sectionTitle(text: string): HTMLElement {
   const el = document.createElement('div');
   el.className = 'insp-title';
@@ -1229,6 +1404,12 @@ function effectValue(effect: MediaEffect): number {
   if (effect.type === 'blur') return effect.radius;
   if (effect.type === 'posterize') return effect.levels;
   return effect.amount;
+}
+
+function supportsVisualEffects(
+  element: SlideElement,
+): element is Extract<SlideElement, { type: 'text' | 'image' | 'video' }> {
+  return element.type === 'text' || element.type === 'image' || element.type === 'video';
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -1270,12 +1451,69 @@ function numberField(
   return wrap;
 }
 
+/** Element opacity as a familiar percentage slider with a live canvas preview. */
+function opacityField(
+  value: number | null,
+  onBegin: () => void,
+  onInput: (value: number) => void,
+  onEnd: () => void,
+): HTMLElement {
+  const wrap = document.createElement('label');
+  wrap.className = 'field field-opacity';
+
+  const label = document.createElement('span');
+  label.textContent = 'Opacity';
+
+  const controls = document.createElement('div');
+  controls.className = 'field-opacity-controls';
+  const input = document.createElement('input');
+  input.type = 'range';
+  input.min = '0';
+  input.max = '100';
+  input.step = '1';
+  input.value = String(value === null ? 50 : Math.round(clamp(value, 0, 1) * 100));
+  input.setAttribute('aria-label', 'Opacity');
+
+  const output = document.createElement('output');
+  output.textContent = value === null ? 'Mixed' : `${input.value}%`;
+  output.htmlFor = input.id;
+
+  let active = false;
+  const begin = () => {
+    if (active) return;
+    active = true;
+    onBegin();
+  };
+  const update = () => {
+    begin();
+    output.textContent = `${input.value}%`;
+    input.setAttribute('aria-valuetext', output.textContent);
+    onInput(Number(input.value) / 100);
+  };
+  const end = () => {
+    if (!active) return;
+    active = false;
+    onEnd();
+  };
+  input.addEventListener('pointerdown', begin);
+  input.addEventListener('input', update);
+  input.addEventListener('change', end);
+  input.addEventListener('pointerup', end);
+  input.addEventListener('pointercancel', end);
+  input.addEventListener('blur', end);
+
+  controls.append(input, output);
+  wrap.append(label, controls);
+  return wrap;
+}
+
 function optionalNumberField(
   label: string,
   value: number | null,
   onChange: (value: number) => void,
   onClear: () => void,
   suffix = '',
+  opts: { min?: number; max?: number; step?: number } = {},
 ): HTMLElement {
   const wrap = document.createElement('label');
   wrap.className = 'field field-number';
@@ -1283,7 +1521,9 @@ function optionalNumberField(
   span.textContent = label;
   const input = document.createElement('input');
   input.type = 'number';
-  input.min = '1';
+  input.min = String(opts.min ?? 1);
+  if (opts.max !== undefined) input.max = String(opts.max);
+  input.step = String(opts.step ?? 1);
   input.value = value === null ? '' : String(value);
   input.placeholder = 'theme';
   input.title = suffix ? `Value in ${suffix}` : label;
@@ -1303,26 +1543,10 @@ function optionalNumberField(
     event.preventDefault();
     onClear();
   });
-  wrap.append(span, input, clear);
-  return wrap;
-}
-
-function textField(
-  label: string,
-  value: string,
-  onChange: (v: string) => void,
-  placeholder = '',
-): HTMLElement {
-  const wrap = document.createElement('label');
-  wrap.className = 'field';
-  const span = document.createElement('span');
-  span.textContent = label;
-  const input = document.createElement('input');
-  input.type = 'text';
-  input.value = value;
-  input.placeholder = placeholder;
-  input.addEventListener('change', () => onChange(input.value));
-  wrap.append(span, input);
+  const controls = document.createElement('div');
+  controls.className = 'optional-number-controls';
+  controls.append(input, clear);
+  wrap.append(span, controls);
   return wrap;
 }
 
@@ -1358,6 +1582,22 @@ function checkboxField(
   span.textContent = label;
   wrap.append(input, span);
   return wrap;
+}
+
+/** A named cluster of related inspector controls. */
+function optionSection(
+  title: string,
+  contentClass: string,
+): { section: HTMLElement; content: HTMLElement } {
+  const section = document.createElement('section');
+  section.className = 'insp-option-section';
+  const heading = document.createElement('h4');
+  heading.className = 'insp-subtitle';
+  heading.textContent = title;
+  const content = document.createElement('div');
+  content.className = contentClass;
+  section.append(heading, content);
+  return { section, content };
 }
 
 function mixedCheckboxField(
@@ -1437,33 +1677,81 @@ function mixedSelectField(
 }
 
 /**
- * A slider over a clip's duration.
+ * One range control over a clip's duration, with separate in and out thumbs.
  *
- * Commits continuously while dragging so the canvas preview follows the
- * handle; the store coalesces a drag into one undo entry.
+ * The two native inputs are overlaid on one visual track. This keeps both
+ * thumbs keyboard-accessible while presenting one range slider, and the
+ * inputs only receive pointer events on their thumbs so neither masks the
+ * other. The values stay at least one frame-ish step apart.
  */
-function rangeSlider(
-  label: string,
-  value: number,
+function trimRangeSlider(
+  start: number,
+  end: number,
   max: number,
-  onInput: (v: number) => void,
-  onCommit: (v: number) => void,
+  onInput: (edge: 'start' | 'end', value: number, start: number, end: number) => void,
+  onCommit: (start: number, end: number) => void,
 ): HTMLElement {
-  const wrap = document.createElement('label');
-  wrap.className = 'field';
+  const wrap = document.createElement('div');
+  wrap.className = 'field trim-range-field';
   const span = document.createElement('span');
-  span.textContent = label;
-  const input = document.createElement('input');
-  input.type = 'range';
-  input.min = '0';
-  input.max = String(max);
-  input.step = '0.01';
-  input.value = String(value);
+  span.textContent = 'Range';
+
+  const slider = document.createElement('div');
+  slider.className = 'trim-range-slider';
+  const track = document.createElement('div');
+  track.className = 'trim-range-track';
+  const fill = document.createElement('div');
+  fill.className = 'trim-range-fill';
+  track.appendChild(fill);
+
+  const makeInput = (edge: 'start' | 'end', value: number) => {
+    const input = document.createElement('input');
+    input.type = 'range';
+    input.className = `trim-range-input trim-range-${edge}`;
+    input.min = '0';
+    input.max = String(max);
+    input.step = '0.01';
+    input.value = String(value);
+    input.setAttribute('aria-label', edge === 'start' ? 'Trim start' : 'Trim end');
+    return input;
+  };
+  const startInput = makeInput('start', start);
+  const endInput = makeInput('end', end);
+  const minimumGap = Math.min(0.05, max);
+
+  const paint = () => {
+    slider.style.setProperty('--trim-start', `${max > 0 ? (start / max) * 100 : 0}%`);
+    slider.style.setProperty('--trim-end', `${max > 0 ? (end / max) * 100 : 100}%`);
+  };
+  const update = (edge: 'start' | 'end') => {
+    if (edge === 'start') {
+      start = Math.max(0, Math.min(Number(startInput.value), end - minimumGap));
+      startInput.value = String(start);
+      onInput(edge, start, start, end);
+    } else {
+      end = Math.min(max, Math.max(Number(endInput.value), start + minimumGap));
+      endInput.value = String(end);
+      onInput(edge, end, start, end);
+    }
+    paint();
+  };
+
   // `input` fires continuously while dragging and must stay side-effect-free
   // on the store; `change` fires once on release and is when the deck commits.
-  input.addEventListener('input', () => onInput(Number(input.value)));
-  input.addEventListener('change', () => onCommit(Number(input.value)));
-  wrap.append(span, input);
+  startInput.addEventListener('input', () => update('start'));
+  endInput.addEventListener('input', () => update('end'));
+  startInput.addEventListener('change', () => {
+    update('start');
+    onCommit(start, end);
+  });
+  endInput.addEventListener('change', () => {
+    update('end');
+    onCommit(start, end);
+  });
+
+  paint();
+  slider.append(track, startInput, endInput);
+  wrap.append(span, slider);
   return wrap;
 }
 

@@ -1,5 +1,5 @@
 import { MIRRORED_TEXT_STYLE_PROPERTIES } from '@shared/deck.js';
-import type { Deck, Slide, SlideElement } from '@shared/deck.js';
+import type { Deck, MediaEffect, Slide, SlideElement } from '@shared/deck.js';
 import { fitScale } from '@shared/geometry.js';
 import { fitAutoTextElement } from '@shared/autoFit.js';
 import { isPendingSrc, pendingName, pendingToken } from '@shared/media.js';
@@ -65,34 +65,19 @@ export function renderElement(
   s.opacity = String(el.opacity);
   if (el.rot) s.transform = `rotate(${el.rot}deg)`;
   for (const [k, v] of Object.entries(el.style)) s.setProperty(k, v);
-  if (el.type === 'image' || el.type === 'video') {
-    if ((el.borderWidth ?? 0) > 0) {
-      s.border = `${el.borderWidth}px solid ${el.borderColor ?? '#000000'}`;
-    }
-    const radius = mediaRadius(el);
-    if (radius) {
-      s.borderRadius = radius;
-      // Rounding must clip, or the media's corners paint outside the radius.
-      s.overflow = 'hidden';
-    }
-  }
 
   const body = renderBody(el, opts);
-  if (el.type === 'image' || el.type === 'video') {
-    // The radius goes on the media node itself as well as on the wrapper: a
-    // <video> gets its own compositing layer, which an ancestor's
-    // overflow: hidden does not always clip — the wrapper alone leaves a
-    // masked clip square on screen while the identical image is a circle.
-    const radius = mediaRadius(el);
-    if (radius) body.style.borderRadius = radius;
-  }
-  if ((el.type === 'image' || el.type === 'video') && el.effects?.length) {
-    const renderedEffects = renderMediaEffects(el.id, el.effects);
+  if (
+    (el.type === 'text' || el.type === 'image' || el.type === 'video')
+    && el.effects?.length
+  ) {
+    const renderedEffects = renderVisualEffects(el.id, el.effects);
     body.style.filter = renderedEffects.filter;
     for (const definition of renderedEffects.definitions) node.appendChild(definition);
   }
 
   node.appendChild(body);
+  if (el.type === 'image' || el.type === 'video') syncMediaFrame(node, el, body);
   if (el.type === 'text' && el.paragraphSpacing !== undefined) {
     node.dataset.paragraphSpacing = String(el.paragraphSpacing);
     s.setProperty('--paragraph-spacing', `${el.paragraphSpacing}px`);
@@ -125,9 +110,75 @@ export function mediaRadius(
   return el.style['border-radius'] ?? '';
 }
 
-function renderMediaEffects(
+/**
+ * Paint a media border over the media instead of putting it in the wrapper's
+ * box model. The latter has `box-sizing:border-box`, so a normal CSS border
+ * steals pixels from the image/video content even though the authored element
+ * keeps the same outer dimensions.
+ *
+ * This is exported because the editor updates existing DOM nodes in place for
+ * inspector changes rather than rebuilding the whole slide.
+ */
+export function syncMediaFrame(
+  node: HTMLElement,
+  el: Extract<SlideElement, { type: 'image' | 'video' }>,
+  body: HTMLElement | SVGElement | null = null,
+): void {
+  let overlay = node.querySelector<HTMLElement>(':scope > .media-border-overlay');
+  if (!overlay) {
+    overlay = document.createElement('div');
+    overlay.className = 'media-border-overlay';
+    overlay.setAttribute('aria-hidden', 'true');
+    node.appendChild(overlay);
+  }
+  overlay.style.cssText = [
+    'position:absolute',
+    'inset:0',
+    'box-sizing:border-box',
+    'pointer-events:none',
+    'z-index:1',
+  ].join(';');
+
+  // A border authored directly in element.style has the same media semantics
+  // as the inspector's typed border. Move its paint to the overlay too.
+  for (const [property, value] of Object.entries(el.style)) {
+    if (!isMediaBorderPaint(property)) continue;
+    overlay.style.setProperty(property, value);
+    node.style.removeProperty(property);
+    // jsdom (and some older Chromium CSSOM builds) retains the expanded
+    // longhands after removing the shorthand.
+    if (property === 'border') node.style.border = '';
+  }
+  if ((el.borderWidth ?? 0) > 0) {
+    overlay.style.border = `${el.borderWidth}px solid ${el.borderColor ?? '#000000'}`;
+  }
+
+  const radius = mediaRadius(el);
+  if (radius) node.style.borderRadius = radius;
+  else node.style.removeProperty('border-radius');
+  if (radius) node.style.overflow = 'hidden';
+  else if (el.style.overflow !== undefined) node.style.overflow = el.style.overflow;
+  else node.style.removeProperty('overflow');
+  overlay.style.borderRadius = radius;
+
+  // The radius goes on the media node itself as well as on the wrapper: a
+  // <video> gets its own compositing layer, which an ancestor's overflow clip
+  // does not always constrain consistently.
+  const mediaBody = body ?? node.querySelector<HTMLElement>('img, video, embed, .pending-asset');
+  if (mediaBody) {
+    if (radius) mediaBody.style.borderRadius = radius;
+    else mediaBody.style.removeProperty('border-radius');
+  }
+}
+
+function isMediaBorderPaint(property: string): boolean {
+  return (property === 'border' || property.startsWith('border-'))
+    && !property.includes('radius');
+}
+
+function renderVisualEffects(
   elementId: string,
-  effects: NonNullable<Extract<SlideElement, { type: 'image' }>['effects']>,
+  effects: MediaEffect[],
 ): { filter: string; definitions: SVGSVGElement[] } {
   const filters: string[] = [];
   const definitions: SVGSVGElement[] = [];
@@ -136,13 +187,80 @@ function renderMediaEffects(
       filters.push(`blur(${effect.radius}px)`);
     } else if (effect.type === 'grayscale') {
       filters.push(`grayscale(${effect.amount})`);
-    } else {
+    } else if (effect.type === 'posterize') {
       const id = `posterize-${elementId}-${index}`.replace(/[^a-zA-Z0-9_-]/g, '-');
       definitions.push(posterizeDefinition(id, effect.levels));
+      filters.push(`url("#${id}")`);
+    } else {
+      const id = `gaussian-noise-${elementId}-${index}`
+        .replace(/[^a-zA-Z0-9_-]/g, '-');
+      definitions.push(gaussianNoiseDefinition(
+        id,
+        effect.amount,
+        effect.frequencyCutoff,
+        noiseSeed(elementId, index),
+      ));
       filters.push(`url("#${id}")`);
     }
   });
   return { filter: filters.join(' '), definitions };
+}
+
+/**
+ * A deterministic, spatially band-limited noise field linearly mixed with the
+ * source. Masking the noise by SourceAlpha keeps transparent text backgrounds
+ * transparent while still replacing every painted video/image pixel at 1.
+ */
+function gaussianNoiseDefinition(
+  id: string,
+  amount: number,
+  frequencyCutoff: number,
+  seed: number,
+): SVGSVGElement {
+  const ns = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(ns, 'svg');
+  svg.classList.add('media-effect-definition');
+  svg.setAttribute('width', '0');
+  svg.setAttribute('height', '0');
+  svg.setAttribute('aria-hidden', 'true');
+
+  const filter = document.createElementNS(ns, 'filter');
+  filter.id = id;
+  filter.setAttribute('color-interpolation-filters', 'sRGB');
+
+  // Several independent octaves summed by fractalNoise give a bell-shaped
+  // field while baseFrequency is the user-facing spatial-frequency cutoff.
+  const turbulence = document.createElementNS(ns, 'feTurbulence');
+  turbulence.setAttribute('type', 'fractalNoise');
+  turbulence.setAttribute('baseFrequency', String(frequencyCutoff));
+  turbulence.setAttribute('numOctaves', '4');
+  turbulence.setAttribute('seed', String(seed));
+  turbulence.setAttribute('result', 'gaussianNoise');
+
+  const masked = document.createElementNS(ns, 'feComposite');
+  masked.setAttribute('in', 'gaussianNoise');
+  masked.setAttribute('in2', 'SourceAlpha');
+  masked.setAttribute('operator', 'in');
+  masked.setAttribute('result', 'maskedNoise');
+
+  const blend = document.createElementNS(ns, 'feComposite');
+  blend.setAttribute('in', 'maskedNoise');
+  blend.setAttribute('in2', 'SourceGraphic');
+  blend.setAttribute('operator', 'arithmetic');
+  blend.setAttribute('k1', '0');
+  blend.setAttribute('k2', String(amount));
+  blend.setAttribute('k3', String(1 - amount));
+  blend.setAttribute('k4', '0');
+
+  filter.append(turbulence, masked, blend);
+  svg.appendChild(filter);
+  return svg;
+}
+
+function noiseSeed(elementId: string, index: number): number {
+  let hash = index + 1;
+  for (const char of elementId) hash = ((hash * 31) + char.charCodeAt(0)) | 0;
+  return Math.abs(hash % 32767) + 1;
 }
 
 function posterizeDefinition(id: string, levels: number): SVGSVGElement {

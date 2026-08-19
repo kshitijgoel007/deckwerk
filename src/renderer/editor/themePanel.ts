@@ -46,7 +46,7 @@ export function createThemePanel(deps: ThemePanelDeps): ThemePanel {
 
   const themeAdoption: ThemeAdoption = {
     scope: 'slides',
-    roles: ['title', 'heading', 'body', 'caption', 'base'],
+    roles: ['title', 'body', 'caption'],
     fontFamily: true,
     fontWeight: false,
     typeScale: false,
@@ -131,9 +131,7 @@ export function createThemePanel(deps: ThemePanelDeps): ThemePanel {
     intro.className = 'theme-browser-intro';
     const title = document.createElement('h2');
     title.textContent = 'Themes';
-    const help = document.createElement('p');
-    help.textContent = 'Select a style source, then choose exactly where and which properties to use. Selection alone changes nothing.';
-    intro.append(title, help);
+    intro.append(title);
 
     const controls = document.createElement('div');
     controls.className = 'theme-adoption-controls';
@@ -164,8 +162,8 @@ export function createThemePanel(deps: ThemePanelDeps): ThemePanel {
     const roleTitle = document.createElement('div');
     roleTitle.className = 'theme-option-title';
     roleTitle.textContent = 'Text roles';
-    const roleBoxes = (['title', 'heading', 'body', 'caption', 'base'] as const).map((role) => {
-      const box = optionBox(role, themeAdoption.roles.includes(role));
+    const roleBoxes = (['title', 'body', 'caption'] as const).map((role) => {
+      const box = optionBox(role[0].toUpperCase() + role.slice(1), themeAdoption.roles.includes(role));
       box.input.addEventListener('change', () => {
         themeAdoption.roles = box.input.checked
           ? [...new Set([...themeAdoption.roles, role])]
@@ -223,7 +221,7 @@ export function createThemePanel(deps: ThemePanelDeps): ThemePanel {
     });
     themeApplyButton.className = 'primary panel-action';
     actions.append(themeApplyButton);
-    wrap.append(intro, themeGallery.element, controls, actions);
+    wrap.append(intro, controls, actions, themeGallery.element);
     return wrap;
   }
 

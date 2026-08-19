@@ -1,6 +1,6 @@
 import type { AgentOperation } from './agent.js';
-import { MIRRORED_TEXT_STYLE_PROPERTIES } from './deck.js';
-import type { Deck, Slide, SlideElement, TimelineEntry } from './deck.js';
+import { MediaEffectSchema, MIRRORED_TEXT_STYLE_PROPERTIES } from './deck.js';
+import type { Deck, MediaEffect, Slide, SlideElement, TimelineEntry } from './deck.js';
 import { fitAutoTextElement } from './autoFit.js';
 import { KATEX_AUTO_RENDER_JS, KATEX_CSS, KATEX_JS } from './katexInline.js';
 import { shapeSvg } from './shapeSvg.js';
@@ -517,6 +517,7 @@ export function elementFromNode(
   // not authored element CSS and must not accumulate in the deck on every
   // HTML round trip.
   delete mediaBase.style.overflow;
+  const mediaDecoration = mediaDecorationFromNode(node, mediaBase.style);
 
   // A cropped picture is exported as a window with the media inside it, the
   // way the player renders one, so the wrapper — not the `<img>` — is the
@@ -524,6 +525,8 @@ export function elementFromNode(
   if (node.dataset.element === 'image' || node.dataset.element === 'video') {
     const common = {
       ...mediaBase,
+      ...mediaDecoration,
+      ...effectsFromNode(node),
       src: node.dataset.src ?? '',
       fit: fitFrom(node.dataset.fit),
       sourceBox: cropFrom(node.dataset.crop),
@@ -552,6 +555,8 @@ export function elementFromNode(
   if (node.tag === 'img') {
     return {
       ...mediaBase,
+      ...mediaDecoration,
+      ...effectsFromNode(node),
       type: 'image',
       src: node.attrs.src ?? '',
       fit: fitFrom(node.attrs.objectFit),
@@ -565,6 +570,8 @@ export function elementFromNode(
     const [start, end] = trimFrom(node.dataset.trim);
     return {
       ...mediaBase,
+      ...mediaDecoration,
+      ...effectsFromNode(node),
       type: 'video',
       src: withoutFragment(node.attrs.src ?? ''),
       fit: fitFrom(node.attrs.objectFit),
@@ -627,6 +634,7 @@ export function elementFromNode(
 
   return {
     ...base,
+    ...effectsFromNode(node),
     type: 'text',
     // A list is one text object; without its own tag around the items the
     // markers and indentation would not survive into the deck.
@@ -752,6 +760,7 @@ function elementToHtml(element: SlideElement, build?: TimelineEntry): string {
         + `${element.html}</div></div>`;
       return `  <div ${attrs} class="element element-text${element.class.length > 0
         ? ` ${escape(element.class.join(' '))}` : ''}" data-valign="${element.valign}"`
+        + effectsDataAttrs(element)
         + `${element.contentStyle && Object.keys(element.contentStyle).length > 0
           ? ` data-content-style="${escape(encodeURIComponent(JSON.stringify(element.contentStyle)))}"` : ''}`
         + `${element.autoFit ? ' data-autofit="true"' : ''}`
@@ -768,12 +777,16 @@ function elementToHtml(element: SlideElement, build?: TimelineEntry): string {
         return `  <div ${attrs} data-element="image"`
           + ` data-src="${escape(element.src)}" data-alt="${escape(element.alt)}"`
           + ` data-fit="${element.fit}" data-crop="${boxAttr(element.sourceBox)}"`
+          + effectsDataAttrs(element)
+          + mediaDataAttrs(element)
           + `${element.maskShape === 'circle' ? ' data-mask-shape="circle"' : ''}`
           + ` ${styleAttr(position, inline, media(element), 'overflow:hidden;')}>`
           + `${notAnObject(croppedMedia('img', element.src, element.sourceBox,
             ` alt="${escape(element.alt)}"`))}</div>`;
       }
       return `  <img ${attrs} src="${escape(element.src)}" alt="${escape(element.alt)}"`
+        + effectsDataAttrs(element)
+        + mediaDataAttrs(element)
         + `${element.maskShape === 'circle' ? ' data-mask-shape="circle"' : ''}`
         + ` ${styleAttr(position, inline, media(element), `object-fit:${element.fit};`)}>`;
     case 'video': {
@@ -784,6 +797,8 @@ function elementToHtml(element: SlideElement, build?: TimelineEntry): string {
         return `  <div ${attrs} data-element="video"`
           + ` data-src="${escape(element.src)}" data-fit="${element.fit}"${trim}`
           + ` data-crop="${boxAttr(element.sourceBox)}"`
+          + effectsDataAttrs(element)
+          + mediaDataAttrs(element)
           + `${element.maskShape === 'circle' ? ' data-mask-shape="circle"' : ''}`
           + `${element.loop ? ' data-loop="true"' : ''}`
           + `${element.muted ? ' data-muted="true"' : ''}`
@@ -796,6 +811,8 @@ function elementToHtml(element: SlideElement, build?: TimelineEntry): string {
       // `#t=` is how a static page asks for the in-point: without it the file
       // shows frame zero while the player shows the frame the talk starts on.
       return `  <video ${attrs} src="${escape(mediaFragment(element))}"${trim}${flags}`
+        + effectsDataAttrs(element)
+        + mediaDataAttrs(element)
         + `${element.maskShape === 'circle' ? ' data-mask-shape="circle"' : ''}`
         + `${element.poster ? ` poster="${escape(element.poster)}"` : ''}`
         + ` ${styleAttr(position, inline, media(element), `object-fit:${element.fit};`)}></video>`;
@@ -879,7 +896,7 @@ function mediaFragment(element: Extract<SlideElement, { type: 'video' }>): strin
   return element.start > 0 ? `${element.src}#t=${element.start}` : element.src;
 }
 
-/** Border and effects, which the player puts on the element wrapper. */
+/** Media decoration for the editable HTML preview. */
 function media(element: SlideElement): string {
   if (element.type !== 'image' && element.type !== 'video') return '';
   const radius = element.maskShape === 'circle'
@@ -888,18 +905,79 @@ function media(element: SlideElement): string {
       ? `${element.borderRadius}px`
       : element.style['border-radius'] ?? '';
   const border = (element.borderWidth ?? 0) > 0
-    ? `border:${element.borderWidth}px solid ${element.borderColor ?? '#000000'};`
+    ? `outline:${element.borderWidth}px solid ${element.borderColor ?? '#000000'};`
+      + ` outline-offset:-${element.borderWidth}px;`
     : '';
   const clip = radius ? ` border-radius:${radius}; overflow:hidden;` : '';
-  // Posterise is an SVG filter the player defines per element; blur and
-  // greyscale are plain CSS. Only the CSS pair is reproduced here, so a
-  // posterised picture previews unposterised — visible, and not data loss.
+  // Posterise and additive noise use SVG filters the player defines per
+  // element; blur and greyscale are plain CSS. Only the CSS pair is reproduced
+  // here, while data-effects keeps every effect losslessly round-trippable.
   const filters = (element.effects ?? [])
     .map((effect) => effect.type === 'blur' ? `blur(${effect.radius}px)`
       : effect.type === 'grayscale' ? `grayscale(${effect.amount})` : '')
     .filter(Boolean)
     .join(' ');
   return border + clip + (filters ? ` filter:${filters};` : '');
+}
+
+/** Typed media decoration survives an inspect/edit/save HTML round trip. */
+function mediaDataAttrs(element: Extract<SlideElement, { type: 'image' | 'video' }>): string {
+  const border = (element.borderWidth ?? 0) > 0
+    ? ` data-border-width="${element.borderWidth}" data-border-color="${escape(element.borderColor ?? '#000000')}"`
+    : '';
+  const radius = (element.borderRadius ?? 0) > 0
+    ? ` data-border-radius="${element.borderRadius}"`
+    : '';
+  return border + radius;
+}
+
+function effectsDataAttrs(
+  element: Extract<SlideElement, { type: 'text' | 'image' | 'video' }>,
+): string {
+  if (!element.effects?.length) return '';
+  return ` data-effects="${escape(encodeURIComponent(JSON.stringify(element.effects)))}"`;
+}
+
+function effectsFromNode(node: MeasuredNode): { effects?: MediaEffect[] } {
+  if (!node.dataset.effects) return {};
+  try {
+    const parsed = MediaEffectSchema.array().safeParse(
+      JSON.parse(decodeURIComponent(node.dataset.effects)),
+    );
+    return parsed.success && parsed.data.length > 0 ? { effects: parsed.data } : {};
+  } catch {
+    return {};
+  }
+}
+
+function mediaDecorationFromNode(
+  node: MeasuredNode,
+  style: Record<string, string>,
+): {
+  borderColor?: string;
+  borderWidth?: number;
+  borderRadius?: number;
+} {
+  const decoration: {
+    borderColor?: string;
+    borderWidth?: number;
+    borderRadius?: number;
+  } = {};
+  const width = Number(node.dataset.borderWidth);
+  if (node.dataset.borderWidth !== undefined && Number.isFinite(width) && width > 0) {
+    decoration.borderWidth = width;
+    decoration.borderColor = node.dataset.borderColor ?? '#000000';
+    // The outline in the exported page is generated only to make the
+    // authoring preview match the player. It is not a stored media style; the
+    // typed fields above are the durable deck representation.
+  }
+  const radius = Number(node.dataset.borderRadius);
+  if (node.dataset.borderRadius !== undefined && Number.isFinite(radius) && radius > 0) {
+    decoration.borderRadius = radius;
+    delete style['border-radius'];
+  }
+  if (node.dataset.maskShape === 'circle') delete style['border-radius'];
+  return decoration;
 }
 
 /**

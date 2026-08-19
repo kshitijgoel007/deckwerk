@@ -8,7 +8,13 @@ import { applyStaticSlideState } from '../player/staticState.js';
 import { formatElapsed, formatWallClock, presentationLabel } from './model.js';
 
 let deck: Deck | null = null;
-let state: PresentationState = { cursor: { slide: 0, step: 0 }, steps: 1, startedAt: Date.now() };
+const openedAt = Date.now();
+let state: PresentationState = {
+  cursor: { slide: 0, step: 0 },
+  steps: 1,
+  startedAt: openedAt,
+  slideStartedAt: openedAt,
+};
 let theme: HTMLStyleElement | null = null;
 const current = document.getElementById('current')!;
 const next = document.getElementById('next')!;
@@ -38,16 +44,20 @@ function preview(host: HTMLElement, slideIndex: number, step = 0): void {
 function render(): void {
   if (!deck) return;
   preview(current, state.cursor.slide, state.cursor.step);
-  preview(next, state.cursor.slide + 1);
+  const lastSlide = state.range?.end ?? deck.slides.length - 1;
+  let nextSlide = state.cursor.slide + 1;
+  while (nextSlide <= lastSlide && deck.slides[nextSlide]?.skipped) nextSlide += 1;
+  preview(next, nextSlide <= lastSlide ? nextSlide : -1);
   document.getElementById('position')!.textContent = presentationLabel(state, deck.slides.length);
 }
 
 window.api.onDeckState((session) => void load(session));
-window.api.onPresentState((nextState) => { state = nextState; render(); });
+window.api.onPresentState((nextState) => { state = nextState; render(); updateClocks(); });
 window.addEventListener('resize', render);
 document.getElementById('prev')!.addEventListener('click', () => window.api.sendPresentCommand({ type: 'prev' }));
 document.getElementById('nextButton')!.addEventListener('click', () => window.api.sendPresentCommand({ type: 'next' }));
 document.getElementById('blank')!.addEventListener('click', () => window.api.sendPresentCommand({ type: 'toggleBlank' }));
+document.getElementById('switchDisplays')!.addEventListener('click', () => window.api.sendPresentCommand({ type: 'swapDisplays' }));
 document.getElementById('end')!.addEventListener('click', () => window.api.sendPresentCommand({ type: 'exit' }));
 window.addEventListener('keydown', (event) => {
   if (['ArrowRight', ' ', 'PageDown'].includes(event.key)) window.api.sendPresentCommand({ type: 'next' });
@@ -55,9 +65,13 @@ window.addEventListener('keydown', (event) => {
   else if (event.key === 'b') window.api.sendPresentCommand({ type: 'toggleBlank' });
   else if (event.key === 'Escape') window.api.sendPresentCommand({ type: 'exit' });
 });
-setInterval(() => {
+function updateClocks(): void {
   const now = Date.now();
-  document.getElementById('timer')!.textContent = formatElapsed(now, state.startedAt);
+  document.getElementById('presentation-timer')!.textContent = formatElapsed(now, state.startedAt);
+  document.getElementById('slide-timer')!.textContent = formatElapsed(now, state.slideStartedAt);
   document.getElementById('wall-clock')!.textContent = formatWallClock(new Date(now));
-}, 250);
+}
+
+updateClocks();
+setInterval(updateClocks, 250);
 void window.api.getDeck().then((session) => session && load(session));

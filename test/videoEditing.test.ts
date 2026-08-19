@@ -131,18 +131,94 @@ const tick = () => new Promise((r) => setTimeout(r, 0));
 const videoEl = (host: HTMLElement) =>
   host.querySelector<HTMLVideoElement>('[data-element-id="video-1"] video')!;
 
-describe('trim sliders in the sidebar', () => {
+describe('compact video inspector', () => {
+  beforeEach(() => document.body.replaceChildren());
+
+  it('uses one type heading, compact sections, and a click-to-copy source path', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+    const { inspectorHost, store } = setup();
+    store.select(['video-1']);
+
+    expect(inspectorHost.querySelector('.insp-title')?.textContent).toBe('video');
+    expect([...inspectorHost.querySelectorAll<HTMLElement>('.insp-group')]
+      .some((section) => section.querySelector('h3')?.textContent === 'Video')).toBe(false);
+
+    const source = inspectorHost.querySelector<HTMLButtonElement>('.media-source')!;
+    expect(inspectorHost.querySelector('.type-heading-row .insp-title')?.nextElementSibling)
+      .toBe(source);
+    expect(source.textContent).toBe('assets/clip.mp4');
+    expect(source.title).toContain('assets/clip.mp4');
+    source.click();
+    await tick();
+    expect(writeText).toHaveBeenCalledWith('assets/clip.mp4');
+
+    const sections = [...inspectorHost.querySelectorAll<HTMLElement>(
+      '.insp-type-sections > .insp-option-section',
+    )];
+    expect(sections.map((section) => section.querySelector('h4')?.textContent))
+      .toEqual([
+        'Playback',
+        'Sizing',
+        'Masking - non-destructive & revertible',
+        'Border',
+        'Effects',
+        'Trim',
+      ]);
+    expect(sections[0].textContent).toContain('Play preview');
+    expect(inspectorHost.querySelectorAll('.z-order-row > button')).toHaveLength(4);
+    expect(inspectorHost.textContent).not.toContain('Crop with the handles');
+  });
+
+  it('reveals reset as a split-button segment only after mask editing is done', () => {
+    const { inspectorHost, store, inspector, canvas } = setup();
+    inspector.onToggleMask = (id) => canvas.toggleMaskMode(id);
+    inspector.maskingElement = () => canvas.maskingElement();
+    canvas.onMaskModeChange = () => inspector.render();
+    store.select(['video-1']);
+
+    let actions = inspectorHost.querySelector('.mask-action-row')!;
+    expect(actions.querySelector('.panel-action')?.textContent).toBe('Edit mask');
+    expect(actions.querySelector('button[title="Reset mask"]')).toBeNull();
+
+    actions.querySelector<HTMLButtonElement>('.panel-action')!.click();
+    actions = inspectorHost.querySelector('.mask-action-row')!;
+    expect(actions.querySelector('.panel-action')?.textContent).toBe('Done editing mask');
+    expect(actions.querySelector('button[title="Reset mask"]')).toBeNull();
+
+    actions.querySelector<HTMLButtonElement>('.panel-action')!.click();
+    actions = inspectorHost.querySelector('.mask-action-row')!;
+    expect(actions.querySelector('.panel-action')?.textContent).toBe('Edit mask');
+    const reset = actions.querySelector<HTMLButtonElement>('button[title="Reset mask"]')!;
+    expect(reset.textContent).toBe('×');
+    expect(reset.classList.contains('mask-reset-segment')).toBe(true);
+    expect(actions.classList.contains('has-reset')).toBe(true);
+    reset.click();
+
+    const video = store.selectedElements()[0];
+    expect(video.type).toBe('video');
+    if (video.type === 'video') expect(video.sourceBox).toBeNull();
+  });
+});
+
+describe('trim range slider in the sidebar', () => {
   beforeEach(() => document.body.replaceChildren());
 
   async function slidersOf(inspectorHost: HTMLElement, store: EditorStore) {
     store.select(['video-1']);
     await tick(); // probeAsset resolves and the panel re-renders with sliders
-    const sliders = [...inspectorHost.querySelectorAll<HTMLInputElement>('input[type="range"]')];
-    expect(sliders, 'trim sliders should exist once duration is known').toHaveLength(2);
+    const sliders = [...inspectorHost.querySelectorAll<HTMLInputElement>(
+      '.trim-range-field input[type="range"]',
+    )];
+    expect(inspectorHost.querySelectorAll('.trim-range-slider')).toHaveLength(1);
+    expect(sliders, 'both trim handles should exist once duration is known').toHaveLength(2);
     return sliders as [HTMLInputElement, HTMLInputElement];
   }
 
-  it('renders sliders once the clip duration is known', async () => {
+  it('renders one slider with two handles once the clip duration is known', async () => {
     const { inspectorHost, store } = setup();
     const [start, end] = await slidersOf(inspectorHost, store);
     expect(start.max).toBe('6');
@@ -250,6 +326,18 @@ describe('trim sliders in the sidebar', () => {
     el = store.slide!.elements[0];
     if (el.type !== 'video') throw new Error('expected video');
     expect(el.end).toBeNull();
+  });
+
+  it('does not let the two handles cross', async () => {
+    const { inspectorHost, store } = setup();
+    const [start, end] = await slidersOf(inspectorHost, store);
+
+    start.value = '5';
+    start.dispatchEvent(new Event('input', { bubbles: true }));
+    end.value = '4';
+    end.dispatchEvent(new Event('input', { bubbles: true }));
+
+    expect(Number(end.value)).toBeGreaterThan(Number(start.value));
   });
 });
 

@@ -283,6 +283,80 @@ describe('inline text editing', () => {
     expect(canvas.isEditing()).toBe(false);
   });
 
+  it('does not show the redundant raw Style box in the inspector', () => {
+    const { store } = setup();
+    store.select(['text-1']);
+    const inspectorHost = document.createElement('aside');
+    document.body.appendChild(inspectorHost);
+    new Inspector(inspectorHost, store);
+
+    expect(inspectorHost.querySelector('.geometry-section .insp-subtitle')?.textContent)
+      .toBe('Geometry');
+    const headings = [...inspectorHost.querySelectorAll<HTMLElement>('.insp-group > h3')]
+      .map((heading) => heading.textContent);
+    expect(inspectorHost.querySelector('.insp-title')?.textContent).toBe('text');
+    expect([...inspectorHost.querySelectorAll('.insp-type-sections .insp-subtitle')]
+      .map((heading) => heading.textContent))
+      .toEqual(['Typography', 'Layout', 'Effects']);
+    expect(headings).not.toContain('Style');
+    expect(inspectorHost.textContent).not.toContain('CSS classes');
+    expect(inspectorHost.textContent).not.toContain('Inline style');
+  });
+
+  it('changes text, shape, image, and video opacity with one live slider edit', () => {
+    const { store, host: canvasHost } = setup();
+    const shape = insertShape(store, 'rect');
+    store.commit((deck) => deck.slides[0].elements.push({
+      id: 'image-1',
+      type: 'image',
+      x: 800,
+      y: 100,
+      w: 320,
+      h: 240,
+      rot: 0,
+      z: 4,
+      opacity: 1,
+      class: [],
+      style: {},
+      src: 'assets/image.png',
+      fit: 'contain',
+      alt: '',
+      sourceBox: null,
+    }));
+
+    const inspectorHost = document.createElement('aside');
+    document.body.appendChild(inspectorHost);
+    new Inspector(inspectorHost, store);
+    const ids = ['text-1', shape.id, 'image-1', 'video-1'];
+    store.select(ids);
+
+    const slider = inspectorHost.querySelector<HTMLInputElement>(
+      '.field-opacity input[type="range"]',
+    )!;
+    const output = inspectorHost.querySelector<HTMLOutputElement>('.field-opacity output')!;
+    expect(slider.value).toBe('100');
+    expect(output.textContent).toBe('100%');
+
+    slider.value = '35';
+    slider.dispatchEvent(new Event('input', { bubbles: true }));
+    slider.value = '42';
+    slider.dispatchEvent(new Event('input', { bubbles: true }));
+
+    expect(slider.isConnected, 'slider was replaced during its drag').toBe(true);
+    expect(output.textContent).toBe('42%');
+    expect(store.selectedElements().map((element) => element.opacity))
+      .toEqual([0.42, 0.42, 0.42, 0.42]);
+    for (const id of ids) {
+      expect(canvasHost.querySelector<HTMLElement>(`[data-element-id="${id}"]`)!.style.opacity)
+        .toBe('0.42');
+    }
+
+    slider.dispatchEvent(new Event('change', { bubbles: true }));
+    store.undo();
+    expect(store.selectedElements().map((element) => element.opacity))
+      .toEqual([1, 1, 1, 1]);
+  });
+
   it('keeps inherited text colour and its picker preview stable after editing', () => {
     installDomShims();
     const styles = document.createElement('style');
@@ -586,6 +660,71 @@ describe('inline text editing', () => {
     expect(host.querySelector('[data-element-id="video-1"] > div > video')).not.toBeNull();
   });
 
+  it('finishes mask editing when the user clicks outside the active mask', () => {
+    const { store, canvas, host } = setup();
+    const stage = host.querySelector<HTMLElement>('.stage')!;
+    stage.getBoundingClientRect = () =>
+      ({ left: 0, top: 0, width: 1920, height: 1080 }) as DOMRect;
+    const modeChanged = vi.fn();
+    canvas.onMaskModeChange = modeChanged;
+    canvas.toggleMaskMode('video-1');
+    modeChanged.mockClear();
+
+    // A click inside the 100,300 640x360 crop keeps mask editing active.
+    host.dispatchEvent(new PointerEvent('pointerdown', {
+      clientX: 300, clientY: 400, bubbles: true, pointerId: 1, button: 0,
+    }));
+    host.dispatchEvent(new PointerEvent('pointerup', {
+      clientX: 300, clientY: 400, bubbles: true, pointerId: 1, button: 0,
+    }));
+    expect(canvas.maskingElement()).toBe('video-1');
+    expect(modeChanged).not.toHaveBeenCalled();
+
+    // The same click that finishes masking still selects the object beneath it.
+    host.dispatchEvent(new PointerEvent('pointerdown', {
+      clientX: 200, clientY: 150, bubbles: true, pointerId: 1, button: 0,
+    }));
+    host.dispatchEvent(new PointerEvent('pointerup', {
+      clientX: 200, clientY: 150, bubbles: true, pointerId: 1, button: 0,
+    }));
+
+    expect(canvas.maskingElement()).toBeNull();
+    expect(modeChanged).toHaveBeenCalledOnce();
+    expect(modeChanged).toHaveBeenCalledWith(null);
+    expect([...store.get().selection]).toEqual(['text-1']);
+  });
+
+  it('treats circular-mask corners as outside but keeps its handles active', () => {
+    const { store, canvas, host } = setup();
+    const stage = host.querySelector<HTMLElement>('.stage')!;
+    stage.getBoundingClientRect = () =>
+      ({ left: 0, top: 0, width: 1920, height: 1080 }) as DOMRect;
+    const video = store.slide!.elements.find((element) => element.id === 'video-1')!;
+    if (video.type !== 'video') throw new Error('expected video fixture');
+    video.maskShape = 'circle';
+    canvas.toggleMaskMode(video.id);
+
+    const handle = host.querySelector<HTMLElement>(
+      `.handle-nw[data-element-id="${video.id}"]`,
+    )!;
+    handle.dispatchEvent(new PointerEvent('pointerdown', {
+      clientX: video.x, clientY: video.y, bubbles: true, pointerId: 1, button: 0,
+    }));
+    host.dispatchEvent(new PointerEvent('pointerup', {
+      clientX: video.x, clientY: video.y, bubbles: true, pointerId: 1, button: 0,
+    }));
+    expect(canvas.maskingElement()).toBe(video.id);
+
+    // The clipped corner is inside the element box, but outside its visible mask.
+    host.dispatchEvent(new PointerEvent('pointerdown', {
+      clientX: video.x + 10, clientY: video.y + 10, bubbles: true, pointerId: 1, button: 0,
+    }));
+    host.dispatchEvent(new PointerEvent('pointerup', {
+      clientX: video.x + 10, clientY: video.y + 10, bubbles: true, pointerId: 1, button: 0,
+    }));
+    expect(canvas.maskingElement()).toBeNull();
+  });
+
   /**
    * Regression: selecting a rotated element drew the selection box as if the
    * element were unrotated — the outline sat where the text *would* be at
@@ -717,6 +856,88 @@ describe('pointer handling keeps the DOM stable', () => {
     host.dispatchEvent(new PointerEvent('pointerup', at(340, 150)));
 
     expect(store.slide!.elements[0].x).toBeGreaterThan(originalX);
+  });
+
+  it('duplicates the selection when an Option-drag crosses the threshold', () => {
+    const { store, host } = setup();
+    const stage = host.querySelector<HTMLElement>('.stage')!;
+    stage.getBoundingClientRect = () =>
+      ({ left: 0, top: 0, width: 1920, height: 1080 }) as DOMRect;
+
+    const at = (x: number, y: number, altKey = false) => ({
+      clientX: x,
+      clientY: y,
+      bubbles: true,
+      pointerId: 1,
+      button: 0,
+      altKey,
+    });
+    host.dispatchEvent(new PointerEvent('pointerdown', at(200, 150)));
+    host.dispatchEvent(new PointerEvent('pointermove', at(340, 190, true)));
+    host.dispatchEvent(new PointerEvent('pointerup', at(340, 190, true)));
+
+    const original = store.slide!.elements.find((el) => el.id === 'text-1')!;
+    const copy = store.slide!.elements.find(
+      (el) => el.id !== 'text-1' && el.type === 'text',
+    )!;
+    expect(store.slide!.elements).toHaveLength(3);
+    expect({ x: original.x, y: original.y }).toEqual({ x: 100, y: 100 });
+    expect({ x: copy.x, y: copy.y }).toEqual({ x: 240, y: 140 });
+    expect(copy.lineageId).toBe('text-1');
+    expect(copy.magicMoveId).toBeNull();
+    expect([...store.get().selection]).toEqual([copy.id]);
+
+    // Duplication and movement are one undoable gesture.
+    store.undo();
+    expect(store.slide!.elements.map((el) => el.id)).toEqual(['text-1', 'video-1']);
+  });
+
+  it('does not duplicate on an Option-click below the drag threshold', () => {
+    const { store, host } = setup();
+    const stage = host.querySelector<HTMLElement>('.stage')!;
+    stage.getBoundingClientRect = () =>
+      ({ left: 0, top: 0, width: 1920, height: 1080 }) as DOMRect;
+    const at = (x: number, y: number) => ({
+      clientX: x,
+      clientY: y,
+      bubbles: true,
+      pointerId: 1,
+      button: 0,
+      altKey: true,
+    });
+
+    host.dispatchEvent(new PointerEvent('pointerdown', at(200, 150)));
+    host.dispatchEvent(new PointerEvent('pointermove', at(202, 151)));
+    host.dispatchEvent(new PointerEvent('pointerup', at(202, 151)));
+
+    expect(store.slide!.elements.map((el) => el.id)).toEqual(['text-1', 'video-1']);
+    expect(store.canUndo()).toBe(false);
+  });
+
+  it('temporarily disables move snapping while Command is held', () => {
+    const dragByFive = (metaKey: boolean): number => {
+      const { store, host } = setup();
+      const stage = host.querySelector<HTMLElement>('.stage')!;
+      stage.getBoundingClientRect = () =>
+        ({ left: 0, top: 0, width: 1920, height: 1080 }) as DOMRect;
+      const at = (x: number) => ({
+        clientX: x,
+        clientY: 150,
+        bubbles: true,
+        pointerId: 1,
+        button: 0,
+        metaKey,
+      });
+      host.dispatchEvent(new PointerEvent('pointerdown', at(200)));
+      host.dispatchEvent(new PointerEvent('pointermove', at(205)));
+      host.dispatchEvent(new PointerEvent('pointerup', at(205)));
+      return store.slide!.elements.find((el) => el.id === 'text-1')!.x;
+    };
+
+    // The video's left edge is also x=100, so a five-pixel move normally
+    // snaps back to it. Command preserves the precise five-pixel delta.
+    expect(dragByFive(false)).toBe(100);
+    expect(dragByFive(true)).toBe(105);
   });
 });
 
@@ -978,10 +1199,12 @@ describe('same-kind multi-selection properties', () => {
       .find((candidate) => candidate.querySelector('span')?.textContent === label)!;
     const family = field('Font family').querySelector<HTMLSelectElement>('select')!;
     const size = field('Font size').querySelector<HTMLInputElement>('input')!;
-    const weight = field('Font weight').querySelector<HTMLSelectElement>('select')!;
+    const weight = field('Font weight').querySelector<HTMLInputElement>('input')!;
     expect(family.value).toBe('__mixed__');
     expect(size.value).toBe('42');
-    expect(weight.value).toBe('__mixed__');
+    expect(weight.value).toBe('');
+    expect(weight.placeholder).toBe('Mixed');
+    expect(weight.step).toBe('25');
 
     // The test environment has no local-font API, so the list is empty;
     // inject the option the way the picker would after enumeration.
@@ -994,7 +1217,7 @@ describe('same-kind multi-selection properties', () => {
       .find((section) => section.querySelector('h3')?.textContent === 'Text')!;
     const rerenderedWeight = [...rerenderedText.querySelectorAll<HTMLLabelElement>('label')]
       .find((candidate) => candidate.querySelector('span')?.textContent === 'Font weight')!
-      .querySelector<HTMLSelectElement>('select')!;
+      .querySelector<HTMLInputElement>('input')!;
     rerenderedWeight.value = '600';
     rerenderedWeight.dispatchEvent(new Event('change', { bubbles: true }));
 
@@ -1021,6 +1244,22 @@ describe('same-kind multi-selection properties', () => {
 
     const videoGroup = [...inspectorHost.querySelectorAll<HTMLElement>('.insp-group')]
       .find((section) => section.querySelector('h3')?.textContent === 'Video')!;
+    const optionSections = [...videoGroup.querySelectorAll<HTMLElement>('.insp-option-section')];
+    expect(optionSections.map((section) => section.querySelector('h4')?.textContent))
+      .toEqual([
+        'Playback',
+        'Sizing',
+        'Masking - non-destructive & revertible',
+        'Border',
+        'Effects',
+      ]);
+    expect(optionSections[0].querySelectorAll('.video-checkbox-grid > .field-check')).toHaveLength(4);
+    expect(optionSections[1].textContent).toContain('Keep aspect ratio');
+    expect(optionSections[2].textContent).toContain('Corner radius');
+    expect(optionSections[2].textContent).toContain('Circular mask');
+    expect(optionSections[3].textContent).toContain('Color');
+    expect(optionSections[3].textContent).toContain('Width');
+    expect(optionSections[3].textContent).not.toContain('Corner radius');
     const autoplay = [...videoGroup.querySelectorAll<HTMLLabelElement>('label')]
       .find((label) => label.querySelector('span')?.textContent === 'Autoplay')!
       .querySelector<HTMLInputElement>('input')!;
@@ -1210,6 +1449,107 @@ describe('object creation and manipulation', () => {
     const resized = store.slide!.elements.find((el) => el.id === ellipse.id)!;
     expect(resized.w).toBeGreaterThan(ellipse.w);
     expect(resized.h).toBeGreaterThan(ellipse.h);
+  });
+
+  it('keeps an object centered while Option-dragging a resize handle', () => {
+    const { store, host } = setup();
+    stageAtOne(host);
+    const ellipse = insertShape(store, 'ellipse');
+    const originalCenter = {
+      x: ellipse.x + ellipse.w / 2,
+      y: ellipse.y + ellipse.h / 2,
+    };
+    const handle = host.querySelector<HTMLElement>(
+      `.handle-se[data-element-id="${ellipse.id}"]`,
+    )!;
+    const event = (x: number, y: number) => ({
+      clientX: x,
+      clientY: y,
+      bubbles: true,
+      pointerId: 1,
+      button: 0,
+      altKey: true,
+    });
+    handle.dispatchEvent(new PointerEvent(
+      'pointerdown',
+      event(ellipse.x + ellipse.w, ellipse.y + ellipse.h),
+    ));
+    host.dispatchEvent(new PointerEvent(
+      'pointermove',
+      event(ellipse.x + ellipse.w + 80, ellipse.y + ellipse.h + 40),
+    ));
+    host.dispatchEvent(new PointerEvent(
+      'pointerup',
+      event(ellipse.x + ellipse.w + 80, ellipse.y + ellipse.h + 40),
+    ));
+
+    const resized = store.slide!.elements.find((el) => el.id === ellipse.id)!;
+    expect(resized.w).toBe(ellipse.w + 160);
+    expect(resized.h).toBe(ellipse.h + 80);
+    expect({
+      x: resized.x + resized.w / 2,
+      y: resized.y + resized.h / 2,
+    }).toEqual(originalCenter);
+  });
+
+  it('turns handles into Command-drag rotation controls', () => {
+    const styles = document.createElement('style');
+    styles.textContent = readFileSync(
+      join(process.cwd(), 'src/renderer/editor/editor.css'),
+      'utf8',
+    );
+    document.head.appendChild(styles);
+
+    const { store, host } = setup();
+    stageAtOne(host);
+    const ellipse = insertShape(store, 'ellipse');
+    const handle = host.querySelector<HTMLElement>(
+      `.handle-e[data-element-id="${ellipse.id}"]`,
+    )!;
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Meta', metaKey: true }));
+    expect(host.classList.contains('command-rotate')).toBe(true);
+    expect(getComputedStyle(handle).cursor).toContain('data:image/svg+xml');
+
+    const center = { x: ellipse.x + ellipse.w / 2, y: ellipse.y + ellipse.h / 2 };
+    handle.dispatchEvent(new PointerEvent('pointerdown', {
+      clientX: ellipse.x + ellipse.w,
+      clientY: center.y,
+      bubbles: true,
+      pointerId: 1,
+      button: 0,
+      metaKey: true,
+    }));
+    host.dispatchEvent(new PointerEvent('pointermove', {
+      clientX: center.x,
+      clientY: ellipse.y + ellipse.h,
+      bubbles: true,
+      pointerId: 1,
+      button: 0,
+      metaKey: true,
+    }));
+
+    expect(host.classList.contains('is-rotating')).toBe(true);
+    const rotated = store.slide!.elements.find((el) => el.id === ellipse.id)!;
+    expect(rotated).toMatchObject({
+      x: ellipse.x, y: ellipse.y, w: ellipse.w, h: ellipse.h, rot: 90,
+    });
+
+    host.dispatchEvent(new PointerEvent('pointerup', {
+      clientX: center.x,
+      clientY: ellipse.y + ellipse.h,
+      bubbles: true,
+      pointerId: 1,
+      button: 0,
+      metaKey: true,
+    }));
+    expect(host.classList.contains('is-rotating')).toBe(false);
+
+    window.dispatchEvent(new KeyboardEvent('keyup', { key: 'Meta' }));
+    expect(host.classList.contains('command-rotate')).toBe(false);
+    store.undo();
+    expect(store.slide!.elements.find((el) => el.id === ellipse.id)!.rot).toBe(0);
+    styles.remove();
   });
 
   it('drags a line endpoint and keeps the handle centred on the new endpoint', () => {

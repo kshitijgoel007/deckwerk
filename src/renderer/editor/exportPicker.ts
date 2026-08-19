@@ -1,18 +1,40 @@
+export interface ToolbarPickerOption {
+  label: string;
+  action: () => void;
+}
+
+export interface ToolbarPickerSection {
+  label: string;
+  options: ToolbarPickerOption[];
+}
+
+export type ToolbarPickerEntry = ToolbarPickerOption | ToolbarPickerSection;
+
+export interface ToolbarSplitButtonConfig {
+  deckOnly?: boolean;
+  menuLabel?: string;
+  variant?: 'primary';
+}
+
 /**
- * The only grouped deck action in the classic toolbar. It deliberately uses
- * the existing Shape menu classes so it has the old toolbar's exact density,
- * borders, focus treatment, and placement.
+ * A compact toolbar dropdown. It deliberately uses the existing Shape menu
+ * classes so grouped file actions have the toolbar's exact density, borders,
+ * focus treatment, and placement.
  */
-export function createExportPicker(options: Array<{ label: string; action: () => void }>): HTMLElement {
+export function createToolbarPicker(
+  label: string,
+  entries: ToolbarPickerEntry[],
+  config: { deckOnly?: boolean } = {},
+): HTMLElement {
   const wrap = document.createElement('span');
-  wrap.className = 'shape-menu-wrap deck-only';
+  wrap.className = `shape-menu-wrap${config.deckOnly ? ' deck-only' : ''}`;
 
   const trigger = document.createElement('button');
   trigger.type = 'button';
   trigger.className = 'shape-menu-trigger';
   trigger.setAttribute('aria-haspopup', 'menu');
   trigger.setAttribute('aria-expanded', 'false');
-  trigger.innerHTML = '<span>Export…</span>' +
+  trigger.innerHTML = `<span>${label}</span>` +
     '<svg class="shape-menu-chevron" viewBox="0 0 10 10" width="9" height="9" aria-hidden="true">' +
     '<path d="M2 3.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.5" ' +
     'stroke-linecap="round" stroke-linejoin="round"/></svg>';
@@ -35,6 +57,90 @@ export function createExportPicker(options: Array<{ label: string; action: () =>
     menu = document.createElement('div');
     menu.className = 'shape-menu';
     menu.setAttribute('role', 'menu');
+    const appendOption = (option: ToolbarPickerOption, parent: HTMLElement): void => {
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = 'shape-menu-item';
+      item.setAttribute('role', 'menuitem');
+      item.textContent = option.label;
+      item.addEventListener('click', () => {
+        close();
+        trigger.blur();
+        option.action();
+      });
+      parent.appendChild(item);
+    };
+    for (const entry of entries) {
+      if (!('options' in entry)) {
+        appendOption(entry, menu);
+        continue;
+      }
+      const section = document.createElement('div');
+      section.className = 'shape-menu-section';
+      section.setAttribute('role', 'group');
+      section.setAttribute('aria-label', entry.label);
+      const heading = document.createElement('div');
+      heading.className = 'shape-menu-section-label';
+      heading.textContent = entry.label;
+      section.appendChild(heading);
+      for (const option of entry.options) appendOption(option, section);
+      menu.appendChild(section);
+    }
+    wrap.appendChild(menu);
+    trigger.setAttribute('aria-expanded', 'true');
+    document.addEventListener('pointerdown', outside, true);
+    document.addEventListener('keydown', keys, true);
+    menu.querySelector<HTMLButtonElement>('button')?.focus();
+  };
+  trigger.addEventListener('click', () => (menu ? close() : open()));
+  wrap.appendChild(trigger);
+  return wrap;
+}
+
+/** A persistent primary action with a narrow, separately clickable menu segment. */
+export function createToolbarSplitButton(
+  label: string,
+  action: () => void,
+  options: ToolbarPickerOption[],
+  config: ToolbarSplitButtonConfig = {},
+): HTMLElement {
+  const wrap = document.createElement('span');
+  wrap.className = `toolbar-split-button shape-menu-wrap${config.deckOnly ? ' deck-only' : ''}`;
+
+  const main = document.createElement('button');
+  main.type = 'button';
+  main.className = `toolbar-split-main${config.variant === 'primary' ? ' primary' : ''}`;
+  main.textContent = label;
+  main.addEventListener('click', action);
+
+  const trigger = document.createElement('button');
+  trigger.type = 'button';
+  trigger.className = `toolbar-split-menu${config.variant === 'primary' ? ' primary' : ''}`;
+  trigger.setAttribute('aria-label', config.menuLabel ?? `More ${label} options`);
+  trigger.setAttribute('aria-haspopup', 'menu');
+  trigger.setAttribute('aria-expanded', 'false');
+  trigger.innerHTML = '<svg viewBox="0 0 10 10" width="9" height="9" aria-hidden="true">' +
+    '<path d="M2 3.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.5" ' +
+    'stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+  let menu: HTMLDivElement | null = null;
+  const close = (): void => {
+    menu?.remove();
+    menu = null;
+    trigger.setAttribute('aria-expanded', 'false');
+    document.removeEventListener('pointerdown', outside, true);
+    document.removeEventListener('keydown', keys, true);
+  };
+  const outside = (event: PointerEvent): void => {
+    if (!wrap.contains(event.target as Node)) close();
+  };
+  const keys = (event: KeyboardEvent): void => {
+    if (event.key === 'Escape') close();
+  };
+  const open = (): void => {
+    menu = document.createElement('div');
+    menu.className = 'shape-menu toolbar-split-popover';
+    menu.setAttribute('role', 'menu');
     for (const option of options) {
       const item = document.createElement('button');
       item.type = 'button';
@@ -55,6 +161,6 @@ export function createExportPicker(options: Array<{ label: string; action: () =>
     menu.querySelector<HTMLButtonElement>('button')?.focus();
   };
   trigger.addEventListener('click', () => (menu ? close() : open()));
-  wrap.appendChild(trigger);
+  wrap.append(main, trigger);
   return wrap;
 }

@@ -1,9 +1,10 @@
 import { type FSWatcher, existsSync, mkdirSync, watch } from 'node:fs';
-import { readFile, writeFile } from 'node:fs/promises';
+import { writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { userInfo } from 'node:os';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { BrowserWindow, app, clipboard, dialog, ipcMain, screen, shell } from 'electron';
+import type { Display, Rectangle } from 'electron';
 import type { Deck } from '@shared/deck.js';
 import {
   CLIPBOARD_FORMAT,
@@ -17,6 +18,7 @@ import { IPC } from '@shared/ipc.js';
 import type {
   AgentContextDraft,
   AgentResponse,
+  CollabStartRequest,
   DeckSession,
   ImportedAsset,
   KeynoteImportResult,
@@ -24,16 +26,22 @@ import type {
   PresentationState,
   PdfExportRequest,
   PresentOptions,
+  RasterSaveRequest,
+  RasterResult,
+  RasterTarget,
   TrimRequest,
   TrimResult,
   WorkflowStartRequest,
   WorkflowStartResult,
 } from '@shared/ipc.js';
+import { encodeEditorView, type EditorViewSnapshot } from '@shared/editorView.js';
 import { startWorkflow } from './workflow.js';
+import { handoffWhenReady } from './windowHandoff.js';
 import { AgentRuntime } from './agentRuntime.js';
 import { installAssetProtocol, registerAssetScheme, setDeckDir } from './assetProtocol.js';
 import {
   createDeck,
+  copyDeck,
   derivedAssetPath,
   ensureAgentGuide,
   importAsset,
@@ -48,12 +56,18 @@ import { probeMedia, runTrim } from './ffmpeg.js';
 import { importKeynote } from './keynoteImport.js';
 import { HTML_EDIT_DIR, writeHtmlScope } from './htmlAuthoring.js';
 import {
-  createCollabHostWindow, createEditorWindow, createPdfWindow, createPresentWindow, createPresenterWindow, createTrimWindow,
+  captureWindowContinuity, createCollabHostWindow, createEditorWindow, createPdfWindow, createPresentWindow, createPresenterWindow, createRasterWindow, createTrimWindow,
 } from './windows.js';
 import {
   defaultClientDir, startCollabServer, type RunningCollabServer,
 } from '../server/collabServer.js';
 import { agentClipboardPrompt, collaborationInviteUrl } from '../server/agentBrief.js';
+import {
+  chooseAudienceDisplay,
+  chooseDisplayById,
+  shouldOpenSpeakerView,
+  swappedPresentationDisplays,
+} from './presentationDisplays.js';
 
 /**
  * Main process: owns the filesystem, ffmpeg and the windows. The renderer never
@@ -71,16 +85,138 @@ let editorWindow: BrowserWindow | null = null;
 let presentWindow: BrowserWindow | null = null;
 let presenterWindow: BrowserWindow | null = null;
 let presentationState: PresentationState | null = null;
+let presentationDisplays: { audienceDisplayId: number; presenterDisplayId: number } | null = null;
+let swappingPresentationDisplays = false;
 let trimWindow: BrowserWindow | null = null;
+let rasterWindow: BrowserWindow | null = null;
 /** Live while the open deck is being shared for co-editing. */
 let collabServer: RunningCollabServer | null = null;
 let collabWindow: BrowserWindow | null = null;
+let collabReturn: Promise<void> | null = null;
 let quitting = false;
 const agentRuntime = new AgentRuntime(() => editorWindow);
+
+function speakerWindowBounds(display: Display): Rectangle {
+  const area = display.workArea;
+  return {
+    x: area.x + 40,
+    y: area.y + 40,
+    width: Math.max(900, Math.min(1200, area.width - 80)),
+    height: Math.max(620, Math.min(820, area.height - 80)),
+  };
+}
+
+function moveSpeakerWindowToDisplay(display: Display): void {
+  if (!presenterWindow || presenterWindow.isDestroyed()) return;
+  presenterWindow.setBounds(speakerWindowBounds(display));
+}
+
+function moveAudienceWindowToDisplay(display: Display): Promise<void> {
+  if (!presentWindow || presentWindow.isDestroyed()) return Promise.resolve();
+  const win = presentWindow;
+  const enterFullscreen = (): void => {
+    if (win.isDestroyed()) return;
+    win.setBounds(display.bounds);
+    win.setFullScreen(true);
+  };
+  if (!win.isFullScreen()) {
+    enterFullscreen();
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    win.once('leave-full-screen', () => {
+      enterFullscreen();
+      resolve();
+    });
+    win.setFullScreen(false);
+  });
+}
+
+async function swapPresentationDisplayRoles(): Promise<void> {
+  if (swappingPresentationDisplays || !presentationDisplays || !presenterWindow) return;
+  const displays = screen.getAllDisplays();
+  const primary = screen.getPrimaryDisplay();
+  const swapped = swappedPresentationDisplays(displays, presentationDisplays, primary);
+  if (!swapped) return;
+  const { audience: audienceTarget, presenter: presenterTarget } = swapped;
+
+  swappingPresentationDisplays = true;
+  presentationDisplays = {
+    audienceDisplayId: audienceTarget.id,
+    presenterDisplayId: presenterTarget.id,
+  };
+  try {
+    moveSpeakerWindowToDisplay(presenterTarget);
+    await moveAudienceWindowToDisplay(audienceTarget);
+    if (presenterWindow && !presenterWindow.isDestroyed()) presenterWindow.focus();
+  } finally {
+    swappingPresentationDisplays = false;
+  }
+}
 
 function requireSession(): DeckSession {
   if (!session) throw new Error('No deck is open');
   return session;
+}
+
+async function readCollabView(win: BrowserWindow): Promise<EditorViewSnapshot | null> {
+  try {
+    return await win.webContents.executeJavaScript(`(() => {
+      const state = window.store?.get?.();
+      if (!state) return null;
+      return {
+        activeSlideId: state.deck.slides[state.slideIndex]?.id ?? null,
+        selectedSlideIds: Array.from(state.slideSelection ?? []),
+        selectedElementIds: Array.from(state.selection ?? []),
+      };
+    })()`) as EditorViewSnapshot | null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Hand the collaboration shell back to the native editor without ever leaving
+ * the desktop with no visible app window. The server is flushed while the old
+ * shell remains on screen; only a ready replacement is allowed to close it.
+ */
+function returnFromCollaboration(): Promise<void> {
+  if (collabReturn) return collabReturn;
+  const host = collabWindow;
+  if (!host || host.isDestroyed() || quitting) return Promise.resolve();
+
+  collabReturn = (async () => {
+    const continuity = captureWindowContinuity(host);
+    const view = await readCollabView(host);
+    const closing = collabServer;
+    collabServer = null;
+    try {
+      await closing?.close();
+    } catch (error) {
+      console.error('Could not close collaboration server cleanly:', error);
+    }
+    if (quitting || !session) return;
+
+    // Closing the server flushes its authoritative in-memory deck to disk.
+    // If a final reload fails, still restore the editor with the last known
+    // session instead of stranding the user in a disconnected collab shell.
+    try {
+      session.deck = await loadDeck(session.dir);
+    } catch (error) {
+      console.error('Could not reload the deck after collaboration:', error);
+    }
+    watchDeck(session.dir, session.deck.theme);
+
+    const query = view ? `?view=${encodeURIComponent(encodeEditorView(view))}` : '';
+    const replacement = createEditorWindow(query, continuity);
+    editorWindow = replacement;
+    broadcastDeck(replacement);
+
+    await handoffWhenReady(replacement, host);
+  })().finally(() => {
+    collabReturn = null;
+  });
+  return collabReturn;
 }
 
 let watchers: FSWatcher[] = [];
@@ -237,18 +373,12 @@ app.whenReady().then(async () => {
   screen.on('display-removed', () => {
     if (!presentWindow || presentWindow.isDestroyed()) return;
     const primary = screen.getPrimaryDisplay();
-    presentWindow.setFullScreen(false);
-    presentWindow.setBounds(primary.bounds);
-    presentWindow.setFullScreen(true);
-    if (presenterWindow && !presenterWindow.isDestroyed()) {
-      const area = primary.workArea;
-      presenterWindow.setBounds({
-        x: area.x + 40,
-        y: area.y + 40,
-        width: Math.max(900, Math.min(1200, area.width - 80)),
-        height: Math.max(620, Math.min(820, area.height - 80)),
-      });
-    }
+    presentationDisplays = {
+      audienceDisplayId: primary.id,
+      presenterDisplayId: primary.id,
+    };
+    moveSpeakerWindowToDisplay(primary);
+    void moveAudienceWindowToDisplay(primary);
   });
 
   app.on('activate', () => {
@@ -312,6 +442,22 @@ function registerHandlers(): void {
     lastSavedDeckJson = await saveDeck(s.dir, deck);
     s.deck = deck;
     broadcastDeck(BrowserWindow.fromWebContents(event.sender));
+  });
+
+  ipcMain.handle(IPC.deckSaveAs, async (): Promise<DeckSession | null> => {
+    const s = requireSession();
+    const target = await dialog.showSaveDialog({
+      title: 'Save deck as',
+      buttonLabel: 'Save As',
+      defaultPath: basename(s.dir),
+      properties: ['createDirectory'],
+    });
+    if (target.canceled || !target.filePath) return null;
+
+    const deck = await copyDeck(s.dir, target.filePath);
+    const saved = setSession(target.filePath, deck);
+    broadcastDeck();
+    return saved;
   });
 
   ipcMain.handle(IPC.deckLoadTheme, async (): Promise<string> => {
@@ -458,41 +604,60 @@ function registerHandlers(): void {
   });
   ipcMain.handle(IPC.presentOpen, async (_e, slideIndex: number, options: PresentOptions = {}) => {
     if (presentWindow && !presentWindow.isDestroyed()) {
-      presenterWindow?.focus();
+      (presenterWindow ?? presentWindow).focus();
       return;
     }
-    const prefsPath = join(app.getPath('userData'), 'presentation-displays.json');
-    let chosen = options;
-    if (options.audienceDisplayId === undefined && options.presenterDisplayId === undefined) {
-      try { chosen = JSON.parse(await readFile(prefsPath, 'utf8')) as PresentOptions; } catch { /* defaults below */ }
-    }
-    if (options.remember) {
-      await writeFile(prefsPath, JSON.stringify({
-        audienceDisplayId: options.audienceDisplayId,
-        presenterDisplayId: options.presenterDisplayId,
-      }));
-    }
+    const displays = screen.getAllDisplays();
+    const primary = screen.getPrimaryDisplay();
+    const audienceDisplay = chooseDisplayById(
+      displays,
+      options.audienceDisplayId,
+      chooseAudienceDisplay(displays, primary),
+    );
+    const presenterDisplay = chooseDisplayById(
+      displays,
+      options.presenterDisplayId,
+      primary,
+    );
+    const openSpeakerView = shouldOpenSpeakerView(
+      audienceDisplay,
+      presenterDisplay,
+      options.speakerView,
+    );
+
     presentationState = null;
-    presentWindow = createPresentWindow(slideIndex, chosen.audienceDisplayId);
-    presenterWindow = createPresenterWindow(chosen.presenterDisplayId);
+    presentationDisplays = {
+      audienceDisplayId: audienceDisplay.id,
+      presenterDisplayId: presenterDisplay.id,
+    };
+    presentWindow = createPresentWindow(slideIndex, audienceDisplay.id, options.endSlideIndex);
+    presenterWindow = openSpeakerView ? createPresenterWindow(presenterDisplay.id) : null;
     presentWindow.on('closed', () => {
       presentWindow = null;
+      presentationDisplays = null;
       if (presenterWindow && !presenterWindow.isDestroyed()) presenterWindow.close();
     });
-    presenterWindow.webContents.once('did-finish-load', () => {
-      if (presentationState && presenterWindow && !presenterWindow.isDestroyed()) {
-        presenterWindow.webContents.send(IPC.presentState, presentationState);
-      }
-    });
-    presenterWindow.on('closed', () => {
-      presenterWindow = null;
-      if (presentWindow && !presentWindow.isDestroyed()) presentWindow.close();
-    });
+    if (presenterWindow) {
+      presenterWindow.webContents.once('did-finish-load', () => {
+        if (presentationState && presenterWindow && !presenterWindow.isDestroyed()) {
+          presenterWindow.webContents.send(IPC.presentState, presentationState);
+        }
+      });
+      presenterWindow.on('closed', () => {
+        presenterWindow = null;
+        presentationDisplays = null;
+        if (presentWindow && !presentWindow.isDestroyed()) presentWindow.close();
+      });
+    }
   });
   ipcMain.on(IPC.presentCommand, (_event, command: PresentationCommand) => {
     if (command.type === 'exit') {
       presentWindow?.close();
       presenterWindow?.close();
+      return;
+    }
+    if (command.type === 'swapDisplays') {
+      void swapPresentationDisplayRoles();
       return;
     }
     presentWindow?.webContents.send(IPC.presentCommand, command);
@@ -510,6 +675,17 @@ function registerHandlers(): void {
     // Wait for the renderer before sending, or the payload lands nowhere.
     win.webContents.once('did-finish-load', () => {
       win.webContents.send(IPC.trimOpen, payload);
+    });
+  });
+
+  ipcMain.handle(IPC.rasterOpen, (_e, payload: RasterTarget) => {
+    if (rasterWindow && !rasterWindow.isDestroyed()) rasterWindow.close();
+    rasterWindow = createRasterWindow();
+    const win = rasterWindow;
+    win.on('closed', () => (rasterWindow = null));
+    // Wait for the paint renderer to subscribe before delivering its target.
+    win.webContents.once('did-finish-load', () => {
+      win.webContents.send(IPC.rasterOpen, payload);
     });
   });
 
@@ -601,7 +777,7 @@ function registerHandlers(): void {
    * "Collaborate": share the open deck for live co-editing.
    *
    * The collab server becomes the deck's only writer — the desktop watcher
-   * closes and the editor window is swapped for the same browser client the
+   * closes and the editor window hands off to the same browser client the
    * joiners load (over localhost), so the host is simply another peer. The
    * server is pinned to this one deck: joiners can't list, create, or import
    * anything else. Closing the window ends the session and brings the
@@ -619,8 +795,13 @@ function registerHandlers(): void {
 
   // "Agent…" runs the same deck-scoped session and copies a complete,
   // task-neutral API brief for the user to paste into an agent chat.
-  ipcMain.handle(IPC.collabStart, async (_e, opts?: { agent?: boolean }): Promise<string[]> => {
+  ipcMain.handle(IPC.collabStart, async (_e, opts?: CollabStartRequest): Promise<string[]> => {
     const s = requireSession();
+    const requestedView: EditorViewSnapshot = opts ?? {
+      activeSlideId: null,
+      selectedSlideIds: [],
+      selectedElementIds: [],
+    };
     if (collabServer) {
       copyJoinLink(collabServer.urls, basename(s.dir), Boolean(opts?.agent));
       return collabServer.urls;
@@ -639,9 +820,9 @@ function registerHandlers(): void {
       hostedDeckId: deckId,
       agentMode: Boolean(opts?.agent),
       clientDir,
-      // "End collaboration" in the host window: closing the window is the
-      // existing teardown path (stops the server, restores the editor).
-      onSessionEnd: () => setImmediate(() => collabWindow?.close()),
+      // Keep the collaboration shell visible until the restored native editor
+      // has loaded, so ending a session is a continuous window handoff too.
+      onSessionEnd: () => setImmediate(() => void returnFromCollaboration()),
     };
     let server: RunningCollabServer;
     try {
@@ -659,28 +840,35 @@ function registerHandlers(): void {
     watchers = [];
 
     const hostName = userInfo().username || 'Host';
-    collabWindow = createCollabHostWindow(
-      `http://127.0.0.1:${server.port}/?deck=${encodeURIComponent(deckId)}&name=${encodeURIComponent(hostName)}`,
-    );
-    collabWindow.on('closed', () => {
-      collabWindow = null;
-      const closing = collabServer;
-      collabServer = null;
-      // Recreate the editor synchronously: with no window at all,
-      // window-all-closed would quit the app on non-macOS.
-      if (!quitting && session) editorWindow = createEditorWindow();
-      void (async () => {
-        await closing?.close();
-        if (quitting || !session) return;
-        // The server may have flushed edits after our watchers closed; reload
-        // so the returning editor shows what everyone last saw.
-        session.deck = await loadDeck(session.dir);
-        watchDeck(session.dir, session.deck.theme);
-        broadcastDeck();
-      })();
+    const hostUrl = new URL(`http://127.0.0.1:${server.port}/`);
+    hostUrl.searchParams.set('deck', deckId);
+    hostUrl.searchParams.set('name', hostName);
+    hostUrl.searchParams.set('view', encodeEditorView(requestedView));
+
+    const previousEditor = editorWindow;
+    const continuity = previousEditor && !previousEditor.isDestroyed()
+      ? captureWindowContinuity(previousEditor)
+      : undefined;
+    const host = createCollabHostWindow(hostUrl.toString(), continuity);
+    collabWindow = host;
+
+    // Native close controls mean "end collaboration". Intercept the close so
+    // the current window remains visible until its replacement is ready.
+    host.on('close', (event) => {
+      if (quitting || collabReturn) return;
+      event.preventDefault();
+      void returnFromCollaboration();
     });
-    editorWindow?.close();
-    editorWindow = null;
+    host.on('closed', () => {
+      if (collabWindow === host) collabWindow = null;
+    });
+
+    // Starting a session uses the same atomic handoff in the other direction:
+    // the editor stays visible while localhost loads, then the ready collab
+    // shell appears at the exact same bounds before the old window closes.
+    void handoffWhenReady(host, previousEditor, () => {
+      if (editorWindow === previousEditor) editorWindow = null;
+    });
     return server.urls;
   });
 
@@ -709,4 +897,34 @@ function registerHandlers(): void {
     editorWindow?.webContents.send(IPC.trimDone, result);
     return result;
   });
+
+  ipcMain.handle(
+    IPC.rasterSave,
+    async (_event, req: RasterSaveRequest): Promise<RasterResult> => {
+      const s = requireSession();
+      // Resolving the input is a cheap containment/existence check. Raster
+      // output always becomes a sibling derived asset; the original stays put.
+      const input = resolveAsset(s.dir, req.src);
+      if (!existsSync(input)) throw new Error(`Image asset does not exist: ${req.src}`);
+      const bytes = Buffer.from(req.png);
+      const pngSignature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+      if (!bytes.subarray(0, pngSignature.length).equals(pngSignature)) {
+        throw new Error('Raster editor produced an invalid PNG');
+      }
+      if (!Number.isInteger(req.width) || !Number.isInteger(req.height)
+        || req.width < 1 || req.height < 1) {
+        throw new Error('Raster editor produced invalid image dimensions');
+      }
+      const { absolute, relative } = await derivedAssetPath(s.dir, req.src, 'paint', '.png');
+      await writeFile(absolute, bytes);
+      const result: RasterResult = {
+        src: relative,
+        elementId: req.elementId,
+        width: req.width,
+        height: req.height,
+      };
+      editorWindow?.webContents.send(IPC.rasterDone, result);
+      return result;
+    },
+  );
 }

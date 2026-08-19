@@ -11,14 +11,14 @@ The editor again uses the layout and styling from commit `7b8cacf`:
 - Layout and Magic Move are back in Props.
 - The slide rail again shows Slide, Duplicate, Hide, and Delete directly.
 
-The one requested exception is **Export…** beside Import Keynote. Its menu has
-only **PDF…** and **Web…**.
+The file-format actions are consolidated under **Save As…**. Its menu contains
+**Deck…**, **PDF (export, lossy)…**, and **Web…**.
 
 ![Restored classic editor layout](assets/ui-audit/restored-classic-layout.png)
 
 The screenshot uses the collaboration renderer, which shares the editor canvas,
 rail, inspector, toolbar geometry, and original stylesheet. The desktop toolbar
-also includes Agent and Collaborate, plus the requested Export menu.
+also includes Agent and Collaborate, plus the Save As menu.
 
 The earlier experimental screenshots remain in `docs/assets/ui-audit/` only as
 historical comparison artifacts. They do not describe the current interface.

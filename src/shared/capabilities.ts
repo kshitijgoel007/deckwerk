@@ -198,14 +198,17 @@ export function capabilities(): Capability[] {
     },
     {
       id: 'media-frame',
-      what: 'Borders, rounded corners and visual effects on media.',
+      what: 'Borders, rounded corners and visual effects on text and media.',
       when: 'Setting a figure off from the background, or de-emphasising it.',
       notes: [
-        'effects apply in array order; the three are blur (radius px), posterize (levels) and grayscale (amount 0–1).',
+        'effects apply in array order: blur (radius px), posterize (levels), grayscale (amount 0–1), and gaussianNoise (amount 0–1, frequencyCutoff 0.001–1).',
         'borderWidth/borderColor/borderRadius work on both images and video.',
       ],
       elements: [
-        text('cap-frame-title', 'Framed and filtered media', TITLE, { class: ['role-title'] }),
+        text('cap-frame-title', 'Framed and filtered media', TITLE, {
+          class: ['role-title'],
+          effects: [{ type: 'gaussianNoise', amount: 0.2, frequencyCutoff: 0.12 }],
+        }),
         {
           id: 'cap-frame-plain', type: 'image', x: 200, y: 320, w: 700, h: 440, rot: 0, z: 2,
           opacity: 1, class: [], style: {}, src: 'assets/swatch.png', fit: 'cover', alt: '',
@@ -215,7 +218,12 @@ export function capabilities(): Capability[] {
           id: 'cap-frame-effect', type: 'image', x: 1020, y: 320, w: 700, h: 440, rot: 0, z: 2,
           opacity: 1, class: [], style: {}, src: 'assets/swatch.png', fit: 'cover', alt: '',
           sourceBox: null,
-          effects: [{ type: 'blur', radius: 6 }, { type: 'posterize', levels: 6 }, { type: 'grayscale', amount: 0.8 }],
+          effects: [
+            { type: 'blur', radius: 6 },
+            { type: 'posterize', levels: 6 },
+            { type: 'grayscale', amount: 0.8 },
+            { type: 'gaussianNoise', amount: 0.3, frequencyCutoff: 0.18 },
+          ],
         },
       ],
     },

@@ -1,6 +1,11 @@
 import '../player/player.css';
 import type { DeckSession } from '@shared/ipc.js';
 import type { PresentationCommand } from '@shared/ipc.js';
+import {
+  nextLeavesPresentationRange,
+  prevLeavesPresentationRange,
+  type PresentationRange,
+} from '@shared/presentationRange.js';
 import { bindPresentKeys } from '../player/keys.js';
 import { Player } from '../player/player.js';
 
@@ -14,8 +19,12 @@ const root = document.getElementById('root');
 if (!root) throw new Error('missing #root');
 
 let player: Player | null = null;
+let session: DeckSession | null = null;
+let range: PresentationRange | null = null;
 let themeLink: HTMLStyleElement | null = null;
 const startedAt = Date.now();
+let slideStartedAt = startedAt;
+let timedSlide = -1;
 
 async function applyTheme(): Promise<void> {
   const css = await window.api.loadTheme();
@@ -26,65 +35,111 @@ async function applyTheme(): Promise<void> {
   themeLink.textContent = css;
 }
 
-function start(session: DeckSession): void {
-  const startSlide = Number(new URLSearchParams(location.search).get('slide') ?? 0);
+function start(nextSession: DeckSession): void {
+  const params = new URLSearchParams(location.search);
+  const startSlide = Number(params.get('slide') ?? 0);
+  const endSlide = params.has('endSlide') ? Number(params.get('endSlide')) : null;
+  range = Number.isFinite(startSlide) && endSlide !== null && Number.isFinite(endSlide)
+    ? { start: startSlide, end: endSlide }
+    : null;
 
   if (player) {
-    player.setDeck(session.deck);
+    player.setDeck(nextSession.deck);
     return;
   }
 
   player = new Player({
-    deck: session.deck,
+    deck: nextSession.deck,
     container: root!,
     resolveSrc: (src) => window.api.assetUrl(src),
-    onCursor: (cursor, steps) => window.api.publishPresentState({ cursor, steps, startedAt }),
+    onCursor: (cursor, steps) => {
+      if (cursor.slide !== timedSlide) {
+        timedSlide = cursor.slide;
+        slideStartedAt = Date.now();
+      }
+      window.api.publishPresentState({
+        cursor,
+        steps,
+        startedAt,
+        slideStartedAt,
+        ...(range ? { range } : {}),
+      });
+    },
   });
   // Presenting from a skipped slide would put it on the projector anyway;
   // land on the nearest slide that is actually part of the talk.
   let first = Number.isFinite(startSlide) ? startSlide : 0;
-  const slides = session.deck.slides;
+  const slides = nextSession.deck.slides;
   if (slides[first]?.skipped) {
-    const forward = slides.findIndex((s, i) => i > first && !s.skipped);
+    const last = range?.end ?? slides.length - 1;
+    const forward = slides.findIndex((s, i) => i > first && i <= last && !s.skipped);
     if (forward >= 0) {
       first = forward;
     } else {
-      for (let i = slides.length - 1; i >= 0; i--) {
+      const earliest = range?.start ?? 0;
+      for (let i = Math.min(first - 1, last); i >= earliest; i--) {
         if (!slides[i].skipped) { first = i; break; }
       }
     }
   }
   player.goToSlide(first);
 
-  bindPresentKeys(window, player, { onExit: () => window.close() });
+  bindPresentKeys(window, player, {
+    onExit: () => window.close(),
+    onNext: advance,
+    onPrev: retreat,
+    onHome: () => player?.goToSlide(range?.start ?? 0),
+  });
 
   // Clicking advances, like every other presentation tool.
   window.addEventListener('mousedown', (e) => {
-    if (e.button === 0) player?.next();
-    else if (e.button === 2) player?.prev();
+    if (e.button === 0) advance();
+    else if (e.button === 2) retreat();
   });
   window.addEventListener('contextmenu', (e) => e.preventDefault());
 }
 
+function advance(): void {
+  if (!player || !session) return;
+  if (range && nextLeavesPresentationRange(session.deck.slides, player.getCursor(), range)) {
+    window.close();
+    return;
+  }
+  player.next();
+}
+
+function retreat(): void {
+  if (!player || !session) return;
+  if (range && prevLeavesPresentationRange(session.deck.slides, player.getCursor(), range)) return;
+  player.prev();
+}
+
 window.api.onPresentCommand((command: PresentationCommand) => {
   if (!player) return;
-  if (command.type === 'next') player.next();
-  else if (command.type === 'prev') player.prev();
-  else if (command.type === 'goTo') player.goToSlide(command.slide);
+  if (command.type === 'next') advance();
+  else if (command.type === 'prev') retreat();
+  else if (command.type === 'goTo') {
+    const target = range
+      ? Math.min(Math.max(command.slide, range.start), range.end)
+      : command.slide;
+    player.goToSlide(target);
+  }
   else if (command.type === 'toggleBlank') player.toggleBlank();
 });
 
 // Live updates while presenting (editing on a second screen mid-rehearsal).
-window.api.onDeckState((session) => {
+window.api.onDeckState((nextSession) => {
+  session = nextSession;
   void applyTheme();
-  start(session);
+  start(nextSession);
 });
 
 // Pull the current deck on load, rather than waiting for a broadcast that may
 // already have fired — reopening this window mid-talk must not show black.
 void (async () => {
-  const session = await window.api.getDeck();
-  if (!session) return;
+  const initialSession = await window.api.getDeck();
+  if (!initialSession) return;
+  session = initialSession;
   await applyTheme();
-  start(session);
+  start(initialSession);
 })();

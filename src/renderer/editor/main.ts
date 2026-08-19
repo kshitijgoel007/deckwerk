@@ -4,7 +4,9 @@ import { applyAgentTransaction } from '@shared/agent.js';
 import type { SlideElement } from '@shared/deck.js';
 import { emptyDeck } from '@shared/deck.js';
 import type { AuthoredHtmlFile } from '@shared/ipc.js';
+import { captureEditorView, decodeEditorView, restoreEditorView } from '@shared/editorView.js';
 import { adoptAuthoredIds } from '@shared/htmlSlides.js';
+import { rangeForSlideSelection } from '@shared/presentationRange.js';
 import {
   themeById,
   themeCss,
@@ -19,7 +21,7 @@ import { Inspector } from './inspector.js';
 import { HistoryPanel } from './historyPanel.js';
 import { authoredHtmlSync, fileName } from './htmlCompile.js';
 import { createShapeInsertPicker, insertText } from './elementCreation.js';
-import { createExportPicker } from './exportPicker.js';
+import { createToolbarPicker, createToolbarSplitButton } from './exportPicker.js';
 import { showPdfExportDialog } from './pdfExportDialog.js';
 import { createThemePanel } from './themePanel.js';
 import {
@@ -37,7 +39,6 @@ import { EditorStore } from './store.js';
 import { statusBarText } from './statusBar.js';
 import { TimelinePanel } from './timelinePanel.js';
 import { WelcomeScreen } from './welcomeScreen.js';
-import { presenterPreflight } from './presenterPreflight.js';
 
 /**
  * Editor shell: wires the panels to one store, owns the toolbar, the keyboard
@@ -51,6 +52,8 @@ const el = <T extends HTMLElement>(id: string): T => {
 };
 
 const store = new EditorStore(emptyDeck());
+const initialView = decodeEditorView(new URLSearchParams(location.search).get('view'));
+let initialViewPending = initialView !== null;
 const canvas = new EditorCanvas(el('canvas'), store);
 const inspector = new Inspector(el('inspector'), store);
 new TimelinePanel(el('timeline'), store);
@@ -74,7 +77,10 @@ const openTrim = (element: Extract<SlideElement, { type: 'video' }>) => {
   pendingTrimElementId = element.id;
   void window.api.openTrim({ src: element.src, elementId: element.id });
 };
-wireCanvasInspector(canvas, inspector, openTrim);
+const openRaster = (element: Extract<SlideElement, { type: 'image' }>) => {
+  void window.api.openRaster({ src: element.src, elementId: element.id });
+};
+wireCanvasInspector(canvas, inspector, openTrim, openRaster);
 
 /**
  * The agent's window into this editor: it publishes the computed selection to
@@ -153,11 +159,19 @@ function buildToolbar(): void {
     createDeckWerkButton(),
     barButton('New', newPresentation),
     barButton('Open', openPresentation),
-    barButton('Import Keynote…', importKeynotePresentation),
-    createExportPicker([
-      { label: 'PDF…', action: () => void exportPdf() },
-      { label: 'Web…', action: () => void exportWeb() },
+    createToolbarPicker('Import…', [
+      { label: 'Keynote…', action: () => void importKeynotePresentation() },
     ]),
+    createToolbarPicker('Save As…', [
+      { label: 'Deck…', action: () => void saveAsPresentation() },
+      {
+        label: 'Lossy export',
+        options: [
+          { label: 'PDF…', action: () => void exportPdf() },
+          { label: 'Web…', action: () => void exportWeb() },
+        ],
+      },
+    ], { deckOnly: true }),
   );
 
   const mid = document.createElement('div');
@@ -172,16 +186,27 @@ function buildToolbar(): void {
   right.append(
     barButton('Agent…', () => void startSharing(true)),
     barButton('Collaborate', () => void startSharing(false)),
-    barButton('Present', async () => {
-      // Flush before presenting: the projector must not show a stale theme.
-      await cssEditor.flush();
-      await save();
-      const options = await presenterPreflight();
-      if (options) await window.api.present(store.get().slideIndex, options);
-    }, 'primary'),
+    createToolbarSplitButton(
+      'Present',
+      () => void startPresentation(),
+      [{ label: 'Present in Speaker View', action: () => void startPresentation(true) }],
+      { variant: 'primary', menuLabel: 'Presentation options' },
+    ),
   );
 
   bar.append(left, mid, right);
+}
+
+async function startPresentation(speakerView = false): Promise<void> {
+  // Flush before presenting: the projector must not show a stale theme.
+  await cssEditor.flush();
+  await save();
+  const { deck, slideIndex, slideSelection } = store.get();
+  const range = rangeForSlideSelection(deck.slides, slideSelection);
+  await window.api.present(range?.start ?? slideIndex, {
+    speakerView,
+    endSlideIndex: range?.end,
+  });
 }
 
 async function exportWeb(): Promise<void> {
@@ -216,7 +241,7 @@ async function startSharing(agent: boolean): Promise<void> {
   try {
     await cssEditor.flush();
     await save();
-    await window.api.startCollab({ agent });
+    await window.api.startCollab({ agent, ...captureEditorView(store) });
     setStatusMessage(agent ? 'Agent session started; API brief copied to clipboard.' : 'Collaboration link copied to clipboard.');
   } catch (err) {
     setStatusMessage(`${agent ? 'Agent session' : 'Collaboration'} failed: ${err instanceof Error ? err.message : err}`);
@@ -231,6 +256,19 @@ async function newPresentation(): Promise<void> {
 async function openPresentation(): Promise<void> {
   const session = await window.api.openDeck();
   if (session) await adopt(session.dir, session.deck);
+}
+
+async function saveAsPresentation(): Promise<void> {
+  await cssEditor.flush();
+  await save();
+  try {
+    const session = await window.api.saveDeckAs();
+    if (!session) return;
+    await adopt(session.dir, session.deck);
+    setStatusMessage(`Saved as ${session.dir}`);
+  } catch (err) {
+    setStatusMessage(`Save As failed: ${err instanceof Error ? err.message : err}`);
+  }
 }
 
 async function importKeynotePresentation(): Promise<void> {
@@ -346,6 +384,10 @@ function scheduleSave(): void {
 
 async function adopt(dir: string, deck: Parameters<typeof store.load>[0]): Promise<void> {
   store.load(deck, dir);
+  if (initialViewPending) {
+    restoreEditorView(store, initialView);
+    initialViewPending = false;
+  }
   welcome.setVisible(false);
   const loadedCss = await window.api.loadTheme();
   const installedTheme = themeById(deck.themePreset);
@@ -370,6 +412,7 @@ const shellDeps: ShellDeps = {
   save,
   setStatusMessage,
   openTrim,
+  openRaster,
 };
 const clipboard = createClipboardActions(shellDeps);
 
@@ -425,6 +468,25 @@ window.api.onTrimDone((result) => {
     }
   });
   void save();
+});
+
+// Raster paint writes a new PNG and reports the exact element that launched
+// it, so a later selection change cannot relink the wrong image.
+window.api.onRasterDone((result) => {
+  const targetExists = store.get().deck.slides.some((slide) =>
+    slide.elements.some((element) => element.id === result.elementId && element.type === 'image'));
+  if (!targetExists) {
+    setStatusMessage(`Painted PNG saved as ${result.src}, but its image element no longer exists.`);
+    return;
+  }
+  store.commit((deck) => {
+    for (const slide of deck.slides) {
+      const element = slide.elements.find((candidate) => candidate.id === result.elementId);
+      if (element?.type === 'image') element.src = result.src;
+    }
+  }, { label: 'Apply raster paint' });
+  void save();
+  setStatusMessage(`Painted image saved as ${result.src}`);
 });
 
 

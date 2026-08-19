@@ -7,6 +7,9 @@ import type { Player } from './player.js';
 export interface KeyHandlers {
   onExit?: () => void;
   onOverview?: () => void;
+  onNext?: () => void;
+  onPrev?: () => void;
+  onHome?: () => void;
 }
 
 export function bindPresentKeys(
@@ -29,18 +32,21 @@ export function bindPresentKeys(
       case 'PageDown':
       case 'Enter':
         e.preventDefault();
-        player.next();
+        if (handlers.onNext) handlers.onNext();
+        else player.next();
         break;
       case 'ArrowLeft':
       case 'ArrowUp':
       case 'PageUp':
       case 'Backspace':
         e.preventDefault();
-        player.prev();
+        if (handlers.onPrev) handlers.onPrev();
+        else player.prev();
         break;
       case 'Home':
         e.preventDefault();
-        player.goToSlide(0);
+        if (handlers.onHome) handlers.onHome();
+        else player.goToSlide(0);
         break;
       case 'b':
       case 'B':

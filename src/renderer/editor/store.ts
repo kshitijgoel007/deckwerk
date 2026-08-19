@@ -5,6 +5,7 @@ import {
   remapElementIds,
   remapSlideIds,
 } from '@shared/clipboard.js';
+import { makeId } from '@shared/geometry.js';
 
 /**
  * Editor state: the deck, the selection, and an undo history.
@@ -372,6 +373,38 @@ export class EditorStore {
     const slide = this.slide;
     if (!slide) return [];
     return slide.elements.filter((e) => this.state.selection.has(e.id));
+  }
+
+  /**
+   * Clone the selected objects and select the copies.
+   *
+   * The optional offset keeps Command-D's familiar nudge while allowing an
+   * Option-drag to start its copies exactly on top of their sources.
+   */
+  duplicateSelection(offset = { x: 24, y: 24 }): string[] {
+    const ids = this.state.selection;
+    if (ids.size === 0) return [];
+    const created: string[] = [];
+    const index = this.state.slideIndex;
+    this.commit((deck) => {
+      const slide = deck.slides[index];
+      for (const el of slide.elements.filter((candidate) => ids.has(candidate.id))) {
+        const copy = structuredClone(el);
+        copy.lineageId = el.lineageId ?? el.id;
+        copy.magicMoveId = null;
+        copy.id = makeId(el.type);
+        copy.x += offset.x;
+        copy.y += offset.y;
+        if (copy.type === 'shape' && copy.control) {
+          copy.control.x += offset.x;
+          copy.control.y += offset.y;
+        }
+        created.push(copy.id);
+        slide.elements.push(copy);
+      }
+    }, { label: ids.size === 1 ? 'Duplicate object' : 'Duplicate objects' });
+    this.select(created);
+    return created;
   }
 
   /** Slides selected in the rail, returned in deck order. */

@@ -61,6 +61,12 @@ describe('slide layouts', () => {
     document.body.appendChild(host);
     new Inspector(host, store);
 
+    expect(host.querySelector('.insp-title')?.textContent).toBe('slide');
+    expect([...host.querySelectorAll('.insp-subtitle')].map((heading) => heading.textContent))
+      .toEqual(['Layout', 'Magic Move']);
+    expect([...host.querySelectorAll<HTMLElement>('.insp-group')]
+      .some((section) => section.querySelector('h3')?.textContent === 'Slide')).toBe(false);
+
     const layout = [...host.querySelectorAll<HTMLSelectElement>('select')].find((select) =>
       [...select.options].some((option) => option.value === 'standard'))!;
     layout.value = 'standard';

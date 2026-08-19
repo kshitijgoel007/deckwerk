@@ -40,6 +40,11 @@ describe('role-based theme workflow', () => {
 
   it('assigns Title and Body roles through the real inspector control', () => {
     const { store, host } = setup();
+    store.select(['title']);
+    const roleOptions = [...host.querySelectorAll<HTMLSelectElement>('select')]
+      .find((candidate) => [...candidate.options].some((option) => option.value === 'role-title'))!;
+    expect([...roleOptions.options].map((option) => option.value))
+      .toEqual(['role-title', 'role-body', 'role-caption', '']);
     chooseRole(store, host, 'title', 'role-title');
     chooseRole(store, host, 'body', 'role-body');
     expect(store.slide!.elements.find((el) => el.id === 'title')!.class).toContain('role-title');
@@ -104,21 +109,24 @@ describe('role-based theme workflow', () => {
     const field = (label: string) => [...host.querySelectorAll<HTMLLabelElement>('label.field')]
       .find((candidate) => candidate.querySelector('span')?.textContent === label)!;
     const size = field('Font size').querySelector<HTMLInputElement>('input[type="number"]')!;
-    const weight = field('Font weight').querySelector<HTMLSelectElement>('select')!;
+    const weight = field('Font weight').querySelector<HTMLInputElement>('input[type="number"]')!;
+    expect(weight.step).toBe('25');
+    expect(size.parentElement?.classList.contains('optional-number-controls')).toBe(true);
+    expect(size.nextElementSibling?.getAttribute('title')).toBe('Use theme value');
+    const spacing = field('Paragraph spacing').querySelector<HTMLInputElement>('input')!;
+    expect(spacing.parentElement?.classList.contains('optional-number-controls')).toBe(true);
+    expect(spacing.nextElementSibling?.getAttribute('title')).toBe('Use theme value');
 
     size.value = '54';
     size.dispatchEvent(new Event('change', { bubbles: true }));
-    field('Font weight').querySelector<HTMLSelectElement>('select')!.value = '700';
-    field('Font weight').querySelector<HTMLSelectElement>('select')!
-      .dispatchEvent(new Event('change', { bubbles: true }));
+    weight.value = '700';
+    weight.dispatchEvent(new Event('change', { bubbles: true }));
     let body = store.slide!.elements.find((element) => element.id === 'body')!;
     expect(body.style['font-size']).toBe('54px');
     expect(body.style['font-weight']).toBe('700');
 
     field('Font size').querySelector<HTMLButtonElement>('button[title="Use theme value"]')!.click();
-    field('Font weight').querySelector<HTMLSelectElement>('select')!.value = 'inherit';
-    field('Font weight').querySelector<HTMLSelectElement>('select')!
-      .dispatchEvent(new Event('change', { bubbles: true }));
+    field('Font weight').querySelector<HTMLButtonElement>('button[title="Use theme value"]')!.click();
     body = store.slide!.elements.find((element) => element.id === 'body')!;
     expect(body.style['font-size']).toBeUndefined();
     expect(body.style['font-weight']).toBeUndefined();

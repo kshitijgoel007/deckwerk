@@ -55,6 +55,63 @@ button.danger:hover:not(:disabled) {
   color: #fff;
   border-color: transparent;
 }
+
+/* Destructive confirmation anchored to the host toolbar action. */
+#end-collaboration-popover {
+  position: fixed;
+  z-index: 2000;
+  box-sizing: border-box;
+  width: min(320px, calc(100vw - 16px));
+  padding: 14px;
+  border: 1px solid var(--danger);
+  border-radius: 10px;
+  background: linear-gradient(145deg, rgb(229 84 75 / 18%), rgb(29 29 33 / 98%) 58%);
+  box-shadow: 0 14px 38px rgb(0 0 0 / 55%), 0 0 0 1px rgb(229 84 75 / 12%);
+}
+#end-collaboration-popover::before {
+  content: '';
+  position: absolute;
+  top: -5px;
+  left: var(--end-collaboration-arrow-left, 22px);
+  width: 8px;
+  height: 8px;
+  border-top: 1px solid var(--danger);
+  border-left: 1px solid var(--danger);
+  background: #452321;
+  transform: rotate(45deg);
+}
+#end-collaboration-popover h2 {
+  margin: 0 0 5px;
+  color: #ff8279;
+  font-size: 14px;
+  line-height: 1.25;
+}
+#end-collaboration-popover p {
+  margin: 0;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.end-collaboration-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 7px;
+  margin-top: 13px;
+}
+.end-collaboration-actions button {
+  min-width: 78px;
+  border-color: rgb(255 255 255 / 12%);
+}
+.end-collaboration-actions .end-collaboration-confirm {
+  border-color: var(--danger);
+  background: var(--danger);
+  color: #fff;
+  font-weight: 650;
+}
+.end-collaboration-actions .end-collaboration-confirm:hover:not(:disabled) {
+  border-color: #f36a60;
+  background: #f36a60;
+}
 /* Agent sessions replace the inspector with a real split pane. Nothing covers
    the canvas; narrow windows move the workspace below it. */
 .agent-session #body {

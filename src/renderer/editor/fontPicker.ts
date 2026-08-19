@@ -122,7 +122,7 @@ export function fontFamilyField(
       return;
     }
     fallbackNote.textContent =
-      `If ${family} is missing, falls back to: ${fallbackStackFor(family).join(', ')}`;
+      `Falls back to: ${fallbackStackFor(family).join(', ')}`;
   };
 
   const addOption = (v: string, text: string, disabled = false): HTMLOptionElement => {

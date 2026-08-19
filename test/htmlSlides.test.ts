@@ -104,6 +104,60 @@ describe('measured nodes become deck objects', () => {
     expect(measured).toMatchObject({ type: 'video', maskShape: 'circle' });
   });
 
+  it('round-trips Gaussian noise settings on text and video', () => {
+    const encoded = encodeURIComponent(JSON.stringify([{
+      type: 'gaussianNoise', amount: 0.45, frequencyCutoff: 0.2,
+    }]));
+    const text = elementFromNode(node({
+      tag: 'p', dataset: { effects: encoded }, html: 'Noisy title',
+    }), 'title', 1);
+    expect(text).toMatchObject({
+      type: 'text',
+      effects: [{ type: 'gaussianNoise', amount: 0.45, frequencyCutoff: 0.2 }],
+    });
+
+    const video = elementFromNode(node({
+      tag: 'video', dataset: { effects: encoded }, attrs: { src: 'assets/demo.mp4' },
+    }), 'clip', 2);
+    expect(video).toMatchObject({
+      type: 'video',
+      effects: [{ type: 'gaussianNoise', amount: 0.45, frequencyCutoff: 0.2 }],
+    });
+
+    const deck = emptyDeck('Noise');
+    deck.slides[0].elements = [text!, video!];
+    const html = slideToHtml(parseDeck(deck).slides[0], { w: 1920, h: 1080 });
+    expect(html.match(/data-effects=/g)).toHaveLength(2);
+    expect(html).toContain('gaussianNoise');
+  });
+
+  it('previews media borders as overlays and keeps their typed fields on round trip', () => {
+    const deck = emptyDeck('Borders');
+    deck.slides[0].elements = [{
+      id: 'image', type: 'image', x: 10, y: 20, w: 500, h: 300, rot: 0, z: 1,
+      opacity: 1, class: [], style: {}, src: 'assets/demo.png', fit: 'cover', alt: '',
+      sourceBox: null, borderColor: '#ff3366', borderWidth: 8, borderRadius: 14,
+    }];
+    const html = slideToHtml(parseDeck(deck).slides[0], { w: 1920, h: 1080 });
+    expect(html).toContain('data-border-width="8"');
+    expect(html).toContain('data-border-color="#ff3366"');
+    expect(html).toContain('data-border-radius="14"');
+    expect(html).toContain('outline:8px solid #ff3366');
+    expect(html).toContain('outline-offset:-8px');
+    expect(html).not.toContain('border:8px solid #ff3366');
+
+    const measured = elementFromNode(node({
+      tag: 'img',
+      dataset: { borderWidth: '8', borderColor: '#ff3366', borderRadius: '14' },
+      attrs: { src: 'assets/demo.png' },
+      style: { 'border-radius': '14px' },
+    }), 'image', 1);
+    expect(measured).toMatchObject({
+      type: 'image', borderColor: '#ff3366', borderWidth: 8, borderRadius: 14,
+      style: {},
+    });
+  });
+
   it('reconstructs shapes from their parameters rather than flattening them', () => {
     const shape = elementFromNode(node({
       tag: 'div',

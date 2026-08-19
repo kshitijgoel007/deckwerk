@@ -7,6 +7,7 @@ import { EditorCanvas } from '../editor/canvas.js';
 import { createDeckWerkButton } from '../editor/aboutDialog.js';
 import { installAgentApi, setAgentName } from './agentApi.js';
 import { CssEditor } from '../editor/cssEditor.js';
+import { createToolbarPicker } from '../editor/exportPicker.js';
 import { HistoryPanel } from '../editor/historyPanel.js';
 import { createShapeInsertPicker, insertText } from '../editor/elementCreation.js';
 import { Inspector } from '../editor/inspector.js';
@@ -29,6 +30,8 @@ import { createDeckOnServer, importKeynoteToServer, showDeckPicker } from './dec
 import { installNetApi } from './netApi.js';
 import { PresenceOverlay } from './presenceOverlay.js';
 import { installAgentWorkspace } from './agentWorkspace.js';
+import { openEndCollaborationPopover } from './endCollaborationPopover.js';
+import { decodeEditorView, restoreEditorView } from '@shared/editorView.js';
 
 /**
  * Browser collaboration shell: the same canvas, rail, inspector, theme
@@ -91,6 +94,8 @@ async function fetchServerConfig(): Promise<ServerConfig> {
 /* --- deck selection -------------------------------------------------------- */
 
 const deckId = new URLSearchParams(location.search).get('deck');
+const initialView = decodeEditorView(new URLSearchParams(location.search).get('view'));
+let initialViewPending = initialView !== null;
 
 let statusMessage = '';
 function setStatusMessage(text: string): void {
@@ -162,6 +167,10 @@ const bridge = new CollabBridge(wsUrl, userName() || undefined, {
     setAgentName(welcome.self.name);
     connectionState = `connected as ${welcome.self.name}`;
     store.load(welcome.deck, `(collab) ${deckId}`, { keepView: true });
+    if (initialViewPending) {
+      restoreEditorView(store, initialView);
+      initialViewPending = false;
+    }
     cssEditor.setValue(welcome.themeCss);
     themePanel.noteDeckOpened(welcome.deck);
     for (const peer of welcome.peers) presence.upsert(peer);
@@ -311,9 +320,26 @@ function buildToolbar(): void {
           setStatusMessage(`Create failed: ${error instanceof Error ? error.message : error}`));
       }),
       barButton('Open', () => showDeckPicker({ dismissable: true, onStatus: setStatusMessage })),
-      barButton('Import Keynote…', () => importKeynoteToServer(setStatusMessage)),
+      createToolbarPicker('Import…', [
+        { label: 'Keynote…', action: () => importKeynoteToServer(setStatusMessage) },
+      ]),
     );
   }
+  // In collaboration the available Save As format is the editable deck
+  // archive; the server flushes the live session before streaming it.
+  left.append(
+    createToolbarPicker('Save As…', [
+      {
+        label: 'Deck archive (.zip)…',
+        action: () => {
+          const link = document.createElement('a');
+          link.href = `/api/download?deck=${encodeURIComponent(deckId!)}`;
+          link.download = `${deckId}.zip`;
+          link.click();
+        },
+      },
+    ], { deckOnly: true }),
+  );
 
   const mid = document.createElement('div');
   mid.className = 'bar-group bar-center';
@@ -324,16 +350,6 @@ function buildToolbar(): void {
 
   const right = document.createElement('div');
   right.className = 'bar-group bar-right';
-  // Everyone can take the deck home at any point: the server flushes the live
-  // session and streams the whole deck folder (deck.json, theme, assets) as a zip.
-  right.append(
-    barButton('Download', () => {
-      const link = document.createElement('a');
-      link.href = `/api/download?deck=${encodeURIComponent(deckId!)}`;
-      link.download = `${deckId}.zip`;
-      link.click();
-    }),
-  );
   if (serverConfig.hosted) {
     right.append(
       barButton('Copy Invite Link', () => {
@@ -356,13 +372,14 @@ function buildToolbar(): void {
   const isHost = serverConfig.hosted
     && (location.hostname === '127.0.0.1' || location.hostname === 'localhost');
   if (isHost) {
-    right.append(
-      barButton('End collaboration', () => {
-        if (!confirm('End the collaboration for everyone? All edits are saved.')) return;
+    const endCollaboration = barButton('End collaboration', () => {
+      openEndCollaborationPopover(endCollaboration, () => {
         void fetch('/api/end', { method: 'POST' }).catch((error) =>
           setStatusMessage(`Could not end the session: ${error instanceof Error ? error.message : error}`));
-      }, 'danger'),
-    );
+      });
+    }, 'danger');
+    endCollaboration.id = 'end-collaboration-trigger';
+    right.append(endCollaboration);
   }
   right.append(
     barButton('Present', () => {

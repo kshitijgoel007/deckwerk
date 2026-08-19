@@ -23,15 +23,37 @@ describe('media assets and borders', () => {
     expect(pdf.src).toContain('paper.pdf#page=1');
   });
 
-  it('renders editable coloured borders on media', () => {
+  it('overlays editable coloured borders without putting them in the media box model', () => {
     const node = renderElement({
       ...base, id: 'image', type: 'image', src: 'assets/image.png', fit: 'contain',
       alt: '', sourceBox: null, borderColor: '#ff3366', borderWidth: 8,
       borderRadius: 14,
     }, { resolveSrc: (src) => src });
-    expect(node.style.border).toContain('8px solid');
-    expect(node.style.border).toContain('rgb(255, 51, 102)');
+    const image = node.querySelector<HTMLImageElement>('img')!;
+    const border = node.querySelector<HTMLElement>(':scope > .media-border-overlay')!;
+
+    expect(node.style.border).toBe('');
+    expect(image.style.width).toBe('100%');
+    expect(image.style.height).toBe('100%');
+    expect(border.style.position).toBe('absolute');
+    expect(border.style.inset).toBe('0');
+    expect(border.style.border).toContain('8px solid');
+    expect(border.style.border).toContain('rgb(255, 51, 102)');
+    expect(border.style.borderRadius).toBe('14px');
     expect(node.style.borderRadius).toBe('14px');
+  });
+
+  it('overlays a CSS-authored media border too', () => {
+    const node = renderElement({
+      ...base, id: 'video', type: 'video', src: 'assets/video.mp4', fit: 'cover',
+      autoplay: false, loop: false, muted: true, controls: false, start: 0, end: null,
+      poster: null, sourceBox: null, style: { border: '5px solid #ffffff' },
+    }, { resolveSrc: (src) => src });
+    const border = node.querySelector<HTMLElement>(':scope > .media-border-overlay')!;
+
+    expect(node.style.border).toBe('');
+    expect(node.querySelector<HTMLVideoElement>('video')!.style.width).toBe('100%');
+    expect(border.style.border).toContain('5px solid');
   });
 
   it('resolves media and CSS assets inside a sandboxed HTML fallback', () => {

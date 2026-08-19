@@ -1,0 +1,41 @@
+# Video and images
+
+Media is placed directly on the slide and stays as a real file in the presentation folder.
+
+### Add media
+
+Drag an image or video from your file manager and drop it onto the slide. It lands where you drop it, at its natural aspect ratio.
+
+Videos start muted, looped, and set to autoplay. Change those options under **Props** after selecting the video.
+
+> Screenshot placeholder: Dropping a video onto a slide.
+
+### Preview video
+
+Double-click a video on the slide to play or pause it. You can also use **Play preview** under **Props**.
+
+> Screenshot placeholder: A video playing on the editing canvas.
+
+### Trim
+
+Select a video, then drag the **Start** and **End** controls under **Props → Trim**. Trimming is non-destructive: the original file is unchanged, and playback simply stays inside the selected range.
+
+Use **Reset trim** to restore the full clip.
+
+> Screenshot placeholder: The video trim controls and frame preview.
+
+### Crop
+
+Select an image or video and click **Edit mask**. Drag the handles on the slide to change the visible area, then click **Done editing mask**.
+
+Cropping is non-destructive. Use **Reset crop** to reveal the full frame again. Turn on **Circular mask** for a round crop.
+
+> Screenshot placeholder: Cropping an image with mask handles.
+
+### Effects
+
+Under **Props → Effects**, choose **Blur**, **Posterize**, or **Greyscale**. Adjust the value, reorder stacked effects with the arrows, or remove one with **×**.
+
+Effects work on both images and videos.
+
+> Screenshot placeholder: Media with two effects applied.

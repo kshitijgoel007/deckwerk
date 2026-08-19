@@ -77,6 +77,19 @@ const BaseElement = z.object({
   comments: z.array(CommentSchema).optional(),
 });
 
+export const MediaEffectSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('blur'), radius: z.number().min(0).max(200) }),
+  z.object({ type: z.literal('posterize'), levels: z.number().int().min(2).max(32) }),
+  z.object({ type: z.literal('grayscale'), amount: z.number().min(0).max(1) }),
+  z.object({
+    type: z.literal('gaussianNoise'),
+    /** Linear blend: zero is the source paint and one is noise only. */
+    amount: z.number().min(0).max(1),
+    /** Normalised spatial-frequency cutoff; larger values produce finer grain. */
+    frequencyCutoff: z.number().min(0.001).max(1),
+  }),
+]);
+
 const TextElement = BaseElement.extend({
   type: z.literal('text'),
   /** Inline HTML. Fonts and sizes are expected to come from theme.css. */
@@ -110,13 +123,9 @@ const TextElement = BaseElement.extend({
   paragraphSpacing: z.number().min(0).optional(),
   align: z.enum(['left', 'center', 'right', 'justify']).default('left'),
   valign: z.enum(['top', 'middle', 'bottom']).default('top'),
+  /** Ordered, non-destructive visual effects. Order is significant. */
+  effects: z.array(MediaEffectSchema).optional(),
 });
-
-export const MediaEffectSchema = z.discriminatedUnion('type', [
-  z.object({ type: z.literal('blur'), radius: z.number().min(0).max(200) }),
-  z.object({ type: z.literal('posterize'), levels: z.number().int().min(2).max(32) }),
-  z.object({ type: z.literal('grayscale'), amount: z.number().min(0).max(1) }),
-]);
 
 const ImageElement = BaseElement.extend({
   type: z.literal('image'),

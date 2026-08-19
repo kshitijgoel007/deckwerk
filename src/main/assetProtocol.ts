@@ -91,6 +91,10 @@ export function installAssetProtocol(): void {
       const headers: Record<string, string> = {
         'Content-Type': type,
         'Accept-Ranges': 'bytes',
+        // The editor renderer is http(s) in development and file: when
+        // packaged, while assets live at deck:. Opting this private scheme
+        // into CORS lets canvas tools read pixels without tainting the bitmap.
+        'Access-Control-Allow-Origin': '*',
       };
 
       if (range) {

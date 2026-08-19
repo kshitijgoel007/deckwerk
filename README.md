@@ -3,6 +3,8 @@
 An HTML presentation tool built around **video as a first-class object**, for
 research talks that are mostly moving pictures.
 
+The concise user guide lives in the [manual](manual/01-magic-move.md).
+
 - Slides are HTML and present as HTML.
 - Positions are set by dragging; typography and colour are set as CSS.
 - Video: drag a file in and it plays. Trim and crop without leaving the app.
@@ -62,6 +64,15 @@ can be set there too; clear it to inherit the installed theme background.
 Lines and arrows have editable endpoints. A curved arrow is a native quadratic
 Bézier with one additional bend handle, so it remains selectable and reshapeable
 instead of becoming opaque imported SVG.
+
+## Raster images
+
+- **Rasterize & paint…** in an image's inspector or context menu opens a small
+  pixel editor with adjustable round and square brushes, undo/redo, and reset.
+- **Pick color** uses the system screen eyedropper when Chromium exposes it and
+  falls back to sampling a pixel from the image.
+- Applying writes a new PNG and relinks the image element. The imported source
+  remains unchanged. PDF embeds stay vector-backed and are not raster-editable.
 
 ## Video
 
@@ -183,6 +194,7 @@ src/preload/     the renderer's entire view of the outside world
 src/renderer/
   player/        deck.json -> DOM + timeline runtime (shared by all three surfaces)
   editor/        canvas, inspector, slide rail, build panel, CSS editor
+  raster/        raster image paint window
   trim/          video trim & crop window
   export/        entry point for the standalone bundle
 src/shared/      deck schema, timeline logic, geometry, IPC contract

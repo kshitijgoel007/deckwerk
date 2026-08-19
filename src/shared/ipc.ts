@@ -1,5 +1,6 @@
 import type { Deck } from './deck.js';
 import type { AgentContextDraft, AgentRequest, AgentResponse } from './agent.js';
+import type { EditorViewSnapshot } from './editorView.js';
 
 /**
  * The contract between the renderer and the main process. Both sides import
@@ -12,6 +13,7 @@ export const IPC = {
   deckGet: 'deck:get',
   deckNew: 'deck:new',
   deckSave: 'deck:save',
+  deckSaveAs: 'deck:saveAs',
   deckLoadTheme: 'deck:loadTheme',
   deckSaveTheme: 'deck:saveTheme',
   deckState: 'deck:state',
@@ -30,6 +32,9 @@ export const IPC = {
   trimRun: 'trim:run',
   trimProgress: 'trim:progress',
   trimDone: 'trim:done',
+  rasterOpen: 'raster:open',
+  rasterSave: 'raster:save',
+  rasterDone: 'raster:done',
   keynoteImport: 'keynote:import',
   exportBundle: 'export:bundle',
   exportPdf: 'export:pdf',
@@ -69,16 +74,24 @@ export interface WorkflowStartResult {
   command: string;
 }
 
+export interface CollabStartRequest extends EditorViewSnapshot {
+  agent?: boolean;
+}
+
 export type { AgentContextDraft, AgentRequest, AgentResponse };
 
 export type PresentationCommand =
-  | { type: 'next' | 'prev' | 'toggleBlank' | 'exit' }
+  | { type: 'next' | 'prev' | 'toggleBlank' | 'swapDisplays' | 'exit' }
   | { type: 'goTo'; slide: number };
 
 export interface PresentationState {
   cursor: { slide: number; step: number };
   steps: number;
   startedAt: number;
+  /** Reset whenever the presentation moves to a different slide, not for builds. */
+  slideStartedAt: number;
+  /** Inclusive bounds when presenting a multi-slide rail selection. */
+  range?: { start: number; end: number };
 }
 
 export interface DisplayInfo {
@@ -92,7 +105,10 @@ export interface DisplayInfo {
 export interface PresentOptions {
   audienceDisplayId?: number;
   presenterDisplayId?: number;
-  remember?: boolean;
+  /** Open Speaker View even when audience and presenter resolve to one display. */
+  speakerView?: boolean;
+  /** Inclusive last slide when presenting a multi-slide rail selection. */
+  endSlideIndex?: number;
 }
 
 export type PdfBuildMode = 'initial' | 'final' | 'every';
@@ -176,6 +192,26 @@ export interface TrimProgress {
   /** 0..1, derived from ffmpeg's reported output time. */
   fraction: number;
   message: string;
+}
+
+/** The image element handed to the standalone raster paint window. */
+export interface RasterTarget {
+  src: string;
+  elementId: string;
+}
+
+/** A PNG rendered by the raster editor, ready to become a derived deck asset. */
+export interface RasterSaveRequest extends RasterTarget {
+  width: number;
+  height: number;
+  png: Uint8Array;
+}
+
+export interface RasterResult extends RasterTarget {
+  /** Deck-relative path of the new PNG. The source is never modified. */
+  src: string;
+  width: number;
+  height: number;
 }
 
 /** Per-deck summary of what the Keynote importer could and could not map. */

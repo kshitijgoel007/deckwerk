@@ -13,7 +13,6 @@ const FONT_SAMPLES: Array<{
   copy: string;
 }> = [
   { role: 'title', label: 'Title', copy: 'The big idea' },
-  { role: 'heading', label: 'Heading', copy: 'A clear section' },
   { role: 'body', label: 'Body', copy: 'Readable body copy for the story.' },
   { role: 'caption', label: 'Caption', copy: 'Supporting detail' },
 ];
@@ -62,12 +61,7 @@ export function createThemeGallery(
     const badge = document.createElement('span');
     badge.className = 'theme-installed-badge';
     badge.textContent = 'Last used';
-    heading.append(name, badge);
     badges.set(theme.id, badge);
-
-    const description = document.createElement('span');
-    description.className = 'theme-card-description';
-    description.textContent = theme.description;
 
     const swatches = document.createElement('span');
     swatches.className = 'theme-card-swatches';
@@ -79,6 +73,7 @@ export function createThemeGallery(
       swatch.title = color;
       swatches.appendChild(swatch);
     }
+    heading.append(name, swatches, badge);
 
     const samples = document.createElement('span');
     samples.className = 'theme-font-samples';
@@ -99,7 +94,7 @@ export function createThemeGallery(
       samples.appendChild(row);
     }
 
-    preview.append(heading, description, swatches, samples);
+    preview.append(heading, samples);
     card.appendChild(preview);
     card.addEventListener('click', () => {
       selected = theme.id;

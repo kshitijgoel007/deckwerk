@@ -31,6 +31,7 @@ export default defineConfig({
           presenter: resolve(__dirname, 'src/renderer/presenter/index.html'),
           print: resolve(__dirname, 'src/renderer/print/index.html'),
           trim: resolve(__dirname, 'src/renderer/trim/index.html'),
+          raster: resolve(__dirname, 'src/renderer/raster/index.html'),
         },
       },
     },

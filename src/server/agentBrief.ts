@@ -35,7 +35,7 @@ once up front rather than being rediscovered after an edit fails.
 ### Native edits — existing content and local changes
 
 Use native edits for text changes, typography, alignment, geometry, object paint,
-media fit/crop/trim/effects, shapes, builds, slide properties, themes, and Magic
+text/media effects, media fit/crop/trim, shapes, builds, slide properties, themes, and Magic
 Move settings. Unmentioned properties and unrelated objects remain unchanged.
 
 1. Read \`GET /api/edit-schema\` for every editable property, type, enum, range,

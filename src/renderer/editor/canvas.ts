@@ -3,11 +3,11 @@ import type { Deck, Slide, SlideElement } from '@shared/deck.js';
 import { type Rect, fitScale, makeId } from '@shared/geometry.js';
 import {
   fitAutoText,
-  mediaRadius,
   quadraticPath,
   renderElement,
   renderSlide,
   scheduleAutoFit,
+  syncMediaFrame,
 } from '../player/render.js';
 import { expandTimeline } from '@shared/timeline.js';
 import { classifyMediaName, makePendingSrc } from '@shared/media.js';
@@ -54,6 +54,15 @@ type DragMode =
       origin: Rect;
       elementId: string;
       aspect: number;
+    }
+  | {
+      kind: 'rotate';
+      elementId: string;
+      startCanvas: { x: number; y: number };
+      center: { x: number; y: number };
+      originRotation: number;
+      lastAngle: number;
+      accumulatedAngle: number;
     }
   | { kind: 'marquee'; startCanvas: { x: number; y: number } }
   | { kind: 'endpoint'; which: 'start' | 'end'; elementId: string }
@@ -343,22 +352,7 @@ export class EditorCanvas {
         }
       }
       if (el.type === 'image' || el.type === 'video') {
-        const width = el.borderWidth ?? 0;
-        node.style.border = width > 0
-          ? `${width}px solid ${el.borderColor ?? '#000000'}`
-          : '';
-        // Same rule as the renderer: any rounding clips, and the radius also
-        // goes on the media node, which is what actually clips a composited
-        // <video>. A raw style border-radius was already applied above.
-        const radius = mediaRadius(el);
-        if (radius) node.style.borderRadius = radius;
-        else node.style.removeProperty('border-radius');
-        node.style.overflow = radius ? 'hidden' : '';
-        const media = node.querySelector<HTMLElement>('img, video');
-        if (media) {
-          if (radius) media.style.borderRadius = radius;
-          else media.style.removeProperty('border-radius');
-        }
+        syncMediaFrame(node, el);
       }
 
       if (el.type === 'shape' && el.control) {
@@ -874,11 +868,30 @@ export class EditorCanvas {
 
   private bindPointer(): void {
     this.host.addEventListener('pointerdown', (ev) => this.onPointerDown(ev));
-    this.host.addEventListener('pointermove', (ev) => this.onPointerMove(ev));
+    this.host.addEventListener('pointermove', (ev) => {
+      // Covers entering the canvas with Command already held, when this window
+      // did not receive the original keydown.
+      if (this.drag.kind === 'none') this.setRotationModifier(ev.metaKey);
+      this.onPointerMove(ev);
+    });
     this.host.addEventListener('pointerup', (ev) => this.onPointerUp(ev));
     this.host.addEventListener('pointercancel', () => this.endDrag());
     this.host.addEventListener('dblclick', (ev) => this.onDoubleClick(ev));
     this.host.addEventListener('contextmenu', (ev) => this.onContextMenu(ev));
+
+    // Modifier state changes do not cause pointermove, so mirror Command onto
+    // the canvas host to let CSS swap the handle cursor while it is hovered.
+    window.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Meta' || ev.metaKey) this.setRotationModifier(true);
+    });
+    window.addEventListener('keyup', (ev) => {
+      if (ev.key === 'Meta' || !ev.metaKey) this.setRotationModifier(false);
+    });
+    window.addEventListener('blur', () => this.setRotationModifier(false));
+  }
+
+  private setRotationModifier(active: boolean): void {
+    this.host.classList.toggle('command-rotate', active);
   }
 
   private onPointerDown(ev: PointerEvent): void {
@@ -910,6 +923,52 @@ export class EditorCanvas {
     }
     const point = this.toCanvas(ev);
     this.host.setPointerCapture(ev.pointerId);
+
+    // A click away from the active crop window is the implicit "Done" action.
+    // Keep the click alive after leaving mask mode so it can still select the
+    // object underneath (or begin a marquee on empty canvas). Mask handles are
+    // allowed to sit just outside rounded/circular windows, so they count as
+    // part of the active region even when their centre is outside the clip.
+    if (this.maskingId) {
+      const mask = slide.elements.find((candidate) => candidate.id === this.maskingId);
+      const onActiveHandle = target.closest<HTMLElement>(
+        `.handle[data-element-id="${CSS.escape(this.maskingId)}"]`,
+      );
+      if (
+        !onActiveHandle &&
+        (!mask || (mask.type !== 'image' && mask.type !== 'video') ||
+          !mediaMaskContainsPoint(mask, point))
+      ) {
+        this.toggleMaskMode(null);
+      }
+    }
+
+    // Like Keynote, Command turns any ordinary object handle into a rotation
+    // handle. Curve controls remain dedicated to bending the curve.
+    const rotationHandle = target.closest<HTMLElement>(
+      '.handle:not(.handle-curve-control)[data-element-id]',
+    );
+    if (ev.metaKey && rotationHandle?.dataset.elementId) {
+      const el = slide.elements.find(
+        (candidate) => candidate.id === rotationHandle.dataset.elementId,
+      );
+      if (el) {
+        const center = { x: el.x + el.w / 2, y: el.y + el.h / 2 };
+        const startAngle = Math.atan2(point.y - center.y, point.x - center.x);
+        this.store.beginTransaction('Rotate object');
+        this.host.classList.add('is-rotating');
+        this.drag = {
+          kind: 'rotate',
+          elementId: el.id,
+          startCanvas: point,
+          center,
+          originRotation: el.rot,
+          lastAngle: startAngle,
+          accumulatedAngle: 0,
+        };
+        return;
+      }
+    }
 
     // Bend handle on a quadratic line or arrow.
     if (target.dataset?.curveControl && target.dataset.elementId) {
@@ -970,7 +1029,6 @@ export class EditorCanvas {
           ...((el.type === 'shape' && el.control) ? { control: { ...el.control } } : {}),
         });
       }
-      this.store.beginTransaction();
       this.drag = { kind: 'move', startCanvas: point, origin };
       return;
     }
@@ -984,7 +1042,7 @@ export class EditorCanvas {
     // dragging, so collaborators see the cursor move, not only the edits.
     this.onPointerSample?.(this.toCanvas(ev));
     if (this.drag.kind === 'none') return;
-    const slide = this.store.slide;
+    let slide = this.store.slide;
     if (!slide) return;
 
     const point = this.toCanvas(ev);
@@ -1004,6 +1062,29 @@ export class EditorCanvas {
         Math.hypot(point.x - start.x, point.y - start.y) * this.scale;
       if (moved < DRAG_THRESHOLD_PX) return;
       this.dragStarted = true;
+      if (this.drag.kind === 'move') {
+        const duplicating = ev.altKey;
+        this.store.beginTransaction(
+          duplicating ? 'Duplicate and move objects' : 'Move objects',
+        );
+        if (duplicating) {
+          this.store.duplicateSelection({ x: 0, y: 0 });
+          this.drag.origin = new Map(
+            this.store.selectedElements().map((el) => [el.id, {
+              x: el.x,
+              y: el.y,
+              w: el.w,
+              h: el.h,
+              ...((el.type === 'shape' && el.control)
+                ? { control: { ...el.control } }
+                : {}),
+            }]),
+          );
+          // The duplicate commit creates a new current slide object. Use it
+          // for snapping and movement rather than the stale pre-clone slide.
+          slide = this.store.slide!;
+        }
+      }
     }
 
     switch (this.drag.kind) {
@@ -1026,8 +1107,8 @@ export class EditorCanvas {
         // members, so relative positions inside a multi-selection are preserved.
         const bounds = unionRect([...drag.origin.values()]);
         const moved = { ...bounds, x: bounds.x + dx, y: bounds.y + dy };
-        const snapped = ev.altKey
-          ? { rect: moved, guides: [] } // Alt suspends snapping for fine placement.
+        const snapped = ev.metaKey
+          ? { rect: moved, guides: [] } // Command suspends snapping for fine placement.
           : snapMove(moved, deck.canvas, others, threshold);
         this.guides = snapped.guides;
 
@@ -1055,9 +1136,9 @@ export class EditorCanvas {
         const dy = point.y - drag.startCanvas.y;
         const o = drag.origin;
 
-        // Cmd resizes about the element's center (like Keynote's option-drag):
+        // Option resizes about the element's center:
         // both sides move, and the center is re-pinned after constraints.
-        const centered = ev.metaKey;
+        const centered = ev.altKey;
         let rect: Rect = { ...o };
         if (centered) {
           if (edges.left) {
@@ -1142,6 +1223,29 @@ export class EditorCanvas {
         break;
       }
 
+      case 'rotate': {
+        const drag = this.drag;
+        const angle = Math.atan2(point.y - drag.center.y, point.x - drag.center.x);
+        let delta = angle - drag.lastAngle;
+        // atan2 wraps at +/- pi. Accumulate the shortest step between pointer
+        // samples so a drag can pass smoothly through that seam (or make more
+        // than one full turn) without the object jumping by 360 degrees.
+        if (delta > Math.PI) delta -= Math.PI * 2;
+        if (delta < -Math.PI) delta += Math.PI * 2;
+        drag.accumulatedAngle += delta;
+        drag.lastAngle = angle;
+
+        let rotation = drag.originRotation + drag.accumulatedAngle * (180 / Math.PI);
+        // Shift gives a precise, discoverable snap without changing the normal
+        // free-rotation gesture.
+        if (ev.shiftKey) rotation = Math.round(rotation / 15) * 15;
+        rotation = Math.round(rotation * 10) / 10;
+        this.store.updateSelected((target) => {
+          if (target.id === drag.elementId) target.rot = rotation;
+        });
+        break;
+      }
+
       case 'endpoint': {
         const drag = this.drag;
         const el = slide.elements.find((e) => e.id === drag.elementId);
@@ -1202,6 +1306,7 @@ export class EditorCanvas {
     this.store.endTransaction();
     this.drag = { kind: 'none' };
     this.dragStarted = false;
+    this.host.classList.remove('is-rotating');
     this.maskOrigin = null;
     this.guides = [];
     this.marquee = null;
@@ -1847,8 +1952,8 @@ function sameStructure(a: Slide, b: Slide, ignoreHtml = false): boolean {
     if (!ignoreHtml && 'html' in x && 'html' in y && x.html !== y.html) return false;
     if (x.class.join(' ') !== y.class.join(' ')) return false;
     if (
-      (x.type === 'image' || x.type === 'video') &&
-      (y.type === 'image' || y.type === 'video') &&
+      (x.type === 'text' || x.type === 'image' || x.type === 'video') &&
+      (y.type === 'text' || y.type === 'image' || y.type === 'video') &&
       JSON.stringify(x.effects ?? []) !== JSON.stringify(y.effects ?? [])
     ) return false;
     // Shape paint and kind live on SVG children; wrapper-only updates cannot
@@ -1971,6 +2076,47 @@ export function elementContainsPoint(
   }
   return x >= el.x && x <= el.x + el.w &&
     y >= el.y && y <= el.y + el.h;
+}
+
+/** Whether a point is inside the visible crop window of a media element. */
+function mediaMaskContainsPoint(
+  el: Extract<SlideElement, { type: 'image' | 'video' }>,
+  point: { x: number; y: number },
+): boolean {
+  // Media rotates around its centre. Bring the pointer back into the element's
+  // unrotated coordinate system before testing the clip shape.
+  let { x, y } = point;
+  if (el.rot) {
+    const cx = el.x + el.w / 2;
+    const cy = el.y + el.h / 2;
+    const rad = (-el.rot * Math.PI) / 180;
+    const dx = x - cx;
+    const dy = y - cy;
+    x = cx + dx * Math.cos(rad) - dy * Math.sin(rad);
+    y = cy + dx * Math.sin(rad) + dy * Math.cos(rad);
+  }
+
+  if (x < el.x || x > el.x + el.w || y < el.y || y > el.y + el.h) return false;
+
+  if (el.maskShape === 'circle') {
+    const rx = el.w / 2;
+    const ry = el.h / 2;
+    const dx = x - (el.x + rx);
+    const dy = y - (el.y + ry);
+    return (dx * dx) / (rx * rx) + (dy * dy) / (ry * ry) <= 1;
+  }
+
+  // Match the rounded rectangle produced by the inspector's corner-radius
+  // control. CSS caps an oversized radius at half the shortest side.
+  const radius = Math.min(el.borderRadius ?? 0, el.w / 2, el.h / 2);
+  if (radius <= 0) return true;
+  if (
+    (x >= el.x + radius && x <= el.x + el.w - radius) ||
+    (y >= el.y + radius && y <= el.y + el.h - radius)
+  ) return true;
+  const cornerX = x < el.x + radius ? el.x + radius : el.x + el.w - radius;
+  const cornerY = y < el.y + radius ? el.y + radius : el.y + el.h - radius;
+  return Math.hypot(x - cornerX, y - cornerY) <= radius;
 }
 
 /** Whether a CSS paint value produces visible pixels. */

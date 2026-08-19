@@ -12,8 +12,10 @@ HTTP only each deck's `assets/` subtree is servable.
 
 The **Collaborate** toolbar button shares the deck currently open in the
 desktop app. The main process starts the same collab server pinned to that
-one deck (port 5800, or a free port if taken) and swaps the editor window for
-the browser client over localhost — the host becomes an ordinary peer, so
+one deck (port 5800, or a free port if taken) and hands the editor window off
+to the browser client over localhost. The old shell stays visible until the
+new one is ready, and its bounds, maximized state, active slide, and selection
+carry across. The host becomes an ordinary peer, so
 there is never a second writer on `deck.json`. The status bar shows the
 invite URL (the LAN/tailscale address); anyone opening it lands directly in
 the shared presentation. In a hosted session the New / Open / Import
@@ -22,7 +24,8 @@ beyond the shared deck, deck creation, and Keynote import. The host's window
 has an **End collaboration** button (also: just closing the window) that
 ends the session for everyone — joiners see "session ended by the host" and
 stop reconnecting — then reloads the deck from disk and brings the ordinary
-editor back. The button only appears (and `/api/end` only works) for the
+editor back through the same continuous handoff. The button only appears (and
+`/api/end` only works) for the
 loopback client in a hosted session, i.e. the host machine.
 
 Requires the built browser client (`npm run build:collab`); packaged builds
@@ -83,7 +86,7 @@ asks once and the server falls back to `Guest n`.
   along).
 - **Import Keynote…** — uploads a `.key` file; the server runs the same
   importer sidecar as the desktop app and the deck opens when it finishes.
-- **Download** — everyone, at any point, can download the deck as a zip of
+- **Save As… → Deck archive (.zip)…** — everyone, at any point, can save
   the whole deck folder (`deck.json`, `theme.css`, `assets/`). The server
   flushes the live session first, so the archive is exactly what everyone
   currently sees; unzip it and open the folder in the desktop app.

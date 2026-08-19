@@ -1,5 +1,4 @@
 import type { SlideElement } from '@shared/deck.js';
-import { makeId } from '@shared/geometry.js';
 import { EditorCanvas } from './canvas.js';
 import { Inspector } from './inspector.js';
 import { SlideRail } from './slideRail.js';
@@ -20,6 +19,7 @@ import {
  */
 
 type VideoElement = Extract<SlideElement, { type: 'video' }>;
+type ImageElement = Extract<SlideElement, { type: 'image' }>;
 
 export interface ShellDeps {
   store: EditorStore;
@@ -29,6 +29,8 @@ export interface ShellDeps {
   setStatusMessage: (text: string) => void;
   /** Desktop only: open the destructive ffmpeg trim/crop window. */
   openTrim?: (element: VideoElement) => void;
+  /** Desktop only: open the destructive raster paint window. */
+  openRaster?: (element: ImageElement) => void;
   /**
    * Undo/redo overrides. The Electron shell uses the store's snapshot stacks;
    * the collab shell substitutes op-based selective undo, because restoring a
@@ -42,11 +44,13 @@ export function wireCanvasInspector(
   canvas: EditorCanvas,
   inspector: Inspector,
   openTrim?: (element: VideoElement) => void,
+  openRaster?: (element: ImageElement) => void,
 ): void {
   if (openTrim) {
     canvas.onTrimRequest = openTrim;
     inspector.onTrimRequest = openTrim;
   }
+  if (openRaster) inspector.onRasterRequest = openRaster;
   inspector.onTogglePlay = (id) => canvas.toggleVideo(id);
   inspector.onEditText = (id) => canvas.beginTextEdit(id);
   inspector.editingText = () => canvas.isEditing();
@@ -101,27 +105,7 @@ export function createClipboardActions(deps: ShellDeps): ClipboardActions {
 }
 
 export function duplicateSelection(store: EditorStore): void {
-  const ids = store.get().selection;
-  if (ids.size === 0) return;
-  const created: string[] = [];
-  store.commit((deck) => {
-    const slide = deck.slides[store.get().slideIndex];
-    for (const el of slide.elements.filter((e) => ids.has(e.id))) {
-      const copy = structuredClone(el);
-      copy.lineageId = el.lineageId ?? el.id;
-      copy.magicMoveId = null;
-      copy.id = makeId(el.type);
-      copy.x += 24;
-      copy.y += 24;
-      if (copy.type === 'shape' && copy.control) {
-        copy.control.x += 24;
-        copy.control.y += 24;
-      }
-      created.push(copy.id);
-      slide.elements.push(copy);
-    }
-  });
-  store.select(created);
+  store.duplicateSelection();
 }
 
 /** Let Chromium copy selected chrome text instead of copying deck objects. */
@@ -224,7 +208,7 @@ export function makeContextActions(
   deps: ShellDeps,
   clipboard: ClipboardActions,
 ): (el: SlideElement | null) => ContextItems {
-  const { store, canvas, openTrim } = deps;
+  const { store, canvas, openTrim, openRaster } = deps;
   return (el) => {
     const sel = store.get().selection.size;
     const items: ContextItems = [];
@@ -271,6 +255,9 @@ export function makeContextActions(
         if (openTrim) {
           items.push({ label: 'Edit w/ ffmpeg…', action: () => openTrim(el) });
         }
+      }
+      if (el.type === 'image' && openRaster && !/\.pdf(?:$|[?#])/i.test(el.src)) {
+        items.push({ label: 'Rasterize & paint…', action: () => openRaster(el) });
       }
       if (el.type === 'text' && sel === 1) {
         items.unshift({ label: 'Edit text', action: () => canvas.beginTextEdit(el.id) }, 'separator');
