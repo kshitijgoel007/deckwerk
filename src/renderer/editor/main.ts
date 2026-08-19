@@ -27,6 +27,7 @@ import { authoredHtmlSync, fileName } from './htmlCompile.js';
 import { createShapeInsertPicker, insertText } from './elementCreation.js';
 import { createToolbarPicker, createToolbarSplitButton } from './exportPicker.js';
 import { showPdfExportDialog } from './pdfExportDialog.js';
+import { makePanelResizable } from './panelResize.js';
 import { createThemePanel } from './themePanel.js';
 import {
   barButton,
@@ -70,6 +71,34 @@ new HistoryPanel(el('history'), store, {
   onOpenAgentChat: (chatId) => void agentChatHistoryModal.open(chatId),
 });
 const rail = new SlideRail(el('rail'), store);
+const editorBody = el('body');
+const railDivider = document.createElement('div');
+railDivider.className = 'panel-resize-divider panel-resize-rail';
+const sideDivider = document.createElement('div');
+sideDivider.className = 'panel-resize-divider panel-resize-side';
+editorBody.append(railDivider, sideDivider);
+makePanelResizable(railDivider, {
+  storageKey: 'deckwerk.editor.rail-size',
+  sizeTarget: editorBody,
+  width: {
+    property: '--rail-width',
+    initial: 220,
+    min: 150,
+    max: () => Math.min(420, window.innerWidth - 560),
+    edge: 'right',
+  },
+});
+makePanelResizable(sideDivider, {
+  storageKey: 'deckwerk.editor.sidebar-size',
+  sizeTarget: editorBody,
+  width: {
+    property: '--sidebar-width',
+    initial: 320,
+    min: 240,
+    max: () => Math.min(560, window.innerWidth - 500),
+    edge: 'left',
+  },
+});
 let agentSessionBridge: CollabBridge | null = null;
 let agentSessionReady = false;
 let agentSessionWsUrl: string | null = null;
