@@ -71,6 +71,20 @@ describe('the authoring page', () => {
     expect(bare.querySelector('section')).not.toBeNull();
     expect(bare.querySelectorAll('html').length).toBe(1);
   });
+
+  it('does not inject the deck theme into an independent complete document', () => {
+    const html = authoringPageHtml({
+      authored: '<!doctype html><html><head><style>h1{color:gold}</style></head><body><section class="slide"><h1>Hello</h1></section></body></html>',
+      typeCss: '.role-title { font-size: 92px; }',
+      theme: 'h1 { color: red; font-size: 200px; }',
+      themeHref: 'theme.css',
+      canvas: emptyDeck().canvas,
+      base: 'deck://asset/',
+    });
+    expect(html).toContain('data-slide-editor-independent="true"');
+    expect(html).toContain('h1{color:gold}');
+    expect(html).not.toContain('h1 { color: red; font-size: 200px; }');
+  });
 });
 
 /**
@@ -125,6 +139,83 @@ describe('the exported document', () => {
 });
 
 describe('the walk', () => {
+  it('bakes computed presentation styles only for independent documents', () => {
+    const doc = pageFrame(`<!doctype html><html><head><style>
+      .authored-title { color: rgb(12, 34, 56); font-size: 73px; letter-spacing: 2px; }
+    </style></head><body><section class="slide"><h1 class="authored-title">Authored</h1></section></body></html>`);
+    const [slide] = measureSlides(doc);
+    expect(slide.nodes[0].classes).toEqual([]);
+    expect(slide.nodes[0].style).toMatchObject({
+      color: 'rgb(12, 34, 56)',
+      'font-size': '73px',
+      'letter-spacing': '2px',
+    });
+  });
+
+  it('does not let editor semantic classes override an independent tag selector', () => {
+    const doc = pageFrame(`<!doctype html><html><head><style>
+      h1 { font-size:112px; line-height:.91; }
+    </style></head><body><section class="slide"><h1>Large title</h1></section></body></html>`);
+    const [slide] = measureSlides(doc);
+    expect(slide.nodes[0].style['font-size']).toBe('112px');
+  });
+
+  it('preserves an independent CSS gradient as the smallest canvas fallback', () => {
+    const doc = pageFrame(`<!doctype html><html><head><style>
+      .slide { width:1920px; height:1080px; background:radial-gradient(circle, #334, #101018); }
+    </style></head><body><section class="slide"><h1>Native title</h1></section></body></html>`);
+    const [slide] = measureSlides(doc);
+    expect(slide.nodes[0]).toMatchObject({
+      verbatim: true,
+      fallbackReason: 'Complex CSS slide background',
+    });
+    expect(slide.nodes[0].style['background-image']).toContain('radial-gradient');
+    expect(slide.nodes[1].tag).toBe('h1');
+  });
+
+  it('keeps mixed rich prose in an independent document as native text', () => {
+    const doc = pageFrame(`<!doctype html><html><head><style>
+      .katex-display, .katex-display > .katex { display:block }
+      .katex-mathml { display:none }
+    </style></head><body><section class="slide">
+      <p><strong style="display:block">World models</strong>Vision and robotics</p>
+    </section></body></html>`);
+    const [slide] = measureSlides(doc);
+    expect(slide.nodes).toHaveLength(1);
+    expect(slide.nodes[0]).toMatchObject({ tag: 'p', verbatim: false });
+    expect(slide.nodes[0].html).toContain('<strong');
+    expect(slide.nodes[0].html).toContain('display: block');
+  });
+
+  it('stores authored TeX instead of KaTeX\'s duplicated render trees', () => {
+    const doc = pageFrame(`<!doctype html><html><body><section class="slide">
+      <p>Energy <span class="katex"><span class="katex-mathml">
+        <annotation encoding="application/x-tex">E=mc^2</annotation>
+      </span><span class="katex-html">painted inline copy</span></span>.</p>
+      <div class="equation"><span class="katex-display"><span class="katex">
+        <span class="katex-mathml">
+          <annotation encoding="application/x-tex">\\int_0^1 x^2\\,dx</annotation>
+        </span><span class="katex-html">painted display copy</span>
+      </span></span></div>
+    </section></body></html>`);
+    const [slide] = measureSlides(doc);
+    const html = slide.nodes.map((node) => node.html).join('\n');
+    expect(html).toContain('$E=mc^2$');
+    expect(html).toContain('$$\\int_0^1 x^2\\,dx$$');
+    expect(html).not.toContain('painted inline copy');
+    expect(html).not.toContain('painted display copy');
+    expect(html).not.toContain('katex-mathml');
+  });
+
+  it('does not double presentation on an isolated fallback wrapper', () => {
+    const doc = pageFrame(`<!doctype html><html><body><section class="slide">
+      <div data-element="html" style="opacity:.4; border:3px solid red; background:blue">Complex</div>
+    </section></body></html>`);
+    const [slide] = measureSlides(doc);
+    expect(slide.nodes[0]).toMatchObject({ verbatim: true, opacity: 1, style: {} });
+    expect(slide.nodes[0].html).toMatch(/opacity:\s*0?\.4/);
+  });
+
   it('reads each slide\'s identity from the markup, in another document', () => {
     // Cross-document is the interesting part: in the editor this function is
     // called from the host realm against an iframe's document.

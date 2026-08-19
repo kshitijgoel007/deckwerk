@@ -45,7 +45,7 @@ interface UndoEntry {
 
 export interface CollabBridgeHooks {
   /** Server-decided deck to show; apply via store.applyRemote. */
-  onDeckReplaced: (deck: Deck, label: string) => void;
+  onDeckReplaced: (deck: Deck, label: string, opts?: { coalesce?: boolean }) => void;
   onWelcome: (welcome: ServerWelcomeMessage) => void;
   onPeerPresence: (state: PresenceState) => void;
   onPeerCursor: (clientId: string, cursor: CursorPosition | null) => void;
@@ -221,7 +221,15 @@ export class CollabBridge {
         for (const p of this.pending) ui = applyOpsLenient(ui, p.ops).deck;
         this.replayingHistory = true;
         try {
-          this.hooks.onDeckReplaced(ui, mineIndex !== -1 ? message.label : `${message.label} (remote)`);
+          const fromAgentApi = message.byClientId === 'agent-http';
+          this.hooks.onDeckReplaced(
+            ui,
+            mineIndex !== -1 || fromAgentApi ? message.label : `${message.label} (remote)`,
+            // Every applied agent draft is a deliberate revision, even when an
+            // agent happens to reuse the same label. Never fold two of them
+            // into one History snapshot.
+            fromAgentApi ? { coalesce: false } : undefined,
+          );
         } finally {
           this.replayingHistory = false;
         }

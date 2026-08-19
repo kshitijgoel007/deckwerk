@@ -18,6 +18,8 @@ import { Inspector } from './inspector.js';
 import { HistoryPanel } from './historyPanel.js';
 import { authoredHtmlSync, fileName } from './htmlCompile.js';
 import { createShapeInsertPicker, insertText } from './elementCreation.js';
+import { createExportPicker } from './exportPicker.js';
+import { showPdfExportDialog } from './pdfExportDialog.js';
 import { createThemePanel } from './themePanel.js';
 import {
   barButton,
@@ -31,8 +33,10 @@ import {
 } from './shellWiring.js';
 import { SlideRail } from './slideRail.js';
 import { EditorStore } from './store.js';
+import { statusBarText } from './statusBar.js';
 import { TimelinePanel } from './timelinePanel.js';
 import { WelcomeScreen } from './welcomeScreen.js';
+import { presenterPreflight } from './presenterPreflight.js';
 
 /**
  * Editor shell: wires the panels to one store, owns the toolbar, the keyboard
@@ -148,72 +152,72 @@ function buildToolbar(): void {
     barButton('New', newPresentation),
     barButton('Open', openPresentation),
     barButton('Import Keynote…', importKeynotePresentation),
-    barButton('Export web…', async () => {
-      await cssEditor.flush();
-      await save();
-      try {
-        const dir = await window.api.exportBundle();
-        if (dir) setStatusMessage(`Exported to ${dir}`);
-      } catch (err) {
-        setStatusMessage(`Export failed: ${err instanceof Error ? err.message : err}`);
-      }
-    }, 'deck-only'),
+    createExportPicker([
+      { label: 'PDF…', action: () => void exportPdf() },
+      { label: 'Web…', action: () => void exportWeb() },
+    ]),
   );
 
   const mid = document.createElement('div');
   mid.className = 'bar-group deck-only bar-center';
-  mid.append(barIconButton('Text', TEXT_ICON, () => addText()), createShapeInsertPicker(store));
+  mid.append(
+    barIconButton('Text', TEXT_ICON, () => addText()),
+    createShapeInsertPicker(store),
+  );
 
   const right = document.createElement('div');
   right.className = 'bar-group bar-right deck-only';
   right.append(
-    barButton('Edit HTML', async () => {
-      try {
-        const ids = store.get().deck.slides
-          .filter((slide) => store.get().slideSelection.has(slide.id))
-          .map((slide) => slide.id);
-        const path = await window.api.exportHtml(ids);
-        setStatusMessage(`HTML ready at ${path}`);
-      } catch (err) {
-        setStatusMessage(`HTML export failed: ${err instanceof Error ? err.message : err}`);
-      }
-    }),
-    barButton('Agent…', async () => {
-      // An agent session is a collaboration session without the hosted-mode
-      // restrictions: the server hosts the deck's parent directory with every
-      // control intact. Hand the invite URL (copied to the clipboard, shown in
-      // the status bar) to the agent of your choice; it joins like any peer
-      // and reads /api/brief to learn how to edit.
-      setStatusMessage('Starting agent session…');
-      try {
-        await cssEditor.flush();
-        await save();
-        await window.api.startCollab({ agent: true });
-      } catch (err) {
-        setStatusMessage(`Agent session failed: ${err instanceof Error ? err.message : err}`);
-      }
-    }),
-    barButton('Collaborate', async () => {
-      setStatusMessage('Starting collaboration…');
-      try {
-        // Flush first: the server takes over persistence from this window.
-        await cssEditor.flush();
-        await save();
-        // On success the main process swaps this window for the collab client.
-        await window.api.startCollab();
-      } catch (err) {
-        setStatusMessage(`Collaborate failed: ${err instanceof Error ? err.message : err}`);
-      }
-    }),
+    barButton('Agent…', () => void startSharing(true)),
+    barButton('Collaborate', () => void startSharing(false)),
     barButton('Present', async () => {
       // Flush before presenting: the projector must not show a stale theme.
       await cssEditor.flush();
       await save();
-      await window.api.present(store.get().slideIndex);
+      const options = await presenterPreflight();
+      if (options) await window.api.present(store.get().slideIndex, options);
     }, 'primary'),
   );
 
   bar.append(left, mid, right);
+}
+
+async function exportWeb(): Promise<void> {
+  await cssEditor.flush();
+  await save();
+  try {
+    const dir = await window.api.exportBundle();
+    if (dir) setStatusMessage(`Exported to ${dir}`);
+  } catch (err) {
+    setStatusMessage(`Export failed: ${err instanceof Error ? err.message : err}`);
+  }
+}
+
+async function exportPdf(): Promise<void> {
+  const choice = await showPdfExportDialog();
+  if (!choice) return;
+  setStatusMessage('Preparing PDF export…');
+  await cssEditor.flush();
+  await save();
+  try {
+    const result = await window.api.exportPdf({
+      mode: choice.includeEachBuildStage ? 'every' : 'final',
+    });
+    if (result) setStatusMessage(`PDF saved to ${result}`);
+  } catch (err) {
+    setStatusMessage(`PDF export failed: ${err instanceof Error ? err.message : err}`);
+  }
+}
+
+async function startSharing(agent: boolean): Promise<void> {
+  setStatusMessage(agent ? 'Starting deck-scoped agent session…' : 'Starting collaboration…');
+  try {
+    await cssEditor.flush();
+    await save();
+    await window.api.startCollab({ agent });
+  } catch (err) {
+    setStatusMessage(`${agent ? 'Agent session' : 'Collaboration'} failed: ${err instanceof Error ? err.message : err}`);
+  }
 }
 
 async function newPresentation(): Promise<void> {
@@ -256,8 +260,6 @@ const themePanel = createThemePanel({
   setStatusMessage,
   saveThemeCss: (css) => void window.api.saveTheme(css),
 });
-
-
 /* --- side panel tabs --- */
 
 const PANELS = [
@@ -379,23 +381,13 @@ function setStatusMessage(text: string): void {
 }
 
 function renderStatus(): void {
-  const { dir, deck, slideIndex, slideSelection, selection, dirty } = store.get();
-  const bits = [
-    dir ? dir.split('/').pop() : 'No deck open — use New, Open or Import Keynote',
-    `slide ${slideIndex + 1}/${deck.slides.length}`,
-  ];
-  if (slideSelection.size > 1) bits.push(`${slideSelection.size} slides selected`);
-  if (selection.size > 0) bits.push(`${selection.size} selected`);
-  if (dirty) bits.push('unsaved');
-  if (statusMessage) bits.push(statusMessage);
-  el('status').textContent = bits.join('  ·  ');
+  el('status').textContent = statusBarText(store.get(), statusMessage);
 }
 
 /* --- boot --- */
 
 buildToolbar();
 buildTabs();
-// The theme gallery lives in its own sidebar tab, not the toolbar.
 el('themePanel').appendChild(themePanel.element);
 el('themePanel').classList.add('theme-panel');
 bindEditorKeys(shellDeps, clipboard);

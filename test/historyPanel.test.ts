@@ -39,4 +39,21 @@ describe('edit history', () => {
     expect(store.get().deck.title).toBe('History');
     expect(host.querySelector('.history-item')?.textContent).toContain('Reverted to Initial state');
   });
+
+  it('keeps identically labelled agent applies as separate restorable revisions', () => {
+    const store = new EditorStore(emptyDeck('History'), '/tmp/history');
+    const first = structuredClone(store.get().deck);
+    first.title = 'Agent revision one';
+    store.applyRemote(first, 'Agent: revise paper slides', { coalesce: false });
+    const second = structuredClone(first);
+    second.title = 'Agent revision two';
+    store.applyRemote(second, 'Agent: revise paper slides', { coalesce: false });
+
+    const agentRevisions = store.history()
+      .filter((item) => item.label === 'Agent: revise paper slides');
+    expect(agentRevisions).toHaveLength(2);
+    expect(store.restoreHistory(agentRevisions[1].id)).toBe(true);
+    expect(store.get().deck.title).toBe('Agent revision one');
+    expect(store.history()[0].label).toBe('Reverted to Agent: revise paper slides');
+  });
 });

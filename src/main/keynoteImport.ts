@@ -26,7 +26,10 @@ function resolveSidecar(): { command: string; args: string[] } | null {
     if (candidate && existsSync(candidate)) return { command: candidate, args: [] };
   }
 
-  if (!app.isPackaged) {
+  // `electron` exports no app object when this module is exercised by the
+  // Node-based integration suite. Treat that runtime like development so the
+  // exact wrapper used by IPC remains testable instead of bypassing it.
+  if (!app?.isPackaged) {
     const script = join(process.cwd(), 'importers/keynote/import_keynote.py');
     if (existsSync(script)) {
       // Prefer the project venv, which is where keynote-parser is installed.

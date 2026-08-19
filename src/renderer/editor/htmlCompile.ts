@@ -6,6 +6,7 @@ import { authoringPageHtml, measureSlides } from '@shared/htmlMeasure.js';
 import { htmlSlideScope, htmlSyncOperations, renderAuthoredMath, slidesFromMeasured } from '@shared/htmlSlides.js';
 import { PLAYER_TYPE_CSS } from '@shared/playerTypeCss.js';
 import { browserDeckRevision } from './agentBridge.js';
+import { sanitizeAuthoredHtml, type HtmlSanitizationReport } from '@shared/htmlSafety.js';
 
 /**
  * Compiling authored HTML inside the editor itself.
@@ -26,6 +27,7 @@ export interface CompiledAuthoredHtml {
   slides: Slide[];
   /** Inline style the browser silently dropped; see `MeasuredSlide.warnings`. */
   warnings: string[];
+  sanitization: HtmlSanitizationReport;
 }
 
 /** Lay authored markup out at canvas size and report it as ordinary slides. */
@@ -53,8 +55,9 @@ export async function compileAuthoredHtml(
     // Deck-relative asset paths must resolve the way the player resolves them,
     // which in this window is the deck: scheme rather than a file URL.
     doc.open();
+    const sanitized = sanitizeAuthoredHtml(authored);
     doc.write(authoringPageHtml({
-      authored,
+      authored: sanitized.html,
       typeCss: PLAYER_TYPE_CSS,
       theme,
       themeHref: deck.theme,
@@ -81,6 +84,7 @@ export async function compileAuthoredHtml(
     return {
       slides: slidesFromMeasured(deck, measured),
       warnings: measured.flatMap((slide) => slide.warnings ?? []),
+      sanitization: sanitized.report,
     };
   } finally {
     frame.remove();

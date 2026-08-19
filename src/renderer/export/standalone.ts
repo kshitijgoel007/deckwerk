@@ -17,6 +17,8 @@ import { Player } from '../player/player.js';
 declare global {
   interface Window {
     __DECK__?: unknown;
+    /** Test/diagnostic handle for rendering an exact slide build state. */
+    __SLIDE_PLAYER__?: Player;
   }
 }
 
@@ -35,6 +37,7 @@ function boot(): void {
     // Assets sit next to index.html, so their deck-relative paths already work.
     resolveSrc: (src) => src,
   });
+  window.__SLIDE_PLAYER__ = player;
 
   bindPresentKeys(window, player);
 

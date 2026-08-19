@@ -1,0 +1,14 @@
+html, body { margin: 0; padding: 0; background: #000; }
+#pages { margin: 0; }
+.pdf-page {
+  position: relative;
+  overflow: hidden;
+  break-after: page;
+  page-break-after: always;
+  background: #000;
+}
+.pdf-page:last-child { break-after: auto; page-break-after: auto; }
+.pdf-stage { position: absolute; inset: 0 auto auto 0; transform-origin: top left; }
+@media print {
+  html, body, #pages { background: transparent; }
+}

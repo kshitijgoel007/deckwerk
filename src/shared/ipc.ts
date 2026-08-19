@@ -22,6 +22,7 @@ export const IPC = {
   clipboardRead: 'clipboard:read',
   assetProbe: 'asset:probe',
   presentOpen: 'present:open',
+  displayList: 'display:list',
   presentCursor: 'present:cursor',
   presentCommand: 'present:command',
   presentState: 'present:state',
@@ -31,6 +32,8 @@ export const IPC = {
   trimDone: 'trim:done',
   keynoteImport: 'keynote:import',
   exportBundle: 'export:bundle',
+  exportPdf: 'export:pdf',
+  exportPdfReady: 'export:pdfReady',
   htmlExport: 'html:export',
   htmlEdit: 'html:edit',
   htmlAdopt: 'html:adopt',
@@ -76,6 +79,26 @@ export interface PresentationState {
   cursor: { slide: number; step: number };
   steps: number;
   startedAt: number;
+}
+
+export interface DisplayInfo {
+  id: number;
+  label: string;
+  primary: boolean;
+  width: number;
+  height: number;
+}
+
+export interface PresentOptions {
+  audienceDisplayId?: number;
+  presenterDisplayId?: number;
+  remember?: boolean;
+}
+
+export type PdfBuildMode = 'initial' | 'final' | 'every';
+export interface PdfExportRequest {
+  mode?: PdfBuildMode;
+  includeHidden?: boolean;
 }
 
 /**

@@ -49,6 +49,8 @@ export const CommentSchema = z.object({
   text: z.string(),
   ts: z.string(),
   resolved: z.boolean().default(false),
+  /** Optional parent comment for a lightweight reply thread. */
+  parentId: Id.optional(),
 });
 
 /** Shared geometry for every element. */
@@ -202,6 +204,12 @@ const ShapeElement = BaseElement.extend({
 const HtmlElement = BaseElement.extend({
   type: z.literal('html'),
   html: z.string().default(''),
+  /** Isolate new fidelity fallbacks in a ShadowRoot. Old HTML stays unisolated. */
+  sandboxed: z.boolean().optional(),
+  /** Styles captured from the authored document and scoped by the ShadowRoot. */
+  css: z.string().optional(),
+  /** Human-readable reason this region could not become native objects. */
+  fallbackReason: z.string().optional(),
 });
 
 /**

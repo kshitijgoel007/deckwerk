@@ -1,6 +1,6 @@
 import { join } from 'node:path';
 import { BrowserWindow, screen } from 'electron';
-import { chooseAudienceDisplay } from './presentationDisplays.js';
+import { chooseAudienceDisplay, chooseDisplayById } from './presentationDisplays.js';
 
 /**
  * Window creation. Three kinds: the editor, the fullscreen present window and
@@ -75,10 +75,10 @@ export function createCollabHostWindow(url: string): BrowserWindow {
  * Fullscreen presentation. Prefers an external display when one is attached,
  * which is the normal case at a talk, and keeps the editor usable behind it.
  */
-export function createPresentWindow(cursorSlide = 0): BrowserWindow {
+export function createPresentWindow(cursorSlide = 0, displayId?: number): BrowserWindow {
   const displays = screen.getAllDisplays();
   const primary = screen.getPrimaryDisplay();
-  const target = chooseAudienceDisplay(displays, primary);
+  const target = chooseDisplayById(displays, displayId, chooseAudienceDisplay(displays, primary));
 
   const win = new BrowserWindow({
     x: target.bounds.x,
@@ -105,13 +105,14 @@ export function createPresentWindow(cursorSlide = 0): BrowserWindow {
 }
 
 /** Laptop control surface; the audience window remains fullscreen externally. */
-export function createPresenterWindow(): BrowserWindow {
+export function createPresenterWindow(displayId?: number): BrowserWindow {
   const primary = screen.getPrimaryDisplay();
+  const target = chooseDisplayById(screen.getAllDisplays(), displayId, primary);
   const win = new BrowserWindow({
-    x: primary.workArea.x + 40,
-    y: primary.workArea.y + 40,
-    width: Math.min(1200, primary.workArea.width - 80),
-    height: Math.min(820, primary.workArea.height - 80),
+    x: target.workArea.x + 40,
+    y: target.workArea.y + 40,
+    width: Math.min(1200, target.workArea.width - 80),
+    height: Math.min(820, target.workArea.height - 80),
     minWidth: 900,
     minHeight: 620,
     backgroundColor: '#111218',
@@ -123,6 +124,25 @@ export function createPresenterWindow(): BrowserWindow {
   });
   win.once('ready-to-show', () => win.show());
   loadRenderer(win, 'presenter');
+  return win;
+}
+
+/** Hidden document that lays every requested slide state out as print pages. */
+export function createPdfWindow(query: string): BrowserWindow {
+  const win = new BrowserWindow({
+    width: 960,
+    height: 540,
+    show: false,
+    backgroundColor: '#000000',
+    webPreferences: {
+      preload: preload(),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
+      autoplayPolicy: 'no-user-gesture-required',
+    },
+  });
+  loadRenderer(win, 'print', query);
   return win;
 }
 

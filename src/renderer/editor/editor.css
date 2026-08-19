@@ -631,6 +631,8 @@ body.welcome-mode .deck-only { display: none; }
   background: var(--panel);
   color: var(--muted);
   font-size: 11px;
+  cursor: text;
+  user-select: text;
 }
 
 /* --- crop (mask) editing --- */
@@ -1523,6 +1525,9 @@ button.magic-object-hit.selected-source:hover:not(:disabled) {
   gap: 8px;
   justify-content: flex-end;
 }
+
+.pdf-export-dialog { width: min(440px, calc(100vw - 56px)); }
+.pdf-export-builds { padding: 8px 0 4px; }
 
 /* Object names in the build and Magic Move lists carry colour swatches so two
    shapes of the same geometry are still told apart at a glance. */

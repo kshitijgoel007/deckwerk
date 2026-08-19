@@ -6,8 +6,8 @@ import { setIdSuffix } from '@shared/geometry.js';
 import { EditorCanvas } from '../editor/canvas.js';
 import { installAgentApi, setAgentName } from './agentApi.js';
 import { CssEditor } from '../editor/cssEditor.js';
-import { createShapeInsertPicker, insertText } from '../editor/elementCreation.js';
 import { HistoryPanel } from '../editor/historyPanel.js';
+import { createShapeInsertPicker, insertText } from '../editor/elementCreation.js';
 import { Inspector } from '../editor/inspector.js';
 import {
   barButton,
@@ -27,6 +27,7 @@ import { CollabBridge } from './collabBridge.js';
 import { createDeckOnServer, importKeynoteToServer, showDeckPicker } from './deckPicker.js';
 import { installNetApi } from './netApi.js';
 import { PresenceOverlay } from './presenceOverlay.js';
+import { installAgentWorkspace } from './agentWorkspace.js';
 
 /**
  * Browser collaboration shell: the same canvas, rail, inspector, theme
@@ -117,8 +118,6 @@ if (!deckId) {
 installNetApi({ deckId, saveTheme: (css) => bridge.sendTheme(css) });
 
 const store = new EditorStore(emptyDeck('Connecting…'));
-// The documented console surface for agents (see /api/brief on the server).
-installAgentApi(store, deckId);
 const canvas = new EditorCanvas(el('canvas'), store);
 // Peers should watch each other type, not just see the result on blur.
 canvas.liveTextSync = true;
@@ -134,6 +133,10 @@ cssHost.hidden = true;
 document.body.appendChild(cssHost);
 const cssEditor = new CssEditor(cssHost);
 cssEditor.onChange = () => canvas.refitAutoText();
+// The documented HTML-first surface and visible agent workspace share this
+// compiler and the live theme buffer.
+installAgentApi(store, deckId, { theme: () => cssEditor.getValue() });
+installAgentWorkspace(store);
 const presence = new PresenceOverlay(canvas, store);
 rail.presenceForSlide = (slideId) => presence.peersOnSlide(slideId);
 
@@ -164,8 +167,8 @@ const bridge = new CollabBridge(wsUrl, userName() || undefined, {
     rail.refreshPresence();
     renderStatus();
   },
-  onDeckReplaced: (deck, label) => {
-    store.applyRemote(deck, label);
+  onDeckReplaced: (deck, label, options) => {
+    store.applyRemote(deck, label, options);
   },
   onPeerPresence: (state) => {
     presence.upsert(state);
@@ -259,6 +262,8 @@ function publishPresence(): void {
 store.subscribe(() => {
   publishPresence();
   syncSlideSelectionContext();
+  const title = document.querySelector<HTMLElement>('.toolbar-deck-title');
+  if (title) title.textContent = store.get().deck.title;
   renderStatus();
 });
 const inspectorRefresh = canvas.onTextEditModeChange;
@@ -310,7 +315,10 @@ function buildToolbar(): void {
 
   const mid = document.createElement('div');
   mid.className = 'bar-group bar-center';
-  mid.append(barIconButton('Text', TEXT_ICON, () => insertText(store)), createShapeInsertPicker(store));
+  mid.append(
+    barIconButton('Text', TEXT_ICON, () => insertText(store)),
+    createShapeInsertPicker(store),
+  );
 
   const right = document.createElement('div');
   right.className = 'bar-group bar-right';
@@ -434,7 +442,7 @@ function renderStatus(): void {
   }
   // Visible in any screenshot or accessibility read of the page, so an agent
   // that lands here cold finds its onboarding without guessing endpoints.
-  bits.push('agents: GET /api/brief · window.agent.seeComments()');
+  bits.push('agents: GET /api/brief · await window.agent.seeComments()');
   el('status').textContent = bits.join('  ·  ');
 }
 

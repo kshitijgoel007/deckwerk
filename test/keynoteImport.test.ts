@@ -5,6 +5,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { parseDeck } from '../src/shared/deck.js';
+import { importKeynote } from '../src/main/keynoteImport.js';
+import { loadDeck, loadTheme } from '../src/main/deckStore.js';
+import { writeHtmlScope } from '../src/main/htmlAuthoring.js';
 import { applySlideLayout } from '../src/renderer/editor/slideLayouts.js';
 import { EditorStore } from '../src/renderer/editor/store.js';
 import { suggestMagicMovePairs, unchangedMagicMovePairs } from '../src/shared/magicMove.js';
@@ -25,6 +28,8 @@ const PYTHON = join(process.cwd(), '.venv-import/bin/python');
 const SCRIPT = join(process.cwd(), 'importers/keynote/import_keynote.py');
 const FIXTURES = process.env.KEYNOTE_FIXTURES;
 const LOCAL_FIXTURES = join(process.cwd(), 'example_presentations');
+const BUNDLED_IMPORTER = join(process.cwd(), 'build', 'importers',
+  process.platform === 'win32' ? 'keynote-import.exe' : 'keynote-import');
 
 const ready = existsSync(PYTHON) && existsSync(SCRIPT);
 
@@ -62,6 +67,56 @@ describe.skipIf(!ready)('keynote importer', () => {
       expect(skipped / Math.max(1, r.elements)).toBeLessThan(0.25);
     }
   }, 600_000);
+
+  it.skipIf(!existsSync(join(LOCAL_FIXTURES, 'team_slide.key')))(
+    'imports a real deck through the app wrapper, reopens it, and prepares its first slide',
+    async () => {
+      const out = await mkdtemp(join(tmpdir(), 'kn-open-smoke-'));
+      try {
+        const imported = await importKeynote(join(LOCAL_FIXTURES, 'team_slide.key'), out);
+        expect(imported.dir).toBe(out);
+        expect(imported.deck.slides.length).toBeGreaterThan(0);
+
+        // Reopen from disk instead of trusting the in-memory importer result.
+        // This is the same boundary used by Open and by a fresh app launch.
+        const opened = await loadDeck(out);
+        expect(opened).toEqual(imported.deck);
+        expect((await loadTheme(out, opened.theme)).length).toBeGreaterThan(0);
+
+        const store = new EditorStore(opened, out);
+        expect(store.slide?.id).toBe(opened.slides[0].id);
+        const authored = await writeHtmlScope(out, opened, [opened.slides[0].id]);
+        expect(existsSync(authored.path)).toBe(true);
+        expect(authored.contents).toContain('section class="slide"');
+      } finally {
+        await rm(out, { recursive: true, force: true });
+      }
+    },
+    120_000,
+  );
+
+  it.skipIf(!existsSync(BUNDLED_IMPORTER) || !existsSync(join(LOCAL_FIXTURES, 'team_slide.key')))(
+    'imports and reopens a real deck with the packaged sidecar',
+    async () => {
+      const out = await mkdtemp(join(tmpdir(), 'kn-packaged-open-'));
+      try {
+        const stdout = execFileSync(
+          BUNDLED_IMPORTER,
+          [join(LOCAL_FIXTURES, 'team_slide.key'), '--out', out],
+          { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 },
+        );
+        const payload = JSON.parse(stdout) as { dir: string; deck: unknown };
+        expect(payload.dir).toBe(out);
+        expect(parseDeck(payload.deck).slides.length).toBeGreaterThan(0);
+        const opened = await loadDeck(out);
+        expect(opened.slides.length).toBeGreaterThan(0);
+        expect((await loadTheme(out, opened.theme)).length).toBeGreaterThan(0);
+      } finally {
+        await rm(out, { recursive: true, force: true });
+      }
+    },
+    120_000,
+  );
 
   // Full written imports copy and transcode gigabytes of assets. Keep this
   // opt-in for CI or focused local runs; report mode above still parses every

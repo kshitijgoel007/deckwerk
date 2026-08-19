@@ -12,8 +12,11 @@ import type {
   ImportedAsset,
   KeynoteImportResult,
   MediaInfo,
+  PdfExportRequest,
   PresentationCommand,
   PresentationState,
+  PresentOptions,
+  DisplayInfo,
   TrimProgress,
   TrimRequest,
   TrimResult,
@@ -76,6 +79,9 @@ const api = {
   importKeynote: (): Promise<KeynoteImportResult | null> =>
     ipcRenderer.invoke(IPC.keynoteImport),
   exportBundle: (): Promise<string | null> => ipcRenderer.invoke(IPC.exportBundle),
+  exportPdf: (request: PdfExportRequest = {}): Promise<string | null> =>
+    ipcRenderer.invoke(IPC.exportPdf, request),
+  pdfReady: (jobId: string): void => ipcRenderer.send(IPC.exportPdfReady, jobId),
   exportHtml: (slideIds: string[]): Promise<string> => ipcRenderer.invoke(IPC.htmlExport, slideIds),
   startWorkflow: (request: WorkflowStartRequest): Promise<WorkflowStartResult> =>
     ipcRenderer.invoke(IPC.workflowStart, request),
@@ -92,8 +98,9 @@ const api = {
   startCollab: (opts?: { agent?: boolean }): Promise<string[]> =>
     ipcRenderer.invoke(IPC.collabStart, opts),
 
-  present: (slideIndex: number): Promise<void> =>
-    ipcRenderer.invoke(IPC.presentOpen, slideIndex),
+  listDisplays: (): Promise<DisplayInfo[]> => ipcRenderer.invoke(IPC.displayList),
+  present: (slideIndex: number, options?: PresentOptions): Promise<void> =>
+    ipcRenderer.invoke(IPC.presentOpen, slideIndex, options),
   sendPresentCommand: (command: PresentationCommand): void =>
     ipcRenderer.send(IPC.presentCommand, command),
   publishPresentState: (state: PresentationState): void =>

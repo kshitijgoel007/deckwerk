@@ -33,4 +33,22 @@ describe('media assets and borders', () => {
     expect(node.style.border).toContain('rgb(255, 51, 102)');
     expect(node.style.borderRadius).toBe('14px');
   });
+
+  it('resolves media and CSS assets inside a sandboxed HTML fallback', () => {
+    const node = renderElement({
+      ...base,
+      id: 'portrait-fallback',
+      type: 'html',
+      html: '<figure data-slide-editor-fallback-root><img src="assets/portrait.jpg"></figure>',
+      sandboxed: true,
+      css: '.portrait { background-image:url("assets/texture.png") }',
+      fallbackReason: 'Clipped media frame with a CSS pseudo-element overlay',
+    }, { resolveSrc: (src) => `/decks/test/${src}` });
+
+    const shadow = node.querySelector('div')!.shadowRoot!;
+    expect(shadow.querySelector('img')!.getAttribute('src'))
+      .toBe('/decks/test/assets/portrait.jpg');
+    expect(shadow.querySelector('style')!.textContent)
+      .toContain('url("/decks/test/assets/texture.png")');
+  });
 });

@@ -1,137 +1,169 @@
-/**
- * The onboarding document served at /api/brief: everything an agent joining a
- * collab session by URL needs to know to edit slides like a peer. Embedded as
- * a string (not a file read) so packaged builds carry it without extra assets.
- */
-export const AGENT_BRIEF = `# Slide-editor collaboration session — agent brief
+/** Onboarding served by every agent-scoped collaboration session. */
+export const AGENT_BRIEF = `# Work on this presentation as an agent
 
-You are connected to a live collaborative slide editor. Open the session URL
-in a browser; every edit you make syncs instantly to every human in the
-session, and theirs to you. Do not edit deck.json on disk — the server owns
-persistence.
+You can edit only the presentation in this session. Do not edit deck JSON.
+Create slides as ordinary HTML and CSS.
 
-**Element JSON is the native language of this session, and screenshots are
-your eyes.** You edit by committing small changes to the deck structure and
-verifying each one visually. There is no separate HTML authoring step here:
-the canvas in front of you renders exactly what the projector will show.
+## Control plane and viewer
 
-## The workflow
+Use the HTTP API for all programmatic work. Send HTML in the request body.
+Do not use editor controls for authoring.
 
-Every task follows the same loop. Worked example — "add an intro slide":
+The browser is a read-only real-player viewer. Request a slide URL through
+\`GET /api/render-slide\`, open it, and inspect the result. The viewer updates
+when the deck changes.
 
-1. \`window.agent.seeComments()\` — comments are how humans leave you
-   instructions, each row carries its 1-based slide number. Start here.
-2. \`window.store.selectSlide(n)\` and **screenshot the page** — see what the
-   slide looks like now. Read 2–3 neighboring slides' elements
-   (\`window.agent.getDeck().slides[n]\`) to learn the deck's fonts, sizes,
-   colors, and background conventions. Match them; do not invent your own.
-3. **Check the cookbook before building anything that feels like a feature.**
-   GET \`/api/capabilities\` lists every editor capability with a minimal,
-   valid example element: bulleted lists (real \`<ul><li>\` markup — never
-   literal "•" characters), KaTeX maths (\`$…$\` in text — never positioned
-   glyphs), crops (\`sourceBox\` — never re-encoding), circular masks,
-   builds, Magic Move, shapes, borders and effects. If you hand-build
-   something the editor already does, humans cannot edit it with their
-   tools afterwards. Filter with \`?only=lists,builds\` once oriented.
-4. Commit one logical change:
-   \`\`\`js
-   window.store.commit((deck) => {
-     deck.slides.splice(1, 0, {
-       id: 'slide-agent-x7f2a', name: 'Intro', notes: '',
-       background: { color: '#0b0b10', image: null },
-       elements: [ /* see element shapes below */ ], timeline: [],
-     });
-   }, { label: 'Agent: add intro slide' });
-   \`\`\`
-   Always pass a short label — it names the undo/history entry humans see.
-5. **Screenshot again.** If something is off (overflowing text, misaligned
-   boxes, an unclipped corner), fix it with another commit and re-check.
-   Never assume a commit looked right without seeing it.
-6. **Critique before you call it done — this step is not optional.** You are
-   an expert slide designer; these slides go on a projector next to
-   professionally made ones, and "renders without errors" is the floor, not
-   the bar. Look at the final screenshot as if reviewing a stranger's work
-   and write down at least three concrete deficiencies — composition, dead
-   space, alignment, hierarchy, crowding, anything — then fix the ones that
-   matter and look again. You have just built the slide, which is exactly
-   when your judgment is most generous; the deficiencies are there, find
-   them. A slide is finished when you would put your name on it as a
-   designer, not when it merely contains the requested content. (Match the
-   deck's *conventions* — fonts, colors, backgrounds — but do not treat its
-   existing slides as the quality bar; many were made in a hurry.)
-7. When a comment is dealt with: \`window.agent.resolveComment(id)\`, and
-   reply with \`window.agent.addComment({...})\` when context helps. Never
-   delete a human's comment.
+A human can add \`debug=1\` to the editor URL to open the old diagnostic
+workspace. Agents must not depend on that workspace.
 
-## The page you are on
+## Required workflow
 
-The client at \`/?deck=<deckId>&name=<yourName>\` exposes, on \`window\`:
+1. Get the deck context.
+2. Get the open comments.
+3. Import each public asset through \`POST /api/import-url\`.
+4. Write a complete 1920×1080 HTML document.
+5. Send the HTML and target to \`POST /api/preview-html\`.
+6. Open the Source preview and capture a screenshot.
+7. Open the Imported preview and capture a screenshot.
+8. Compare the screenshots visually. Fetching HTML or checking byte counts is
+   not visual verification.
+9. Read the import report. Fix every overflow and missing or blocked asset.
+10. Repeat preview and screenshot inspection until those lists are empty.
+11. Send the returned draft data to \`POST /api/apply-html\`.
+12. Get the real player URL from \`GET /api/render-slide\`.
+13. Open the player URL and capture a screenshot at the full 16:9 slide.
+14. Check for clipping, overlap, broken media, tiny text, and poor hierarchy.
+15. Re-read the request and make a content inventory: count every required person,
+    item, asset, and section. A clean render is still a failure if content is missing
+    or the composition is perfunctory or overly sparse.
+16. If the player is wrong or the inventory is incomplete, preview and apply a
+    revision. Verify it again.
+17. Reply to useful comments. Resolve comments only after both the screenshot and
+    content inventory pass.
 
-- \`store\` — the deck store. \`store.state.deck\` is the live deck (do not
-  mutate it directly); \`store.state.slideIndex\` the current slide.
-- \`store.commit(fn, {label})\` — \`fn(deck)\` receives a deep clone, mutate
-  it freely; the change is diffed into element-level operations, applied
-  optimistically, and broadcast.
-- \`store.selectSlide(i)\` — navigate (also drives your presence indicator).
-- \`agent\` — helpers: \`brief()\`, \`getDeck()\`, \`goToSlide(n)\`,
-  \`commit(fn, label)\`, \`seeComments()\`, \`addComment()\`,
-  \`resolveComment()\`, \`uploadAsset(name, data)\`.
-- \`canvas\`, \`rail\`, \`bridge\` — the UI objects, for advanced use.
+Preview does not change the presentation. Apply creates one named collaboration
+revision in the editor's History panel. Any earlier revision can be restored;
+the restoration is itself a new collaborative revision.
+If the revision changed, preview again. Never reuse a draft after a revision conflict.
 
-## Deck shape (deck.json schema, abridged)
+Do not apply a draft with reported overflow, missing assets, or blocked resources.
+Do not claim that you inspected a render when you only fetched its HTML. If you
+cannot capture screenshots, stop and report that visual verification is blocked.
+Do not use an empty diagnostics report as proof that the requested design is
+complete: diagnostics check import mechanics, not editorial completeness or quality.
 
-Canvas is fixed (default 1920x1080); all geometry is absolute pixels.
-A slide: \`{id, name, background: {color, image}, notes, elements, timeline,
-comments?}\`. Every element has \`{id, x, y, w, h, rot, z, opacity, class:
-string[], style: Record<string,string>, comments?}\` plus per-type fields:
+## Author HTML freely
 
-- text: \`html\` (inline HTML, <p> per paragraph), \`autoFit\`, \`align\`,
-  \`valign\`. Give text \`class: ["kn-text", "role-title"|"role-heading"|
-  "role-body"|"role-caption"]\` so theme.css styles it; set explicit
-  font-size/family/color in \`style\` only to override the theme.
-- image: \`src\` (deck-relative, "assets/…"), \`fit\` (contain|cover|fill),
-  \`maskShape: "circle"\` for a circular mask, \`sourceBox\` to pan/zoom the
-  picture behind the element box (the box is the visible window),
-  \`borderRadius\` (px) for rounded corners.
-- video: like image — \`maskShape\`, \`sourceBox\`, \`borderRadius\` all work
-  the same — plus \`start\`/\`end\` trim (seconds), \`autoplay\`, \`loop\`,
-  \`muted\`.
-- shape: \`shape: rect|ellipse|line|arrow|path\`, \`fill\`, \`stroke\`,
-  \`strokeWidth\`.
+Use semantic HTML, CSS grid, flexbox, inline SVG, images, video, and CSS animation.
+Wrap each slide in \`<section class="slide">\`.
+Give each section a concise \`data-name\` so the deck outline stays useful.
+The slide canvas is 1920×1080 unless \`getContext()\` reports another size.
+Write inline maths as \`$…$\` and display maths as \`$$…$$\`; the player and
+import measurement render both with bundled KaTeX.
 
-Fields not in the schema are silently dropped on parse — if you set a field
-and it vanishes from the deck, you invented it; re-read this list.
+JavaScript is not allowed. Event handlers are removed. External presentation-time
+network resources are blocked. Upload assets first or use data URLs. Data URLs are
+extracted into the presentation asset folder during preview.
 
-New ids: any unique string works; prefix with your name
-(e.g. \`text-agent-x7f2a\`).
+The importer converts text, lists, images, video, simple shapes, and box paint into
+editable native objects. It keeps the smallest unsupported region as isolated HTML.
+The report lists each fallback reason and the native-object ratio. Visual fidelity
+has priority over native editing.
 
-## Uploading media
+Prefer flat text elements with classes over nested formatting tags. For example,
+use \`<p class="person-name">Name</p>\` instead of a nested \`<b>\`. A fallback is
+acceptable only when Source and Imported screenshots still match visually.
 
-POST raw file bytes to \`/api/upload?deck=<deckId>&name=<filename>\` (same
-origin). Response: \`{src, kind, width, height, duration}\` — use \`src\`
-directly in an image/video element and size the element from width/height.
-Or use \`window.agent.uploadAsset(name, blobOrBuffer)\`.
+## Targets
 
-## Etiquette
+Insert after a slide:
 
-- Small, labelled commits: one logical change per commit so humans can undo
-  selectively.
-- Do not touch elements a human is actively editing (presence badges show
-  who edits what; concurrent edits to one element resolve last-write-wins).
-- The theme file is shared: change theme.css only when asked.
+\`\`\`js
+const target = { mode: "insert", afterSlideId: "slide-id" };
+\`\`\`
 
-## Other endpoints
+Replace one slide:
 
-- GET \`/api/capabilities[?only=id,id]\` — the feature cookbook: every
-  capability with copy-pasteable example elements. Read it before building.
-- GET \`/api/comments?deck=…\` — every comment with its 1-based slide
-  number, as JSON, without touching the page. Same rows as
-  \`window.agent.seeComments()\`.
-- GET \`/api/deck?deck=…\` — the live deck as JSON (read-only; edits still
-  go through \`store.commit\` in the page).
-- GET \`/api/decks\` — list decks; POST \`?name=…\` creates one.
-- GET \`/api/theme?deck=…\` — the deck's theme.css.
-- GET \`/api/download?deck=…\` — zip of the whole deck folder.
-- Present view: \`/present.html?deck=…&slide=<n>\` — the real player, fed by
-  the same live session; edits land on it as they happen.
+\`\`\`js
+const target = { mode: "replace", slideIds: ["slide-id"] };
+\`\`\`
+
+Replacement keeps the slide ID, comments, speaker notes, and hidden state. It
+replaces visual content and builds. A multi-slide draft applies as one change.
+
+## Comments
+
+\`\`\`js
+const open = await agent.listComments("open");
+await agent.addComment({ slideId, parentId: commentId, text: "Implemented and verified." });
+await agent.resolveComment(commentId);
+await agent.reopenComment(commentId);
+\`\`\`
+
+Do not delete another person's comment. Navigate with \`agent.goToSlide(number)\`.
+
+## HTTP example
+
+Use the session origin and add the deck ID to each request. This example works
+in the page and in any programmatic browser that can call \`fetch\`.
+
+\`\`\`js
+const deck = new URLSearchParams(location.search).get("deck");
+const endpoint = (path) => \`\${location.origin}\${path}?deck=\${encodeURIComponent(deck)}\`;
+const post = async (path, body) => {
+  const response = await fetch(endpoint(path), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const value = await response.json();
+  if (!response.ok) throw new Error(value.error);
+  return value;
+};
+
+const context = await (await fetch(endpoint("/api/context"))).json();
+const comments = await (await fetch(endpoint("/api/comments"))).json();
+const draft = await post("/api/preview-html", { html, target });
+const result = await post("/api/apply-html", {
+  draftId: draft.draftId,
+  expectedRevision: draft.revision,
+  idempotencyKey: crypto.randomUUID(),
+  label: "Agent: add project timeline",
+  target: draft.target,
+});
+\`\`\`
+
+The JSON request for \`POST /api/import-url\` is
+\`{ "url": "https://…", "name": "portrait.jpg" }\`. The response gives a
+deck-relative \`src\` value. Use that value in the slide HTML.
+
+Command-line agents can preview a large HTML file without JSON escaping:
+
+\`curl -H 'content-type: text/html' --data-binary @slides.html\`
+\`'<origin>/api/preview-html?deck=<deck>&mode=replace&slideIds=slide-a,slide-b'\`
+
+For insertion, use \`mode=insert&afterSlideId=<id>\`. Omitting \`afterSlideId\`
+inserts at the start. The JSON form remains available to browser agents.
+
+Use a new idempotency key for each intended change. Reusing a key returns the first
+result and does not duplicate slides.
+
+## HTTP and browser access
+
+The session provides these HTTP endpoints:
+
+- \`GET /api/brief\`
+- \`GET /api/context?deck=…\`
+- \`GET /api/comments?deck=…\`
+- \`POST /api/comments?deck=…\`
+- \`POST /api/comments/resolve?deck=…\`
+- \`POST /api/upload?deck=…&name=…\`
+- \`POST /api/import-url?deck=…\`
+- \`POST /api/preview-html?deck=…\`
+- \`GET /api/html-drafts/<draftId>/source?deck=…\`
+- \`GET /api/html-drafts/<draftId>/imported?deck=…\`
+- \`POST /api/apply-html?deck=…\`
+- \`GET /api/render-slide?deck=…&slideId=…\`
+
+The HTTP API is the authoritative path. The browser is only the visual output.
 `;

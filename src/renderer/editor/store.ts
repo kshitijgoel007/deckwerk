@@ -153,7 +153,11 @@ export class EditorStore {
    * object identity is re-shared so untouched slides keep their DOM and
    * playing videos; the cursor stays on the same slide by id.
    */
-  applyRemote(deck: Deck, label = 'Remote edit'): void {
+  applyRemote(
+    deck: Deck,
+    label = 'Remote edit',
+    opts: { coalesce?: boolean } = {},
+  ): void {
     const anchor = this.cursorAnchor();
     const next = parseDeck(deck);
     shareUnchangedSlides(this.state.deck, next);
@@ -161,7 +165,7 @@ export class EditorStore {
     this.restoreCursor(anchor);
     // Live typing arrives as a stream of same-label transactions; folding them
     // into one history entry keeps the History panel legible.
-    this.recordHistory(label, { coalesce: true });
+    this.recordHistory(label, { coalesce: opts.coalesce ?? true });
     this.emit();
   }
 

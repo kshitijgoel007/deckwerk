@@ -41,6 +41,7 @@ export interface MeasuredNode {
     alt?: string;
     poster?: string;
     objectFit?: string;
+    objectPosition?: string;
     textAlign?: string;
     loop?: boolean;
     muted?: boolean;
@@ -49,6 +50,9 @@ export interface MeasuredNode {
   };
   /** Set by the walker when a node must be preserved as raw markup. */
   verbatim?: boolean;
+  /** Captured author CSS for an isolated fallback region. */
+  css?: string;
+  fallbackReason?: string;
 }
 
 export interface MeasuredSlide {
@@ -418,9 +422,12 @@ export const PRESENTATIONAL_STYLE = new Set([
   // Gradient text is background-image + background-clip + a transparent fill.
   // Drop the clip and the "gradient" is a solid box over the words.
   'background-clip', '-webkit-background-clip', '-webkit-text-fill-color',
-  'text-shadow', 'border', 'border-radius', 'border-color', 'border-width',
+  'text-shadow', '-webkit-text-stroke', '-webkit-text-stroke-width',
+  '-webkit-text-stroke-color', 'border', 'border-radius', 'border-color', 'border-width',
   'border-style', 'box-shadow', 'filter', 'mix-blend-mode', 'padding',
   'padding-top', 'padding-right', 'padding-bottom', 'padding-left',
+  'overflow', 'object-position', 'white-space', 'word-break', 'overflow-wrap',
+  'writing-mode', 'text-orientation', 'list-style-type', 'list-style-position',
 ]);
 
 const TEXT_TAGS = new Set(['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'blockquote', 'li', 'span', 'div', 'figcaption', 'pre', 'code', 'ul', 'ol']);
@@ -503,13 +510,19 @@ export function elementFromNode(
     style: pickStyle(node.style),
     ...(node.dataset.magicMove ? { magicMoveId: node.dataset.magicMove } : {}),
   };
+  const mediaBase = { ...base, style: { ...base.style } };
+  // The player wrapper clips native media for crops and rounded corners. That
+  // renderer-owned `overflow:hidden` is visible to the browser walk, but it is
+  // not authored element CSS and must not accumulate in the deck on every
+  // HTML round trip.
+  delete mediaBase.style.overflow;
 
   // A cropped picture is exported as a window with the media inside it, the
   // way the player renders one, so the wrapper — not the `<img>` — is the
   // object, and it says what it is rather than being guessed from its tag.
   if (node.dataset.element === 'image' || node.dataset.element === 'video') {
     const common = {
-      ...base,
+      ...mediaBase,
       src: node.dataset.src ?? '',
       fit: fitFrom(node.dataset.fit),
       sourceBox: cropFrom(node.dataset.crop),
@@ -533,7 +546,7 @@ export function elementFromNode(
 
   if (node.tag === 'img') {
     return {
-      ...base,
+      ...mediaBase,
       type: 'image',
       src: node.attrs.src ?? '',
       fit: fitFrom(node.attrs.objectFit),
@@ -545,7 +558,7 @@ export function elementFromNode(
   if (node.tag === 'video') {
     const [start, end] = trimFrom(node.dataset.trim);
     return {
-      ...base,
+      ...mediaBase,
       type: 'video',
       src: withoutFragment(node.attrs.src ?? ''),
       fit: fitFrom(node.attrs.objectFit),
@@ -595,7 +608,14 @@ export function elementFromNode(
   // dropped or flattened to a picture. It still drags and resizes; only its
   // innards are not individually editable.
   if (node.verbatim || node.dataset.element === 'html' || !TEXT_TAGS.has(node.tag)) {
-    return { ...base, type: 'html', html: node.html };
+    return {
+      ...base,
+      type: 'html',
+      html: node.html,
+      sandboxed: true,
+      css: node.css ?? '',
+      fallbackReason: node.fallbackReason ?? `Unsupported ${node.tag} region`,
+    };
   }
 
   return {

@@ -1,7 +1,9 @@
 import { type FSWatcher, existsSync, mkdirSync, watch } from 'node:fs';
+import { readFile, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import { userInfo } from 'node:os';
 import { basename, dirname, join, resolve, sep } from 'node:path';
-import { BrowserWindow, app, clipboard, dialog, ipcMain, shell } from 'electron';
+import { BrowserWindow, app, clipboard, dialog, ipcMain, screen, shell } from 'electron';
 import type { Deck } from '@shared/deck.js';
 import {
   CLIPBOARD_FORMAT,
@@ -20,6 +22,8 @@ import type {
   KeynoteImportResult,
   PresentationCommand,
   PresentationState,
+  PdfExportRequest,
+  PresentOptions,
   TrimRequest,
   TrimResult,
   WorkflowStartRequest,
@@ -44,7 +48,7 @@ import { probeMedia, runTrim } from './ffmpeg.js';
 import { importKeynote } from './keynoteImport.js';
 import { HTML_EDIT_DIR, writeHtmlScope } from './htmlAuthoring.js';
 import {
-  createCollabHostWindow, createEditorWindow, createPresentWindow, createPresenterWindow, createTrimWindow,
+  createCollabHostWindow, createEditorWindow, createPdfWindow, createPresentWindow, createPresenterWindow, createTrimWindow,
 } from './windows.js';
 import {
   defaultClientDir, startCollabServer, type RunningCollabServer,
@@ -219,6 +223,23 @@ app.whenReady().then(async () => {
   }
 
   editorWindow = createEditorWindow();
+
+  screen.on('display-removed', () => {
+    if (!presentWindow || presentWindow.isDestroyed()) return;
+    const primary = screen.getPrimaryDisplay();
+    presentWindow.setFullScreen(false);
+    presentWindow.setBounds(primary.bounds);
+    presentWindow.setFullScreen(true);
+    if (presenterWindow && !presenterWindow.isDestroyed()) {
+      const area = primary.workArea;
+      presenterWindow.setBounds({
+        x: area.x + 40,
+        y: area.y + 40,
+        width: Math.max(900, Math.min(1200, area.width - 80)),
+        height: Math.max(620, Math.min(820, area.height - 80)),
+      });
+    }
+  });
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) editorWindow = createEditorWindow();
@@ -415,14 +436,35 @@ function registerHandlers(): void {
     return probeMedia(resolveAsset(s.dir, src));
   });
 
-  ipcMain.handle(IPC.presentOpen, (_e, slideIndex: number) => {
+  ipcMain.handle(IPC.displayList, () => {
+    const primaryId = screen.getPrimaryDisplay().id;
+    return screen.getAllDisplays().map((display, index) => ({
+      id: display.id,
+      label: display.label || `Display ${index + 1}`,
+      primary: display.id === primaryId,
+      width: display.bounds.width,
+      height: display.bounds.height,
+    }));
+  });
+  ipcMain.handle(IPC.presentOpen, async (_e, slideIndex: number, options: PresentOptions = {}) => {
     if (presentWindow && !presentWindow.isDestroyed()) {
       presenterWindow?.focus();
       return;
     }
+    const prefsPath = join(app.getPath('userData'), 'presentation-displays.json');
+    let chosen = options;
+    if (options.audienceDisplayId === undefined && options.presenterDisplayId === undefined) {
+      try { chosen = JSON.parse(await readFile(prefsPath, 'utf8')) as PresentOptions; } catch { /* defaults below */ }
+    }
+    if (options.remember) {
+      await writeFile(prefsPath, JSON.stringify({
+        audienceDisplayId: options.audienceDisplayId,
+        presenterDisplayId: options.presenterDisplayId,
+      }));
+    }
     presentationState = null;
-    presentWindow = createPresentWindow(slideIndex);
-    presenterWindow = createPresenterWindow();
+    presentWindow = createPresentWindow(slideIndex, chosen.audienceDisplayId);
+    presenterWindow = createPresenterWindow(chosen.presenterDisplayId);
     presentWindow.on('closed', () => {
       presentWindow = null;
       if (presenterWindow && !presenterWindow.isDestroyed()) presenterWindow.close();
@@ -500,6 +542,51 @@ function registerHandlers(): void {
     return target.filePath;
   });
 
+  ipcMain.handle(IPC.exportPdf, async (_event, request: PdfExportRequest = {}): Promise<string | null> => {
+    const s = requireSession();
+    const mode = request.mode ?? 'final';
+    const includeHidden = request.includeHidden ?? false;
+    const target = await dialog.showSaveDialog({
+      title: 'Export PDF',
+      buttonLabel: 'Export',
+      defaultPath: `${basename(s.dir)}.pdf`,
+      filters: [{ name: 'PDF', extensions: ['pdf'] }],
+    });
+    if (target.canceled || !target.filePath) return null;
+
+    const jobId = randomUUID();
+    const ready = new Promise<void>((resolveReady, reject) => {
+      const timer = setTimeout(() => {
+        ipcMain.off(IPC.exportPdfReady, listener);
+        reject(new Error('PDF renderer timed out'));
+      }, 30_000);
+      const listener = (_readyEvent: Electron.IpcMainEvent, readyJobId: string) => {
+        if (readyJobId !== jobId) return;
+        clearTimeout(timer);
+        ipcMain.off(IPC.exportPdfReady, listener);
+        resolveReady();
+      };
+      ipcMain.on(IPC.exportPdfReady, listener);
+    });
+    const query = `?job=${encodeURIComponent(jobId)}&mode=${mode}&includeHidden=${includeHidden ? '1' : '0'}`;
+    const printWindow = createPdfWindow(query);
+    try {
+      await ready;
+      const renderError = await printWindow.webContents.executeJavaScript(
+        'document.documentElement.dataset.error || ""',
+      ) as string;
+      if (renderError) throw new Error(renderError);
+      const pdf = await printWindow.webContents.printToPDF({
+        printBackground: true,
+        preferCSSPageSize: true,
+      });
+      await writeFile(target.filePath, pdf);
+      return target.filePath;
+    } finally {
+      if (!printWindow.isDestroyed()) printWindow.destroy();
+    }
+  });
+
   /**
    * "Collaborate": share the open deck for live co-editing.
    *
@@ -512,9 +599,9 @@ function registerHandlers(): void {
    */
   // Joiners need a URL reachable from their machine, so prefer a LAN
   // address over the loopback one the host window itself uses.
-  const copyJoinLink = (urls: string[], deckId: string): void => {
+  const copyJoinLink = (urls: string[], deckId: string, agent = false): void => {
     const base = urls.find((u) => !u.includes('127.0.0.1')) ?? urls[0];
-    if (base) clipboard.writeText(`${base}?deck=${encodeURIComponent(deckId)}`);
+    if (base) clipboard.writeText(`${base}?deck=${encodeURIComponent(deckId)}${agent ? '&agent=1' : ''}`);
   };
 
   // "Agent…" runs the same session unpinned: the server hosts the deck's
@@ -524,7 +611,7 @@ function registerHandlers(): void {
   ipcMain.handle(IPC.collabStart, async (_e, opts?: { agent?: boolean }): Promise<string[]> => {
     const s = requireSession();
     if (collabServer) {
-      copyJoinLink(collabServer.urls, basename(s.dir));
+      copyJoinLink(collabServer.urls, basename(s.dir), Boolean(opts?.agent));
       return collabServer.urls;
     }
 
@@ -536,7 +623,10 @@ function registerHandlers(): void {
     const deckId = basename(s.dir);
     const base = {
       rootDir: dirname(s.dir),
-      hostedDeckId: opts?.agent ? undefined : deckId,
+      // Agent sessions are scoped to the same open deck as human sessions.
+      // An invite never exposes sibling folders.
+      hostedDeckId: deckId,
+      agentMode: Boolean(opts?.agent),
       clientDir,
       // "End collaboration" in the host window: closing the window is the
       // existing teardown path (stops the server, restores the editor).
@@ -550,7 +640,7 @@ function registerHandlers(): void {
       server = await startCollabServer({ ...base, port: 0 });
     }
     collabServer = server;
-    copyJoinLink(server.urls, deckId);
+    copyJoinLink(server.urls, deckId, Boolean(opts?.agent));
 
     // Two debounced whole-file writers on one deck.json silently last-write-
     // wins each other; from here the server owns persistence.

@@ -82,7 +82,9 @@ async function capturePlayer(win, slide) {
 async function captureAuthored(win, slide) {
   await win.loadURL(pathToFileURL(slide.page).href);
   await settle(win);
-  const rect = await win.webContents.executeJavaScript(FRAME_SLIDE);
+  const rect = await win.webContents.executeJavaScript(
+    `(${FRAME_SLIDE})(${JSON.stringify(slide.sourceNumber ?? 1)})`,
+  );
   await win.webContents.executeJavaScript(pinVideos(slide.videoStarts ?? []));
   return captureStable(win, rect);
 }
@@ -216,13 +218,21 @@ const NEUTRAL_PAGE = `(() => {
  * The page deliberately pads and shadows the slide so it looks like a slide
  * when opened; that framing is not part of the comparison.
  */
-const FRAME_SLIDE = `(() => {
+const FRAME_SLIDE = `(number => {
   document.documentElement.style.background = '#ffffff';
   const body = document.body;
   body.style.margin = '0';
   body.style.padding = '0';
   body.style.background = '#ffffff';
-  const slide = document.querySelector('section.slide, [data-slide-id]');
+  const slides = [...document.querySelectorAll('section.slide, [data-slide-id]')];
+  const slide = slides[number - 1];
+  if (!slide) throw new Error('Authored slide ' + number + ' is missing');
+  // A multi-slide authoring document lays later sections below the viewport.
+  // Isolate the requested section before capturing so its authored 1920x1080
+  // canvas is framed at the origin just like a one-slide fixture.
+  for (const candidate of slides) {
+    if (candidate !== slide) candidate.style.display = 'none';
+  }
   slide.style.boxShadow = 'none';
   slide.style.margin = '0';
   window.scrollTo(0, 0);
@@ -231,7 +241,7 @@ const FRAME_SLIDE = `(() => {
     x: Math.round(box.left), y: Math.round(box.top),
     width: Math.round(box.width), height: Math.round(box.height),
   };
-})()`;
+})`;
 
 /** Offscreen rendering paints on its own schedule; wait for the frame to land. */
 const NEXT_PAINT = `new Promise((done) => requestAnimationFrame(

@@ -1,18 +1,26 @@
 import { spawn } from 'node:child_process';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { lookup } from 'node:dns/promises';
 import { createReadStream, existsSync } from 'node:fs';
-import { mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { networkInterfaces, tmpdir } from 'node:os';
 import { basename, dirname, extname, join, normalize, resolve } from 'node:path';
+import { isIP } from 'node:net';
 import { WebSocketServer, type WebSocket } from 'ws';
-import { createDeck, importAsset, resolveAsset } from '../main/deckStore.js';
+import { createDeck, importAsset, loadTheme, resolveAsset } from '../main/deckStore.js';
 import { AGENT_BRIEF } from './agentBrief.js';
 import { capabilities } from '../shared/capabilities.js';
 import { probeMedia } from '../main/ffmpeg.js';
 import { ClientMessageSchema, COLLAB_PROTOCOL_VERSION, type PresenceState, type ServerMessage } from '../shared/collab.js';
 import { CollabSession } from './collabSession.js';
 import { writeZip, type ZipFile } from './zip.js';
+import { compileHtmlToSlides, measureBuiltTextOverflows } from '../cli/compileHtml.js';
+import { slidesToHtml } from '../shared/htmlSlides.js';
+import { PLAYER_TYPE_CSS } from '../shared/playerTypeCss.js';
+import { authoringPageHtml } from '../shared/htmlMeasure.js';
+import { deckRevision } from '../main/agentRuntime.js';
+import type { AgentOperation } from '../shared/agent.js';
 
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -53,6 +61,18 @@ interface Room {
   guestCounter: number;
 }
 
+interface HttpHtmlDraft {
+  id: string;
+  deckId: string;
+  revision: string;
+  slides: import('../shared/deck.js').Slide[];
+  target: { mode: 'insert' | 'replace'; afterSlideId?: string | null; slideIds?: string[] };
+  sourceHtml: string;
+  importedHtml: string;
+  report: Record<string, unknown>;
+  createdAt: number;
+}
+
 export interface CollabServerOptions {
   /**
    * The single directory this server exposes. Every immediate subdirectory
@@ -71,6 +91,10 @@ export interface CollabServerOptions {
    * they don't browse the host's disk.
    */
   hostedDeckId?: string;
+  /** Show agent-specific onboarding for invite links created for an agent. */
+  agentMode?: boolean;
+  /** Optional evaluation-only folder that receives every submitted HTML draft. */
+  draftArchiveDir?: string;
   /**
    * Called when the host requests the session end (POST /api/end from
    * loopback in a hosted session). The owner tears the server down; the
@@ -91,6 +115,8 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
   const host = options.host ?? '0.0.0.0';
   const hostedDeckId = options.hostedDeckId;
   const rooms = new Map<string, Room>();
+  const htmlDrafts = new Map<string, HttpHtmlDraft>();
+  const htmlIdempotency = new Map<string, { revision: string; slideIds: string[]; label: string }>();
   /** Known once listen() succeeds; /api/config reports the invite URLs. */
   let boundPort: number | null = null;
 
@@ -164,6 +190,20 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
     const path = decodeURIComponent(url.pathname);
     const deckParam = url.searchParams.get('deck');
 
+    // Agent sessions are observation-only in the browser. All authoring,
+    // comments, assets, and apply operations go through the HTTP API. Keep the
+    // old manual workspace only as an explicit human debugging surface.
+    if ((path === '/' || path === '/index.html')
+      && url.searchParams.get('agent') === '1'
+      && url.searchParams.get('debug') !== '1') {
+      const viewer = new URL('/present.html', 'http://localhost');
+      for (const [key, value] of url.searchParams) viewer.searchParams.set(key, value);
+      if (!viewer.searchParams.has('slide')) viewer.searchParams.set('slide', '1');
+      response.writeHead(302, { location: `${viewer.pathname}${viewer.search}` });
+      response.end();
+      return;
+    }
+
     // Deck-scoped asset streaming: /decks/<id>/assets/<relpath>
     const assetMatch = /^\/decks\/([^/]+)\/(assets\/.+)$/.exec(path);
     if (assetMatch) {
@@ -213,6 +253,7 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
       respondJson(response, 200, {
         hosted: Boolean(hostedDeckId),
         deckId: hostedDeckId ?? null,
+        agentMode: Boolean(options.agentMode),
         urls: boundPort === null ? [] : reachableUrls(host, boundPort),
       });
       return;
@@ -267,6 +308,26 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
       const tmpFile = join(dir, sanitizeFilename(name));
       try {
         await writeFile(tmpFile, body);
+        const imported = await importAsset(deckDirOf(deckParam), tmpFile);
+        respondJson(response, 200, imported);
+      } catch (error) {
+        respondJson(response, 400, { error: String(error instanceof Error ? error.message : error) });
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+      return;
+    }
+
+    if (path === '/api/import-url' && request.method === 'POST') {
+      if (!deckParam) return respondJson(response, 400, { error: 'missing deck' });
+      const payload = JSON.parse((await readBody(request)).toString('utf8')) as { url?: string; name?: string };
+      if (!payload.url) return respondJson(response, 400, { error: 'missing url' });
+      const dir = await mkdtemp(join(tmpdir(), 'collab-url-import-'));
+      try {
+        const downloaded = await downloadPublicAsset(payload.url);
+        const requestedName = payload.name?.trim() || basename(downloaded.url.pathname) || 'download';
+        const tmpFile = join(dir, sanitizeFilename(requestedName));
+        await writeFile(tmpFile, downloaded.bytes);
         const imported = await importAsset(deckDirOf(deckParam), tmpFile);
         respondJson(response, 200, imported);
       } catch (error) {
@@ -354,6 +415,276 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
         }
       });
       respondJson(response, 200, { commentCount: rows.length, comments: rows });
+      return;
+    }
+
+    if (path === '/api/context' && request.method === 'GET') {
+      if (!deckParam) return respondJson(response, 400, { error: 'missing deck' });
+      const room = await getRoom(deckParam);
+      respondJson(response, 200, {
+        deckId: deckParam,
+        revision: deckRevision(room.session.deck),
+        canvas: room.session.deck.canvas,
+        outline: room.session.deck.slides.map((slide, index) => ({
+          index: index + 1,
+          id: slide.id,
+          title: slide.name,
+          hidden: Boolean(slide.skipped),
+          openComments: [...(slide.comments ?? []), ...slide.elements.flatMap((element) => element.comments ?? [])]
+            .filter((comment) => !comment.resolved).length,
+        })),
+      });
+      return;
+    }
+
+    if (path === '/api/comments' && request.method === 'POST') {
+      if (!deckParam) return respondJson(response, 400, { error: 'missing deck' });
+      const body = JSON.parse((await readBody(request)).toString('utf8')) as {
+        slideId?: string; elementId?: string; parentId?: string; author?: string; text?: string;
+      };
+      if (!body.text?.trim()) return respondJson(response, 400, { error: 'missing text' });
+      const room = await getRoom(deckParam);
+      const slide = body.slideId
+        ? room.session.deck.slides.find((candidate) => candidate.id === body.slideId)
+        : room.session.deck.slides.find((candidate) => candidate.elements.some((element) => element.id === body.elementId));
+      if (!slide) return respondJson(response, 404, { error: 'no such slide or element' });
+      const owner = body.elementId ? slide.elements.find((element) => element.id === body.elementId) : slide;
+      if (!owner) return respondJson(response, 404, { error: 'no such element' });
+      const comment = {
+        id: `comment-${randomUUID()}`,
+        author: body.author?.trim() || 'Agent',
+        text: body.text.trim(),
+        ts: new Date().toISOString(),
+        resolved: false,
+        ...(body.parentId ? { parentId: body.parentId } : {}),
+      };
+      const next = structuredClone(owner);
+      (next.comments ??= []).push(comment);
+      const operation: AgentOperation = 'elements' in owner
+        ? { op: 'replaceSlide', slideId: slide.id, slide: next as typeof slide }
+        : { op: 'replaceElement', slideId: slide.id, elementId: owner.id, element: next as typeof owner };
+      const applied = room.session.applyOps([operation]);
+      broadcast(room, { kind: 'deck', seq: applied.seq, deck: applied.deck, reason: 'external-edit' });
+      respondJson(response, 200, comment);
+      return;
+    }
+
+    if (path === '/api/comments/resolve' && request.method === 'POST') {
+      if (!deckParam) return respondJson(response, 400, { error: 'missing deck' });
+      const body = JSON.parse((await readBody(request)).toString('utf8')) as { commentId?: string; resolved?: boolean };
+      if (!body.commentId) return respondJson(response, 400, { error: 'missing commentId' });
+      const room = await getRoom(deckParam);
+      let operation: AgentOperation | null = null;
+      for (const slide of room.session.deck.slides) {
+        const slideComment = slide.comments?.find((comment) => comment.id === body.commentId);
+        if (slideComment) {
+          const next = structuredClone(slide);
+          next.comments!.find((comment) => comment.id === body.commentId)!.resolved = body.resolved ?? true;
+          operation = { op: 'replaceSlide', slideId: slide.id, slide: next };
+          break;
+        }
+        for (const element of slide.elements) {
+          if (!element.comments?.some((comment) => comment.id === body.commentId)) continue;
+          const next = structuredClone(element);
+          next.comments!.find((comment) => comment.id === body.commentId)!.resolved = body.resolved ?? true;
+          operation = { op: 'replaceElement', slideId: slide.id, elementId: element.id, element: next };
+          break;
+        }
+        if (operation) break;
+      }
+      if (!operation) return respondJson(response, 404, { error: 'no such comment' });
+      const applied = room.session.applyOps([operation]);
+      broadcast(room, { kind: 'deck', seq: applied.seq, deck: applied.deck, reason: 'external-edit' });
+      respondJson(response, 200, { ok: true, resolved: body.resolved ?? true });
+      return;
+    }
+
+    if (path === '/api/preview-html' && request.method === 'POST') {
+      if (!deckParam) return respondJson(response, 400, { error: 'missing deck' });
+      const raw = (await readBody(request)).toString('utf8');
+      const contentType = String(request.headers['content-type'] ?? '').toLowerCase();
+      let payload: { html?: string; target?: HttpHtmlDraft['target'] };
+      if (contentType.startsWith('text/html')) {
+        const mode = url.searchParams.get('mode');
+        const slideIds = (url.searchParams.get('slideIds') ?? '')
+          .split(',').map((id) => id.trim()).filter(Boolean);
+        if (mode === 'replace' && slideIds.length === 0) {
+          return respondJson(response, 400, { error: 'raw HTML replacement requires slideIds' });
+        }
+        payload = {
+          html: raw,
+          ...(mode === 'replace'
+            ? { target: { mode, slideIds } }
+            : mode === 'insert'
+              ? { target: { mode, afterSlideId: url.searchParams.get('afterSlideId') || null } }
+              : {}),
+        };
+      } else {
+        payload = JSON.parse(raw) as {
+          html?: string;
+          target?: HttpHtmlDraft['target'];
+        };
+      }
+      if (!payload.html?.trim()) return respondJson(response, 400, { error: 'missing html' });
+      const room = await getRoom(deckParam);
+      const sanitized = await sanitizeServerHtml(payload.html, room.session.dir);
+      const temp = await mkdtemp(join(tmpdir(), 'slide-http-preview-'));
+      const htmlPath = join(temp, 'slides.html');
+      try {
+        await writeFile(htmlPath, sanitized.html, 'utf8');
+        const compiled = await compileHtmlToSlides({ deckDir: room.session.dir, deck: room.session.deck, htmlPath });
+        if (compiled.slides.length === 0) return respondJson(response, 400, { error: 'no slides found' });
+        const all = compiled.slides.flatMap((slide) => slide.elements);
+        const fallback = all.filter((element) => element.type === 'html');
+        const native = all.length - fallback.length;
+        const overflows = await measureBuiltTextOverflows(room.session.dir, room.session.deck, compiled.slides);
+        const id = randomUUID();
+        const target = payload.target ?? {
+          mode: 'insert' as const,
+          afterSlideId: room.session.deck.slides.at(-1)?.id ?? null,
+        };
+        const report = {
+          nativeObjectRatio: all.length === 0 ? 1 : native / all.length,
+          nativeObjects: native,
+          fallbackObjects: fallback.length,
+          fallbackReasons: [...new Set(fallback.map((element) => element.fallbackReason ?? 'Unsupported HTML region'))],
+          warnings: compiled.warnings,
+          missingAssets: sanitized.blocked,
+          blockedResources: sanitized.blocked,
+          extractedAssets: sanitized.assets,
+          overflows,
+          pixelDifference: null,
+          tolerance: 0.002,
+        };
+        if (options.draftArchiveDir) {
+          await mkdir(options.draftArchiveDir, { recursive: true });
+          const stamp = `${Date.now()}-${id}`;
+          await writeFile(join(options.draftArchiveDir, `${stamp}.html`), payload.html, 'utf8');
+          await writeFile(join(options.draftArchiveDir, `${stamp}.json`), JSON.stringify({
+            draftId: id,
+            deckId: deckParam,
+            revision: deckRevision(room.session.deck),
+            target,
+            report,
+          }, null, 2), 'utf8');
+        }
+        const sourceHtml = authoringPageHtml({
+          authored: sanitized.html,
+          typeCss: PLAYER_TYPE_CSS,
+          theme: await loadTheme(room.session.dir, room.session.deck.theme),
+          themeHref: room.session.deck.theme,
+          canvas: room.session.deck.canvas,
+          base: `/decks/${encodeURIComponent(deckParam)}/`,
+        });
+        const draft: HttpHtmlDraft = {
+          id, deckId: deckParam, revision: deckRevision(room.session.deck), slides: compiled.slides,
+          target, sourceHtml,
+          importedHtml: slidesToHtml(compiled.slides, room.session.deck.canvas, {
+            typeCss: PLAYER_TYPE_CSS,
+            base: `/decks/${encodeURIComponent(deckParam)}/`,
+            theme: `/api/theme?deck=${encodeURIComponent(deckParam)}`,
+          }),
+          report, createdAt: Date.now(),
+        };
+        htmlDrafts.set(id, draft);
+        respondJson(response, 200, {
+          draftId: id,
+          revision: draft.revision,
+          sourceUrl: `/api/html-drafts/${id}/source`,
+          importedUrl: `/api/html-drafts/${id}/imported`,
+          diffUrl: null,
+          report,
+          target,
+        });
+      } finally {
+        await rm(temp, { recursive: true, force: true });
+      }
+      return;
+    }
+
+    const draftView = /^\/api\/html-drafts\/([^/]+)\/(source|imported)$/.exec(path);
+    if (draftView && request.method === 'GET') {
+      const draft = htmlDrafts.get(draftView[1]);
+      if (!draft || draft.deckId !== deckParam) return respondJson(response, 404, { error: 'draft not found' });
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+      response.end(draftView[2] === 'source' ? draft.sourceHtml : draft.importedHtml);
+      return;
+    }
+
+    if (path === '/api/apply-html' && request.method === 'POST') {
+      if (!deckParam) return respondJson(response, 400, { error: 'missing deck' });
+      const payload = JSON.parse((await readBody(request)).toString('utf8')) as {
+        draftId?: string; expectedRevision?: string; idempotencyKey?: string; label?: string; target?: HttpHtmlDraft['target'];
+      };
+      if (!payload.idempotencyKey) return respondJson(response, 400, { error: 'missing idempotencyKey' });
+      const prior = htmlIdempotency.get(payload.idempotencyKey);
+      if (prior) return respondJson(response, 200, { ...prior, idempotent: true });
+      const draft = payload.draftId ? htmlDrafts.get(payload.draftId) : null;
+      if (!draft || draft.deckId !== deckParam) return respondJson(response, 404, { error: 'draft not found' });
+      const blockingDiagnostics = ['overflows', 'missingAssets', 'blockedResources']
+        .filter((key) => Array.isArray(draft.report[key]) && (draft.report[key] as unknown[]).length > 0);
+      if (blockingDiagnostics.length > 0) {
+        return respondJson(response, 422, {
+          error: 'draft has blocking import diagnostics; preview and revise before applying',
+          blockingDiagnostics,
+          report: draft.report,
+        });
+      }
+      const room = await getRoom(deckParam);
+      const current = deckRevision(room.session.deck);
+      const expected = payload.expectedRevision ?? draft.revision;
+      if (current !== expected || draft.revision !== expected) {
+        return respondJson(response, 409, { error: 'revision conflict', expected, current });
+      }
+      const target = payload.target ?? draft.target;
+      const operations: AgentOperation[] = [];
+      const appliedIds: string[] = [];
+      if (target.mode === 'insert') {
+        operations.push({ op: 'insertSlides', afterSlideId: target.afterSlideId ?? null, slides: draft.slides });
+        appliedIds.push(...draft.slides.map((slide) => slide.id));
+      } else {
+        const ids = target.slideIds ?? [];
+        if (ids.length !== draft.slides.length) return respondJson(response, 400, { error: 'replace target count does not match draft' });
+        for (let index = 0; index < ids.length; index += 1) {
+          const previous = room.session.deck.slides.find((slide) => slide.id === ids[index]);
+          if (!previous) return respondJson(response, 404, { error: `no slide ${ids[index]}` });
+          const visual = structuredClone(draft.slides[index]);
+          visual.id = previous.id; visual.comments = previous.comments; visual.notes = previous.notes; visual.skipped = previous.skipped;
+          operations.push({ op: 'replaceSlide', slideId: previous.id, slide: visual });
+          appliedIds.push(previous.id);
+        }
+      }
+      const label = payload.label?.trim().slice(0, 200) || 'Agent: apply HTML slides';
+      const applied = room.session.applyOps(operations);
+      // This is a collaboration transaction, not an anonymous external deck
+      // replacement. Broadcasting the actual operations and label lets every
+      // editor record a distinct, restorable History revision.
+      broadcast(room, {
+        kind: 'txn',
+        seq: applied.seq,
+        txnId: `agent-http-${randomUUID()}`,
+        byClientId: 'agent-http',
+        label,
+        ops: operations,
+      });
+      const result = { revision: deckRevision(applied.deck), slideIds: appliedIds, label };
+      htmlIdempotency.set(payload.idempotencyKey, result);
+      respondJson(response, 200, { ...result, idempotent: false });
+      return;
+    }
+
+    if (path === '/api/render-slide' && request.method === 'GET') {
+      if (!deckParam) return respondJson(response, 400, { error: 'missing deck' });
+      const slideId = url.searchParams.get('slideId');
+      if (!slideId) return respondJson(response, 400, { error: 'missing slideId' });
+      const room = await getRoom(deckParam);
+      const index = room.session.deck.slides.findIndex((slide) => slide.id === slideId);
+      if (index < 0) return respondJson(response, 404, { error: `no slide ${slideId}` });
+      respondJson(response, 200, {
+        slideId,
+        slide: index + 1,
+        url: `/present.html?deck=${encodeURIComponent(deckParam)}&slide=${index + 1}&agent=1`,
+      });
       return;
     }
 
@@ -572,6 +903,107 @@ function sanitizeFilename(name: string): string {
   return base || 'upload';
 }
 
+async function downloadPublicAsset(raw: string): Promise<{ bytes: Buffer; url: URL }> {
+  let current = new URL(raw);
+  for (let redirects = 0; redirects <= 5; redirects += 1) {
+    await assertPublicHttpUrl(current);
+    const response = await fetch(current, { redirect: 'manual', signal: AbortSignal.timeout(30_000) });
+    if (response.status >= 300 && response.status < 400) {
+      const location = response.headers.get('location');
+      if (!location) throw new Error('asset redirect has no location');
+      current = new URL(location, current);
+      continue;
+    }
+    if (!response.ok) throw new Error(`asset download failed (${response.status})`);
+    const length = Number(response.headers.get('content-length') ?? 0);
+    if (length > 100 * 1024 * 1024) throw new Error('asset is larger than 100 MB');
+    const bytes = Buffer.from(await response.arrayBuffer());
+    if (bytes.byteLength > 100 * 1024 * 1024) throw new Error('asset is larger than 100 MB');
+    return { bytes, url: current };
+  }
+  throw new Error('asset has too many redirects');
+}
+
+async function assertPublicHttpUrl(url: URL): Promise<void> {
+  if (!['http:', 'https:'].includes(url.protocol)) throw new Error('asset URL must use HTTP or HTTPS');
+  if (url.username || url.password) throw new Error('asset URL must not contain credentials');
+  const host = url.hostname.toLowerCase();
+  if (host === 'localhost' || host.endsWith('.local')) throw new Error('asset URL must be public');
+  const addresses = isIP(host) ? [{ address: host }] : await lookup(host, { all: true, verbatim: true });
+  if (addresses.length === 0 || addresses.some(({ address }) => isPrivateAddress(address))) {
+    throw new Error('asset URL must be public');
+  }
+}
+
+function isPrivateAddress(address: string): boolean {
+  const value = address.toLowerCase();
+  if (value === '::1' || value === '::' || value.startsWith('fe80:') || value.startsWith('fc') || value.startsWith('fd')) return true;
+  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/u.exec(value)?.[1];
+  const ipv4 = mapped ?? (isIP(value) === 4 ? value : '');
+  if (!ipv4) return false;
+  const [a, b] = ipv4.split('.').map(Number);
+  return a === 0 || a === 10 || a === 127 || a >= 224
+    || (a === 100 && b >= 64 && b <= 127)
+    || (a === 169 && b === 254)
+    || (a === 172 && b >= 16 && b <= 31)
+    || (a === 192 && b === 168)
+    || (a === 198 && (b === 18 || b === 19));
+}
+
+/** Conservative Node-side sanitizer for the HTTP HTML import path. */
+async function sanitizeServerHtml(
+  source: string,
+  deckDir: string,
+): Promise<{ html: string; blocked: string[]; assets: string[] }> {
+  const blocked: string[] = [];
+  const assets: string[] = [];
+  let html = source
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>/gi, '')
+    .replace(/<(?:iframe|object|embed)\b[^>]*>[\s\S]*?<\/(?:iframe|object|embed)\s*>/gi, '')
+    .replace(/\s+on[a-z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '')
+    .replace(/\s+(?:src|href|poster)\s*=\s*(["'])javascript:[\s\S]*?\1/gi, '');
+
+  html = html.replace(/(src|poster|href)\s*=\s*(["'])(https?:[^"']+)\2/gi, (match, attr: string, _quote: string, url: string) => {
+    if (attr.toLowerCase() === 'href' && /^<a\b/i.test(match)) return match;
+    blocked.push(url);
+    return '';
+  });
+  html = html.replace(/@import\s+(?:url\()?\s*['"]?https?:[^;]+;/gi, (match) => {
+    blocked.push(match);
+    return '/* external import removed */';
+  });
+
+  const dataUrls = [...new Set(html.match(/data:[^'"\s)>]+/g) ?? [])];
+  for (let index = 0; index < dataUrls.length; index += 1) {
+    const url = dataUrls[index];
+    const parsed = /^data:([^;,]+)?(;base64)?,(.*)$/s.exec(url);
+    if (!parsed) continue;
+    const mime = parsed[1] ?? 'application/octet-stream';
+    const bytes = parsed[2] ? Buffer.from(parsed[3], 'base64') : Buffer.from(decodeURIComponent(parsed[3]));
+    const temp = await mkdtemp(join(tmpdir(), 'slide-data-url-'));
+    try {
+      const file = join(temp, `inline-${index + 1}.${extensionForMime(mime)}`);
+      await writeFile(file, bytes);
+      const imported = await importAsset(deckDir, file);
+      html = html.replaceAll(url, imported.src);
+      assets.push(imported.src);
+    } finally {
+      await rm(temp, { recursive: true, force: true });
+    }
+  }
+  return { html, blocked, assets };
+}
+
+function extensionForMime(mime: string): string {
+  if (mime.includes('svg')) return 'svg';
+  if (mime.includes('jpeg')) return 'jpg';
+  if (mime.includes('webp')) return 'webp';
+  if (mime.includes('gif')) return 'gif';
+  if (mime.includes('mp4')) return 'mp4';
+  if (mime.includes('webm')) return 'webm';
+  return 'png';
+}
+
 /** A new deck's folder name: human-typed, so normalise instead of rejecting. */
 function sanitizeDeckId(name: string): string {
   return basename(name)
@@ -588,13 +1020,19 @@ function sanitizeDeckId(name: string): string {
  */
 async function runKeynoteImport(keyFile: string, outDir: string): Promise<unknown> {
   const repoRoot = resolve(import.meta.dirname, '../..');
-  const binary = join(repoRoot, 'build/importers', process.platform === 'win32' ? 'keynote-import.exe' : 'keynote-import');
+  const binaryName = process.platform === 'win32' ? 'keynote-import.exe' : 'keynote-import';
+  const resourcesPath = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath;
+  const binaries = [
+    ...(resourcesPath ? [join(resourcesPath, 'importers', binaryName)] : []),
+    join(repoRoot, 'build/importers', binaryName),
+  ];
+  const binary = binaries.find((candidate) => existsSync(candidate));
   const script = join(repoRoot, 'importers/keynote/import_keynote.py');
   const venv = join(repoRoot, '.venv-import/bin/python');
 
   let command: string;
   let args: string[];
-  if (existsSync(binary)) {
+  if (binary) {
     command = binary;
     args = [keyFile, '--out', outDir];
   } else if (existsSync(script)) {

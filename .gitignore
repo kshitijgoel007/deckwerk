@@ -2,6 +2,7 @@ node_modules/
 out/
 build/
 dist/
+artifacts/
 .venv-import/
 .DS_Store
 __pycache__/

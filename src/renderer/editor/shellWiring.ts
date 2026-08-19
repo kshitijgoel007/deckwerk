@@ -124,6 +124,16 @@ export function duplicateSelection(store: EditorStore): void {
   store.select(created);
 }
 
+/** Let Chromium copy selected chrome text instead of copying deck objects. */
+export function hasNativeCopySelection(selection = window.getSelection()): boolean {
+  if (!selection || selection.isCollapsed || selection.rangeCount === 0) return false;
+  const common = selection.getRangeAt(0).commonAncestorContainer;
+  const element = common.nodeType === Node.ELEMENT_NODE
+    ? common as Element
+    : common.parentElement;
+  return element?.closest('[data-native-copy]') !== null;
+}
+
 export function bindEditorKeys(deps: ShellDeps, clipboard: ClipboardActions): void {
   const { store, canvas, rail, save } = deps;
   window.addEventListener('keydown', (e) => {
@@ -156,6 +166,7 @@ export function bindEditorKeys(deps: ShellDeps, clipboard: ClipboardActions): vo
       return;
     }
     if (mod && e.key.toLowerCase() === 'c') {
+      if (hasNativeCopySelection()) return;
       e.preventDefault();
       void clipboard.copyToClipboard('Copied');
       return;

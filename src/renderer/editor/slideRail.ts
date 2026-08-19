@@ -13,6 +13,12 @@ import type { EditorStore } from './store.js';
 /** Rendered width of a slide thumbnail, in CSS pixels. */
 const THUMB_WIDTH = 168;
 
+export interface RailPresence {
+  name: string;
+  color: string;
+  selectedElementIds: string[];
+}
+
 export class SlideRail {
   private host: HTMLElement;
   private store: EditorStore;
@@ -39,7 +45,7 @@ export class SlideRail {
    * Collaboration presence: who is on which slide, drawn as colored dots on
    * the rail rows. Unset outside collab sessions.
    */
-  presenceForSlide?: (slideId: string) => Array<{ name: string; color: string }>;
+  presenceForSlide?: (slideId: string) => RailPresence[];
 
   constructor(host: HTMLElement, store: EditorStore) {
     this.host = host;
@@ -234,7 +240,7 @@ export class SlideRail {
     return thumb;
   }
 
-  /** Re-decorate presence dots in place, without invalidating thumbnails. */
+  /** Re-decorate presence in place, without invalidating thumbnails. */
   refreshPresence(): void {
     for (const dots of this.host.querySelectorAll<HTMLElement>('.rail-presence')) {
       const slideId = dots.dataset.slideId;
@@ -255,6 +261,46 @@ export class SlideRail {
       dot.title = names;
       return dot;
     }));
+
+    const item = container.closest<HTMLElement>('.rail-item');
+    const thumb = item?.querySelector<HTMLElement>('.rail-thumb');
+    const { deck } = this.store.get();
+    const index = Number(item?.dataset.index);
+    const indexedSlide = Number.isInteger(index) ? deck.slides[index] : undefined;
+    const slide = indexedSlide?.id === slideId ? indexedSlide : undefined;
+    if (!thumb || !slide) return;
+
+    let selections = thumb.querySelector<HTMLElement>('.rail-presence-selections');
+    if (!selections) {
+      selections = document.createElement('span');
+      selections.className = 'rail-presence-selections';
+      thumb.appendChild(selections);
+    }
+
+    const scale = THUMB_WIDTH / deck.canvas.w;
+    const byId = new Map(slide.elements.map((element) => [element.id, element]));
+    const boxes: HTMLElement[] = [];
+    for (const [peerIndex, peer] of peers.entries()) {
+      for (const id of peer.selectedElementIds) {
+        const element = byId.get(id);
+        if (!element) continue;
+        const box = document.createElement('span');
+        box.className = 'rail-presence-selection';
+        box.title = peer.name;
+        box.style.cssText = [
+          `left:${element.x * scale}px`,
+          `top:${element.y * scale}px`,
+          `width:${element.w * scale}px`,
+          `height:${element.h * scale}px`,
+          `transform:rotate(${element.rot}deg)`,
+          `outline:2px solid ${peer.color}`,
+          `outline-offset:${peerIndex * 2}px`,
+          `background:color-mix(in srgb, ${peer.color} 14%, transparent)`,
+        ].join(';');
+        boxes.push(box);
+      }
+    }
+    selections.replaceChildren(...boxes);
   }
 
   /** One slide row: number, cached thumbnail, hidden badge, handlers. */

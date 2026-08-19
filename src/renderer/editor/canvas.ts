@@ -1772,8 +1772,57 @@ export function elementContainsPoint(
     x = cx + dx * Math.cos(rad) - dy * Math.sin(rad);
     y = cy + dx * Math.sin(rad) + dy * Math.cos(rad);
   }
+
+  if (el.type === 'shape' && (el.shape === 'rect' || el.shape === 'ellipse')) {
+    const fillVisible = visiblePaint(el.fill);
+    const strokeVisible = visiblePaint(el.stroke) && el.strokeWidth > 0;
+    if (!fillVisible && !strokeVisible) return false;
+
+    if (el.shape === 'rect') {
+      const inside = x >= el.x && x <= el.x + el.w &&
+        y >= el.y && y <= el.y + el.h;
+      if (!inside || fillVisible) return inside;
+
+      // A hollow rectangle is paint only at its perimeter. Treating its whole
+      // bounding box as solid made a subtle full-slide border intercept every
+      // click on the objects beneath it.
+      const distanceToEdge = Math.min(
+        x - el.x,
+        el.x + el.w - x,
+        y - el.y,
+        el.y + el.h - y,
+      );
+      return distanceToEdge <= Math.max(tolerance, el.strokeWidth / 2);
+    }
+
+    const rx = el.w / 2;
+    const ry = el.h / 2;
+    const dx = x - (el.x + rx);
+    const dy = y - (el.y + ry);
+    const implicit = (dx * dx) / (rx * rx) + (dy * dy) / (ry * ry);
+    if (fillVisible) return implicit <= 1;
+    if (!strokeVisible) return false;
+
+    // First-order distance to the ellipse boundary. This keeps the forgiving
+    // screen-space stroke tolerance without turning an unfilled ellipse into
+    // a solid rectangular target.
+    const gradient = Math.hypot((2 * dx) / (rx * rx), (2 * dy) / (ry * ry));
+    const distanceToEdge = gradient > 0
+      ? Math.abs(implicit - 1) / gradient
+      : Number.POSITIVE_INFINITY;
+    return distanceToEdge <= Math.max(tolerance, el.strokeWidth / 2);
+  }
   return x >= el.x && x <= el.x + el.w &&
     y >= el.y && y <= el.y + el.h;
+}
+
+/** Whether a CSS paint value produces visible pixels. */
+function visiblePaint(value: string | null): boolean {
+  if (!value) return false;
+  const paint = value.trim().toLowerCase();
+  if (!paint || paint === 'none' || paint === 'transparent') return false;
+  const alpha = paint.match(/^rgba?\([^)]*[,/]\s*([\d.]+)%?\s*\)$/)?.[1];
+  return alpha === undefined || Number(alpha) > 0;
 }
 
 function distanceToSegment(

@@ -413,7 +413,7 @@ export function capabilities(): Capability[] {
       notes: [
         'comments: [{id, author, text, ts, resolved}] lives on a slide and on any element.',
         'CLI: `slide-agent comments <deck>` lists every comment with its 1-based slide number; --resolve <id> marks one done; --add <text> --slide/--element <id> replies.',
-        'In a live collaboration session: window.agent.seeComments() and window.agent.resolveComment(id); GET /api/comments serves the same rows.',
+        'In a live collaboration session: await window.agent.seeComments() and await window.agent.resolveComment(id); GET /api/comments serves the same rows.',
         'Resolve what you acted on. Never delete a human’s comment.',
       ],
       elements: [
@@ -442,6 +442,7 @@ export function capabilities(): Capability[] {
         'The markup renders as-is inside the element box. Nothing measures it, so overflow is yours to catch — render or screenshot the slide.',
         'It is one opaque object to the editor: a human cannot select or restyle its parts with the inspector, and auto-fit does not apply.',
         'theme.css applies to it like any other element, so use the deck’s own classes inside the markup.',
+        'Hybrid imports can set sandboxed, css, and fallbackReason. These fields isolate captured author styles and explain why the region stayed HTML.',
       ],
       elements: [
         text('cap-html-title', 'Raw markup, when nothing else fits', TITLE, { class: ['role-title'] }),

@@ -7,7 +7,11 @@
   </head>
   <body>
     <main>
-      <header><div id="timer">00:00</div><div id="position">Slide 1</div></header>
+      <header>
+        <div class="presenter-clock"><span>Elapsed</span><strong id="timer">00:00</strong></div>
+        <div id="position">Slide 1</div>
+        <div class="presenter-clock wall-clock"><span>Local time</span><strong id="wall-clock">--:--</strong></div>
+      </header>
       <section class="previews">
         <div><h2>Current</h2><div id="current" class="preview"></div></div>
         <div><h2>Next</h2><div id="next" class="preview"></div></div>

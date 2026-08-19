@@ -64,6 +64,10 @@ async function copyAssets(
     for (const el of slide.elements) {
       if (el.type === 'image' || el.type === 'video') wanted.add(el.src);
       if (el.type === 'video' && el.poster) wanted.add(el.poster);
+      if (el.type === 'html') {
+        collectFallbackAssets(el.html, wanted);
+        collectFallbackAssets(el.css ?? '', wanted);
+      }
     }
   }
   if (wanted.size === 0) return;
@@ -77,6 +81,17 @@ async function copyAssets(
     const name = rel.split('/').pop();
     if (!name || !available.has(name)) continue;
     await copyFile(join(srcAssets, name), join(destAssets, name));
+  }
+}
+
+/** Assets referenced only by an isolated HTML region still belong in exports. */
+function collectFallbackAssets(source: string, wanted: Set<string>): void {
+  const patterns = [
+    /\b(?:src|poster)\s*=\s*["'](assets\/[^"'#?]+)(?:[?#][^"']*)?["']/gi,
+    /url\(\s*["']?(assets\/[^"')#?]+)(?:[?#][^"')]*)?["']?\s*\)/gi,
+  ];
+  for (const pattern of patterns) {
+    for (const match of source.matchAll(pattern)) wanted.add(match[1]);
   }
 }
 

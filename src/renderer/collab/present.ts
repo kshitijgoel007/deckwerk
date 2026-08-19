@@ -19,6 +19,7 @@ if (!deckId) {
   throw new Error('missing deck');
 }
 const startSlide = Math.max(0, Number(params.get('slide') ?? '1') - 1);
+const agentViewer = params.get('agent') === '1';
 
 const themeTag = document.createElement('style');
 document.head.appendChild(themeTag);
@@ -30,7 +31,7 @@ const name = localStorage.getItem('collab-name');
 const bridge = new CollabBridge(wsUrl, name ? `${name} (presenting)` : 'Presenting', {
   onWelcome: (welcome) => {
     themeTag.textContent = welcome.themeCss;
-    document.title = `Presenting — ${welcome.deck.title}`;
+    document.title = `${agentViewer ? 'Agent viewer' : 'Presenting'} — ${welcome.deck.title}`;
     if (!player) {
       player = new Player({
         deck: welcome.deck,
@@ -39,13 +40,15 @@ const bridge = new CollabBridge(wsUrl, name ? `${name} (presenting)` : 'Presenti
           `/decks/${encodeURIComponent(deckId)}/${src.replace(/^\/+/, '').split('/').map(encodeURIComponent).join('/')}`,
       });
       player.goToSlide(startSlide);
-      bindPresentKeys(window, player, { onExit: () => window.close() });
-      // A click advances, like a presenter remote; double-click toggles fullscreen.
-      window.addEventListener('click', () => player?.next());
-      window.addEventListener('dblclick', () => {
-        if (document.fullscreenElement) void document.exitFullscreen();
-        else void document.documentElement.requestFullscreen();
-      });
+      if (!agentViewer) {
+        bindPresentKeys(window, player, { onExit: () => window.close() });
+        // A click advances, like a presenter remote; double-click toggles fullscreen.
+        window.addEventListener('click', () => player?.next());
+        window.addEventListener('dblclick', () => {
+          if (document.fullscreenElement) void document.exitFullscreen();
+          else void document.documentElement.requestFullscreen();
+        });
+      }
     } else {
       player.setDeck(welcome.deck);
     }

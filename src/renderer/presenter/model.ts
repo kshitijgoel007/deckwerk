@@ -5,6 +5,10 @@ export function formatElapsed(now: number, startedAt: number): string {
   return `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
 }
 
+export function formatWallClock(date: Date, locale?: string): string {
+  return date.toLocaleTimeString(locale, { hour: 'numeric', minute: '2-digit' });
+}
+
 export function presentationLabel(state: PresentationState, slideCount: number): string {
   return `Slide ${state.cursor.slide + 1} / ${slideCount} · Build ${state.cursor.step + 1} / ${state.steps}`;
 }

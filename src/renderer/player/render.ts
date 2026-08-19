@@ -291,6 +291,7 @@ function renderBody(el: SlideElement, opts: RenderOptions): HTMLElement | SVGEle
       img.style.width = '100%';
       img.style.height = '100%';
       img.style.objectFit = el.fit;
+      if (el.style['object-position']) img.style.objectPosition = el.style['object-position'];
       return img;
     }
 
@@ -304,7 +305,24 @@ function renderBody(el: SlideElement, opts: RenderOptions): HTMLElement | SVGEle
       const div = document.createElement('div');
       div.style.width = '100%';
       div.style.height = '100%';
-      div.innerHTML = el.html;
+      if (el.sandboxed) {
+        const root = div.attachShadow({ mode: 'open' });
+        const style = document.createElement('style');
+        style.textContent = `:host { display:block; width:100%; height:100%; overflow:hidden; }\n${rewriteCssAssetUrls(el.css ?? '', opts.resolveSrc)}\n[data-slide-editor-fallback-root] { position:relative !important; left:0 !important; top:0 !important; width:100% !important; height:100% !important; margin:0 !important; transform:none !important; }`;
+        const body = document.createElement('div');
+        body.style.width = '100%';
+        body.style.height = '100%';
+        body.innerHTML = el.html;
+        for (const media of body.querySelectorAll<HTMLElement>('[src], [poster]')) {
+          for (const attribute of ['src', 'poster']) {
+            const value = media.getAttribute(attribute);
+            if (value && !/^(?:[a-z]+:|\/)/i.test(value)) media.setAttribute(attribute, opts.resolveSrc(value));
+          }
+        }
+        root.append(style, body);
+      } else {
+        div.innerHTML = el.html;
+      }
       return div;
     }
 
@@ -317,6 +335,13 @@ function renderBody(el: SlideElement, opts: RenderOptions): HTMLElement | SVGEle
       return div;
     }
   }
+}
+
+function rewriteCssAssetUrls(css: string, resolveSrc: (src: string) => string): string {
+  return css.replace(/url\(\s*(["']?)([^"')]+)\1\s*\)/gi, (match, _quote: string, src: string) => {
+    if (/^(?:data:|blob:|https?:|\/)/i.test(src)) return match;
+    return `url("${resolveSrc(src)}")`;
+  });
 }
 
 /**
@@ -404,6 +429,7 @@ function renderVideo(
   video.style.width = '100%';
   video.style.height = '100%';
   video.style.objectFit = el.fit;
+  if (el.style['object-position']) video.style.objectPosition = el.style['object-position'];
   return video;
 }
 

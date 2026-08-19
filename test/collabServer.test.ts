@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -108,6 +109,16 @@ describe('collab server', () => {
     const decks = await (await fetch(`http://127.0.0.1:${server.port}/api/decks`)).json() as
       Array<{ id: string; title: string; slides: number }>;
     expect(decks).toEqual([{ id: DECK_ID, title: 'Collab', slides: 2 }]);
+  });
+
+  it('redirects normal agent sessions to the read-only real-player viewer', async () => {
+    const base = `http://127.0.0.1:${server.port}`;
+    const response = await fetch(`${base}/?deck=${DECK_ID}&agent=1&name=Test`, { redirect: 'manual' });
+    expect(response.status).toBe(302);
+    expect(response.headers.get('location')).toBe(`/present.html?deck=${DECK_ID}&agent=1&name=Test&slide=1`);
+
+    const debug = await fetch(`${base}/?deck=${DECK_ID}&agent=1&debug=1`, { redirect: 'manual' });
+    expect(debug.status).not.toBe(302);
   });
 
   it('creates new decks inside the root and refuses duplicates', async () => {
@@ -282,6 +293,212 @@ describe('collab server', () => {
     expect(served.status).toBe(200);
     expect(Buffer.from(await served.arrayBuffer())).toEqual(png);
   });
+
+  it('rejects private-network URLs in the public asset importer', async () => {
+    const response = await fetch(
+      `http://127.0.0.1:${server.port}/api/import-url?deck=${DECK_ID}`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ url: `http://127.0.0.1:${server.port}/deck.json`, name: 'private.png' }),
+      },
+    );
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ error: expect.stringMatching(/must be public/) });
+  });
+
+  it.skipIf(!existsSync(join(process.cwd(), 'example_presentations', 'team_slide.key')))(
+    'imports, lists, and opens a real Keynote deck through HTTP',
+    async () => {
+      const key = await readFile(join(process.cwd(), 'example_presentations', 'team_slide.key'));
+      const imported = await fetch(
+        `http://127.0.0.1:${server.port}/api/import-keynote?name=Imported%20Team`,
+        { method: 'POST', body: key },
+      );
+      expect(imported.status).toBe(200);
+      expect(await imported.json()).toMatchObject({ id: 'Imported Team' });
+
+      const decks = await (await fetch(`http://127.0.0.1:${server.port}/api/decks`)).json() as
+        Array<{ id: string; slides: number }>;
+      expect(decks).toContainEqual(expect.objectContaining({ id: 'Imported Team', slides: expect.any(Number) }));
+      expect(decks.find((deck) => deck.id === 'Imported Team')!.slides).toBeGreaterThan(0);
+
+      const opened = await fetch(
+        `http://127.0.0.1:${server.port}/api/deck?deck=Imported%20Team`,
+      );
+      expect(opened.status).toBe(200);
+      const deck = await opened.json() as Deck;
+      expect(deck.slides.length).toBeGreaterThan(0);
+    },
+    30_000,
+  );
+
+  it('previews and applies HTML once while preserving slide comments', async () => {
+    const base = `http://127.0.0.1:${server.port}`;
+    const added = await fetch(`${base}/api/comments?deck=${DECK_ID}`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ slideId: 's1', author: 'Benchmark', text: 'Replace this slide.' }),
+    });
+    expect(added.status).toBe(200);
+    const comment = await added.json() as { id: string };
+    const context = await (await fetch(`${base}/api/context?deck=${DECK_ID}`)).json() as { revision: string };
+    const preview = await fetch(`${base}/api/preview-html?deck=${DECK_ID}`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        html: '<!doctype html><section class="slide" style="width:1920px;height:1080px;background:#123"><h1>Replaced</h1></section>',
+        target: { mode: 'replace', slideIds: ['s1'] },
+      }),
+    });
+    expect(preview.status).toBe(200);
+    const draft = await preview.json() as { draftId: string; revision: string; report: { nativeObjectRatio: number } };
+    expect(draft.revision).toBe(context.revision);
+    expect(draft.report.nativeObjectRatio).toBeGreaterThan(0);
+
+    const request = {
+      draftId: draft.draftId, expectedRevision: draft.revision,
+      idempotencyKey: 'replace-s1-once', label: 'Agent: replace first slide',
+    };
+    const observer = await connect('Observer');
+    const applied = await fetch(`${base}/api/apply-html?deck=${DECK_ID}`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(request),
+    });
+    expect(applied.status).toBe(200);
+    expect(await applied.json()).toMatchObject({
+      idempotent: false,
+      slideIds: ['s1'],
+      label: 'Agent: replace first slide',
+    });
+    const historyTxn = await observer.client.nextOfKind('txn');
+    expect(historyTxn).toMatchObject({
+      byClientId: 'agent-http',
+      label: 'Agent: replace first slide',
+      ops: [expect.objectContaining({ op: 'replaceSlide', slideId: 's1' })],
+    });
+    const replay = await fetch(`${base}/api/apply-html?deck=${DECK_ID}`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(request),
+    });
+    expect(await replay.json()).toMatchObject({
+      idempotent: true,
+      slideIds: ['s1'],
+      label: 'Agent: replace first slide',
+    });
+
+    const deck = await (await fetch(`${base}/api/deck?deck=${DECK_ID}`)).json() as Deck;
+    expect(deck.slides).toHaveLength(2);
+    expect(deck.slides[0].id).toBe('s1');
+    expect(deck.slides[0].comments?.some((row) => row.id === comment.id)).toBe(true);
+    const rendered = await fetch(`${base}/api/render-slide?deck=${DECK_ID}&slideId=s1`);
+    expect(rendered.status).toBe(200);
+    expect(await rendered.json()).toMatchObject({
+      slideId: 's1', slide: 1, url: `/present.html?deck=${DECK_ID}&slide=1&agent=1`,
+    });
+    const resolved = await fetch(`${base}/api/comments/resolve?deck=${DECK_ID}`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ commentId: comment.id, resolved: true }),
+    });
+    expect(resolved.status).toBe(200);
+  }, 20_000);
+
+  it('accepts a raw HTML preview body so command-line agents do not escape large JSON', async () => {
+    const base = `http://127.0.0.1:${server.port}`;
+    const preview = await fetch(
+      `${base}/api/preview-html?deck=${DECK_ID}&mode=replace&slideIds=s1`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'text/html; charset=utf-8' },
+        body: '<!doctype html><section class="slide"><h1>Raw HTML</h1></section>',
+      },
+    );
+    expect(preview.status).toBe(200);
+    expect(await preview.json()).toMatchObject({
+      draftId: expect.any(String),
+      target: { mode: 'replace', slideIds: ['s1'] },
+    });
+  }, 20_000);
+
+  it('serves source previews with a deck-relative base and the real theme', async () => {
+    await mkdir(join(deckDir, 'assets'), { recursive: true });
+    const pixel = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+      'base64',
+    );
+    await writeFile(join(deckDir, 'assets', 'pixel.png'), pixel);
+    await writeFile(join(deckDir, 'theme.css'), '.from-deck-theme { color: rgb(1, 2, 3); }', 'utf8');
+
+    const base = `http://127.0.0.1:${server.port}`;
+    const preview = await fetch(`${base}/api/preview-html?deck=${DECK_ID}`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        html: '<!doctype html><html><head><link rel="stylesheet" href="theme.css"></head><body><section class="slide"><img src="assets/pixel.png"><p class="from-deck-theme">Themed</p></section></body></html>',
+        target: { mode: 'replace', slideIds: ['s1'] },
+      }),
+    });
+    expect(preview.status).toBe(200);
+    const draft = await preview.json() as { sourceUrl: string };
+    const source = await (await fetch(`${base}${draft.sourceUrl}?deck=${DECK_ID}`)).text();
+    expect(source).toContain(`<base href="/decks/${DECK_ID}/">`);
+    expect(source).toContain('.from-deck-theme { color: rgb(1, 2, 3); }');
+    expect(source).toContain('src="assets/pixel.png"');
+
+    const asset = await fetch(`${base}/decks/${DECK_ID}/assets/pixel.png`);
+    expect(asset.status).toBe(200);
+    expect(Buffer.from(await asset.arrayBuffer())).toEqual(pixel);
+  }, 20_000);
+
+  it('refuses to apply a draft with blocked resources', async () => {
+    const base = `http://127.0.0.1:${server.port}`;
+    const preview = await fetch(`${base}/api/preview-html?deck=${DECK_ID}`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        html: '<section class="slide"><img src="https://example.com/live.png"><h1>Unsafe draft</h1></section>',
+        target: { mode: 'replace', slideIds: ['s1'] },
+      }),
+    });
+    expect(preview.status).toBe(200);
+    const draft = await preview.json() as { draftId: string; revision: string };
+    const applied = await fetch(`${base}/api/apply-html?deck=${DECK_ID}`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        draftId: draft.draftId,
+        expectedRevision: draft.revision,
+        idempotencyKey: 'blocked-draft',
+        label: 'Must not apply',
+      }),
+    });
+    expect(applied.status).toBe(422);
+    expect(await applied.json()).toMatchObject({
+      error: expect.stringContaining('blocking import diagnostics'),
+      blockingDiagnostics: expect.arrayContaining(['missingAssets', 'blockedResources']),
+    });
+
+    const deck = await (await fetch(`${base}/api/deck?deck=${DECK_ID}`)).json() as Deck;
+    expect(deck.slides[0].elements[0].id).toBe('e1');
+  }, 20_000);
+
+  it('rejects an HTML draft after the deck revision changes', async () => {
+    const base = `http://127.0.0.1:${server.port}`;
+    const preview = await fetch(`${base}/api/preview-html?deck=${DECK_ID}`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        html: '<!doctype html><section class="slide" style="width:1920px;height:1080px"><h1>Stale</h1></section>',
+        target: { mode: 'insert', afterSlideId: 's1' },
+      }),
+    });
+    const draft = await preview.json() as { draftId: string; revision: string };
+    await fetch(`${base}/api/comments?deck=${DECK_ID}`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ slideId: 's1', text: 'This changes the revision.' }),
+    });
+    const conflict = await fetch(`${base}/api/apply-html?deck=${DECK_ID}`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        draftId: draft.draftId, expectedRevision: draft.revision,
+        idempotencyKey: 'stale-draft',
+      }),
+    });
+    expect(conflict.status).toBe(409);
+    expect(await conflict.json()).toMatchObject({ error: 'revision conflict', expected: draft.revision });
+  }, 20_000);
 
   it('saves and relays theme edits', async () => {
     const a = await connect('A');

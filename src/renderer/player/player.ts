@@ -10,7 +10,7 @@ import {
   stepCount,
 } from '@shared/timeline.js';
 import { applyStageScale, fitAutoTextElement, renderSlide } from './render.js';
-import { applyParagraphVisibility } from '@shared/paragraphs.js';
+import { applyStaticSlideState } from './staticState.js';
 import { essentialMagicMovePairs, explicitMagicMovePairs, unchangedMagicMovePairs } from '@shared/magicMove.js';
 
 /**
@@ -413,23 +413,12 @@ export class Player {
 
   /** Reconcile the DOM and media playback with a computed slide state. */
   private applyState(slide: Slide, state: SlideState): void {
-    applyParagraphVisibility(this.stage, state);
+    applyStaticSlideState(this.stage, slide, state);
     for (const el of slide.elements) {
       const node = this.stage.querySelector<HTMLElement>(
         `[data-element-id="${CSS.escape(el.id)}"]`,
       );
       if (!node) continue;
-
-      const visible = state.visible.has(el.id);
-      node.style.visibility = visible ? 'visible' : 'hidden';
-      // Hidden elements must not swallow clicks in the editor preview.
-      node.style.pointerEvents = visible ? '' : 'none';
-
-      const extra = state.classes.get(el.id);
-      if (extra) {
-        const base = ['element', `element-${el.type}`, ...el.class];
-        node.className = [...base, ...extra].join(' ');
-      }
 
       if (el.type !== 'video') continue;
       const video = node.querySelector('video');
@@ -442,7 +431,7 @@ export class Player {
 
       this.enforceTrim(el, video);
 
-      if (state.playing.has(el.id) && visible && !this.blanked) {
+      if (state.playing.has(el.id) && state.visible.has(el.id) && !this.blanked) {
         // A rejected play() is normal (autoplay policy, or the element being
         // torn down mid-promise) and must not break the rest of the build.
         void video.play().catch(() => {});

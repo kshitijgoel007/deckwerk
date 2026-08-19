@@ -21,9 +21,48 @@ function setup() {
   const store = new EditorStore(deck, '/tmp/deck');
   const host = document.createElement('div');
   document.body.replaceChildren(host);
-  new SlideRail(host, store);
-  return { store, host };
+  const rail = new SlideRail(host, store);
+  return { store, host, rail };
 }
+
+describe('collaborator presence in the slide rail', () => {
+  beforeEach(() => document.body.replaceChildren());
+
+  it('highlights a remote element selection on another slide without rebuilding its thumbnail', () => {
+    const { store, host, rail } = setup();
+    store.commit((deck) => {
+      deck.slides[1].elements.push({
+        id: 'title-2', type: 'text', x: 100, y: 80, w: 800, h: 160,
+        rot: 5, z: 1, opacity: 1, class: ['role-title'], style: {},
+        html: 'Selected elsewhere', align: 'left', valign: 'top',
+      });
+    }, { history: false });
+
+    const secondThumb = host.querySelectorAll<HTMLElement>('.rail-thumb')[1];
+    rail.presenceForSlide = (slideId) => slideId === 'slide-2' ? [{
+      name: 'Ada', color: '#ff3366', selectedElementIds: ['title-2'],
+    }] : [];
+    rail.refreshPresence();
+
+    const secondRow = host.querySelectorAll<HTMLElement>('.rail-item')[1];
+    const selection = secondRow.querySelector<HTMLElement>('.rail-presence-selection')!;
+    expect(selection.title).toBe('Ada');
+    expect(selection.style.left).toBe('8.75px');
+    expect(selection.style.top).toBe('7px');
+    expect(selection.style.width).toBe('70px');
+    expect(selection.style.height).toBe('14px');
+    expect(selection.style.transform).toBe('rotate(5deg)');
+    expect(selection.style.outline).toBe('2px solid #ff3366');
+    expect(secondRow.querySelector('.rail-presence-dot')).not.toBeNull();
+    expect(host.querySelectorAll<HTMLElement>('.rail-thumb')[1]).toBe(secondThumb);
+
+    rail.presenceForSlide = () => [];
+    rail.refreshPresence();
+    expect(secondRow.querySelector('.rail-presence-selection')).toBeNull();
+    expect(secondRow.querySelector('.rail-presence-dot')).toBeNull();
+    expect(host.querySelectorAll<HTMLElement>('.rail-thumb')[1]).toBe(secondThumb);
+  });
+});
 
 describe('deleting slides from the rail', () => {
   beforeEach(() => document.body.replaceChildren());

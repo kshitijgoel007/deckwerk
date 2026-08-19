@@ -24,6 +24,23 @@
   pointer-events: auto;
 }
 
+/* Element selections stay outside the cached rendered slide so presence-only
+   updates never recreate a thumbnail's media. Geometry is scaled into rail
+   pixels by SlideRail; the outline itself remains two physical pixels wide. */
+.rail-presence-selections {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.rail-presence-selection {
+  position: absolute;
+  box-sizing: border-box;
+  transform-origin: center;
+}
+
 .presence-layer {
   z-index: 40;
 }
@@ -37,4 +54,72 @@ button.danger:hover:not(:disabled) {
   background: var(--danger);
   color: #fff;
   border-color: transparent;
+}
+/* Agent sessions replace the inspector with a real split pane. Nothing covers
+   the canvas; narrow windows move the workspace below it. */
+.agent-session #body {
+  grid-template-columns: 220px minmax(0, 1fr) minmax(340px, 360px);
+}
+.agent-session.agent-workspace-collapsed #body {
+  grid-template-columns: 220px minmax(0, 1fr) 48px;
+}
+#agent-workspace {
+  grid-column: 3;
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto auto auto auto minmax(120px, 22vh) auto minmax(150px, 1fr) minmax(70px, 120px);
+  overflow: hidden auto;
+  border-left: 1px solid var(--ui-border);
+  background: var(--ui-surface);
+}
+.agent-session #side[hidden] { display: none !important; }
+#agent-workspace > header { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--ui-border); background: var(--ui-surface); }
+#agent-workspace > header > div:first-child { min-width: 0; flex: 1; }
+.agent-head-actions { display: flex; align-items: center; gap: 6px; flex: none; }
+#agent-workspace h2 { margin: 0; font-size: 14px; }
+#agent-workspace header p { margin: 2px 0 0; color: var(--ui-text-muted); font-size: 11px; }
+#agent-workspace.collapsed { grid-template-rows: auto; }
+#agent-workspace.collapsed > :not(header) { display: none; }
+#agent-workspace.collapsed > header > :not(:last-child) { display: none; }
+#agent-workspace.collapsed > header { justify-content: center; padding: 4px; }
+#agent-workspace.collapsed .agent-head-actions > :not(:last-child) { display: none; }
+#agent-workspace.collapsed .agent-head-actions > :last-child { writing-mode: vertical-rl; }
+.agent-controls { display: grid; grid-template-columns: 108px minmax(0, 1fr); align-items: center; gap: 7px; padding: 8px 12px; }
+.agent-controls select { min-width: 0; width: 100%; border: 1px solid var(--ui-border); border-radius: var(--ui-radius-sm); background: var(--ui-surface-raised); color: var(--ui-text); padding: 6px; }
+.agent-controls button { grid-column: 1 / -1; }
+.agent-actions { display: flex; align-items: center; gap: 7px; padding: 8px 12px; }
+.agent-assets { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 7px; padding: 8px 12px; border-top: 1px solid var(--ui-border); }
+.agent-assets input:first-child { grid-column: 1 / -1; }
+.agent-assets input, .agent-comment textarea { min-width: 0; border: 1px solid var(--ui-border); border-radius: var(--ui-radius-sm); background: var(--ui-surface-raised); color: var(--ui-text); padding: 6px 8px; font: inherit; }
+.agent-assets output { grid-column: 1 / -1; color: var(--ui-text-muted); font: 10px/1.35 var(--ui-mono); overflow-wrap: anywhere; }
+.agent-html-source { width: auto; min-height: 110px; resize: vertical; border: 0; border-block: 1px solid var(--ui-border); background: #0b0d12; color: #d8e0ef; padding: 12px; font: 11px/1.5 var(--ui-mono); }
+.agent-actions span { flex: 1; color: var(--ui-text-muted); font-size: 11px; }
+.agent-actions span.error { color: var(--ui-danger); }
+.agent-previews { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; min-height: 0; padding: 0 12px 10px; }
+.agent-previews section { display: grid; grid-template-rows: 22px 1fr; min-width: 0; min-height: 0; }
+.agent-previews h3 { margin: 0; color: var(--ui-text-muted); font-size: 10px; text-transform: uppercase; letter-spacing: .08em; }
+.agent-previews iframe { width: 100%; height: 100%; border: 1px solid var(--ui-border); background: #000; }
+.agent-diagnostics { max-height: 120px; margin: 0; overflow: auto; border-top: 1px solid var(--ui-border); background: #0b0d12; color: var(--ui-text-muted); padding: 9px 12px; font: 10px/1.4 var(--ui-mono); }
+.agent-comment-list { max-height: 220px; overflow: auto; border-block: 1px solid var(--ui-border); padding: 6px 12px; color: var(--ui-text-muted); font-size: 11px; }
+.agent-comment { display: grid; gap: 6px; padding: 7px 0; border-bottom: 1px solid var(--ui-border); }
+.agent-comment:last-child { border-bottom: 0; }
+.agent-comment-context { width: 100%; border: 0; background: transparent; color: var(--ui-text); padding: 3px 0; text-align: left; }
+.agent-comment textarea { width: 100%; resize: vertical; }
+.agent-comment > div { display: flex; justify-content: flex-end; gap: 6px; }
+
+@media (max-width: 1100px) {
+  .agent-session #body,
+  .agent-session.agent-workspace-collapsed #body {
+    grid-template-columns: 170px minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) minmax(300px, 42vh);
+  }
+  .agent-session.agent-workspace-collapsed #body { grid-template-rows: minmax(0, 1fr) 42px; }
+  #agent-workspace {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    border-top: 1px solid var(--ui-border);
+    border-left: 0;
+  }
+  #agent-workspace.collapsed .agent-head-actions > :last-child { writing-mode: horizontal-tb; }
 }

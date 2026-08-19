@@ -3,9 +3,9 @@ import './presenter.css';
 import type { Deck } from '@shared/deck.js';
 import type { DeckSession, PresentationState } from '@shared/ipc.js';
 import { resolveState } from '@shared/timeline.js';
-import { applyParagraphVisibility } from '@shared/paragraphs.js';
 import { applyStageScale, renderSlide } from '../player/render.js';
-import { formatElapsed, presentationLabel } from './model.js';
+import { applyStaticSlideState } from '../player/staticState.js';
+import { formatElapsed, formatWallClock, presentationLabel } from './model.js';
 
 let deck: Deck | null = null;
 let state: PresentationState = { cursor: { slide: 0, step: 0 }, steps: 1, startedAt: Date.now() };
@@ -29,11 +29,7 @@ function preview(host: HTMLElement, slideIndex: number, step = 0): void {
   stage.appendChild(renderSlide(slide, { resolveSrc: window.api.assetUrl }));
   host.appendChild(stage);
   const resolved = resolveState(slide, step);
-  for (const element of slide.elements) {
-    const node = stage.querySelector<HTMLElement>(`[data-element-id="${CSS.escape(element.id)}"]`);
-    if (node) node.style.visibility = resolved.visible.has(element.id) ? 'visible' : 'hidden';
-  }
-  applyParagraphVisibility(stage, resolved);
+  applyStaticSlideState(stage, slide, resolved);
   const bounds = host.getBoundingClientRect();
   applyStageScale(stage, deck, { w: bounds.width, h: bounds.height });
   for (const video of stage.querySelectorAll('video')) video.pause();
@@ -60,6 +56,8 @@ window.addEventListener('keydown', (event) => {
   else if (event.key === 'Escape') window.api.sendPresentCommand({ type: 'exit' });
 });
 setInterval(() => {
-  document.getElementById('timer')!.textContent = formatElapsed(Date.now(), state.startedAt);
+  const now = Date.now();
+  document.getElementById('timer')!.textContent = formatElapsed(now, state.startedAt);
+  document.getElementById('wall-clock')!.textContent = formatWallClock(new Date(now));
 }, 250);
 void window.api.getDeck().then((session) => session && load(session));

@@ -564,6 +564,23 @@ describe('pointer handling keeps the DOM stable', () => {
     expect(store.canUndo()).toBe(false);
   });
 
+  it('clicks through the empty interior of a decorative frame', () => {
+    const { store, host } = setup();
+    store.commit((deck) => {
+      deck.slides[0].elements.push({
+        id: 'decorative-frame', type: 'shape', shape: 'rect',
+        x: 24, y: 24, w: 1872, h: 1032, rot: 0, z: 99, opacity: 1,
+        class: [], style: {}, fill: null, stroke: 'rgba(255, 255, 255, 0.09)',
+        strokeWidth: 1, radius: 0, path: null, pathSize: null,
+        arrowStart: false, arrowEnd: false,
+      });
+    }, { history: false });
+
+    press(host, 200, 150);
+
+    expect([...store.get().selection]).toEqual(['text-1']);
+  });
+
   it('ignores movement below the drag threshold', () => {
     const { store, host } = setup();
     const stage = host.querySelector<HTMLElement>('.stage')!;
@@ -759,6 +776,31 @@ describe('native line endpoint editing', () => {
     expect(elementContainsPoint(text, { x: 400, y: 210 })).toBe(true);
     // Inside the raw bounds but visually empty after rotation.
     expect(elementContainsPoint(text, { x: 320, y: 300 })).toBe(false);
+  });
+
+  it('hits an unfilled rectangle only near its visible stroke', () => {
+    const frame = {
+      id: 'frame', type: 'shape' as const, shape: 'rect' as const,
+      x: 24, y: 24, w: 1872, h: 1032, rot: 0, z: 99, opacity: 1,
+      class: [], style: {}, fill: null, stroke: 'rgba(255, 255, 255, 0.09)',
+      strokeWidth: 1, radius: 0, path: null, pathSize: null,
+      arrowStart: false, arrowEnd: false,
+    };
+
+    expect(elementContainsPoint(frame, { x: 960, y: 540 })).toBe(false);
+    expect(elementContainsPoint(frame, { x: 25, y: 540 })).toBe(true);
+  });
+
+  it('hits an unfilled ellipse only near its visible stroke', () => {
+    const ring = {
+      id: 'ring', type: 'shape' as const, shape: 'ellipse' as const,
+      x: 100, y: 100, w: 600, h: 400, rot: 0, z: 10, opacity: 1,
+      class: [], style: {}, fill: null, stroke: '#ffffff', strokeWidth: 2,
+      radius: 0, path: null, pathSize: null, arrowStart: false, arrowEnd: false,
+    };
+
+    expect(elementContainsPoint(ring, { x: 400, y: 300 })).toBe(false);
+    expect(elementContainsPoint(ring, { x: 700, y: 300 })).toBe(true);
   });
 
   it('shows clean traces and persistent shared width controls for selected arrows', () => {

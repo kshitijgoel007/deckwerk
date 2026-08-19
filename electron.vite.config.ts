@@ -29,6 +29,7 @@ export default defineConfig({
           editor: resolve(__dirname, 'src/renderer/editor/index.html'),
           present: resolve(__dirname, 'src/renderer/present/index.html'),
           presenter: resolve(__dirname, 'src/renderer/presenter/index.html'),
+          print: resolve(__dirname, 'src/renderer/print/index.html'),
           trim: resolve(__dirname, 'src/renderer/trim/index.html'),
         },
       },

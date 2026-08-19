@@ -58,11 +58,19 @@ export class PresenceOverlay {
     this.render();
   }
 
-  /** Peers whose active slide is the given one — for the rail dots. */
-  peersOnSlide(slideId: string): Array<{ name: string; color: string }> {
+  /** Peers whose active slide is the given one — for rail dots and selections. */
+  peersOnSlide(slideId: string): Array<{
+    name: string;
+    color: string;
+    selectedElementIds: string[];
+  }> {
     return [...this.peers.values()]
       .filter((peer) => peer.state.activeSlideId === slideId)
-      .map((peer) => ({ name: peer.state.name, color: peer.state.color }));
+      .map((peer) => ({
+        name: peer.state.name,
+        color: peer.state.color,
+        selectedElementIds: peer.state.selectedElementIds,
+      }));
   }
 
   private render(): void {

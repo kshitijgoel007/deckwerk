@@ -47,7 +47,6 @@ export class Inspector {
   videoDuration?: (elementId: string) => number | null;
   /** Seeks the sidebar trim preview; rebuilt with the panel. */
   private trimPreviewSeek: ((t: number) => void) | null = null;
-
   /** What the panel showed last, to skip re-renders that would change nothing. */
   private lastDeck: unknown = null;
   private lastSelection = '';
@@ -92,7 +91,6 @@ export class Inspector {
     const selected = this.store.selectedElements();
     this.host.replaceChildren();
     if (selected.length > 0) this.magicMovePanel.dismiss();
-
     if (slideSelection.size > 1 && selected.length === 0) {
       this.host.appendChild(hint(`${slideSelection.size} slides selected`));
       this.appendMagicMove();

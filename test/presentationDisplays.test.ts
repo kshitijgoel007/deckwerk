@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { chooseAudienceDisplay } from '../src/main/presentationDisplays.js';
+import { chooseAudienceDisplay, chooseDisplayById } from '../src/main/presentationDisplays.js';
 
 describe('presenter display placement', () => {
   it('uses an external display for the audience', () => {
@@ -11,5 +11,12 @@ describe('presenter display placement', () => {
   it('falls back to the laptop when it is the only display', () => {
     const laptop = { id: 1 };
     expect(chooseAudienceDisplay([laptop], laptop)).toBe(laptop);
+  });
+
+  it('uses a remembered mapping only while that display is connected', () => {
+    const laptop = { id: 1 };
+    const projector = { id: 2 };
+    expect(chooseDisplayById([laptop, projector], 2, laptop)).toBe(projector);
+    expect(chooseDisplayById([laptop], 2, laptop)).toBe(laptop);
   });
 });
