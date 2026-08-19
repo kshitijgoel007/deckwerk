@@ -119,6 +119,7 @@ const api = {
   /** Keep this native editor visible while it joins the agent's live session. */
   startAgentSession: (view: CollabStartRequest): Promise<AgentSessionConnection> =>
     ipcRenderer.invoke(IPC.agentSessionStart, view),
+  endAgentSession: (): Promise<void> => ipcRenderer.invoke(IPC.agentSessionEnd),
   onAgentSessionState: (fn: (state: AgentSessionState) => void): (() => void) =>
     on(IPC.agentSessionState, fn),
 

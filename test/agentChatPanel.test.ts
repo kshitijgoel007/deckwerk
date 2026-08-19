@@ -84,4 +84,33 @@ describe('agent chat panel', () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(interrupt).toHaveBeenCalledOnce();
   });
+
+  it('uses the explicit close callback while Escape only tucks the panel away', () => {
+    const onClose = vi.fn();
+    const api: AgentChatApi = {
+      getAgentChatState: async () => ready(),
+      sendAgentChatMessage: async () => ready(),
+      loginAgentChat: async () => ready(),
+      interruptAgentChat: async () => ready(),
+      resetAgentChat: async () => ready(),
+      onAgentChatState: () => () => undefined,
+    };
+    const panel = new AgentChatPanel({
+      api,
+      currentDeckPath: () => '/tmp/talk',
+      onClose,
+    });
+    panel.show();
+    panel.element.querySelector<HTMLTextAreaElement>('textarea')!.dispatchEvent(
+      new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }),
+    );
+    expect(panel.element.hidden).toBe(true);
+    expect(onClose).not.toHaveBeenCalled();
+
+    panel.show();
+    [...panel.element.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent === 'Close')!
+      .click();
+    expect(onClose).toHaveBeenCalledOnce();
+  });
 });

@@ -61,7 +61,7 @@ import { probeMedia, runTrim } from './ffmpeg.js';
 import { importKeynote } from './keynoteImport.js';
 import { HTML_EDIT_DIR, writeHtmlScope } from './htmlAuthoring.js';
 import {
-  captureWindowContinuity, createAgentChatWindow, createCollabHostWindow, createEditorWindow, createPdfWindow, createPresentWindow, createPresenterWindow, createRasterWindow, createTrimWindow,
+  captureWindowContinuity, createCollabHostWindow, createEditorWindow, createPdfWindow, createPresentWindow, createPresenterWindow, createRasterWindow, createTrimWindow,
 } from './windows.js';
 import {
   defaultClientDir, startCollabServer, type RunningCollabServer,
@@ -97,7 +97,6 @@ let rasterWindow: BrowserWindow | null = null;
 /** Live while the open deck is being shared for co-editing. */
 let collabServer: RunningCollabServer | null = null;
 let collabWindow: BrowserWindow | null = null;
-let agentChatWindow: BrowserWindow | null = null;
 let collabMode: 'window' | 'agent-background' | null = null;
 let collabReturn: Promise<void> | null = null;
 let agentSessionReturn: Promise<void> | null = null;
@@ -112,8 +111,8 @@ const agentChat = new AgentChatController({
     await shell.openExternal(url);
   },
   onState: (state) => {
-    for (const win of [editorWindow, agentChatWindow]) {
-      if (win && !win.isDestroyed()) win.webContents.send(IPC.agentChatState, state);
+    if (editorWindow && !editorWindow.isDestroyed()) {
+      editorWindow.webContents.send(IPC.agentChatState, state);
     }
   },
 });
@@ -208,9 +207,6 @@ function returnFromCollaboration(): Promise<void> {
   if (!host || host.isDestroyed() || quitting) return Promise.resolve();
 
   collabReturn = (async () => {
-    const chat = agentChatWindow;
-    agentChatWindow = null;
-    if (chat && !chat.isDestroyed()) chat.destroy();
     const continuity = captureWindowContinuity(host);
     const view = await readCollabView(host);
     const closing = collabServer;
@@ -262,9 +258,6 @@ function endBackgroundAgentSession(): Promise<void> {
   if (collabMode !== 'agent-background') return Promise.resolve();
 
   agentSessionReturn = (async () => {
-    const chat = agentChatWindow;
-    agentChatWindow = null;
-    if (chat && !chat.isDestroyed()) chat.destroy();
     const closing = collabServer;
     collabServer = null;
     collabMode = null;
@@ -464,7 +457,6 @@ app.on('before-quit', () => {
   quitting = true;
   void agentRuntime.close();
   agentChat.close();
-  agentChatWindow?.destroy();
   void collabServer?.close();
 });
 
@@ -958,22 +950,6 @@ function registerHandlers(): void {
       wsUrl: `ws://127.0.0.1:${collabServer.port}/ws?deck=${encodeURIComponent(deckId)}`,
     };
     sendAgentSessionState(connection);
-
-    if (agentChatWindow && !agentChatWindow.isDestroyed()) {
-      agentChatWindow.show();
-      agentChatWindow.focus();
-    } else {
-      const owner = editorWindow;
-      if (!owner || owner.isDestroyed()) throw new Error('The editor window is not available');
-      const chat = createAgentChatWindow(owner);
-      agentChatWindow = chat;
-      chat.on('closed', () => {
-        if (agentChatWindow === chat) agentChatWindow = null;
-        if (!quitting && collabMode === 'agent-background') {
-          void endBackgroundAgentSession();
-        }
-      });
-    }
     return connection;
   };
 
@@ -981,6 +957,9 @@ function registerHandlers(): void {
     IPC.agentSessionStart,
     async (): Promise<AgentSessionConnection> => startBackgroundAgent(),
   );
+  ipcMain.handle(IPC.agentSessionEnd, async (): Promise<void> => {
+    await endBackgroundAgentSession();
+  });
 
   // "Collaborate" retains the full-window browser handoff. Agent mode is
   // accepted here only for compatibility with older renderers and now uses

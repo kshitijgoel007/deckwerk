@@ -54,6 +54,7 @@ export const IPC = {
   workflowStart: 'workflow:start',
   collabStart: 'collab:start',
   agentSessionStart: 'agentSession:start',
+  agentSessionEnd: 'agentSession:end',
   agentSessionState: 'agentSession:state',
 } as const;
 

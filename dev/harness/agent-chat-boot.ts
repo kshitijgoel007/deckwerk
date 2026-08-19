@@ -1,5 +1,4 @@
 import '../../src/renderer/editor/editor.css';
-import '../../src/renderer/agent-chat/agentChat.css';
 import type { AgentChatState } from '../../src/shared/ipc.js';
 import {
   AgentChatPanel,

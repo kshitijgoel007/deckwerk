@@ -27,7 +27,6 @@ export default defineConfig({
       rollupOptions: {
         input: {
           editor: resolve(__dirname, 'src/renderer/editor/index.html'),
-          agentChat: resolve(__dirname, 'src/renderer/agent-chat/index.html'),
           present: resolve(__dirname, 'src/renderer/present/index.html'),
           presenter: resolve(__dirname, 'src/renderer/presenter/index.html'),
           print: resolve(__dirname, 'src/renderer/print/index.html'),

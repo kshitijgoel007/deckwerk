@@ -16,6 +16,7 @@ import {
   withThemeBlock,
 } from '@shared/themes.js';
 import { AgentBridge } from './agentBridge.js';
+import { AgentChatPanel } from './agentChatPanel.js';
 import { createDeckWerkButton } from './aboutDialog.js';
 import { EditorCanvas } from './canvas.js';
 import { CssEditor } from './cssEditor.js';
@@ -80,6 +81,11 @@ const welcome = new WelcomeScreen(el('canvas'), {
   newPresentation,
   openPresentation,
   importKeynote: importKeynotePresentation,
+});
+const agentChatPanel = new AgentChatPanel({
+  api: window.api,
+  currentDeckPath: () => store.get().dir,
+  onClose: () => void endAgentChat(),
 });
 
 /**
@@ -199,8 +205,8 @@ function buildToolbar(): void {
   const right = document.createElement('div');
   right.className = 'bar-group bar-right deck-only';
   right.append(
-    barButton('Agent…', () => void startSharing(true)),
-    barButton('Collaborate', () => void startSharing(false)),
+    barButton('Agent…', () => void toggleAgentChat()),
+    barButton('Collaborate', () => void startSharing()),
     createToolbarSplitButton(
       'Present',
       () => void startPresentation(),
@@ -251,23 +257,49 @@ async function exportPdf(): Promise<void> {
   }
 }
 
-async function startSharing(agent: boolean): Promise<void> {
-  setStatusMessage(agent ? 'Starting embedded agent session…' : 'Starting collaboration…');
+async function toggleAgentChat(): Promise<void> {
+  if (!agentChatPanel.element.hidden) {
+    agentChatPanel.hide();
+    return;
+  }
+  setStatusMessage('Starting embedded agent session…');
   try {
     await cssEditor.flush();
     await save();
-    if (agent) {
+    if (!agentSessionBridge) {
       const connection = await window.api.startAgentSession({
         agent: true,
         ...captureEditorView(store),
       });
       connectAgentSession(connection);
-    } else {
-      await window.api.startCollab({ agent: false, ...captureEditorView(store) });
     }
-    setStatusMessage(agent ? 'Agent chat opened; HTTP API brief copied to clipboard.' : 'Collaboration link copied to clipboard.');
+    agentChatPanel.show();
+    setStatusMessage('Agent chat opened; HTTP API brief copied to clipboard.');
   } catch (err) {
-    setStatusMessage(`${agent ? 'Agent session' : 'Collaboration'} failed: ${err instanceof Error ? err.message : err}`);
+    setStatusMessage(`Agent session failed: ${err instanceof Error ? err.message : err}`);
+  }
+}
+
+async function endAgentChat(): Promise<void> {
+  agentChatPanel.hide();
+  if (!agentSessionBridge) return;
+  setStatusMessage('Closing agent session…');
+  try {
+    await window.api.endAgentSession();
+  } catch (err) {
+    setStatusMessage(`Could not close agent session: ${err instanceof Error ? err.message : err}`);
+  }
+}
+
+async function startSharing(): Promise<void> {
+  setStatusMessage('Starting collaboration…');
+  try {
+    await cssEditor.flush();
+    await save();
+    await window.api.startCollab({ agent: false, ...captureEditorView(store) });
+    setStatusMessage('Collaboration link copied to clipboard.');
+  } catch (err) {
+    setStatusMessage(`Collaboration failed: ${err instanceof Error ? err.message : err}`);
   }
 }
 
@@ -637,6 +669,7 @@ window.api.onThemeCss?.((css) => {
 window.api.onAgentSessionState?.((state) => {
   if (state.active) connectAgentSession(state);
   else {
+    agentChatPanel.hide();
     disconnectAgentSession();
     setStatusMessage('Agent chat closed; presentation saved.');
   }
