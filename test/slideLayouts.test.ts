@@ -73,11 +73,12 @@ describe('slide layouts', () => {
     layout.dispatchEvent(new Event('change', { bubbles: true }));
     expect(store.slide!.layout).toBe('standard');
 
-    const color = host.querySelector<HTMLInputElement>('input[type="color"]')!;
+    host.querySelector<HTMLButtonElement>('.color-picker-trigger')!.click();
+    const color = document.querySelector<HTMLInputElement>('input[aria-label="Hex color"]')!;
     color.value = '#123456';
     color.dispatchEvent(new Event('change', { bubbles: true }));
     expect(store.slide!.background).toEqual({ color: '#123456', image: null });
-    host.querySelector<HTMLButtonElement>('button[title="No colour"]')!.click();
+    document.querySelector<HTMLButtonElement>('.color-picker-clear-theme')!.click();
     expect(store.slide!.background).toEqual({ color: null, image: null });
     expect([...host.querySelectorAll('button')].some((button) =>
       button.textContent === 'Apply theme to slide')).toBe(false);

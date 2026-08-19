@@ -1617,16 +1617,217 @@ input[type="range"] { accent-color: var(--accent); border: 0; background: transp
 /* The element being typed into. */
 .element.editing { outline-color: var(--accent); background: var(--accent-soft); }
 
-/* Colour pickers and toolbar cast options. */
+/* Colour picker: theme palette and full RGBA controls open in one popover. */
 .field-color { flex-direction: row; align-items: center; gap: 8px; }
-.field-color input[type="color"] {
-  width: 44px;
-  height: 22px;
-  padding: 1px;
+.field-color > span:first-child { min-width: 0; flex: 1; }
+
+.color-picker-trigger {
+  position: relative;
+  flex: none;
+  width: 46px;
+  height: 28px;
+  padding: 2px;
+  overflow: hidden;
   border: 1px solid var(--line);
-  background: var(--bg);
+  border-radius: 5px;
+  background-color: #fff;
+  background-image:
+    linear-gradient(45deg, #c7c7c7 25%, transparent 25%),
+    linear-gradient(-45deg, #c7c7c7 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #c7c7c7 75%),
+    linear-gradient(-45deg, transparent 75%, #c7c7c7 75%);
+  background-position: 0 0, 0 4px, 4px -4px, -4px 0;
+  background-size: 8px 8px;
   cursor: pointer;
 }
+.color-picker-trigger:hover:not(:disabled),
+.color-picker-trigger[aria-expanded="true"] { border-color: var(--accent); background-color: #fff; }
+.color-picker-preview {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--picker-color);
+  box-shadow: inset 0 0 0 1px rgb(0 0 0 / 12%);
+}
+.color-picker-trigger.is-theme { box-shadow: 0 0 0 1px var(--accent); }
+.color-picker-trigger.is-css { box-shadow: 0 0 0 1px var(--yellow); }
+.color-picker-source-badge {
+  position: absolute;
+  right: 1px;
+  bottom: 1px;
+  display: grid;
+  width: 13px;
+  height: 13px;
+  place-items: center;
+  border: 1px solid rgb(255 255 255 / 75%);
+  border-radius: 3px;
+  background: var(--accent);
+  color: #fff;
+  font: 700 8px/1 var(--mono);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 45%);
+}
+.color-picker-css-badge {
+  width: 22px;
+  background: #a86d00;
+  font-size: 7px;
+  letter-spacing: -.04em;
+}
+
+.color-picker-popover {
+  position: fixed;
+  z-index: 10020;
+  width: 276px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 14px 38px rgb(0 0 0 / 45%);
+}
+.color-picker-section-title {
+  margin-bottom: 7px;
+  color: var(--muted);
+  font: 10px var(--mono);
+  text-transform: uppercase;
+  letter-spacing: .08em;
+}
+.color-picker-source-note {
+  display: flex;
+  gap: 7px;
+  align-items: center;
+  margin-bottom: 10px;
+  padding: 7px;
+  border: 1px solid color-mix(in srgb, var(--yellow) 45%, var(--line));
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--yellow) 8%, transparent);
+  color: var(--muted);
+  font: 10px/1.25 var(--mono);
+}
+.color-picker-source-note strong { color: var(--yellow); font-size: 9px; }
+.color-picker-palette {
+  display: flex;
+  flex-wrap: wrap;
+  min-height: 23px;
+  gap: 4px;
+  align-items: center;
+  margin-bottom: 11px;
+}
+.color-picker-palette-button,
+.color-picker-theme-default {
+  position: relative;
+  flex: none;
+  width: 23px;
+  height: 23px;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background-color: #fff;
+  background-image:
+    linear-gradient(45deg, #c7c7c7 25%, transparent 25%),
+    linear-gradient(-45deg, #c7c7c7 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #c7c7c7 75%),
+    linear-gradient(-45deg, transparent 75%, #c7c7c7 75%);
+  background-position: 0 0, 0 4px, 4px -4px, -4px 0;
+  background-size: 8px 8px;
+}
+.color-picker-palette-button { background: var(--picker-color); }
+.color-picker-palette-button:hover:not(:disabled),
+.color-picker-theme-default:hover:not(:disabled) { border-color: var(--muted); background-color: #fff; }
+.color-picker-palette-button.selected,
+.color-picker-theme-default.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.color-picker-theme-default .color-picker-palette-swatch {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--picker-color);
+}
+.color-picker-theme-default .color-picker-theme-badge { right: -3px; bottom: -3px; }
+.color-picker-palette-empty { color: var(--muted); font: 10px var(--mono); }
+
+.color-picker-plane {
+  position: relative;
+  width: 100%;
+  height: 142px;
+  overflow: hidden;
+  border: 1px solid rgb(255 255 255 / 14%);
+  border-radius: 5px;
+  outline: none;
+  background:
+    linear-gradient(to top, #000, transparent),
+    linear-gradient(to right, #fff, transparent),
+    var(--picker-hue);
+  cursor: crosshair;
+  touch-action: none;
+}
+.color-picker-plane:focus-visible { box-shadow: 0 0 0 2px var(--accent); }
+.color-picker-plane-cursor {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 75%);
+  pointer-events: none;
+}
+
+.color-picker-slider-row {
+  display: grid;
+  grid-template-columns: 48px 1fr;
+  gap: 8px;
+  align-items: center;
+  margin-top: 9px;
+  color: var(--muted);
+  font: 10px var(--mono);
+  text-transform: uppercase;
+  letter-spacing: .06em;
+}
+.color-picker-slider-row input[type="range"] {
+  width: 100%;
+  height: 14px;
+  margin: 0;
+  appearance: none;
+  -webkit-appearance: none;
+  border: 0;
+  border-radius: 7px;
+  background: linear-gradient(to right, #f00, #ff0, #0f0, #0ff, #00f, #f0f, #f00);
+}
+.color-picker-slider-row input[type="range"]::-webkit-slider-thumb {
+  width: 14px;
+  height: 14px;
+  appearance: none;
+  -webkit-appearance: none;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  background: transparent;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 70%);
+}
+.color-picker-opacity { grid-template-columns: 48px 1fr 34px; }
+.color-picker-opacity input[type="range"] {
+  background-color: #fff;
+  background-image:
+    linear-gradient(to right, transparent, var(--picker-opaque-color)),
+    linear-gradient(45deg, #bbb 25%, transparent 25%),
+    linear-gradient(-45deg, #bbb 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #bbb 75%),
+    linear-gradient(-45deg, transparent 75%, #bbb 75%);
+  background-position: 0 0, 0 0, 0 4px, 4px -4px, -4px 0;
+  background-size: auto, 8px 8px, 8px 8px, 8px 8px, 8px 8px;
+}
+.color-picker-opacity output { color: var(--text); text-align: right; }
+.color-picker-values { display: grid; grid-template-columns: 1fr; margin-top: 9px; }
+.color-picker-values label { display: grid; grid-template-columns: 48px 1fr; gap: 8px; align-items: center; }
+.color-picker-values span { color: var(--muted); font: 10px var(--mono); text-transform: uppercase; letter-spacing: .06em; }
+.color-picker-values input { min-width: 0; font-family: var(--mono); text-transform: uppercase; }
+.color-picker-clear {
+  width: 100%;
+  margin-top: 10px;
+  color: var(--text);
+  font-size: 11px;
+}
+.color-picker-clear-theme { color: var(--accent); }
 
 .bar-check {
   display: flex;

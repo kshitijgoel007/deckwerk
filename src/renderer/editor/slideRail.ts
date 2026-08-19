@@ -42,6 +42,15 @@ export class SlideRail {
    */
   private expandedRuns = new Set<string>();
   /**
+   * The active hidden slide whose run the user explicitly collapsed.
+   *
+   * Normally selecting a hidden slide auto-expands its run so the rail never
+   * loses the selection. The collapse bracket is an explicit exception: keep
+   * editing that slide even though its row is now represented by the run
+   * placeholder. Selecting another slide clears the exception.
+   */
+  private collapsedActiveSlideId: string | null = null;
+  /**
    * Collaboration presence: who is on which slide, drawn as colored dots on
    * the rail rows. Unset outside collab sessions.
    */
@@ -65,6 +74,13 @@ export class SlideRail {
    */
   private onStoreChange(): void {
     const { deck, slideIndex, slideSelection } = this.store.get();
+    const activeSlide = deck.slides[slideIndex];
+    if (
+      this.collapsedActiveSlideId !== null
+      && (activeSlide?.id !== this.collapsedActiveSlideId || !activeSlide.skipped)
+    ) {
+      this.collapsedActiveSlideId = null;
+    }
     if (deck.slides === this.renderedSlides) {
       this.highlight(slideIndex, slideSelection);
       return;
@@ -101,8 +117,8 @@ export class SlideRail {
     this.host.replaceChildren();
 
     // Group consecutive hidden slides: runs of 2+ collapse to one placeholder
-    // unless expanded. A run holding the active slide stays expanded so the
-    // selection is never invisible.
+    // unless expanded. A run holding the active slide normally stays expanded;
+    // an explicit bracket click may hide that row while preserving the editor.
     for (let i = 0; i < deck.slides.length; ) {
       if (!deck.slides[i].skipped) {
         this.host.appendChild(this.buildItem(deck, i, slideIndex, slideSelection));
@@ -118,7 +134,9 @@ export class SlideRail {
       }
       const runKey = deck.slides[i].id;
       const containsActive = slideIndex >= i && slideIndex <= end;
-      if (!this.expandedRuns.has(runKey) && !containsActive) {
+      const explicitlyCollapsed = containsActive
+        && deck.slides[slideIndex]?.id === this.collapsedActiveSlideId;
+      if (!this.expandedRuns.has(runKey) && (!containsActive || explicitlyCollapsed)) {
         this.host.appendChild(this.buildCollapsedRun(deck, i, end, runKey));
       } else {
         this.expandedRuns.add(runKey);
@@ -171,6 +189,7 @@ export class SlideRail {
     row.append(num, stack, badge);
     row.addEventListener('click', () => {
       this.expandedRuns.add(runKey);
+      this.collapsedActiveSlideId = null;
       this.render();
     });
     return row;
@@ -196,6 +215,9 @@ export class SlideRail {
     bracket.setAttribute('aria-label', bracket.title);
     bracket.addEventListener('click', () => {
       this.expandedRuns.delete(runKey);
+      if (slideIndex >= start && slideIndex <= end) {
+        this.collapsedActiveSlideId = deck.slides[slideIndex]?.id ?? null;
+      }
       this.render();
     });
     const col = document.createElement('div');

@@ -357,7 +357,7 @@ describe('inline text editing', () => {
       .toEqual([1, 1, 1, 1]);
   });
 
-  it('keeps inherited text colour and its picker preview stable after editing', () => {
+  it('keeps inherited CSS text colour and its picker preview stable after editing', () => {
     installDomShims();
     const styles = document.createElement('style');
     styles.textContent = [
@@ -381,11 +381,13 @@ describe('inline text editing', () => {
     const beforeNode = canvasHost.querySelector<HTMLElement>(
       `[data-element-id="${title.id}"]`,
     )!;
-    const beforePicker = inspectorHost.querySelector<HTMLInputElement>('input[type="color"]')!;
+    const beforePicker = inspectorHost.querySelector<HTMLButtonElement>('.color-picker-trigger')!;
     expect(getComputedStyle(beforeNode).color).toBe('rgb(91, 33, 182)');
     expect(getComputedStyle(beforeNode.firstElementChild!).opacity).not.toBe('0.4');
-    expect(beforePicker.value).toBe('#5b21b6');
-    expect(beforePicker.dataset.inherited).toBe('true');
+    expect(beforePicker.classList.contains('is-css')).toBe(true);
+    expect(beforePicker.classList.contains('is-theme')).toBe(false);
+    expect(beforePicker.querySelector<HTMLElement>('.color-picker-preview')!
+      .style.getPropertyValue('--picker-color')).toBe('#5b21b6');
 
     canvas.beginTextEdit(title.id);
     bodyOf(canvasHost, title.id).innerHTML = 'Edited title';
@@ -394,40 +396,95 @@ describe('inline text editing', () => {
     const afterNode = canvasHost.querySelector<HTMLElement>(
       `[data-element-id="${title.id}"]`,
     )!;
-    const afterPicker = inspectorHost.querySelector<HTMLInputElement>('input[type="color"]')!;
+    const afterPicker = inspectorHost.querySelector<HTMLButtonElement>('.color-picker-trigger')!;
     const edited = store.slide!.elements.find((element) => element.id === title.id)!;
     expect(edited.class).not.toContain('placeholder');
     expect(edited.style.color).toBeUndefined();
     expect(getComputedStyle(afterNode).color).toBe('rgb(91, 33, 182)');
-    expect(afterPicker.value).toBe('#5b21b6');
-    expect(afterPicker.dataset.inherited).toBe('true');
+    expect(afterPicker.classList.contains('is-css')).toBe(true);
+    expect(afterPicker.classList.contains('is-theme')).toBe(false);
+    expect(afterPicker.querySelector<HTMLElement>('.color-picker-preview')!
+      .style.getPropertyValue('--picker-color')).toBe('#5b21b6');
 
-    afterPicker.value = '#c026d3';
-    afterPicker.dispatchEvent(new Event('change', { bubbles: true }));
+    afterPicker.click();
+    const hex = document.querySelector<HTMLInputElement>('input[aria-label="Hex color"]')!;
+    hex.value = '#c026d3';
+    hex.dispatchEvent(new Event('change', { bubbles: true }));
     let live = store.slide!.elements.find((element) => element.id === title.id)!;
-    let livePicker = inspectorHost.querySelector<HTMLInputElement>('input[type="color"]')!;
+    let livePicker = inspectorHost.querySelector<HTMLButtonElement>('.color-picker-trigger')!;
     expect(live.style.color).toBe('#c026d3');
     expect(getComputedStyle(canvasHost.querySelector<HTMLElement>(
       `[data-element-id="${title.id}"]`,
     )!).color).toBe('rgb(192, 38, 211)');
-    expect(livePicker.value).toBe('#c026d3');
-    expect(livePicker.dataset.inherited).toBe('false');
+    expect(livePicker.classList.contains('is-theme')).toBe(false);
+    expect(livePicker.querySelector<HTMLElement>('.color-picker-preview')!
+      .style.getPropertyValue('--picker-color')).toBe('#c026d3');
 
     canvas.beginTextEdit(title.id);
     bodyOf(canvasHost, title.id).innerHTML = 'Edited again';
     bodyOf(canvasHost, title.id).dispatchEvent(new FocusEvent('blur'));
     live = store.slide!.elements.find((element) => element.id === title.id)!;
-    livePicker = inspectorHost.querySelector<HTMLInputElement>('input[type="color"]')!;
+    livePicker = inspectorHost.querySelector<HTMLButtonElement>('.color-picker-trigger')!;
     expect(live.style.color).toBe('#c026d3');
-    expect(livePicker.value).toBe('#c026d3');
+    expect(livePicker.querySelector<HTMLElement>('.color-picker-preview')!
+      .style.getPropertyValue('--picker-color')).toBe('#c026d3');
 
-    inspectorHost.querySelector<HTMLButtonElement>('button[title="No colour"]')!.click();
+    document.querySelector<HTMLButtonElement>('.color-picker-clear-css')!.click();
     live = store.slide!.elements.find((element) => element.id === title.id)!;
-    livePicker = inspectorHost.querySelector<HTMLInputElement>('input[type="color"]')!;
+    livePicker = inspectorHost.querySelector<HTMLButtonElement>('.color-picker-trigger')!;
     expect(live.style.color).toBeUndefined();
-    expect(livePicker.value).toBe('#5b21b6');
-    expect(livePicker.dataset.inherited).toBe('true');
+    expect(livePicker.classList.contains('is-css')).toBe(true);
+    expect(livePicker.classList.contains('is-theme')).toBe(false);
+    expect(livePicker.querySelector<HTMLElement>('.color-picker-preview')!
+      .style.getPropertyValue('--picker-color')).toBe('#5b21b6');
     styles.remove();
+  });
+
+  it('shows imported gradient text as CSS paint and replaces it with a solid cleanly', () => {
+    installDomShims();
+    const gradient = 'linear-gradient(92.67deg, #56c1ff 0%, #b500a3 100%)';
+    const deck = emptyDeck('Gradient title');
+    deck.slides[0].elements = [{
+      id: 'gradient-title', type: 'text', x: 0, y: 0, w: 1920, h: 170,
+      rot: 0, z: 1, opacity: 1, class: ['kn-text', 'role-title'],
+      style: {
+        color: 'transparent',
+        'background-image': gradient,
+        'background-clip': 'text',
+        '-webkit-background-clip': 'text',
+      },
+      html: 'Diffusion Forcing - Training', align: 'center', valign: 'middle',
+    }];
+    const canvasHost = document.createElement('div');
+    const inspectorHost = document.createElement('div');
+    document.body.replaceChildren(canvasHost, inspectorHost);
+    const store = new EditorStore(deck, '/tmp/gradient-title');
+    new EditorCanvas(canvasHost, store);
+    new Inspector(inspectorHost, store);
+    store.select(['gradient-title']);
+
+    const trigger = inspectorHost.querySelector<HTMLButtonElement>('.color-picker-trigger')!;
+    expect(trigger.classList.contains('is-css')).toBe(true);
+    expect(trigger.classList.contains('is-theme')).toBe(false);
+    expect(trigger.querySelector('.color-picker-css-badge')?.textContent).toBe('CSS');
+    expect(trigger.querySelector<HTMLElement>('.color-picker-preview')!
+      .style.getPropertyValue('--picker-color')).toBe(gradient);
+
+    trigger.click();
+    expect(document.querySelector('.color-picker-source-note')?.textContent)
+      .toContain('CSS gradient text');
+    const hex = document.querySelector<HTMLInputElement>('input[aria-label="Hex color"]')!;
+    hex.value = '#123456';
+    hex.dispatchEvent(new Event('change', { bubbles: true }));
+
+    const title = store.slide!.elements[0];
+    expect(title.type).toBe('text');
+    expect(title.style.color).toBe('#123456');
+    expect(title.style['background-image']).toBeUndefined();
+    expect(title.style['background-clip']).toBeUndefined();
+    expect(title.style['-webkit-background-clip']).toBeUndefined();
+    expect(inspectorHost.querySelector('.color-picker-css-badge')).toBeNull();
+    expect(inspectorHost.querySelector('.color-picker-theme-badge')).toBeNull();
   });
 
   it('lets an element inline colour beat a theme rule that targets .text-content', () => {

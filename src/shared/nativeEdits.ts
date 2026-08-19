@@ -149,6 +149,7 @@ const SLIDE_PROPERTIES: PropertyDoc[] = [
   { path: 'notes', type: 'string', description: 'Speaker notes.', example: 'Emphasize the scaling result.' },
   { path: 'layout', type: 'enum', values: ['freeform', 'standard', 'title'], description: 'Slide layout identity.', example: 'standard' },
   { path: 'magicMoveFromPrevious', type: 'boolean', description: 'Animate from the preceding slide.', example: true },
+  { path: 'magicMoveDuration', type: 'number 100..5000', description: 'Magic Move duration from the preceding slide, in milliseconds.', example: 900 },
   { path: 'skipped', type: 'boolean', description: 'Keep the slide but skip it during presentation.', example: false },
   { path: 'timeline', type: 'timeline entry[]', description: 'Complete object-build sequence. Targets must remain on this slide.', example: [] },
 ];
@@ -161,7 +162,6 @@ const DECK_PROPERTIES: PropertyDoc[] = [
   { path: 'themeStyle.fonts.<role>.<property>', type: 'theme font value', description: 'Theme typography for title, heading, body, caption, or base: family, size, weight, lineHeight, letterSpacing, and optional color.', example: 'Inter' },
   { path: 'themeStyle.colors.<role>', type: 'CSS color', description: 'Theme background, text, muted, or accent color.', example: '#f7f7f8' },
   { path: 'themeStyle.palette', type: 'CSS color[]', description: 'Theme color palette.', example: ['#101218', '#f7f7f8', '#6ea8fe'] },
-  { path: 'magicMoveDuration', type: 'number 100..5000', description: 'Deck-wide Magic Move duration in milliseconds.', example: 900 },
   { path: 'magicMoveEasing', type: 'enum', values: ['ease-in-out', 'ease-out', 'linear'], description: 'Deck-wide Magic Move easing.', example: 'ease-in-out' },
 ];
 
@@ -310,12 +310,12 @@ function unsetPath(target: Record<string, unknown>, path: string): void {
 }
 
 function allowedDeckPath(path: string): boolean {
-  return ['title', 'themePreset', 'magicMoveDuration', 'magicMoveEasing', 'canvas.w', 'canvas.h'].includes(path)
+  return ['title', 'themePreset', 'magicMoveEasing', 'canvas.w', 'canvas.h'].includes(path)
     || path.startsWith('themeStyle.');
 }
 
 function allowedSlidePath(path: string): boolean {
-  return ['name', 'background.color', 'background.image', 'notes', 'layout', 'magicMoveFromPrevious', 'skipped', 'timeline'].includes(path);
+  return ['name', 'background.color', 'background.image', 'notes', 'layout', 'magicMoveFromPrevious', 'magicMoveDuration', 'skipped', 'timeline'].includes(path);
 }
 
 function allowedElementPath(type: SlideElement['type'], path: string): boolean {

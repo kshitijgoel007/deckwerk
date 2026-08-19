@@ -149,6 +149,56 @@ describe('hiding slides from the rail', () => {
     store.undo();
     expect(store.get().deck.slides.map((s) => s.skipped ?? false)).toEqual([true, true]);
   });
+
+  it('collapses an expanded hidden run without changing the active slide', () => {
+    const { store, host } = setup();
+    store.commit((deck) => {
+      deck.slides[0].skipped = true;
+      deck.slides[1].skipped = true;
+      deck.slides.push({
+        id: 'slide-3', name: 'Third', background: { color: null, image: null },
+        notes: '', elements: [], timeline: [],
+      });
+    }, { history: false });
+
+    expect(host.querySelector('.rail-run')).not.toBeNull();
+    host.querySelector<HTMLButtonElement>('.rail-run-bracket')!.click();
+
+    expect(store.get().slideIndex).toBe(0);
+    expect(store.slide?.id).toBe('slide-1');
+    expect(host.querySelector('.rail-run')).toBeNull();
+    expect(host.querySelector('.rail-collapsed')).not.toBeNull();
+
+    // A regular edit should not make the explicitly collapsed run spring
+    // open again while this hidden slide remains active in the editor.
+    store.commit((deck) => {
+      deck.slides[0].name = 'Still editing';
+    }, { history: false });
+    expect(store.slide?.name).toBe('Still editing');
+    expect(host.querySelector('.rail-collapsed')).not.toBeNull();
+  });
+
+  it('restores auto-reveal after selecting a different slide', () => {
+    const { store, host } = setup();
+    store.commit((deck) => {
+      deck.slides[0].skipped = true;
+      deck.slides[1].skipped = true;
+      deck.slides.push({
+        id: 'slide-3', name: 'Third', background: { color: null, image: null },
+        notes: '', elements: [], timeline: [],
+      });
+    }, { history: false });
+
+    host.querySelector<HTMLButtonElement>('.rail-run-bracket')!.click();
+    host.querySelector<HTMLButtonElement>('.rail-item[data-index="2"]')!.click();
+    expect(store.slide?.id).toBe('slide-3');
+    expect(host.querySelector('.rail-collapsed')).not.toBeNull();
+
+    store.selectSlide(0);
+    expect(store.slide?.id).toBe('slide-1');
+    expect(host.querySelector('.rail-run')).not.toBeNull();
+    expect(host.querySelector('.rail-item[data-index="0"]')).not.toBeNull();
+  });
 });
 
 describe('slide rail keyboard insertion', () => {

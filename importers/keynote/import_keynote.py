@@ -296,6 +296,96 @@ def path_to_svg(path_msg: Any) -> str:
     return " ".join(parts)
 
 
+def is_axis_aligned_rectangle(path_msg: Any) -> bool:
+    """Whether a closed Keynote path is exactly an axis-aligned rectangle.
+
+    Keynote does not consistently retain a semantic rectangle path source.
+    Ordinary sharp-cornered rectangles are often serialized as a four-corner
+    bezier path, followed by a redundant move back to the first corner. Those
+    should stay native rectangles in the editor rather than opaque SVG paths.
+
+    This deliberately accepts only one closed subpath made from straight line
+    segments. A freeform path that merely resembles a box, contains a curve,
+    or has another painted subpath remains a path.
+    """
+    vertices: list[tuple[float, float]] = []
+    closed = False
+
+    for element in path_msg.elements:
+        kind = int(element.type)
+        points = list(element.points)
+
+        if kind == 1:  # moveTo
+            if len(points) != 1:
+                return False
+            point = (float(points[0].x), float(points[0].y))
+            if not vertices:
+                vertices.append(point)
+            elif closed and _points_near(point, vertices[0]):
+                # Keynote commonly appends `M <start>` after closing the path.
+                continue
+            else:
+                return False
+        elif kind == 2 and not closed:  # lineTo
+            if len(points) != 1:
+                return False
+            vertices.append((float(points[0].x), float(points[0].y)))
+        elif kind == 5 and not closed:  # closeSubpath
+            closed = True
+        else:
+            return False
+
+    if not closed:
+        return False
+    if len(vertices) == 5 and _points_near(vertices[-1], vertices[0]):
+        vertices.pop()
+    if len(vertices) != 4:
+        return False
+
+    xs = [point[0] for point in vertices]
+    ys = [point[1] for point in vertices]
+    min_x, max_x = min(xs), max(xs)
+    min_y, max_y = min(ys), max(ys)
+    tolerance = max(max_x - min_x, max_y - min_y, 1.0) * 1e-6
+    if max_x - min_x <= tolerance or max_y - min_y <= tolerance:
+        return False
+
+    corners: set[tuple[int, int]] = set()
+    for x, y in vertices:
+        x_side = (
+            0
+            if abs(x - min_x) <= tolerance
+            else 1 if abs(x - max_x) <= tolerance else -1
+        )
+        y_side = (
+            0
+            if abs(y - min_y) <= tolerance
+            else 1 if abs(y - max_y) <= tolerance else -1
+        )
+        if x_side < 0 or y_side < 0:
+            return False
+        corners.add((x_side, y_side))
+
+    if len(corners) != 4:
+        return False
+
+    for start, end in zip(vertices, vertices[1:] + vertices[:1]):
+        horizontal = abs(start[1] - end[1]) <= tolerance
+        vertical = abs(start[0] - end[0]) <= tolerance
+        if horizontal == vertical:
+            return False
+    return True
+
+
+def _points_near(
+    first: tuple[float, float], second: tuple[float, float], tolerance: float = 1e-4
+) -> bool:
+    return (
+        abs(first[0] - second[0]) <= tolerance
+        and abs(first[1] - second[1]) <= tolerance
+    )
+
+
 def color_to_hex(color: Any) -> str | None:
     """TSP colour -> CSS. Returns None for fully transparent colours."""
     try:
@@ -1583,6 +1673,33 @@ class Importer:
                         box["y"] + (control[1] - min_y) * sy,
                     )
                 return self._native_line(style, start_abs, end_abs, z, control_abs)
+
+        # Sharp-cornered Keynote rectangles are commonly stored as ordinary
+        # four-line bezier paths rather than scalar rectangle sources. Promote
+        # only the exact closed, axis-aligned form so the editor exposes native
+        # rectangle controls without flattening genuine freeform artwork.
+        if (
+            path_msg is not None
+            and not is_connection
+            and not style.arrow_start
+            and not style.arrow_end
+            and is_axis_aligned_rectangle(path_msg)
+        ):
+            element = self._base(box, z, "shape")
+            element.update(
+                {
+                    "shape": "rect",
+                    "path": None,
+                    "pathSize": None,
+                    "fill": style.fill,
+                    "stroke": style.stroke,
+                    "strokeWidth": style.stroke_width,
+                    "radius": 0,
+                    "arrowStart": False,
+                    "arrowEnd": False,
+                }
+            )
+            return element
 
         # The viewBox is the path's own extent, never Keynote's `naturalSize`,
         # which is unreliable in both directions and wrong in opposite ways:

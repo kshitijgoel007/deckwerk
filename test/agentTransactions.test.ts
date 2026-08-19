@@ -118,10 +118,9 @@ describe('agent transaction operations', () => {
   it('updates whitelisted deck fields and nothing else', () => {
     const deck = fixture();
     const next = applyAgentTransaction(deck, transaction([
-      { op: 'updateDeck', title: 'MilliVid', magicMoveDuration: 1400 },
+      { op: 'updateDeck', title: 'MilliVid' },
     ], deck));
     expect(next.title).toBe('MilliVid');
-    expect(next.magicMoveDuration).toBe(1400);
     expect(next.slides).toHaveLength(3);
   });
 

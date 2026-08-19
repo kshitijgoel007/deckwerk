@@ -26,7 +26,11 @@ export interface Capability {
   elements: SlideElement[];
   timeline?: TimelineEntry[];
   /** Slide-level fields the feature needs, e.g. a background or Magic Move. */
-  slide?: { background?: { color: string | null; image: string | null }; magicMoveFromPrevious?: boolean };
+  slide?: {
+    background?: { color: string | null; image: string | null };
+    magicMoveFromPrevious?: boolean;
+    magicMoveDuration?: number;
+  };
 }
 
 const text = (
@@ -360,7 +364,7 @@ export function capabilities(): Capability[] {
       notes: [
         'Give the same magicMoveId to the objects that are "the same thing" on both slides.',
         'Set magicMoveFromPrevious: true on the *later* slide.',
-        'Unpaired objects cross-fade; deck.magicMoveDuration sets the timing.',
+        'Unpaired objects cross-fade; magicMoveDuration on the later slide sets the timing.',
         "deck.magicMoveEasing picks the motion curve: 'ease-in-out' (default), 'ease-out' (snappy start, soft landing), or 'linear'.",
       ],
       elements: [
@@ -374,8 +378,8 @@ export function capabilities(): Capability[] {
       id: 'magic-move-target',
       what: 'The second half of the pair: same identity, new position.',
       when: 'Always authored together with the slide before it.',
-      notes: ['This slide carries magicMoveFromPrevious: true.'],
-      slide: { magicMoveFromPrevious: true },
+      notes: ['This slide carries magicMoveFromPrevious: true and its own magicMoveDuration.'],
+      slide: { magicMoveFromPrevious: true, magicMoveDuration: 1000 },
       elements: [
         text('cap-magic2-title', 'The same object, moved', TITLE, { class: ['role-title'] }),
         text('cap-magic2-term', '$E = mc^2$', { x: 1000, y: 640, w: 700, h: 200 }, {

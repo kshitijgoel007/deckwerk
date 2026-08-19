@@ -61,6 +61,7 @@ export interface MeasuredSlide {
   notes: string;
   background: { color: string | null; image: string | null };
   magicMoveFromPrevious: boolean;
+  magicMoveDuration?: number;
   nodes: MeasuredNode[];
   /**
    * Inline style the browser silently refused: a segment with no colon, or a
@@ -485,6 +486,7 @@ export function slideFromMeasured(
     notes: measured.notes,
     background: measured.background,
     ...(measured.magicMoveFromPrevious ? { magicMoveFromPrevious: true } : {}),
+    ...(measured.magicMoveDuration !== undefined ? { magicMoveDuration: measured.magicMoveDuration } : {}),
     elements,
     timeline,
   };
@@ -710,6 +712,7 @@ export function slideToHtml(slide: Slide, canvas: { w: number; h: number }): str
     + ` data-canvas="${canvas.w}x${canvas.h}"`
     + (slide.name ? ` data-name="${escape(slide.name)}"` : '')
     + (slide.magicMoveFromPrevious ? ' data-magic-move-from-previous="true"' : '')
+    + (slide.magicMoveDuration !== undefined ? ` data-magic-move-duration="${slide.magicMoveDuration}"` : '')
     + `${background}>\n${body}\n</section>\n`;
 }
 

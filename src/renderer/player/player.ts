@@ -174,7 +174,7 @@ export class Player {
     next: Slide,
     previousNodes: Map<string, HTMLElement>,
   ): void {
-    const duration = this.deck.magicMoveDuration;
+    const duration = next.magicMoveDuration ?? 1000;
     // The named curves map to beziers chosen for object motion, not the CSS
     // keywords of the same name: 'ease-out' front-loads the motion (snappy
     // arrival), while the default symmetric ease-in-out keeps mid-transition

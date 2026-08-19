@@ -867,6 +867,9 @@ export function measureSlides(doc: Document): MeasuredSlide[] {
       notes: root.dataset.notes ?? '',
       background: { color: background, image: image ? image[1] : null },
       magicMoveFromPrevious: root.dataset.magicMoveFromPrevious === 'true',
+      ...(root.dataset.magicMoveDuration !== undefined
+        ? { magicMoveDuration: Number(root.dataset.magicMoveDuration) }
+        : {}),
       nodes,
       warnings,
     };

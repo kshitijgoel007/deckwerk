@@ -202,6 +202,8 @@ describe.skipIf(!ready)('reference.key ground truth', () => {
     near(shape.y, 100);
     near(shape.w, 400);
     near(shape.h, 300);
+    expect(shape.shape).toBe('rect');
+    expect(shape.path).toBeNull();
     expect(shape.fill).not.toBeNull();
     // Keynote themes define a default 1px black stroke that the app does not
     // paint on filled shapes; honouring it boxes every solid rectangle.
@@ -251,29 +253,16 @@ describe.skipIf(!ready)('reference.key ground truth', () => {
     expect(box.stroke).not.toBeNull();
   });
 
-  /**
-   * The outlined box draws to 1149x290 in its own path coordinates while
-   * Keynote's `naturalSize` claims 848x214. Using that claim as the SVG viewBox
-   * scaled the drawing up by ~35%, so the border spilled well outside the
-   * element — the selectable area was right but the visible border was not.
-   * The viewBox has to cover what the path actually draws.
-   */
+  /** Native rectangles inset their centred stroke, keeping all paint inside. */
   it.each([14, 15])('slide %i: the box border stays inside its element', (slide) => {
     const box = deck.slides[slide - 1].elements.find(
       (e) => e.type === 'shape' && e.stroke !== null,
     );
     if (box?.type !== 'shape') throw new Error('expected an outlined box');
-    expect(box.pathSize).not.toBeNull();
-
-    // Every drawn coordinate must fall within the viewBox.
-    const coords = (box.path ?? '')
-      .split(/[ ,]+/)
-      .map(Number)
-      .filter((n) => Number.isFinite(n));
-    const xs = coords.filter((_, i) => i % 2 === 0);
-    const ys = coords.filter((_, i) => i % 2 === 1);
-    expect(Math.max(...xs)).toBeLessThanOrEqual(box.pathSize!.w + 0.5);
-    expect(Math.max(...ys)).toBeLessThanOrEqual(box.pathSize!.h + 0.5);
+    expect(box.shape).toBe('rect');
+    expect(box.path).toBeNull();
+    expect(box.pathSize).toBeNull();
+    expect(box.strokeWidth).toBeLessThan(Math.min(box.w, box.h));
   });
 
   it('slides 14 and 15 agree on that box', () => {

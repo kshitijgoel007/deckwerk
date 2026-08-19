@@ -341,8 +341,11 @@ describe('deck objects become authored HTML', () => {
   });
 
   it('carries the slide identity a bake-back needs to find its target', () => {
-    const html = slideToHtml(emptyDeck('Deck').slides[0], { w: 1920, h: 1080 });
+    const slide = emptyDeck('Deck').slides[0];
+    slide.magicMoveDuration = 1450;
+    const html = slideToHtml(slide, { w: 1920, h: 1080 });
     expect(html).toContain('data-slide-id="slide-1"');
     expect(html).toContain('data-canvas="1920x1080"');
+    expect(html).toContain('data-magic-move-duration="1450"');
   });
 });

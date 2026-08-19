@@ -299,6 +299,8 @@ export const SlideSchema = z.object({
   layout: z.enum(['freeform', 'standard', 'title']).optional(),
   /** Animate the transition from the preceding slide, including unpaired fades. */
   magicMoveFromPrevious: z.boolean().optional(),
+  /** Duration of the Magic Move transition from the preceding slide, in milliseconds. */
+  magicMoveDuration: z.number().min(100).max(5000).optional(),
   /** Kept in the deck and editable, but stepped over when presenting. */
   skipped: z.boolean().optional(),
   elements: z.array(ElementSchema).default([]),
@@ -319,8 +321,6 @@ export const DeckSchema = z.object({
   themePreset: z.string().nullable().default(null),
   /** Persistent deck defaults, composed property-by-property from theme presets. */
   themeStyle: ThemeStyleSchema.nullable().default(null),
-  /** Deck-wide duration for every explicitly paired Magic Move, in milliseconds. */
-  magicMoveDuration: z.number().min(100).max(5000).default(1000),
   /** Deck-wide motion curve for Magic Move transitions. */
   magicMoveEasing: z.enum(['ease-in-out', 'ease-out', 'linear']).default('ease-in-out'),
   slides: z.array(SlideSchema).default([]),
@@ -350,12 +350,34 @@ export const DECK_VERSION = 1 as const;
  * path-annotated message rather than a raw ZodError dump.
  */
 export function parseDeck(raw: unknown): Deck {
-  const result = DeckSchema.safeParse(raw);
+  const result = DeckSchema.safeParse(migrateDeckMagicMoveDuration(raw));
   if (result.success) return result.data;
   const details = result.error.issues
     .map((i) => `  ${i.path.join('.') || '<root>'}: ${i.message}`)
     .join('\n');
   throw new Error(`deck.json is not valid:\n${details}`);
+}
+
+/**
+ * Decks written before per-slide Magic Move timing stored one global duration.
+ * Copy that value onto slides which do not already carry an explicit duration;
+ * DeckSchema then strips the retired deck-level field from the parsed result.
+ */
+function migrateDeckMagicMoveDuration(raw: unknown): unknown {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return raw;
+  const deck = raw as Record<string, unknown>;
+  if (!Object.prototype.hasOwnProperty.call(deck, 'magicMoveDuration') || !Array.isArray(deck.slides)) return raw;
+  const duration = deck.magicMoveDuration;
+  return {
+    ...deck,
+    slides: deck.slides.map((candidate) => {
+      if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return candidate;
+      const slide = candidate as Record<string, unknown>;
+      return Object.prototype.hasOwnProperty.call(slide, 'magicMoveDuration')
+        ? candidate
+        : { ...slide, magicMoveDuration: duration };
+    }),
+  };
 }
 
 /**

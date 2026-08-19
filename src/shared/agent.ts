@@ -63,6 +63,7 @@ export const ComputedSlideSceneSchema = z.object({
   background: z.unknown(),
   layout: z.string(),
   magicMoveFromPrevious: z.boolean(),
+  magicMoveDuration: z.number().min(100).max(5000),
   skipped: z.boolean(),
   timeline: z.array(z.unknown()),
   elements: z.array(ComputedElementSceneSchema),
@@ -127,7 +128,6 @@ const UpdateDeckOperation = z.object({
   theme: z.string().optional(),
   themePreset: z.string().nullable().optional(),
   themeStyle: DeckSchema.shape.themeStyle.removeDefault().optional(),
-  magicMoveDuration: z.number().min(100).max(5000).optional(),
   magicMoveEasing: z.enum(['ease-in-out', 'ease-out', 'linear']).optional(),
 });
 /**
@@ -269,7 +269,6 @@ function applyOperation(deck: Deck, operation: AgentOperation): void {
       if (operation.theme !== undefined) deck.theme = operation.theme;
       if (operation.themePreset !== undefined) deck.themePreset = operation.themePreset;
       if (operation.themeStyle !== undefined) deck.themeStyle = structuredClone(operation.themeStyle);
-      if (operation.magicMoveDuration !== undefined) deck.magicMoveDuration = operation.magicMoveDuration;
       if (operation.magicMoveEasing !== undefined) deck.magicMoveEasing = operation.magicMoveEasing;
       return;
     case 'setSlideProperties': {
@@ -354,6 +353,7 @@ export function authoredScene(
     background: slide.background,
     layout: slide.layout ?? 'freeform',
     magicMoveFromPrevious: slide.magicMoveFromPrevious ?? false,
+    magicMoveDuration: slide.magicMoveDuration ?? 1000,
     skipped: slide.skipped ?? false,
     timeline: slide.timeline,
     elements: slide.elements.map((element) => authoredElementScene(element, selectedElementIds)),

@@ -573,7 +573,6 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
           theme: room.session.deck.theme,
           themePreset: room.session.deck.themePreset,
           themeStyle: room.session.deck.themeStyle,
-          magicMoveDuration: room.session.deck.magicMoveDuration,
           magicMoveEasing: room.session.deck.magicMoveEasing,
         },
         slides: selected.map((slide) => inspectNativeSlide(room.session.deck, slide)),

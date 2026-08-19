@@ -1,6 +1,6 @@
 import '../../src/renderer/player/player.css';
 import '../../src/renderer/player/type.css';
-import { DeckSchema } from '../../src/shared/deck.js';
+import { parseDeck } from '../../src/shared/deck.js';
 import { Player } from '../../src/renderer/player/player.js';
 
 /**
@@ -12,9 +12,11 @@ const params = new URLSearchParams(location.search);
 const deckName = params.get('deck') ?? 'decks/animation-reference';
 
 const raw = await (await fetch(`/${deckName}/deck.json`)).json();
-const deck = DeckSchema.parse(raw);
+const deck = parseDeck(raw);
 const duration = Number(params.get('duration'));
-if (Number.isFinite(duration) && duration > 0) deck.magicMoveDuration = duration;
+if (Number.isFinite(duration) && duration > 0) {
+  for (const slide of deck.slides) slide.magicMoveDuration = duration;
+}
 
 const theme = document.createElement('style');
 theme.textContent = await (await fetch(`/${deckName}/theme.css`)).text();

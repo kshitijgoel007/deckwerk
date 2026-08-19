@@ -171,6 +171,32 @@ describe.skipIf(!ready)('keynote importer', () => {
     expect(curves).toBeGreaterThan(0);
   }, 600_000);
 
+  const allHandsDeck = join(LOCAL_FIXTURES, '2608_all_HANDS.key');
+
+  it.skipIf(!existsSync(allHandsDeck))(
+    'imports the red outline on All Hands slide 5 as a native rectangle',
+    () => {
+      const stdout = execFileSync(PYTHON, ['-c', [
+        'import json',
+        'from pathlib import Path',
+        'from importers.keynote.import_keynote import import_key',
+        `d,_=import_key(Path(${JSON.stringify(allHandsDeck)}),Path('/dev/null'),False)`,
+        'print(json.dumps(d))',
+      ].join(';')], { encoding: 'utf8', cwd: process.cwd(), maxBuffer: 64 * 1024 * 1024 });
+      const deck = parseDeck(JSON.parse(stdout));
+      const redOutline = deck.slides[4].elements.find((element) =>
+        element.type === 'shape' && element.stroke === '#ee220c');
+
+      expect(redOutline).toBeDefined();
+      if (redOutline?.type !== 'shape') throw new Error('expected a shape');
+      expect(redOutline.shape).toBe('rect');
+      expect(redOutline.path).toBeNull();
+      expect(redOutline.fill).toBeNull();
+      expect(redOutline.strokeWidth).toBe(7);
+    },
+    60_000,
+  );
+
   const bitterLessonDeck = join(LOCAL_FIXTURES, '2606_bitter_lesson.key');
 
   function importBitterLesson() {

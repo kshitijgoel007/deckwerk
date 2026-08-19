@@ -337,7 +337,7 @@ Operations, applied in array order:
 | `insertElements` | Append elements to a slide |
 | `replaceElement` | Replace one element; its `id` must not change |
 | `deleteElements` | Remove elements and any timeline entries referencing them |
-| `updateDeck` | `title`, `magicMoveDuration` |
+| `updateDeck` | `title`, `magicMoveEasing` |
 
 Rules worth internalising:
 

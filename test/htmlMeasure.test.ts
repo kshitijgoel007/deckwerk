@@ -224,7 +224,8 @@ describe('the walk', () => {
                data-notes="Say hello" style="background:#101014">
         <h1 class="role-title">Hello</h1>
       </section>
-      <section class="slide" data-slide-id="next" data-magic-move-from-previous="true"></section>
+      <section class="slide" data-slide-id="next" data-magic-move-from-previous="true"
+               data-magic-move-duration="1450"></section>
     `);
     const slides = measureSlides(doc);
 
@@ -236,6 +237,7 @@ describe('the walk', () => {
       magicMoveFromPrevious: false,
     });
     expect(slides[1].magicMoveFromPrevious).toBe(true);
+    expect(slides[1].magicMoveDuration).toBe(1450);
   });
 
   it('treats a page with no slide sections as one slide', () => {

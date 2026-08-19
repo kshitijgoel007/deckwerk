@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { readFileSync } from 'node:fs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { emptyDeck, type SlideElement } from '../src/shared/deck.js';
+import { emptyDeck, parseDeck, type SlideElement } from '../src/shared/deck.js';
 import {
   essentialMagicMovePairs,
   explicitMagicMovePairs,
@@ -235,7 +235,7 @@ describe('Magic Move matching', () => {
 
   it('runs paired movement and edge-window unpaired fades on one timeline', async () => {
     const deck = twoSlideDeck();
-    deck.magicMoveDuration = 1350;
+    deck.slides[1].magicMoveDuration = 1350;
     deck.slides[0].elements[0].magicMoveId = 'pair';
     deck.slides[1].elements[0].magicMoveId = 'pair';
     deck.slides[0].elements.push(text('disappears', 'Disappears', 900));
@@ -446,11 +446,18 @@ describe('Magic Move matching', () => {
       .toHaveLength(0);
   });
 
-  it('uses a slower deck-wide duration for every paired animation', () => {
+  it('uses the destination slide duration for every paired animation', () => {
     const deck = twoSlideDeck();
-    deck.magicMoveDuration = 1250;
+    deck.slides[1].magicMoveDuration = 1250;
     deck.slides[0].elements[0].magicMoveId = 'pair';
     deck.slides[1].elements[0].magicMoveId = 'pair';
+    const third = structuredClone(deck.slides[1]);
+    third.id = 'slide-3';
+    third.elements[0].id = 'target-3';
+    third.elements[0].x = 900;
+    third.magicMoveFromPrevious = true;
+    third.magicMoveDuration = 650;
+    deck.slides.push(third);
     const host = document.createElement('div');
     document.body.appendChild(host);
     const animate = vi.fn();
@@ -461,6 +468,10 @@ describe('Magic Move matching', () => {
 
     expect(animate).toHaveBeenCalled();
     expect(animate.mock.calls[0][1]).toMatchObject({ duration: 1250 });
+    animate.mockClear();
+    player.goToSlide(2);
+    expect(animate).toHaveBeenCalled();
+    expect(animate.mock.calls[0][1]).toMatchObject({ duration: 650 });
     player.destroy();
   });
 
@@ -504,7 +515,7 @@ describe('Magic Move matching', () => {
     directPlayer.destroy();
   });
 
-  it('edits the one global duration from the dedicated panel', () => {
+  it('edits the selected transition duration from the dedicated panel', () => {
     const store = new EditorStore(twoSlideDeck(), '/tmp/magic');
     const host = document.createElement('div');
     document.body.appendChild(host);
@@ -513,6 +524,18 @@ describe('Magic Move matching', () => {
     expect(input.value).toBe('1000');
     input.value = '1450';
     input.dispatchEvent(new Event('change', { bubbles: true }));
-    expect(store.get().deck.magicMoveDuration).toBe(1450);
+    expect(store.get().deck.slides[1].magicMoveDuration).toBe(1450);
+    expect(host.textContent).toContain('Duration');
+    expect(host.textContent).not.toContain('Duration for deck');
+  });
+
+  it('migrates a legacy deck-wide duration onto every slide', () => {
+    const legacy = parseDeck({
+      ...emptyDeck('Legacy Magic Move'),
+      magicMoveDuration: 1750,
+      slides: [{ id: 'slide-1' }, { id: 'slide-2', magicMoveDuration: 900 }],
+    });
+    expect(legacy.slides.map((slide) => slide.magicMoveDuration)).toEqual([1750, 900]);
+    expect(legacy).not.toHaveProperty('magicMoveDuration');
   });
 });

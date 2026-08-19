@@ -122,7 +122,6 @@ function applyLenient(
       if (op.theme !== undefined) deck.theme = op.theme;
       if (op.themePreset !== undefined) deck.themePreset = op.themePreset;
       if (op.themeStyle !== undefined) deck.themeStyle = structuredClone(op.themeStyle);
-      if (op.magicMoveDuration !== undefined) deck.magicMoveDuration = op.magicMoveDuration;
       if (op.magicMoveEasing !== undefined) deck.magicMoveEasing = op.magicMoveEasing;
       return;
     case 'setSlideProperties': {

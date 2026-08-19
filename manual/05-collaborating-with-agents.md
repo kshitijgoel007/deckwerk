@@ -1,10 +1,12 @@
 # Collaborating with agents
 
+DeckWerk is closely integrated with agents that can edit slides directly, see and resolve comments that you put on elements or slides, create whole presentations from scratch, and essentially can do ~anything that a coding agent can do today.
+
 Click **Agent…** to start a deck-scoped agent session. A compact chat panel drops down beneath the toolbar with the message box focused, while the ordinary editor remains visible. Type a request and press **Enter** to send it; use **Shift+Enter** for a new line.
 
-Sign in with ChatGPT if DeckWerk asks you to. The agent receives the same complete HTTP API onboarding that the Agent button copies to the clipboard: the loopback session URL, deck ID, inspection endpoints, native-edit and HTML-authoring lanes, and the preview/apply/verification contract.
+When you send a prompt to the agent, the agent receives access to a specificially designed web API that gives the agent full affordance over the Deck. It can create slides from scratch in HTML and import them in DeckWerk, with no limits to its creativity or styling. Or it can execute surgical edits to styling and content of existing slides.
 
-The signed-in email appears at the top of the panel. Choose **Switch account** to use a different ChatGPT account; DeckWerk keeps this login isolated from other Codex clients on the computer.
+Sign in with ChatGPT if DeckWerk asks you to. The signed-in email appears at the top of the panel. Choose **Switch account** to use a different ChatGPT account; DeckWerk keeps this login isolated from other Codex clients on the computer.
 
 Choose a model from the **Model** menu. DeckWerk starts with the default reported by Codex for the signed-in account, and a new choice takes effect with the next message.
 

@@ -69,17 +69,19 @@ export class MagicMovePanel {
     const duration = document.createElement('label');
     duration.className = 'field magic-duration';
     const durationLabel = document.createElement('span');
-    durationLabel.textContent = 'Duration for deck';
+    durationLabel.textContent = 'Duration';
     const durationInput = document.createElement('input');
     durationInput.type = 'number';
     durationInput.min = '100';
     durationInput.max = '5000';
     durationInput.step = '50';
-    durationInput.value = String(deck.magicMoveDuration);
+    durationInput.value = String(next?.magicMoveDuration ?? 1000);
+    durationInput.disabled = !next;
     durationInput.addEventListener('change', () => {
       const value = Math.max(100, Math.min(5000, Number(durationInput.value) || 1000));
       this.store.commit((nextDeck) => {
-        nextDeck.magicMoveDuration = value;
+        const destination = nextDeck.slides[slideIndex + 1];
+        if (destination) destination.magicMoveDuration = value;
       }, { label: 'Change Magic Move duration' });
     });
     const suffix = document.createElement('span');

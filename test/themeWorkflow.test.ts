@@ -88,18 +88,22 @@ describe('role-based theme workflow', () => {
       .toEqual(['role-title', 'role-body']);
   });
 
-  it('keeps the native colour panel anchored until its choice is accepted', () => {
+  it('keeps the full colour popover open while a choice is explored', () => {
     const { store, host } = setup();
     store.select(['title']);
-    const input = host.querySelector<HTMLInputElement>('input[type="color"]')!;
-    const originalInput = input;
+    host.querySelector<HTMLButtonElement>('.color-picker-trigger')!.click();
+    const popover = document.querySelector<HTMLElement>('.color-picker-popover')!;
+    const hue = popover.querySelector<HTMLInputElement>('input[aria-label="Hue"]')!;
 
-    input.value = '#123456';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-    expect(host.querySelector('input[type="color"]')).toBe(originalInput);
+    hue.value = '180';
+    hue.dispatchEvent(new Event('input', { bubbles: true }));
+    expect(popover.isConnected).toBe(true);
     expect(store.slide!.elements.find((el) => el.id === 'title')!.style.color).toBe('#f00');
 
-    input.dispatchEvent(new Event('change', { bubbles: true }));
+    const hex = popover.querySelector<HTMLInputElement>('input[aria-label="Hex color"]')!;
+    hex.value = '#123456';
+    hex.dispatchEvent(new Event('change', { bubbles: true }));
+    expect(popover.isConnected).toBe(true);
     expect(store.slide!.elements.find((el) => el.id === 'title')!.style.color).toBe('#123456');
   });
 

@@ -5,6 +5,36 @@ import type { EditorStore } from './store.js';
 import { LAYOUT_LABELS, applySlideLayout, type SlideLayout } from './slideLayouts.js';
 import { MagicMovePanel } from './magicMovePanel.js';
 import { fontFamilyField } from './fontPicker.js';
+import { colorField, colorForInput } from './colorPicker.js';
+
+interface TextPaintInfo {
+  value: string | null;
+  inheritedValue: string | null;
+  source?: { kind: 'theme' | 'css'; preview?: string | null; label?: string };
+  clear: { kind: 'theme' | 'css'; label: string };
+}
+
+function setTextPaint(element: Extract<SlideElement, { type: 'text' }>, value: string | null): void {
+  const style = { ...element.style };
+  const contentStyle = { ...element.contentStyle };
+  for (const declarations of [style, contentStyle]) {
+    const textClipped = /text/i.test(
+      declarations['background-clip'] ?? declarations['-webkit-background-clip'] ?? '',
+    );
+    delete declarations.color;
+    delete declarations['-webkit-text-fill-color'];
+    if (textClipped) {
+      delete declarations.background;
+      delete declarations['background-image'];
+      delete declarations['background-clip'];
+      delete declarations['-webkit-background-clip'];
+    }
+  }
+  if (value) style.color = value;
+  element.style = style;
+  if (Object.keys(contentStyle).length > 0) element.contentStyle = contentStyle;
+  else delete element.contentStyle;
+}
 
 /** Display labels for the video behaviour flags. */
 const VIDEO_FLAG_LABELS = {
@@ -144,10 +174,13 @@ export class Inspector {
       layout.append(layoutLabel, layoutSelect);
       layoutSection.content.appendChild(layout);
       layoutSection.content.appendChild(
-        colorField('Background (clear = theme)', slide?.background.color ?? null, (value) => {
+        colorField('Background', slide?.background.color ?? null, (value) => {
           this.store.commit((next) => {
             next.slides[slideIndex].background = { color: value, image: null };
           });
+        }, {
+          inheritedValue: deck.themeStyle?.colors.background ?? null,
+          clear: { kind: 'theme', label: 'Use theme background' },
         }),
       );
       this.host.appendChild(layoutSection.section);
@@ -506,10 +539,13 @@ export class Inspector {
         }),
       ));
     } else {
-      wrap.appendChild(colorField('Fill', commonValue(shapes.map((shape) => shape.fill)) ?? shapes[0].fill, (value) =>
-        this.store.updateSelected((element) => {
+      wrap.appendChild(colorField(
+        'Fill',
+        commonValue(shapes.map((shape) => shape.fill)) ?? shapes[0].fill,
+        (value) => this.store.updateSelected((element) => {
           if (element.type === 'shape') element.fill = value;
         }),
+        { clear: { kind: 'none', label: 'No fill (transparent)' } },
       ));
     }
 
@@ -519,6 +555,7 @@ export class Inspector {
       (value) => this.store.updateSelected((element) => {
         if (element.type === 'shape') element.stroke = value;
       }),
+      { clear: { kind: 'none', label: 'No stroke' } },
     ));
     const numbers = document.createElement('div');
     numbers.className = 'field-grid';
@@ -659,17 +696,19 @@ export class Inspector {
     ));
 
     const colors = commonValue(texts.map((text) => text.style.color ?? ''));
+    const paint = this.textPaintInfo(texts[0]);
     wrap.appendChild(colorField(
       colors === null ? 'Colour (mixed)' : 'Colour',
-      colors === null ? (texts[0].style.color ?? null) : (colors || null),
+      colors === null ? paint.value : (colors || paint.value),
       (value) => this.store.updateSelected((element) => {
         if (element.type !== 'text') return;
-        const style = { ...element.style };
-        if (value) style.color = value;
-        else delete style.color;
-        element.style = style;
+        setTextPaint(element, value);
       }),
-      this.effectiveTextColor(texts[0]),
+      {
+        inheritedValue: paint.inheritedValue,
+        source: paint.source,
+        clear: paint.clear,
+      },
     ));
     wrap.appendChild(mixedSelectField(
       'Align', ['left', 'center', 'right', 'justify'],
@@ -780,8 +819,10 @@ export class Inspector {
         if (element.type === 'image' || element.type === 'video') {
           clearLegacyMediaBorder(element);
           element.borderColor = value;
+          if (value === null) element.borderWidth = 0;
         }
       }),
+      { clear: { kind: 'none', label: 'No border' } },
     ));
     border.content.appendChild(
       numberField('Width', commonValue(media.map((element) => element.borderWidth ?? 0)), (value) =>
@@ -1034,17 +1075,19 @@ export class Inspector {
           ),
         );
 
+        const paint = this.textPaintInfo(el);
         typography.content.appendChild(
           colorField(
             'Colour',
-            el.style['color'] ?? null,
+            paint.value,
             (v) => this.store.updateSelected((e) => {
-                const rest = { ...e.style };
-                if (v) rest['color'] = v;
-                else delete rest['color'];
-                e.style = rest;
+                if (e.type === 'text') setTextPaint(e, v);
               }),
-            this.effectiveTextColor(el),
+            {
+              inheritedValue: paint.inheritedValue,
+              source: paint.source,
+              clear: paint.clear,
+            },
           ),
         );
         const alignment = document.createElement('div');
@@ -1123,6 +1166,7 @@ export class Inspector {
             this.store.updateSelected((e) => {
               if (e.type === 'shape') e.fill = v;
             }),
+            { clear: { kind: 'none', label: 'No fill (transparent)' } },
           ),
         );
         colors.appendChild(
@@ -1130,6 +1174,7 @@ export class Inspector {
             this.store.updateSelected((e) => {
               if (e.type === 'shape') e.stroke = v;
             }),
+            { clear: { kind: 'none', label: 'No stroke' } },
           ),
         );
         style.content.appendChild(colors);
@@ -1168,18 +1213,20 @@ export class Inspector {
     }
   }
 
-  /** The colour the canvas actually paints when the element inherits from CSS. */
-  private effectiveTextColor(el: SlideElement): string | null {
-    if (el.type !== 'text') return null;
+  /** The solid colour reported by the live canvas after the full CSS cascade. */
+  private computedTextColor(el: Extract<SlideElement, { type: 'text' }>): string | null {
     const escapeCss = (globalThis.CSS as { escape?: (value: string) => string } | undefined)
       ?.escape;
     const escaped = escapeCss ? escapeCss(el.id) : el.id.replace(/["\\]/g, '\\$&');
-    const node = document.querySelector<HTMLElement>(
+    const wrapper = document.querySelector<HTMLElement>(
       `.canvas-host [data-element-id="${escaped}"]`,
     );
-    const rendered = node ? colorForInput(getComputedStyle(node).color) : null;
-    if (rendered) return rendered;
+    const node = wrapper?.querySelector<HTMLElement>('.text-content') ?? wrapper;
+    return node ? colorForInput(getComputedStyle(node).color) : null;
+  }
 
+  /** The installed theme colour for this semantic role, if the deck has one. */
+  private themeTextColor(el: Extract<SlideElement, { type: 'text' }>): string | null {
     const style = this.store.get().deck.themeStyle;
     if (!style) return null;
     const role = el.class.find((name) =>
@@ -1188,6 +1235,72 @@ export class Inspector {
     return colorForInput(
       (role ? style.fonts[role].color : undefined) ?? style.colors.text,
     );
+  }
+
+  /**
+   * Distinguish an explicit solid from an installed theme value and from
+   * arbitrary CSS paint (gradients, inline runs, or user-authored rules).
+   * `null` alone is never enough evidence that a colour came from the theme.
+   */
+  private textPaintInfo(el: Extract<SlideElement, { type: 'text' }>): TextPaintInfo {
+    const declarations = [el.contentStyle ?? {}, el.style];
+    const declared = (property: string): string | undefined =>
+      declarations.map((style) => style[property]).find((value) => value !== undefined);
+    const declaredColor = declared('color') ?? declared('-webkit-text-fill-color') ?? null;
+    const background = declared('background-image') ?? declared('background') ?? null;
+    const clip = declared('background-clip') ?? declared('-webkit-background-clip') ?? '';
+    const gradient = background && background !== 'none' && /gradient\(/i.test(background)
+      ? background
+      : null;
+    const inlineRunPaint = /style\s*=\s*["'][^"']*(?:color|-webkit-text-fill-color|background(?:-image)?)\s*:/i
+      .test(el.html);
+    const cssPaint = Boolean(
+      (gradient && /text/i.test(clip))
+      || declared('-webkit-text-fill-color')
+      || inlineRunPaint,
+    );
+    const computed = this.computedTextColor(el);
+    const theme = this.themeTextColor(el);
+    const explicitSolid = colorForInput(declaredColor);
+
+    if (cssPaint || (declaredColor !== null && !explicitSolid)) {
+      return {
+        value: declaredColor,
+        inheritedValue: computed ?? explicitSolid,
+        source: {
+          kind: 'css',
+          preview: gradient ?? explicitSolid,
+          label: gradient ? 'CSS gradient text' : 'CSS-defined text paint',
+        },
+        clear: { kind: 'css', label: 'Remove CSS text paint' },
+      };
+    }
+
+    if (explicitSolid) {
+      return {
+        value: declaredColor,
+        inheritedValue: computed ?? explicitSolid,
+        clear: theme
+          ? { kind: 'theme', label: 'Use theme text color' }
+          : { kind: 'css', label: 'Use inherited text color' },
+      };
+    }
+
+    if (theme && (!computed || computed === theme)) {
+      return {
+        value: null,
+        inheritedValue: computed ?? theme,
+        source: { kind: 'theme', label: 'Theme color' },
+        clear: { kind: 'theme', label: 'Use theme text color' },
+      };
+    }
+
+    return {
+      value: null,
+      inheritedValue: computed,
+      source: { kind: 'css', preview: computed, label: 'CSS-defined text color' },
+      clear: { kind: 'css', label: 'Use inherited text color' },
+    };
   }
 
   private mediaBorderControls(): HTMLElement {
@@ -1199,8 +1312,9 @@ export class Inspector {
         if (target.type === 'image' || target.type === 'video') {
           clearLegacyMediaBorder(target);
           target.borderColor = value;
+          if (value === null) target.borderWidth = 0;
         }
-      })));
+      }), { clear: { kind: 'none', label: 'No border' } }));
     border.content.appendChild(
       numberField('Width', el.borderWidth ?? 0, (value) =>
         this.store.updateSelected((target) => {
@@ -1776,62 +1890,6 @@ function trimRangeSlider(
   slider.append(track, startInput, endInput);
   wrap.append(span, slider);
   return wrap;
-}
-
-/**
- * A colour swatch picker. `null` means "no colour" (transparent fill, no
- * stroke, inherit text colour), cleared with the x button.
- */
-function colorField(
-  label: string,
-  value: string | null,
-  onChange: (v: string | null) => void,
-  inheritedValue: string | null = null,
-): HTMLElement {
-  const wrap = document.createElement('label');
-  wrap.className = 'field field-color';
-  const span = document.createElement('span');
-  span.textContent = label;
-  const input = document.createElement('input');
-  input.type = 'color';
-  // Swatches from the installed theme, if any (a <datalist> the toolbar keeps
-  // up to date). This is what "installing a theme updates the choices" means.
-  input.setAttribute('list', 'theme-swatches');
-  // <input type=color> only speaks 6-digit hex; anything else (rgba, names,
-  // unset) previews as mid-grey until picked.
-  input.value = colorForInput(value) ?? inheritedValue ?? '#888888';
-  input.dataset.inherited = String(value === null);
-  input.title = value === null ? 'Inherited colour' : 'Explicit colour';
-  // Native colour panels emit `input` while their gradient is being explored.
-  // Committing there rebuilds this inspector and destroys the input anchoring
-  // the still-open panel. Commit once the choice is accepted instead.
-  input.addEventListener('change', () => onChange(input.value));
-  const clear = document.createElement('button');
-  clear.type = 'button';
-  clear.className = 'icon-button';
-  clear.textContent = '×';
-  clear.title = 'No colour';
-  clear.addEventListener('click', (e) => {
-    e.preventDefault();
-    onChange(null);
-  });
-  wrap.append(span, input, clear);
-  return wrap;
-}
-
-/** Convert CSS hex/rgb colours to the six-digit format native colour inputs require. */
-function colorForInput(value: string | null | undefined): string | null {
-  if (!value) return null;
-  const hex = /^#([0-9a-f]{6})$/i.exec(value.trim());
-  if (hex) return `#${hex[1].toLowerCase()}`;
-  const short = /^#([0-9a-f])([0-9a-f])([0-9a-f])$/i.exec(value.trim());
-  if (short) return `#${short.slice(1).map((part) => part + part).join('').toLowerCase()}`;
-  const rgb = /^rgba?\(\s*(\d+)\s*[, ]\s*(\d+)\s*[, ]\s*(\d+)(?:\s*[,/]\s*(?:1(?:\.0+)?))?\s*\)$/i.exec(
-    value.trim(),
-  );
-  if (!rgb) return null;
-  return `#${rgb.slice(1, 4).map((part) =>
-    Math.max(0, Math.min(255, Number(part))).toString(16).padStart(2, '0')).join('')}`;
 }
 
 function button(label: string, onClick: () => void, variant = ''): HTMLElement {

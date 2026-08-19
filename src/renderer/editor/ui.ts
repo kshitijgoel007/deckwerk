@@ -62,6 +62,26 @@ function bindDismiss(popover: HTMLElement, anchor: HTMLElement): void {
   setTimeout(() => activeDismiss && document.addEventListener('pointerdown', activeDismiss, true), 0);
 }
 
+/**
+ * Show editor-owned content beside a control while sharing the same singleton
+ * and outside-click behaviour as menus and help. Complex controls such as the
+ * colour picker use this instead of reimplementing popover positioning.
+ */
+export function openAnchoredPopover(
+  anchor: HTMLElement,
+  popover: HTMLElement,
+  options: { focus?: boolean } = {},
+): void {
+  closePopover();
+  placePopover(popover, anchor);
+  bindDismiss(popover, anchor);
+  if (options.focus !== false) {
+    popover.querySelector<HTMLElement>(
+      'button:not(:disabled), input:not(:disabled), [tabindex="0"]',
+    )?.focus();
+  }
+}
+
 export function openMenu(anchor: HTMLElement, items: MenuItem[]): void {
   closePopover();
   const menu = document.createElement('div');
