@@ -1021,6 +1021,7 @@ function registerHandlers(): void {
           importedContactSheetUrl: draft.importedContactSheetUrl,
         });
       } : undefined,
+      getAgentChatId: agentMode ? () => agentChat.chatId(s.dir) : undefined,
     };
     try {
       return await startCollabServer(base);

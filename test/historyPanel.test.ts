@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { emptyDeck } from '../src/shared/deck.js';
 import { HistoryPanel } from '../src/renderer/editor/historyPanel.js';
 import { EditorStore } from '../src/renderer/editor/store.js';
+import { describeAgentEdit } from '../src/renderer/collab/collabBridge.js';
 
 describe('edit history', () => {
   beforeEach(() => document.body.replaceChildren());
@@ -44,16 +45,50 @@ describe('edit history', () => {
     const store = new EditorStore(emptyDeck('History'), '/tmp/history');
     const first = structuredClone(store.get().deck);
     first.title = 'Agent revision one';
-    store.applyRemote(first, 'Agent: revise paper slides', { coalesce: false });
+    store.applyRemote(first, 'Agent edit', {
+      coalesce: false,
+      description: 'Revised the paper slides. Changed 1 revised slide.',
+      agentChatId: 'thread-1',
+    });
     const second = structuredClone(first);
     second.title = 'Agent revision two';
-    store.applyRemote(second, 'Agent: revise paper slides', { coalesce: false });
+    store.applyRemote(second, 'Agent edit', {
+      coalesce: false,
+      description: 'Revised the paper slides again. Changed 1 revised slide.',
+      agentChatId: 'thread-1',
+    });
 
     const agentRevisions = store.history()
-      .filter((item) => item.label === 'Agent: revise paper slides');
+      .filter((item) => item.label === 'Agent edit');
     expect(agentRevisions).toHaveLength(2);
     expect(store.restoreHistory(agentRevisions[1].id)).toBe(true);
     expect(store.get().deck.title).toBe('Agent revision one');
-    expect(store.history()[0].label).toBe('Reverted to Agent: revise paper slides');
+    expect(store.history()[0].label).toBe('Reverted to Agent edit');
+  });
+
+  it('shows a verbose Agent description and opens its linked chat independently', () => {
+    const store = new EditorStore(emptyDeck('History'), '/tmp/history');
+    const revised = structuredClone(store.get().deck);
+    revised.title = 'Agent revision';
+    store.applyRemote(revised, 'Agent edit', {
+      coalesce: false,
+      description: 'Reworked the opening. Changed 2 revised slides and 3 added objects.',
+      agentChatId: 'thread-7',
+    });
+    const host = document.createElement('div');
+    const opened: string[] = [];
+    new HistoryPanel(host, store, { onOpenAgentChat: (chatId) => opened.push(chatId) });
+    expect(host.querySelector('.history-description')?.textContent)
+      .toContain('Changed 2 revised slides and 3 added objects');
+    host.querySelector<HTMLButtonElement>('.history-chat-link')?.click();
+    expect(opened).toEqual(['thread-7']);
+  });
+
+  it('expands an Agent transaction label with a structural edit summary', () => {
+    expect(describeAgentEdit('Agent: Refine the opening', [
+      { op: 'replaceSlide', slideId: 's1', slide: emptyDeck().slides[0] },
+      { op: 'setSlideProperties', slideId: 's2', slide: emptyDeck().slides[0] },
+      { op: 'deleteElements', slideId: 's1', elementIds: ['e1', 'e2', 'e3'] },
+    ])).toBe('Refine the opening. Changed 2 revised slides and 3 removed objects.');
   });
 });

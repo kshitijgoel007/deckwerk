@@ -102,13 +102,17 @@ export const ServerTxnSchema = z.object({
   byClientId: z.string(),
   label: z.string(),
   ops: z.array(AgentOperationSchema).min(1),
+  /** Embedded Agent conversation that produced this transaction. */
+  agentChatId: z.string().optional(),
 });
 
 export const ServerDeckSchema = z.object({
   kind: z.literal('deck'),
   seq: z.number().int().nonnegative(),
   deck: DeckSchema,
-  reason: z.enum(['external-edit', 'resync']),
+  reason: z.enum(['agent-edit', 'external-edit', 'resync']),
+  label: z.string().optional(),
+  agentChatId: z.string().optional(),
 });
 
 export const ServerPresenceSchema = z.object({

@@ -133,6 +133,8 @@ export interface CollabServerOptions {
   draftArchiveDir?: string;
   /** Publish the newest HTML work-in-progress to the embedded agent chat. */
   onHtmlDraft?: (draft: HtmlDraftPreview) => void;
+  /** Attribute Agent HTTP edits to the embedded conversation that made them. */
+  getAgentChatId?: () => string | null;
   /**
    * Called when the host requests the session end (POST /api/end from
    * loopback in a hosted session). The owner tears the server down; the
@@ -206,7 +208,18 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
     const session = await CollabSession.open(deckDirOf(deckId));
     const room: Room = { session, peers: new Map(), guestCounter: 0, agentPresence: null };
     session.watch({
-      onExternalDeck: (deck, seq) => broadcast(room, { kind: 'deck', seq, deck, reason: 'external-edit' }),
+      onExternalDeck: (deck, seq) => broadcast(room, {
+        kind: 'deck',
+        seq,
+        deck,
+        reason: options.agentMode ? 'agent-edit' : 'external-edit',
+        ...(options.agentMode
+          ? {
+              label: 'The Agent updated the deck through its file-based authoring workspace.',
+              agentChatId: options.getAgentChatId?.() ?? undefined,
+            }
+          : {}),
+      }),
       onExternalTheme: (css) => broadcast(room, { kind: 'theme', css, byClientId: '' }),
     });
     rooms.set(deckId, room);
@@ -706,6 +719,7 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
       broadcast(room, {
         kind: 'txn', seq: applied.seq, txnId: `agent-http-${randomUUID()}`,
         byClientId: 'agent-http', label, ops: draft.operations,
+        agentChatId: options.getAgentChatId?.() ?? undefined,
       });
       const result = {
         digest,
@@ -746,7 +760,11 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
         ? { op: 'replaceSlide', slideId: slide.id, slide: next as typeof slide }
         : { op: 'replaceElement', slideId: slide.id, elementId: owner.id, element: next as typeof owner };
       const applied = room.session.applyOps([operation]);
-      broadcast(room, { kind: 'deck', seq: applied.seq, deck: applied.deck, reason: 'external-edit' });
+      broadcast(room, {
+        kind: 'deck', seq: applied.seq, deck: applied.deck, reason: 'agent-edit',
+        label: `The Agent added a comment${body.slideId ? ` to slide ${body.slideId}` : ''}: ${body.text.trim().slice(0, 160)}`,
+        agentChatId: options.getAgentChatId?.() ?? undefined,
+      });
       respondJson(response, 200, comment);
       return;
     }
@@ -776,7 +794,11 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
       }
       if (!operation) return respondJson(response, 404, { error: 'no such comment' });
       const applied = room.session.applyOps([operation]);
-      broadcast(room, { kind: 'deck', seq: applied.seq, deck: applied.deck, reason: 'external-edit' });
+      broadcast(room, {
+        kind: 'deck', seq: applied.seq, deck: applied.deck, reason: 'agent-edit',
+        label: `The Agent marked comment ${body.commentId} ${body.resolved ?? true ? 'resolved' : 'unresolved'}.`,
+        agentChatId: options.getAgentChatId?.() ?? undefined,
+      });
       respondJson(response, 200, { ok: true, resolved: body.resolved ?? true });
       return;
     }
@@ -1012,6 +1034,7 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
         byClientId: 'agent-http',
         label,
         ops: operations,
+        agentChatId: options.getAgentChatId?.() ?? undefined,
       });
       const result = { revision: deckRevision(applied.deck), slideIds: appliedIds, label };
       htmlIdempotency.set(payload.idempotencyKey, result);

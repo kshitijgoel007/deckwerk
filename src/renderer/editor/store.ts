@@ -32,8 +32,18 @@ type Listener = (state: EditorState) => void;
 export interface HistoryItem {
   id: number;
   label: string;
+  /** Longer explanation shown beneath the compact history title. */
+  description?: string;
+  /** Saved embedded Agent conversation that produced this state. */
+  agentChatId?: string;
   at: number;
   slideIndex: number;
+}
+
+export interface RemoteHistoryOptions {
+  coalesce?: boolean;
+  description?: string;
+  agentChatId?: string;
 }
 
 interface DeckHistoryItem extends HistoryItem {
@@ -127,12 +137,17 @@ export class EditorStore {
    * user's undo history or stable-id selection. Agent transactions and hand
    * edits therefore behave like ordinary, reversible editor actions.
    */
-  replaceExternal(deck: Deck, dir: string, label = 'External edit'): void {
+  replaceExternal(
+    deck: Deck,
+    dir: string,
+    label = 'Agent edit',
+    opts: Omit<RemoteHistoryOptions, 'coalesce'> = {},
+  ): void {
     const anchor = this.cursorAnchor();
     this.pushUndo(this.state.deck, label);
     this.state = { ...this.state, dir, deck: parseDeck(deck), dirty: false };
     this.restoreCursor(anchor);
-    this.recordHistory(label);
+    this.recordHistory(label, opts);
     this.emit();
   }
 
@@ -157,7 +172,7 @@ export class EditorStore {
   applyRemote(
     deck: Deck,
     label = 'Remote edit',
-    opts: { coalesce?: boolean } = {},
+    opts: RemoteHistoryOptions = {},
   ): void {
     const anchor = this.cursorAnchor();
     const next = parseDeck(deck);
@@ -166,7 +181,11 @@ export class EditorStore {
     this.restoreCursor(anchor);
     // Live typing arrives as a stream of same-label transactions; folding them
     // into one history entry keeps the History panel legible.
-    this.recordHistory(label, { coalesce: opts.coalesce ?? true });
+    this.recordHistory(label, {
+      coalesce: opts.coalesce ?? true,
+      description: opts.description,
+      agentChatId: opts.agentChatId,
+    });
     this.emit();
   }
 
@@ -464,17 +483,21 @@ export class EditorStore {
     };
   }
 
-  private recordHistory(label: string, opts: { coalesce?: boolean } = {}): void {
+  private recordHistory(label: string, opts: RemoteHistoryOptions = {}): void {
     const last = this.historyLog[this.historyLog.length - 1];
     if (opts.coalesce && last && last.label === label) {
       last.at = Date.now();
       last.slideIndex = this.state.slideIndex;
       last.deck = this.state.deck;
+      if (opts.description) last.description = opts.description;
+      if (opts.agentChatId) last.agentChatId = opts.agentChatId;
       return;
     }
     this.historyLog.push({
       id: this.nextHistoryId++,
       label,
+      ...(opts.description ? { description: opts.description } : {}),
+      ...(opts.agentChatId ? { agentChatId: opts.agentChatId } : {}),
       at: Date.now(),
       slideIndex: this.state.slideIndex,
       deck: this.state.deck,

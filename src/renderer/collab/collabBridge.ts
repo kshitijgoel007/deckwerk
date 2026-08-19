@@ -11,6 +11,7 @@ import {
 import type { Deck } from '@shared/deck.js';
 import { diffDecks } from '@shared/deckDiff.js';
 import { makeId } from '@shared/geometry.js';
+import type { RemoteHistoryOptions } from '../editor/store.js';
 
 /**
  * Optimistic replication against the collab server.
@@ -45,7 +46,7 @@ interface UndoEntry {
 
 export interface CollabBridgeHooks {
   /** Server-decided deck to show; apply via store.applyRemote. */
-  onDeckReplaced: (deck: Deck, label: string, opts?: { coalesce?: boolean }) => void;
+  onDeckReplaced: (deck: Deck, label: string, opts?: RemoteHistoryOptions) => void;
   onWelcome: (welcome: ServerWelcomeMessage) => void;
   onPeerPresence: (state: PresenceState) => void;
   onPeerCursor: (clientId: string, cursor: CursorPosition | null) => void;
@@ -232,11 +233,15 @@ export class CollabBridge {
           const fromAgentApi = message.byClientId === 'agent-http';
           this.hooks.onDeckReplaced(
             ui,
-            mineIndex !== -1 || fromAgentApi ? message.label : `${message.label} (remote)`,
+            fromAgentApi ? 'Agent edit' : mineIndex !== -1 ? message.label : `${message.label} (remote)`,
             // Every applied agent draft is a deliberate revision, even when an
             // agent happens to reuse the same label. Never fold two of them
             // into one History snapshot.
-            fromAgentApi ? { coalesce: false } : undefined,
+            fromAgentApi ? {
+              coalesce: false,
+              description: describeAgentEdit(message.label, message.ops),
+              agentChatId: message.agentChatId,
+            } : undefined,
           );
         } finally {
           this.replayingHistory = false;
@@ -253,7 +258,16 @@ export class CollabBridge {
         try {
           this.hooks.onDeckReplaced(
             message.deck,
-            message.reason === 'external-edit' ? 'External edit' : 'Server resync',
+            message.reason === 'resync' ? 'Server resync' : 'Agent edit',
+            message.reason === 'resync' ? undefined : {
+              coalesce: false,
+              description: message.label ?? (
+                message.reason === 'agent-edit'
+                  ? 'The Agent updated the presentation through its deck authoring workspace.'
+                  : 'The presentation changed through the Agent-facing deck workspace.'
+              ),
+              agentChatId: message.agentChatId,
+            },
           );
         } finally {
           this.replayingHistory = false;
@@ -279,4 +293,39 @@ export class CollabBridge {
         return;
     }
   }
+}
+
+/** Turn a terse API label plus structural operations into readable provenance. */
+export function describeAgentEdit(label: string, ops: AgentOperation[]): string {
+  const lead = label.replace(/^Agent:\s*/i, '').trim().replace(/[.\s]+$/, '');
+  const counts = new Map<string, number>();
+  const add = (name: string, count = 1) => counts.set(name, (counts.get(name) ?? 0) + count);
+  for (const op of ops) {
+    if (op.op === 'insertSlides') add('added slide', op.slides.length);
+    else if (op.op === 'replaceSlide') add('revised slide');
+    else if (op.op === 'deleteSlide') add('removed slide');
+    else if (op.op === 'moveSlide') add('reordered slide');
+    else if (op.op === 'insertElements') add('added object', op.elements.length);
+    else if (op.op === 'replaceElement') add('revised object');
+    else if (op.op === 'deleteElements') add('removed object', op.elementIds.length);
+    else if (op.op === 'setSlideProperties') add('revised slide');
+    else if (op.op === 'updateDeck') add('updated deck setting');
+  }
+  const structural = [...counts.entries()].map(([name, count]) => {
+    const noun = count === 1 ? name : pluralizeAgentChange(name);
+    return `${count} ${noun}`;
+  });
+  const detail = structural.length ? ` Changed ${joinNaturalLanguage(structural)}.` : '';
+  return `${lead || 'Updated the presentation'}.${detail}`;
+}
+
+function pluralizeAgentChange(value: string): string {
+  if (value.endsWith('setting')) return `${value}s`;
+  return value.replace(/slide$/, 'slides').replace(/object$/, 'objects');
+}
+
+function joinNaturalLanguage(items: string[]): string {
+  if (items.length < 2) return items[0] ?? '';
+  if (items.length === 2) return `${items[0]} and ${items[1]}`;
+  return `${items.slice(0, -1).join(', ')}, and ${items.at(-1)}`;
 }

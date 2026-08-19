@@ -1035,9 +1035,77 @@ input[type="range"] { accent-color: var(--accent); padding: 0; background: trans
   padding: 9px 10px;
   text-align: left;
 }
+.history-row { position: relative; margin: 0 0 6px; }
+.history-row .history-item { margin-bottom: 0; }
 .history-item strong { font-size: 11px; font-weight: 600; }
 .history-item span { color: var(--muted); font-size: 10px; }
+.history-item .history-description {
+  color: var(--text);
+  font-size: 10.5px;
+  line-height: 1.4;
+  white-space: normal;
+}
 .history-item:disabled { border-color: var(--accent); opacity: 1; }
+.history-chat-link {
+  width: 100%;
+  margin: 4px 0 0;
+  padding: 5px 10px;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font-size: 10px;
+  text-align: left;
+}
+.history-chat-link:hover { text-decoration: underline; }
+
+.agent-history-dialog {
+  width: min(760px, calc(100vw - 48px));
+  height: min(720px, calc(100vh - 48px));
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 24px 80px rgb(0 0 0 / 55%);
+}
+.agent-history-dialog::backdrop { background: rgb(0 0 0 / 55%); }
+.agent-history-dialog > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--line);
+}
+.agent-history-dialog h2 { margin: 0 0 4px; font-size: 15px; }
+.agent-history-dialog header p { margin: 0; color: var(--muted); font-size: 11px; }
+.agent-history-close {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 22px;
+}
+.agent-history-messages {
+  display: flex;
+  height: calc(100% - 70px);
+  padding: 16px 18px 24px;
+  overflow-y: auto;
+  flex-direction: column;
+  gap: 12px;
+}
+.agent-history-message {
+  max-width: 90%;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel-2);
+}
+.agent-history-message-user { align-self: flex-end; background: color-mix(in srgb, var(--accent) 14%, var(--panel-2)); }
+.agent-history-message strong { display: block; margin-bottom: 5px; font-size: 10px; }
+.agent-history-message div { font-size: 11px; line-height: 1.5; white-space: pre-wrap; }
 .text-selection-style { display: grid; gap: 6px; margin: 4px 0 8px; }
 .text-selection-style > span { color: var(--muted); font-size: 10.5px; }
 .text-selection-style .button-row { display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; }

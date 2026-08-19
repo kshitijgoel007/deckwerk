@@ -5,6 +5,7 @@ import { AgentChatPanel, type AgentChatApi } from '../src/renderer/editor/agentC
 
 const ready = (over: Partial<AgentChatState> = {}): AgentChatState => ({
   deckPath: '/tmp/talk',
+  chatId: 'thread-1',
   connection: 'ready',
   auth: 'signedIn',
   accountLabel: 'slides@example.com',

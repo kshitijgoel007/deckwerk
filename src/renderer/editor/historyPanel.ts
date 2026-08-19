@@ -1,10 +1,15 @@
 import type { EditorStore } from './store.js';
 
+export interface HistoryPanelOptions {
+  onOpenAgentChat?: (chatId: string) => void;
+}
+
 /** Browsable deck snapshots. Selecting an older entry creates a new revert state. */
 export class HistoryPanel {
   constructor(
     private host: HTMLElement,
     private store: EditorStore,
+    private options: HistoryPanelOptions = {},
   ) {
     store.subscribe(() => this.render());
     this.render();
@@ -26,6 +31,8 @@ export class HistoryPanel {
 
     const items = this.store.history();
     items.forEach((item, index) => {
+      const row = document.createElement('div');
+      row.className = 'history-row';
       const button = document.createElement('button');
       button.className = 'history-item';
       button.dataset.historyId = String(item.id);
@@ -34,9 +41,25 @@ export class HistoryPanel {
       label.textContent = index === 0 ? `Current · ${item.label}` : item.label;
       const meta = document.createElement('span');
       meta.textContent = `Slide ${item.slideIndex + 1} · ${formatTime(item.at)}`;
-      button.append(label, meta);
+      button.append(label);
+      if (item.description) {
+        const description = document.createElement('span');
+        description.className = 'history-description';
+        description.textContent = item.description;
+        button.append(description);
+      }
+      button.append(meta);
       button.addEventListener('click', () => this.store.restoreHistory(item.id));
-      this.host.appendChild(button);
+      row.appendChild(button);
+      if (item.agentChatId && this.options.onOpenAgentChat) {
+        const chat = document.createElement('button');
+        chat.type = 'button';
+        chat.className = 'history-chat-link';
+        chat.textContent = 'Open Agent chat';
+        chat.addEventListener('click', () => this.options.onOpenAgentChat?.(item.agentChatId!));
+        row.appendChild(chat);
+      }
+      this.host.appendChild(row);
     });
   }
 }

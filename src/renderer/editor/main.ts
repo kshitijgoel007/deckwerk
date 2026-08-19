@@ -17,6 +17,7 @@ import {
 } from '@shared/themes.js';
 import { AgentBridge } from './agentBridge.js';
 import { AgentChatPanel } from './agentChatPanel.js';
+import { AgentChatHistoryModal } from './agentChatHistoryModal.js';
 import { createDeckWerkButton } from './aboutDialog.js';
 import { EditorCanvas } from './canvas.js';
 import { CssEditor } from './cssEditor.js';
@@ -57,12 +58,17 @@ const el = <T extends HTMLElement>(id: string): T => {
 };
 
 const store = new EditorStore(emptyDeck());
+let currentAgentChatId: string | null = null;
+window.api.onAgentChatState?.((state) => { currentAgentChatId = state.chatId; });
 const initialView = decodeEditorView(new URLSearchParams(location.search).get('view'));
 let initialViewPending = initialView !== null;
 const canvas = new EditorCanvas(el('canvas'), store);
 const inspector = new Inspector(el('inspector'), store);
 new TimelinePanel(el('timeline'), store);
-new HistoryPanel(el('history'), store);
+const agentChatHistoryModal = new AgentChatHistoryModal(window.api);
+new HistoryPanel(el('history'), store, {
+  onOpenAgentChat: (chatId) => void agentChatHistoryModal.open(chatId),
+});
 const rail = new SlideRail(el('rail'), store);
 let agentSessionBridge: CollabBridge | null = null;
 let agentSessionReady = false;
@@ -658,7 +664,10 @@ window.api.onDeckState((session) => {
   // A different deck is a genuine open; the same deck rewritten underneath us
   // is an edit, and an edit should be undoable rather than a history wipe.
   if (session.dir !== state.dir) store.load(session.deck, session.dir, { keepView: true });
-  else store.replaceExternal(session.deck, session.dir);
+  else store.replaceExternal(session.deck, session.dir, 'Agent edit', {
+    description: 'The Agent updated the presentation through the deck’s file-based authoring workflow.',
+    agentChatId: currentAgentChatId ?? undefined,
+  });
   welcome.setVisible(false);
   themePanel.refreshSwatches();
   setStatusMessage('Deck reloaded from disk.');

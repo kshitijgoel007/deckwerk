@@ -95,7 +95,12 @@ describe('collab server', () => {
     });
     await saveDeck(deckDir, deck);
     await writeFile(join(deckDir, 'theme.css'), '/* test theme */\n', 'utf8');
-    server = await startCollabServer({ rootDir, port: 0, host: '127.0.0.1' });
+    server = await startCollabServer({
+      rootDir,
+      port: 0,
+      host: '127.0.0.1',
+      getAgentChatId: () => 'thread-1',
+    });
   });
 
   afterEach(async () => {
@@ -420,6 +425,7 @@ describe('collab server', () => {
     const historyTxn = await observer.client.nextOfKind('txn');
     expect(historyTxn).toMatchObject({
       byClientId: 'agent-http',
+      agentChatId: 'thread-1',
       label: 'Agent: replace first slide',
       ops: [expect.objectContaining({ op: 'replaceSlide', slideId: 's1' })],
     });
@@ -533,7 +539,7 @@ describe('collab server', () => {
       idempotent: false, slideIds: ['s1'], elementIds: ['e1'], label: request.label,
     });
     expect(await observer.client.nextOfKind('txn')).toMatchObject({
-      byClientId: 'agent-http', label: request.label,
+      byClientId: 'agent-http', agentChatId: 'thread-1', label: request.label,
       ops: [expect.objectContaining({ op: 'replaceElement', slideId: 's1', elementId: 'e1' })],
     });
     const afterApply = await (await fetch(`${base}/api/deck?deck=${DECK_ID}`)).json() as Deck;

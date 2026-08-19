@@ -95,6 +95,8 @@ export interface AgentChatScratchpad {
 /** Complete renderer snapshot for one open deck's embedded agent conversation. */
 export interface AgentChatState {
   deckPath: string;
+  /** Stable Codex thread id used to link Agent-authored history entries. */
+  chatId: string | null;
   connection: AgentChatConnection;
   auth: AgentChatAuth;
   accountLabel: string | null;

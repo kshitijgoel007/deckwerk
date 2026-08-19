@@ -393,6 +393,11 @@ export class AgentChatController {
     return this.snapshot(session);
   }
 
+  /** Current conversation id for history attribution; does not start Codex. */
+  chatId(deckPath: string): string | null {
+    return this.session(deckPath).threadId;
+  }
+
   async interrupt(deckPath: string): Promise<AgentChatState> {
     const session = this.session(deckPath);
     if (!session.threadId || !session.activeTurnId || !session.busy) return this.snapshot(session);
@@ -717,6 +722,7 @@ export class AgentChatController {
   private snapshot(session: AgentChatSession): AgentChatState {
     return {
       deckPath: session.deckPath,
+      chatId: session.threadId,
       connection: this.connection,
       auth: this.auth,
       accountLabel: this.accountLabel,
