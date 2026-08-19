@@ -61,6 +61,8 @@ interface Room {
   session: CollabSession;
   peers: Map<string, Peer>;
   guestCounter: number;
+  /** Synthetic HTTP-agent presence, retained so peers joining later see it. */
+  agentPresence: PresenceState | null;
 }
 
 interface HttpHtmlDraft {
@@ -133,6 +135,7 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
   const clientDir = options.clientDir;
   const host = options.host ?? '0.0.0.0';
   const hostedDeckId = options.hostedDeckId;
+  const agentMode = Boolean(options.agentMode);
   const rooms = new Map<string, Room>();
   const htmlDrafts = new Map<string, HttpHtmlDraft>();
   const htmlIdempotency = new Map<string, { revision: string; slideIds: string[]; label: string }>();
@@ -183,7 +186,7 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
     const existing = rooms.get(deckId);
     if (existing) return existing;
     const session = await CollabSession.open(deckDirOf(deckId));
-    const room: Room = { session, peers: new Map(), guestCounter: 0 };
+    const room: Room = { session, peers: new Map(), guestCounter: 0, agentPresence: null };
     session.watch({
       onExternalDeck: (deck, seq) => broadcast(room, { kind: 'deck', seq, deck, reason: 'external-edit' }),
       onExternalTheme: (css) => broadcast(room, { kind: 'theme', css, byClientId: '' }),
@@ -199,6 +202,20 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
     for (const [id, peer] of room.peers) {
       if (id !== except && peer.greeted) send(peer, message);
     }
+  };
+  const publishAgentPresence = (room: Room, slideId: string): void => {
+    if (!agentMode) return;
+    room.agentPresence = {
+      clientId: 'agent-http',
+      name: 'Agent',
+      color: PALETTE[0],
+      activeSlideId: slideId,
+      selectedSlideIds: [slideId],
+      selectedElementIds: [],
+      editingElementId: null,
+      cursor: null,
+    };
+    broadcast(room, { kind: 'presence', state: room.agentPresence });
   };
 
   const httpServer = createServer((request, response) => {
@@ -927,6 +944,9 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
       const room = await getRoom(deckParam);
       const index = room.session.deck.slides.findIndex((slide) => slide.id === slideId);
       if (index < 0) return respondJson(response, 404, { error: `no slide ${slideId}` });
+      // The real-player URL is the point at which the agent declares what it
+      // is visually inspecting. Surface that slide in every connected editor.
+      publishAgentPresence(room, slideId);
       respondJson(response, 200, {
         slideId,
         slide: index + 1,
@@ -1039,7 +1059,12 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
           seq: room.session.seq,
           deck: room.session.deck,
           themeCss: room.session.themeCss,
-          peers: [...room.peers.values()].filter((p) => p !== peer && p.greeted).map((p) => p.state),
+          peers: [
+            ...[...room.peers.values()]
+              .filter((p) => p !== peer && p.greeted)
+              .map((p) => p.state),
+            ...(room.agentPresence ? [room.agentPresence] : []),
+          ],
         });
         broadcast(room, { kind: 'presence', state: peer.state }, clientId);
         return;

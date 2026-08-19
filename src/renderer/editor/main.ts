@@ -1,10 +1,12 @@
 import '../player/player.css';
 import './editor.css';
+import '../collab/collab.css';
 import { applyAgentTransaction } from '@shared/agent.js';
 import type { SlideElement } from '@shared/deck.js';
 import { emptyDeck } from '@shared/deck.js';
-import type { AuthoredHtmlFile } from '@shared/ipc.js';
+import type { AgentSessionConnection, AuthoredHtmlFile } from '@shared/ipc.js';
 import { captureEditorView, decodeEditorView, restoreEditorView } from '@shared/editorView.js';
+import { setIdSuffix } from '@shared/geometry.js';
 import { adoptAuthoredIds } from '@shared/htmlSlides.js';
 import { rangeForSlideSelection } from '@shared/presentationRange.js';
 import {
@@ -39,6 +41,8 @@ import { EditorStore } from './store.js';
 import { statusBarText } from './statusBar.js';
 import { TimelinePanel } from './timelinePanel.js';
 import { WelcomeScreen } from './welcomeScreen.js';
+import { CollabBridge } from '../collab/collabBridge.js';
+import { PresenceOverlay } from '../collab/presenceOverlay.js';
 
 /**
  * Editor shell: wires the panels to one store, owns the toolbar, the keyboard
@@ -59,7 +63,18 @@ const inspector = new Inspector(el('inspector'), store);
 new TimelinePanel(el('timeline'), store);
 new HistoryPanel(el('history'), store);
 const rail = new SlideRail(el('rail'), store);
-const cssEditor = new CssEditor(el('theme'));
+let agentSessionBridge: CollabBridge | null = null;
+let agentSessionReady = false;
+let agentSessionWsUrl: string | null = null;
+let agentPresence: PresenceOverlay | null = null;
+const persistThemeCss = (css: string): Promise<void> | void => {
+  if (agentSessionReady && agentSessionBridge) {
+    agentSessionBridge.sendTheme(css);
+    return;
+  }
+  return window.api.saveTheme(css);
+};
+const cssEditor = new CssEditor(el('theme'), persistThemeCss);
 cssEditor.onChange = () => canvas.refitAutoText();
 const welcome = new WelcomeScreen(el('canvas'), {
   newPresentation,
@@ -241,11 +256,104 @@ async function startSharing(agent: boolean): Promise<void> {
   try {
     await cssEditor.flush();
     await save();
-    await window.api.startCollab({ agent, ...captureEditorView(store) });
+    if (agent) {
+      const connection = await window.api.startAgentSession({
+        agent: true,
+        ...captureEditorView(store),
+      });
+      connectAgentSession(connection);
+    } else {
+      await window.api.startCollab({ agent: false, ...captureEditorView(store) });
+    }
     setStatusMessage(agent ? 'Agent chat opened; HTTP API brief copied to clipboard.' : 'Collaboration link copied to clipboard.');
   } catch (err) {
     setStatusMessage(`${agent ? 'Agent session' : 'Collaboration'} failed: ${err instanceof Error ? err.message : err}`);
   }
+}
+
+let lastAgentPresenceKey = '';
+
+function publishAgentPresence(): void {
+  if (!agentSessionReady || !agentSessionBridge) return;
+  const { deck, slideIndex, slideSelection, selection } = store.get();
+  const state = {
+    activeSlideId: deck.slides[slideIndex]?.id ?? null,
+    selectedSlideIds: [...slideSelection],
+    selectedElementIds: [...selection],
+    editingElementId: canvas.editingElementId(),
+  };
+  const key = JSON.stringify(state);
+  if (key === lastAgentPresenceKey) return;
+  lastAgentPresenceKey = key;
+  agentSessionBridge.sendPresence(state);
+}
+
+/** Join the background HTTP session as an ordinary collaboration peer. */
+function connectAgentSession(connection: AgentSessionConnection): void {
+  if (agentSessionWsUrl === connection.wsUrl && agentSessionBridge) return;
+  disconnectAgentSession();
+  agentSessionWsUrl = connection.wsUrl;
+  agentPresence = new PresenceOverlay(canvas, store);
+  rail.presenceForSlide = (slideId) => agentPresence?.peersOnSlide(slideId) ?? [];
+
+  const bridge = new CollabBridge(connection.wsUrl, connection.name, {
+    onWelcome: (welcome) => {
+      if (agentSessionBridge !== bridge) return;
+      setIdSuffix(welcome.clientId.slice(0, 4));
+      agentSessionReady = true;
+      if (JSON.stringify(store.get().deck) !== JSON.stringify(welcome.deck)) {
+        store.applyRemote(welcome.deck, 'Agent session synchronized', { coalesce: false });
+      }
+      store.markClean();
+      store.onLocalEdit = bridge.localEdit;
+      cssEditor.setValue(welcome.themeCss);
+      themePanel.noteDeckOpened(welcome.deck);
+      for (const peer of welcome.peers) agentPresence?.upsert(peer);
+      rail.refreshPresence();
+      lastAgentPresenceKey = '';
+      publishAgentPresence();
+      setStatusMessage('Agent chat connected — edits sync live.');
+    },
+    onDeckReplaced: (deck, label, options) => store.applyRemote(deck, label, options),
+    onPeerPresence: (state) => {
+      agentPresence?.upsert(state);
+      rail.refreshPresence();
+    },
+    onPeerCursor: (clientId, cursor) => agentPresence?.moveCursor(clientId, cursor),
+    onPeerLeft: (clientId) => {
+      agentPresence?.remove(clientId);
+      rail.refreshPresence();
+    },
+    onThemeCss: (css) => {
+      if (!cssEditor.hasFocus() && css !== cssEditor.getValue()) cssEditor.setValue(css);
+    },
+    onStatus: (text) => setStatusMessage(`Agent session: ${text}`),
+    onCleanChange: (clean) => {
+      if (clean) store.markClean();
+    },
+    onEnded: () => {
+      if (agentSessionBridge === bridge) {
+        disconnectAgentSession();
+        setStatusMessage('Agent session ended.');
+      }
+    },
+  });
+  agentSessionBridge = bridge;
+  bridge.connect();
+}
+
+function disconnectAgentSession(): void {
+  const bridge = agentSessionBridge;
+  agentSessionBridge = null;
+  agentSessionReady = false;
+  agentSessionWsUrl = null;
+  lastAgentPresenceKey = '';
+  if (store.onLocalEdit === bridge?.localEdit) store.onLocalEdit = null;
+  bridge?.close();
+  agentPresence?.destroy();
+  agentPresence = null;
+  rail.presenceForSlide = undefined;
+  rail.refreshPresence();
 }
 
 async function newPresentation(): Promise<void> {
@@ -299,7 +407,7 @@ const themePanel = createThemePanel({
   cssEditor,
   save,
   setStatusMessage,
-  saveThemeCss: (css) => void window.api.saveTheme(css),
+  saveThemeCss: (css) => void persistThemeCss(css),
 });
 /* --- side panel tabs --- */
 
@@ -369,7 +477,7 @@ async function save(): Promise<void> {
     clearTimeout(saveTimer);
     saveTimer = null;
   }
-  await window.api.saveDeck(store.get().deck);
+  if (!agentSessionReady) await window.api.saveDeck(store.get().deck);
   store.markClean();
 }
 
@@ -399,7 +507,7 @@ async function adopt(dir: string, deck: Parameters<typeof store.load>[0]): Promi
       ? withThemeBlock(loadedCss, themeCss(installedTheme))
     : loadedCss;
   cssEditor.setValue(refreshedCss);
-  if (refreshedCss !== loadedCss) void window.api.saveTheme(refreshedCss);
+  if (refreshedCss !== loadedCss) void persistThemeCss(refreshedCss);
   themePanel.noteDeckOpened(deck);
 }
 
@@ -413,6 +521,14 @@ const shellDeps: ShellDeps = {
   setStatusMessage,
   openTrim,
   openRaster,
+  undo: () => {
+    if (agentSessionReady && agentSessionBridge) agentSessionBridge.undo(store.get().deck);
+    else store.undo();
+  },
+  redo: () => {
+    if (agentSessionReady && agentSessionBridge) agentSessionBridge.redo(store.get().deck);
+    else store.redo();
+  },
 };
 const clipboard = createClipboardActions(shellDeps);
 
@@ -437,10 +553,16 @@ buildTabs();
 el('themePanel').appendChild(themePanel.element);
 el('themePanel').classList.add('theme-panel');
 bindEditorKeys(shellDeps, clipboard);
+const refreshInspectorForTextMode = canvas.onTextEditModeChange;
+canvas.onTextEditModeChange = (elementId) => {
+  refreshInspectorForTextMode?.(elementId);
+  publishAgentPresence();
+};
 store.subscribe(() => {
   syncSlideSelectionContext();
   renderStatus();
   scheduleSave();
+  publishAgentPresence();
 });
 syncSlideSelectionContext();
 renderStatus();
@@ -511,6 +633,13 @@ window.api.onDeckState((session) => {
 });
 window.api.onThemeCss?.((css) => {
   if (css !== cssEditor.getValue()) cssEditor.setValue(css);
+});
+window.api.onAgentSessionState?.((state) => {
+  if (state.active) connectAgentSession(state);
+  else {
+    disconnectAgentSession();
+    setStatusMessage('Agent chat closed; presentation saved.');
+  }
 });
 
 // Reopen the deck the main process already has, if any.

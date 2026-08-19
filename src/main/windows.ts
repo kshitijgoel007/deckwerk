@@ -76,7 +76,7 @@ export function createEditorWindow(query = '', state?: WindowContinuityState): B
   return win;
 }
 
-/** Small companion chat kept beside the authoritative collaboration shell. */
+/** Small companion chat kept beside the still-visible native editor. */
 export function createAgentChatWindow(owner: BrowserWindow): BrowserWindow {
   const bounds = owner.getBounds();
   const width = 420;

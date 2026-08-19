@@ -15,7 +15,11 @@ export class CssEditor {
   private styleTag: HTMLStyleElement;
   private saveTimer: ReturnType<typeof setTimeout> | null = null;
 
-  constructor(host: HTMLElement) {
+  constructor(
+    host: HTMLElement,
+    private readonly persist: (css: string) => Promise<void> | void =
+      (css) => window.api.saveTheme(css),
+  ) {
     // The live stylesheet the canvas and preview both read.
     this.styleTag = document.createElement('style');
     this.styleTag.dataset.role = 'deck-theme';
@@ -65,7 +69,7 @@ export class CssEditor {
     if (!this.saveTimer) return;
     clearTimeout(this.saveTimer);
     this.saveTimer = null;
-    await window.api.saveTheme(this.getValue());
+    await this.persist(this.getValue());
   }
 
   private scheduleSave(text: string): void {
@@ -74,7 +78,7 @@ export class CssEditor {
     // on disk is never meaningfully behind the screen.
     this.saveTimer = setTimeout(() => {
       this.saveTimer = null;
-      void window.api.saveTheme(text);
+      void this.persist(text);
     }, 500);
   }
 }

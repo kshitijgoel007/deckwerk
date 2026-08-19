@@ -53,6 +53,8 @@ export const IPC = {
   agentChatState: 'agentChat:state',
   workflowStart: 'workflow:start',
   collabStart: 'collab:start',
+  agentSessionStart: 'agentSession:start',
+  agentSessionState: 'agentSession:state',
 } as const;
 
 export type AgentChatConnection = 'connecting' | 'ready' | 'unavailable';
@@ -109,6 +111,16 @@ export interface WorkflowStartResult {
 export interface CollabStartRequest extends EditorViewSnapshot {
   agent?: boolean;
 }
+
+/** Native editor connection to the authoritative deck-scoped agent session. */
+export interface AgentSessionConnection {
+  active: true;
+  deckId: string;
+  wsUrl: string;
+  name: string;
+}
+
+export type AgentSessionState = AgentSessionConnection | { active: false };
 
 export type { AgentContextDraft, AgentRequest, AgentResponse };
 

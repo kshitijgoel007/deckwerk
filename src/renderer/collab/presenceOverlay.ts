@@ -20,19 +20,25 @@ export class PresenceOverlay {
   private peers = new Map<string, PeerView>();
   private layer: HTMLElement;
   private fadeTimer: ReturnType<typeof setInterval>;
+  private unsubscribe: () => void;
+  private readonly viewportHandler = () => this.render();
 
   constructor(
     private readonly canvas: EditorCanvas,
     private readonly store: EditorStore,
   ) {
     this.layer = canvas.addStageLayer('presence-layer');
-    canvas.onViewportChange = () => this.render();
-    store.subscribe(() => this.render());
+    canvas.onViewportChange = this.viewportHandler;
+    this.unsubscribe = store.subscribe(() => this.render());
     this.fadeTimer = setInterval(() => this.render(), 1000);
   }
 
   destroy(): void {
     clearInterval(this.fadeTimer);
+    this.unsubscribe();
+    if (this.canvas.onViewportChange === this.viewportHandler) {
+      this.canvas.onViewportChange = undefined;
+    }
     this.layer.remove();
   }
 

@@ -6,6 +6,8 @@ import type {
   AgentContextDraft,
   AgentChatSendRequest,
   AgentChatState,
+  AgentSessionConnection,
+  AgentSessionState,
   AgentRequest,
   AssetImportProgress,
   AgentResponse,
@@ -114,6 +116,11 @@ const api = {
    */
   startCollab: (opts: CollabStartRequest): Promise<string[]> =>
     ipcRenderer.invoke(IPC.collabStart, opts),
+  /** Keep this native editor visible while it joins the agent's live session. */
+  startAgentSession: (view: CollabStartRequest): Promise<AgentSessionConnection> =>
+    ipcRenderer.invoke(IPC.agentSessionStart, view),
+  onAgentSessionState: (fn: (state: AgentSessionState) => void): (() => void) =>
+    on(IPC.agentSessionState, fn),
 
   listDisplays: (): Promise<DisplayInfo[]> => ipcRenderer.invoke(IPC.displayList),
   present: (slideIndex: number, options?: PresentOptions): Promise<void> =>

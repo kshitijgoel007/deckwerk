@@ -67,6 +67,7 @@ export class CollabBridge {
   private redoStack: UndoEntry[] = [];
   private replayingHistory = false;
   private reconnectDelay = 500;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private closed = false;
 
   constructor(
@@ -93,13 +94,20 @@ export class CollabBridge {
     socket.addEventListener('close', () => {
       if (this.closed) return;
       this.hooks.onStatus(`Disconnected — retrying in ${Math.round(this.reconnectDelay / 1000)}s`);
-      setTimeout(() => this.connect(), this.reconnectDelay);
+      this.reconnectTimer = setTimeout(() => {
+        this.reconnectTimer = null;
+        if (!this.closed) this.connect();
+      }, this.reconnectDelay);
       this.reconnectDelay = Math.min(this.reconnectDelay * 2, 10_000);
     });
   }
 
   close(): void {
     this.closed = true;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     this.socket?.close();
   }
 

@@ -265,6 +265,36 @@ describe('collab server', () => {
     expect(left.clientId).toBe(b.welcome.clientId);
   });
 
+  it('shows the slide requested by an HTTP agent as persistent presence', async () => {
+    await server.close();
+    server = await startCollabServer({
+      rootDir,
+      port: 0,
+      host: '127.0.0.1',
+      hostedDeckId: DECK_ID,
+      agentMode: true,
+    });
+    const observer = await connect('Host');
+    const rendered = await fetch(
+      `http://127.0.0.1:${server.port}/api/render-slide?deck=${DECK_ID}&slideId=s2`,
+    );
+    expect(rendered.status).toBe(200);
+    expect(await observer.client.nextOfKind('presence')).toMatchObject({
+      state: {
+        clientId: 'agent-http',
+        name: 'Agent',
+        activeSlideId: 's2',
+        selectedSlideIds: ['s2'],
+      },
+    });
+
+    const latePeer = await connect('Late peer');
+    expect(latePeer.welcome.peers).toContainEqual(expect.objectContaining({
+      clientId: 'agent-http',
+      activeSlideId: 's2',
+    }));
+  });
+
   it('serves deck assets with Range support, confined to the deck folder', async () => {
     const bytes = Buffer.from('0123456789');
     await mkdir(join(deckDir, 'assets'), { recursive: true });

@@ -19,6 +19,8 @@ import type {
   AgentContextDraft,
   AgentChatSendRequest,
   AgentChatState,
+  AgentSessionConnection,
+  AgentSessionState,
   AgentResponse,
   CollabStartRequest,
   DeckSession,
@@ -96,7 +98,9 @@ let rasterWindow: BrowserWindow | null = null;
 let collabServer: RunningCollabServer | null = null;
 let collabWindow: BrowserWindow | null = null;
 let agentChatWindow: BrowserWindow | null = null;
+let collabMode: 'window' | 'agent-background' | null = null;
 let collabReturn: Promise<void> | null = null;
+let agentSessionReturn: Promise<void> | null = null;
 let quitting = false;
 const agentRuntime = new AgentRuntime(() => editorWindow);
 const agentChat = new AgentChatController({
@@ -211,6 +215,7 @@ function returnFromCollaboration(): Promise<void> {
     const view = await readCollabView(host);
     const closing = collabServer;
     collabServer = null;
+    collabMode = null;
     try {
       if (session) await agentChat.reset(session.dir);
       await closing?.close();
@@ -239,6 +244,49 @@ function returnFromCollaboration(): Promise<void> {
     collabReturn = null;
   });
   return collabReturn;
+}
+
+function sendAgentSessionState(state: AgentSessionState): void {
+  if (editorWindow && !editorWindow.isDestroyed()) {
+    editorWindow.webContents.send(IPC.agentSessionState, state);
+  }
+}
+
+/**
+ * End the hidden authoritative session while leaving the native editor in
+ * place. The server flushes first; disk watching resumes only after its final
+ * deck is reloaded, so there is never a second writer racing it.
+ */
+function endBackgroundAgentSession(): Promise<void> {
+  if (agentSessionReturn) return agentSessionReturn;
+  if (collabMode !== 'agent-background') return Promise.resolve();
+
+  agentSessionReturn = (async () => {
+    const chat = agentChatWindow;
+    agentChatWindow = null;
+    if (chat && !chat.isDestroyed()) chat.destroy();
+    const closing = collabServer;
+    collabServer = null;
+    collabMode = null;
+    try {
+      if (session) await agentChat.reset(session.dir);
+      await closing?.close();
+    } catch (error) {
+      console.error('Could not close agent collaboration session cleanly:', error);
+    }
+    if (quitting || !session) return;
+    try {
+      session.deck = await loadDeck(session.dir);
+    } catch (error) {
+      console.error('Could not reload the deck after the agent session:', error);
+    }
+    watchDeck(session.dir, session.deck.theme);
+    broadcastDeck();
+    sendAgentSessionState({ active: false });
+  })().finally(() => {
+    agentSessionReturn = null;
+  });
+  return agentSessionReturn;
 }
 
 let watchers: FSWatcher[] = [];
@@ -847,9 +895,101 @@ function registerHandlers(): void {
     clipboard.writeText(agent ? agentClipboardPrompt(joinUrl, deckId) : joinUrl);
   };
 
-  // "Agent…" runs the same deck-scoped session and copies a complete,
-  // task-neutral API brief for the user to paste into an agent chat.
+  const stopDeckWatchers = (): void => {
+    for (const watcher of watchers) watcher.close();
+    watchers = [];
+  };
+
+  const startHostedServer = async (
+    s: DeckSession,
+    agentMode: boolean,
+    onSessionEnd: () => void,
+  ): Promise<RunningCollabServer> => {
+    const clientDir = defaultClientDir(app.getAppPath());
+    if (!clientDir) {
+      throw new Error('The browser client is not built — run: npm run build:collab');
+    }
+    const base = {
+      rootDir: dirname(s.dir),
+      hostedDeckId: basename(s.dir),
+      agentMode,
+      clientDir,
+      onSessionEnd,
+    };
+    try {
+      return await startCollabServer(base);
+    } catch {
+      // 5800 taken (another session or app); any free port still shares fine.
+      return startCollabServer({ ...base, port: 0 });
+    }
+  };
+
+  /**
+   * Start the agent's authoritative HTTP/collaboration session without
+   * replacing the native editor. The editor joins it over WebSocket as a peer
+   * using the returned connection, while the only new window is the chat.
+   */
+  const startBackgroundAgent = async (): Promise<AgentSessionConnection> => {
+    const s = requireSession();
+    if (collabMode === 'window') throw new Error('End the current collaboration first');
+    const deckId = basename(s.dir);
+    const name = userInfo().username || 'Host';
+
+    if (!collabServer) {
+      collabServer = await startHostedServer(
+        s,
+        true,
+        () => setImmediate(() => void endBackgroundAgentSession()),
+      );
+      collabMode = 'agent-background';
+      // The server is now the deck's sole writer. Native edits will reach it
+      // through the WebSocket bridge returned below.
+      stopDeckWatchers();
+    }
+    if (collabMode !== 'agent-background') {
+      throw new Error('A different collaboration session is already running');
+    }
+
+    copyJoinLink(collabServer.urls, deckId, true);
+    const connection: AgentSessionConnection = {
+      active: true,
+      deckId,
+      name,
+      wsUrl: `ws://127.0.0.1:${collabServer.port}/ws?deck=${encodeURIComponent(deckId)}`,
+    };
+    sendAgentSessionState(connection);
+
+    if (agentChatWindow && !agentChatWindow.isDestroyed()) {
+      agentChatWindow.show();
+      agentChatWindow.focus();
+    } else {
+      const owner = editorWindow;
+      if (!owner || owner.isDestroyed()) throw new Error('The editor window is not available');
+      const chat = createAgentChatWindow(owner);
+      agentChatWindow = chat;
+      chat.on('closed', () => {
+        if (agentChatWindow === chat) agentChatWindow = null;
+        if (!quitting && collabMode === 'agent-background') {
+          void endBackgroundAgentSession();
+        }
+      });
+    }
+    return connection;
+  };
+
+  ipcMain.handle(
+    IPC.agentSessionStart,
+    async (): Promise<AgentSessionConnection> => startBackgroundAgent(),
+  );
+
+  // "Collaborate" retains the full-window browser handoff. Agent mode is
+  // accepted here only for compatibility with older renderers and now uses
+  // the native-editor background session too.
   ipcMain.handle(IPC.collabStart, async (_e, opts?: CollabStartRequest): Promise<string[]> => {
+    if (opts?.agent) {
+      await startBackgroundAgent();
+      return collabServer?.urls ?? [];
+    }
     const s = requireSession();
     const requestedView: EditorViewSnapshot = opts ?? {
       activeSlideId: null,
@@ -857,41 +997,23 @@ function registerHandlers(): void {
       selectedElementIds: [],
     };
     if (collabServer) {
-      copyJoinLink(collabServer.urls, basename(s.dir), Boolean(opts?.agent));
+      copyJoinLink(collabServer.urls, basename(s.dir), false);
       return collabServer.urls;
     }
 
-    const clientDir = defaultClientDir(app.getAppPath());
-    if (!clientDir) {
-      throw new Error('The browser client is not built — run: npm run build:collab');
-    }
-
     const deckId = basename(s.dir);
-    const base = {
-      rootDir: dirname(s.dir),
-      // Agent sessions are scoped to the same open deck as human sessions.
-      // An invite never exposes sibling folders.
-      hostedDeckId: deckId,
-      agentMode: Boolean(opts?.agent),
-      clientDir,
-      // Keep the collaboration shell visible until the restored native editor
-      // has loaded, so ending a session is a continuous window handoff too.
-      onSessionEnd: () => setImmediate(() => void returnFromCollaboration()),
-    };
-    let server: RunningCollabServer;
-    try {
-      server = await startCollabServer(base);
-    } catch {
-      // 5800 taken (another session or app); any free port still shares fine.
-      server = await startCollabServer({ ...base, port: 0 });
-    }
+    const server = await startHostedServer(
+      s,
+      false,
+      () => setImmediate(() => void returnFromCollaboration()),
+    );
     collabServer = server;
-    copyJoinLink(server.urls, deckId, Boolean(opts?.agent));
+    collabMode = 'window';
+    copyJoinLink(server.urls, deckId, false);
 
     // Two debounced whole-file writers on one deck.json silently last-write-
     // wins each other; from here the server owns persistence.
-    for (const w of watchers) w.close();
-    watchers = [];
+    stopDeckWatchers();
 
     const hostName = userInfo().username || 'Host';
     const hostUrl = new URL(`http://127.0.0.1:${server.port}/`);
@@ -905,15 +1027,6 @@ function registerHandlers(): void {
       : undefined;
     const host = createCollabHostWindow(hostUrl.toString(), continuity);
     collabWindow = host;
-
-    if (opts?.agent) {
-      const chat = createAgentChatWindow(host);
-      agentChatWindow = chat;
-      chat.on('closed', () => {
-        if (agentChatWindow === chat) agentChatWindow = null;
-        if (!quitting && !collabReturn) void returnFromCollaboration();
-      });
-    }
 
     // Native close controls mean "end collaboration". Intercept the close so
     // the current window remains visible until its replacement is ready.

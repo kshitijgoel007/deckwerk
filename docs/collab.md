@@ -35,8 +35,8 @@ ship it in `dist/collab`.
 
 The **Agent…** toolbar button starts the established deck-scoped collaboration
 server and opens a small companion chat window backed by Codex App Server. The
-editor hands off to the collaboration shell, so the HTTP API remains the one
-authoritative writer while the chat is active.
+native editor stays visible and joins that server as a collaboration peer, so
+the HTTP API remains the one authoritative writer while the chat is active.
 
 On the first message in a chat, DeckWerk:
 
@@ -48,12 +48,13 @@ On the first message in a chat, DeckWerk:
    network access enabled. The live deck is reachable only through the
    loopback HTTP API.
 4. Streams text and activity into the companion window while API transactions
-   appear in the collaboration shell and History panel.
+   appear in the native editor and History panel. Real-player requests also
+   show the slide the agent is inspecting as a presence dot in the slide rail.
 
 Follow-up messages reuse both the Codex thread and live HTTP session. **New
 chat** clears only the Codex thread; **Stop** interrupts the active turn.
 Closing the companion window ends the hosted session, flushes the server, and
-hands the presentation back to the ordinary editor.
+returns the already-open editor to ordinary file-backed persistence.
 
 ## Comments
 
