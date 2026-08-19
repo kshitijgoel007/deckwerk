@@ -143,14 +143,22 @@ export function syncMediaFrame(
   // as the inspector's typed border. Move its paint to the overlay too.
   for (const [property, value] of Object.entries(el.style)) {
     if (!isMediaBorderPaint(property)) continue;
-    overlay.style.setProperty(property, value);
+    // Typed media fields take precedence over the CSS copy left by older
+    // imports. CSS remains supported when no typed width has ever been set.
+    if (el.borderWidth === undefined) overlay.style.setProperty(property, value);
     node.style.removeProperty(property);
     // jsdom (and some older Chromium CSSOM builds) retains the expanded
     // longhands after removing the shorthand.
     if (property === 'border') node.style.border = '';
   }
-  if ((el.borderWidth ?? 0) > 0) {
-    overlay.style.border = `${el.borderWidth}px solid ${el.borderColor ?? '#000000'}`;
+  // Once a typed width exists, the inspector owns the border completely.
+  // Older Agent imports can contain both typed media fields and the original
+  // CSS border; an explicit 0 must suppress that stale CSS copy rather than
+  // revealing it again underneath the editable value.
+  if (el.borderWidth !== undefined) {
+    if (el.borderWidth > 0) {
+      overlay.style.border = `${el.borderWidth}px solid ${el.borderColor ?? '#000000'}`;
+    }
   }
 
   const radius = mediaRadius(el);

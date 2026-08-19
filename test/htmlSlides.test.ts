@@ -150,7 +150,7 @@ describe('measured nodes become deck objects', () => {
       tag: 'img',
       dataset: { borderWidth: '8', borderColor: '#ff3366', borderRadius: '14' },
       attrs: { src: 'assets/demo.png' },
-      style: { 'border-radius': '14px' },
+      style: { 'border-radius': '14px', border: '8px solid #ff3366' },
     }), 'image', 1);
     expect(measured).toMatchObject({
       type: 'image', borderColor: '#ff3366', borderWidth: 8, borderRadius: 14,

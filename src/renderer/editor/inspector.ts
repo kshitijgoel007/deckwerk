@@ -777,13 +777,19 @@ export class Inspector {
       borderColors === null ? 'Color (mixed)' : 'Color',
       borderColors === null ? (media[0].borderColor ?? null) : (borderColors || null),
       (value) => this.store.updateSelected((element) => {
-        if (element.type === 'image' || element.type === 'video') element.borderColor = value;
+        if (element.type === 'image' || element.type === 'video') {
+          clearLegacyMediaBorder(element);
+          element.borderColor = value;
+        }
       }),
     ));
     border.content.appendChild(
       numberField('Width', commonValue(media.map((element) => element.borderWidth ?? 0)), (value) =>
         this.store.updateSelected((element) => {
-          if (element.type === 'image' || element.type === 'video') element.borderWidth = Math.max(0, value);
+          if (element.type === 'image' || element.type === 'video') {
+            clearLegacyMediaBorder(element);
+            element.borderWidth = Math.max(0, value);
+          }
         })),
     );
     wrap.appendChild(border.section);
@@ -1190,12 +1196,16 @@ export class Inspector {
     if (!el || (el.type !== 'image' && el.type !== 'video')) return border.section;
     border.content.appendChild(colorField('Color', el.borderColor ?? null, (value) =>
       this.store.updateSelected((target) => {
-        if (target.type === 'image' || target.type === 'video') target.borderColor = value;
+        if (target.type === 'image' || target.type === 'video') {
+          clearLegacyMediaBorder(target);
+          target.borderColor = value;
+        }
       })));
     border.content.appendChild(
       numberField('Width', el.borderWidth ?? 0, (value) =>
         this.store.updateSelected((target) => {
           if (target.type === 'image' || target.type === 'video') {
+            clearLegacyMediaBorder(target);
             target.borderWidth = Math.max(0, value);
           }
         })),
@@ -1410,6 +1420,19 @@ function supportsVisualEffects(
   element: SlideElement,
 ): element is Extract<SlideElement, { type: 'text' | 'image' | 'video' }> {
   return element.type === 'text' || element.type === 'image' || element.type === 'video';
+}
+
+function clearLegacyMediaBorder(
+  element: Extract<SlideElement, { type: 'image' | 'video' }>,
+): void {
+  const style = { ...element.style };
+  for (const property of Object.keys(style)) {
+    if (
+      (property === 'border' || property.startsWith('border-'))
+      && !property.includes('radius')
+    ) delete style[property];
+  }
+  element.style = style;
 }
 
 function clamp(value: number, min: number, max: number): number {

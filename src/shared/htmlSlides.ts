@@ -967,6 +967,12 @@ function mediaDecorationFromNode(
   if (node.dataset.borderWidth !== undefined && Number.isFinite(width) && width > 0) {
     decoration.borderWidth = width;
     decoration.borderColor = node.dataset.borderColor ?? '#000000';
+    // Exported Agent HTML may carry the same border both as durable typed
+    // metadata and as CSS used for preview. Keep one source of truth so later
+    // inspector edits do not uncover an immutable duplicate.
+    for (const property of Object.keys(style)) {
+      if (isMediaBorderPaint(property)) delete style[property];
+    }
     // The outline in the exported page is generated only to make the
     // authoring preview match the player. It is not a stored media style; the
     // typed fields above are the durable deck representation.
@@ -978,6 +984,11 @@ function mediaDecorationFromNode(
   }
   if (node.dataset.maskShape === 'circle') delete style['border-radius'];
   return decoration;
+}
+
+function isMediaBorderPaint(property: string): boolean {
+  return (property === 'border' || property.startsWith('border-'))
+    && !property.includes('radius');
 }
 
 /**

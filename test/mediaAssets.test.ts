@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from 'vitest';
 import { classifyMedia } from '../src/main/deckStore.js';
-import { renderElement } from '../src/renderer/player/render.js';
+import { renderElement, syncMediaFrame } from '../src/renderer/player/render.js';
 
 const base = {
   x: 10, y: 20, w: 800, h: 500, rot: 0, z: 1, opacity: 1, class: [], style: {},
@@ -54,6 +54,20 @@ describe('media assets and borders', () => {
     expect(node.style.border).toBe('');
     expect(node.querySelector<HTMLVideoElement>('video')!.style.width).toBe('100%');
     expect(border.style.border).toContain('5px solid');
+  });
+
+  it('lets an explicit inspector width suppress a stale CSS-authored border', () => {
+    const element = {
+      ...base, id: 'image', type: 'image' as const, src: 'assets/image.png', fit: 'cover' as const,
+      alt: '', sourceBox: null, style: { border: '7px solid #f3b61f' },
+      borderColor: '#f3b61f', borderWidth: 7,
+    };
+    const node = renderElement(element, { resolveSrc: (src) => src });
+    const border = node.querySelector<HTMLElement>(':scope > .media-border-overlay')!;
+    expect(border.style.border).toContain('7px solid');
+
+    syncMediaFrame(node, { ...element, borderWidth: 0 });
+    expect(border.style.border).toBe('');
   });
 
   it('resolves media and CSS assets inside a sandboxed HTML fallback', () => {
