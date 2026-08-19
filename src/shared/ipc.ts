@@ -50,6 +50,7 @@ export const IPC = {
   agentChatLogin: 'agentChat:login',
   agentChatSwitchAccount: 'agentChat:switchAccount',
   agentChatSetModel: 'agentChat:setModel',
+  agentChatSetFastMode: 'agentChat:setFastMode',
   agentChatInterrupt: 'agentChat:interrupt',
   agentChatReset: 'agentChat:reset',
   agentChatState: 'agentChat:state',
@@ -75,6 +76,8 @@ export interface AgentChatModel {
   displayName: string;
   description: string;
   isDefault: boolean;
+  serviceTiers: Array<{ id: string; name: string; description: string }>;
+  defaultServiceTier: string | null;
 }
 
 /** Complete renderer snapshot for one open deck's embedded agent conversation. */
@@ -85,6 +88,7 @@ export interface AgentChatState {
   accountLabel: string | null;
   models: AgentChatModel[];
   selectedModel: string | null;
+  fastMode: boolean;
   busy: boolean;
   activity: string | null;
   messages: AgentChatMessage[];
@@ -97,6 +101,10 @@ export interface AgentChatSendRequest {
 
 export interface AgentChatSetModelRequest {
   model: string;
+}
+
+export interface AgentChatSetFastModeRequest {
+  enabled: boolean;
 }
 
 /** The workflow templates a UI action can instantiate (see workflows/). */

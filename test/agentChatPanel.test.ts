@@ -9,10 +9,18 @@ const ready = (over: Partial<AgentChatState> = {}): AgentChatState => ({
   auth: 'signedIn',
   accountLabel: 'slides@example.com',
   models: [
-    { model: 'gpt-5.6-sol', displayName: 'GPT-5.6 Sol', description: 'Frontier', isDefault: true },
-    { model: 'gpt-5.6-terra', displayName: 'GPT-5.6 Terra', description: 'Balanced', isDefault: false },
+    {
+      model: 'gpt-5.6-sol', displayName: 'GPT-5.6 Sol', description: 'Frontier', isDefault: true,
+      serviceTiers: [{ id: 'priority', name: 'Fast', description: 'Faster responses' }],
+      defaultServiceTier: 'priority',
+    },
+    {
+      model: 'gpt-5.6-terra', displayName: 'GPT-5.6 Terra', description: 'Balanced', isDefault: false,
+      serviceTiers: [], defaultServiceTier: null,
+    },
   ],
   selectedModel: 'gpt-5.6-sol',
+  fastMode: true,
   busy: false,
   activity: null,
   messages: [],
@@ -46,6 +54,7 @@ describe('agent chat panel', () => {
       loginAgentChat: async () => ready(),
       switchAgentChatAccount: async () => ready(),
       setAgentChatModel: async ({ model }) => ready({ selectedModel: model }),
+      setAgentChatFastMode: async ({ enabled }) => ready({ fastMode: enabled }),
       interruptAgentChat: async () => ready(),
       resetAgentChat: async () => ready(),
       onAgentChatState: (fn) => { listener = fn; return () => undefined; },
@@ -69,7 +78,7 @@ describe('agent chat panel', () => {
     expect(input.value).toBe('');
   });
 
-  it('switches the send action to Stop while a turn is active', async () => {
+  it('keeps follow-up sending available and exposes a separate Stop action', async () => {
     let listener: (state: AgentChatState) => void = () => undefined;
     const interrupt = vi.fn(async () => ready());
     const api: AgentChatApi = {
@@ -78,6 +87,7 @@ describe('agent chat panel', () => {
       loginAgentChat: async () => ready(),
       switchAgentChatAccount: async () => ready(),
       setAgentChatModel: async ({ model }) => ready({ selectedModel: model }),
+      setAgentChatFastMode: async ({ enabled }) => ready({ fastMode: enabled }),
       interruptAgentChat: interrupt,
       resetAgentChat: async () => ready(),
       onAgentChatState: (fn) => { listener = fn; return () => undefined; },
@@ -88,8 +98,12 @@ describe('agent chat panel', () => {
     });
     listener(ready({ busy: true, activity: 'Editing slides…' }));
     const action = panel.element.querySelector<HTMLButtonElement>('.agent-chat-action')!;
-    expect(action.textContent).toBe('Stop');
-    action.click();
+    const input = panel.element.querySelector<HTMLTextAreaElement>('textarea')!;
+    const stop = panel.element.querySelector<HTMLButtonElement>('.agent-chat-stop')!;
+    expect(action.textContent).toBe('Send');
+    expect(input.disabled).toBe(false);
+    expect(stop.hidden).toBe(false);
+    stop.click();
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(interrupt).toHaveBeenCalledOnce();
   });
@@ -102,6 +116,7 @@ describe('agent chat panel', () => {
       loginAgentChat: async () => ready(),
       switchAgentChatAccount: async () => ready(),
       setAgentChatModel: async ({ model }) => ready({ selectedModel: model }),
+      setAgentChatFastMode: async ({ enabled }) => ready({ fastMode: enabled }),
       interruptAgentChat: async () => ready(),
       resetAgentChat: async () => ready(),
       onAgentChatState: () => () => undefined,
@@ -134,6 +149,7 @@ describe('agent chat panel', () => {
       loginAgentChat: async () => ready(),
       switchAgentChatAccount: switchAccount,
       setAgentChatModel: async ({ model }) => ready({ selectedModel: model }),
+      setAgentChatFastMode: async ({ enabled }) => ready({ fastMode: enabled }),
       interruptAgentChat: async () => ready(),
       resetAgentChat: async () => ready(),
       onAgentChatState: (fn) => { listener = fn; return () => undefined; },
@@ -152,12 +168,14 @@ describe('agent chat panel', () => {
   it('shows the account model catalog and applies a selection', async () => {
     let listener: (state: AgentChatState) => void = () => undefined;
     const setModel = vi.fn(async ({ model }: { model: string }) => ready({ selectedModel: model }));
+    const setFastMode = vi.fn(async ({ enabled }: { enabled: boolean }) => ready({ fastMode: enabled }));
     const api: AgentChatApi = {
       getAgentChatState: async () => ready(),
       sendAgentChatMessage: async () => ready(),
       loginAgentChat: async () => ready(),
       switchAgentChatAccount: async () => ready(),
       setAgentChatModel: setModel,
+      setAgentChatFastMode: setFastMode,
       interruptAgentChat: async () => ready(),
       resetAgentChat: async () => ready(),
       onAgentChatState: (fn) => { listener = fn; return () => undefined; },
@@ -172,5 +190,13 @@ describe('agent chat panel', () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(setModel).toHaveBeenCalledWith({ model: 'gpt-5.6-terra' });
     expect(select.value).toBe('gpt-5.6-terra');
+
+    listener(ready());
+    const fast = panel.element.querySelector<HTMLButtonElement>('.agent-chat-fast-mode')!;
+    expect(fast.hidden).toBe(false);
+    expect(fast.getAttribute('aria-pressed')).toBe('true');
+    fast.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(setFastMode).toHaveBeenCalledWith({ enabled: false });
   });
 });

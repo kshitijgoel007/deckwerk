@@ -12,10 +12,18 @@ let state: AgentChatState = {
   auth: 'signedIn',
   accountLabel: 'slides@example.com',
   models: [
-    { model: 'gpt-5.6-sol', displayName: 'GPT-5.6 Sol', description: 'Frontier', isDefault: true },
-    { model: 'gpt-5.6-terra', displayName: 'GPT-5.6 Terra', description: 'Balanced', isDefault: false },
+    {
+      model: 'gpt-5.6-sol', displayName: 'GPT-5.6 Sol', description: 'Frontier', isDefault: true,
+      serviceTiers: [{ id: 'priority', name: 'Fast', description: 'Faster responses' }],
+      defaultServiceTier: 'priority',
+    },
+    {
+      model: 'gpt-5.6-terra', displayName: 'GPT-5.6 Terra', description: 'Balanced', isDefault: false,
+      serviceTiers: [], defaultServiceTier: null,
+    },
   ],
   selectedModel: 'gpt-5.6-sol',
+  fastMode: true,
   busy: false,
   activity: null,
   messages: [],
@@ -55,6 +63,7 @@ const api: AgentChatApi = {
     messages: [],
   }),
   setAgentChatModel: async ({ model }) => publish({ ...state, selectedModel: model }),
+  setAgentChatFastMode: async ({ enabled }) => publish({ ...state, fastMode: enabled }),
   interruptAgentChat: async () => publish({ ...state, busy: false, activity: null }),
   resetAgentChat: async () => publish({ ...state, busy: false, activity: null, messages: [] }),
   onAgentChatState: (fn) => { listener = fn; return () => undefined; },

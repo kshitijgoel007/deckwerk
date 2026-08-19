@@ -63,6 +63,12 @@ The **Model** picker is populated from that account's live Codex model catalog;
 the server-marked default is selected initially, and changes apply on the next
 message in that deck's conversation.
 
+While a turn is running, the composer remains available: another message
+steers the active turn instead of waiting for it to finish. **Stop** remains a
+separate control. When the selected model advertises a fast service tier, the
+lightning button toggles it; lit means fast/priority service, unlit means the
+standard service tier. Model and speed changes wait until the active turn ends.
+
 ## Comments
 
 Slides and elements carry `comments: [{id, author, text, ts, resolved}]`

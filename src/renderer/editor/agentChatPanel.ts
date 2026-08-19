@@ -1,5 +1,6 @@
 import type {
   AgentChatSendRequest,
+  AgentChatSetFastModeRequest,
   AgentChatSetModelRequest,
   AgentChatState,
 } from '@shared/ipc.js';
@@ -10,6 +11,7 @@ export interface AgentChatApi {
   loginAgentChat: () => Promise<AgentChatState>;
   switchAgentChatAccount: () => Promise<AgentChatState>;
   setAgentChatModel: (request: AgentChatSetModelRequest) => Promise<AgentChatState>;
+  setAgentChatFastMode: (request: AgentChatSetFastModeRequest) => Promise<AgentChatState>;
   interruptAgentChat: () => Promise<AgentChatState>;
   resetAgentChat: () => Promise<AgentChatState>;
   onAgentChatState: (fn: (state: AgentChatState) => void) => () => void;
@@ -34,8 +36,10 @@ export class AgentChatPanel {
   private readonly switchAccount: HTMLButtonElement;
   private readonly modelRow: HTMLElement;
   private readonly modelSelect: HTMLSelectElement;
+  private readonly fastMode: HTMLButtonElement;
   private readonly input: HTMLTextAreaElement;
   private readonly action: HTMLButtonElement;
+  private readonly stop: HTMLButtonElement;
   private readonly reset: HTMLButtonElement;
   private state: AgentChatState | null = null;
 
@@ -80,15 +84,21 @@ export class AgentChatPanel {
     this.switchAccount.classList.add('agent-chat-switch-account');
     this.account.append(this.signIn);
 
-    this.modelRow = document.createElement('label');
+    this.modelRow = document.createElement('div');
     this.modelRow.className = 'agent-chat-model';
     this.modelRow.hidden = true;
-    const modelLabel = document.createElement('span');
+    const modelLabel = document.createElement('label');
     modelLabel.textContent = 'Model';
+    modelLabel.htmlFor = 'agent-chat-model-select';
     this.modelSelect = document.createElement('select');
+    this.modelSelect.id = 'agent-chat-model-select';
     this.modelSelect.setAttribute('aria-label', 'Agent model');
     this.modelSelect.addEventListener('change', () => void this.changeModel());
-    this.modelRow.append(modelLabel, this.modelSelect);
+    this.fastMode = smallButton('⚡', () => void this.changeFastMode());
+    this.fastMode.classList.add('agent-chat-fast-mode');
+    this.fastMode.setAttribute('aria-label', 'Enable fast mode');
+    this.fastMode.setAttribute('aria-pressed', 'false');
+    this.modelRow.append(modelLabel, this.modelSelect, this.fastMode);
 
     this.messages = document.createElement('div');
     this.messages.className = 'agent-chat-messages';
@@ -123,12 +133,21 @@ export class AgentChatPanel {
     this.action.className = 'ui-button ui-button-primary agent-chat-action';
     this.action.textContent = 'Send';
     this.action.addEventListener('click', () => void this.submit());
+    this.stop = document.createElement('button');
+    this.stop.type = 'button';
+    this.stop.className = 'ui-button ui-button-danger agent-chat-stop';
+    this.stop.textContent = 'Stop';
+    this.stop.hidden = true;
+    this.stop.addEventListener('click', () => void this.stopTurn());
     const hint = document.createElement('span');
     hint.className = 'agent-chat-hint';
     hint.textContent = 'Enter to send · Shift+Enter for a new line';
     const composeRow = document.createElement('div');
     composeRow.className = 'agent-chat-compose-row';
-    composeRow.append(hint, this.action);
+    const composerActions = document.createElement('div');
+    composerActions.className = 'agent-chat-composer-actions';
+    composerActions.append(this.stop, this.action);
+    composeRow.append(hint, composerActions);
     composer.append(this.input, composeRow);
 
     panel.append(header, this.account, this.modelRow, this.messages, this.error, composer);
@@ -156,21 +175,26 @@ export class AgentChatPanel {
   }
 
   private async submit(): Promise<void> {
-    if (this.state?.busy) {
-      this.action.disabled = true;
-      try {
-        this.applyState(await this.options.api.interruptAgentChat());
-      } catch (error) {
-        this.showLocalError(error);
-      }
-      return;
-    }
     const text = this.input.value.trim();
     if (!text || this.state?.auth !== 'signedIn') return;
+    this.input.value = '';
     this.action.disabled = true;
     try {
       this.applyState(await this.options.api.sendAgentChatMessage({ text }));
-      this.input.value = '';
+    } catch (error) {
+      // Restore the failed message only if the user has not already started
+      // composing the next one while the request was in flight.
+      if (!this.input.value) this.input.value = text;
+      this.showLocalError(error);
+    } finally {
+      this.syncControls();
+    }
+  }
+
+  private async stopTurn(): Promise<void> {
+    this.stop.disabled = true;
+    try {
+      this.applyState(await this.options.api.interruptAgentChat());
     } catch (error) {
       this.showLocalError(error);
     } finally {
@@ -207,6 +231,19 @@ export class AgentChatPanel {
       this.applyState(await this.options.api.setAgentChatModel({ model: this.modelSelect.value }));
     } catch (error) {
       this.modelSelect.value = previous;
+      this.showLocalError(error);
+    } finally {
+      this.syncControls();
+    }
+  }
+
+  private async changeFastMode(): Promise<void> {
+    this.fastMode.disabled = true;
+    try {
+      this.applyState(await this.options.api.setAgentChatFastMode({
+        enabled: !this.state?.fastMode,
+      }));
+    } catch (error) {
       this.showLocalError(error);
     } finally {
       this.syncControls();
@@ -257,6 +294,8 @@ export class AgentChatPanel {
     this.modelRow.hidden = state.auth !== 'signedIn' || state.models.length === 0;
     const signature = state.models.map((model) => [
       model.model, model.displayName, model.description, model.isDefault,
+      model.defaultServiceTier,
+      ...model.serviceTiers.flatMap((tier) => [tier.id, tier.name, tier.description]),
     ].join('\u0000')).join('\u0001');
     if (this.modelSelect.dataset.signature !== signature) {
       this.modelSelect.replaceChildren(...state.models.map((model) => {
@@ -269,6 +308,21 @@ export class AgentChatPanel {
       this.modelSelect.dataset.signature = signature;
     }
     if (state.selectedModel) this.modelSelect.value = state.selectedModel;
+    const selected = state.models.find((model) => model.model === state.selectedModel);
+    const tier = selected?.serviceTiers.find((candidate) => {
+      const id = candidate.id.toLowerCase();
+      return id === 'priority' || id === 'fast' || candidate.name.toLowerCase() === 'fast';
+    });
+    this.fastMode.hidden = !tier;
+    this.fastMode.classList.toggle('active', state.fastMode);
+    this.fastMode.setAttribute('aria-pressed', String(state.fastMode));
+    this.fastMode.setAttribute(
+      'aria-label',
+      state.fastMode ? 'Disable fast mode' : 'Enable fast mode',
+    );
+    this.fastMode.title = tier
+      ? `${state.fastMode ? 'Disable' : 'Enable'} ${tier.name}: ${tier.description}`
+      : 'Fast mode is unavailable for this model';
   }
 
   private renderMessages(state: AgentChatState): void {
@@ -300,18 +354,19 @@ export class AgentChatPanel {
 
   private syncControls(): void {
     const state = this.state;
-    this.action.textContent = state?.busy ? 'Stop' : 'Send';
-    this.action.classList.toggle('ui-button-primary', !state?.busy);
-    this.action.classList.toggle('ui-button-danger', state?.busy === true);
-    this.action.disabled = state?.busy
-      ? false
-      : !this.input.value.trim()
-        || state?.connection !== 'ready'
-        || state.auth !== 'signedIn';
-    this.input.disabled = state?.busy === true || state?.connection === 'unavailable';
+    this.action.textContent = 'Send';
+    this.action.classList.add('ui-button-primary');
+    this.action.classList.remove('ui-button-danger');
+    this.action.disabled = !this.input.value.trim()
+      || state?.connection !== 'ready'
+      || state?.auth !== 'signedIn';
+    this.input.disabled = state?.connection === 'unavailable';
+    this.stop.hidden = state?.busy !== true;
+    this.stop.disabled = state?.busy !== true;
     this.reset.disabled = state?.busy === true;
     this.switchAccount.disabled = state?.busy === true;
     this.modelSelect.disabled = state?.busy === true || state?.auth !== 'signedIn';
+    this.fastMode.disabled = state?.busy === true || state?.auth !== 'signedIn';
   }
 
   private showLocalError(error: unknown): void {

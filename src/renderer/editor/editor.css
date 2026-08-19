@@ -1907,6 +1907,27 @@ button.magic-object-hit.selected-source:hover:not(:disabled) {
   font-size: 11px;
 }
 
+.agent-chat-fast-mode {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  flex: none;
+  place-items: center;
+  padding: 0;
+  border-color: var(--line);
+  background: transparent;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.agent-chat-fast-mode[hidden] { display: none; }
+
+.agent-chat-fast-mode.active {
+  border-color: #f59e0b;
+  background: rgb(245 158 11 / 14%);
+  color: #fbbf24;
+}
+
 .agent-chat-switch-account {
   flex: none;
   padding: 4px 7px;
@@ -2012,8 +2033,11 @@ button.magic-object-hit.selected-source:hover:not(:disabled) {
 
 .agent-chat-composer textarea:focus { border-color: var(--accent); }
 .agent-chat-compose-row { justify-content: space-between; margin-top: 8px; }
+.agent-chat-composer-actions { display: flex; align-items: center; gap: 6px; }
 .agent-chat-hint { color: var(--muted); font-size: 10px; }
 .agent-chat-action { min-width: 64px; }
+.agent-chat-stop { min-width: 54px; border-color: transparent; background: var(--danger); color: white; }
+.agent-chat-stop[hidden] { display: none; }
 .agent-chat-action.ui-button-primary { border-color: transparent; background: var(--accent); color: white; }
 .agent-chat-action.ui-button-danger { border-color: transparent; background: var(--danger); color: white; }
 

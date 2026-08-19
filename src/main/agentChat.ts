@@ -28,6 +28,10 @@ interface TurnStartResult {
   turn: { id: string; status: string };
 }
 
+interface TurnSteerResult {
+  turnId: string;
+}
+
 interface LoginResult {
   type: string;
   loginId?: string;
@@ -41,6 +45,8 @@ interface ModelListResult {
     description: string;
     hidden: boolean;
     isDefault: boolean;
+    serviceTiers: Array<{ id: string; name: string; description: string }>;
+    defaultServiceTier: string | null;
   }>;
   nextCursor: string | null;
 }
@@ -57,6 +63,8 @@ interface AgentChatSession {
   activeTurnId: string | null;
   agentPrompt: string | null;
   model: string | null;
+  fastMode: boolean;
+  queuedFollowUps: string[];
   messages: AgentChatMessage[];
   busy: boolean;
   activity: string | null;
@@ -154,6 +162,8 @@ export class AgentChatController {
         candidate.activeTurnId = null;
         candidate.agentPrompt = null;
         candidate.model = null;
+        candidate.fastMode = false;
+        candidate.queuedFollowUps = [];
         candidate.messages = [];
         candidate.activity = null;
         candidate.error = null;
@@ -180,7 +190,7 @@ export class AgentChatController {
     try {
       await this.ensureClient();
       if (this.auth !== 'signedIn') throw new Error('Sign in with ChatGPT before sending a message');
-      if (session.busy) throw new Error('The agent is already working');
+      if (session.busy) return await this.steer(session, text);
 
       session.messages.push({ id: randomUUID(), role: 'user', text });
       session.busy = true;
@@ -193,6 +203,7 @@ export class AgentChatController {
         session.agentPrompt = await prepareAgentPrompt();
         const started = await this.client!.request<ThreadStartResult>('thread/start', {
           ...(session.model ? { model: session.model } : {}),
+          serviceTier: this.serviceTierFor(session),
           // A neutral cwd keeps the dynamically wrapped HTTP brief as the
           // thread's sole DeckWerk-specific instruction source.
           cwd: this.runtimeDir,
@@ -212,6 +223,7 @@ export class AgentChatController {
       const turn = await this.client!.request<TurnStartResult>('turn/start', {
         threadId: session.threadId,
         ...(session.model ? { model: session.model } : {}),
+        serviceTier: this.serviceTierFor(session),
         input: [{ type: 'text', text, text_elements: [] }],
         cwd: this.runtimeDir,
         approvalPolicy: 'never',
@@ -229,8 +241,12 @@ export class AgentChatController {
       });
       session.activeTurnId = turn.turn.id;
       this.emit(session);
+      for (const followUp of session.queuedFollowUps.splice(0)) {
+        await this.dispatchSteer(session, followUp);
+      }
     } catch (error) {
       session.busy = false;
+      session.queuedFollowUps = [];
       session.activity = null;
       session.error = message(error);
       session.messages.push({
@@ -239,6 +255,38 @@ export class AgentChatController {
       this.emit(session);
     }
     return this.snapshot(session);
+  }
+
+  private async steer(session: AgentChatSession, text: string): Promise<AgentChatState> {
+    session.messages.push({ id: randomUUID(), role: 'user', text });
+    if (!session.threadId || !session.activeTurnId) {
+      session.queuedFollowUps.push(text);
+      session.activity = 'Queueing follow-up…';
+      session.error = null;
+      this.emit(session);
+      return this.snapshot(session);
+    }
+    await this.dispatchSteer(session, text);
+    return this.snapshot(session);
+  }
+
+  private async dispatchSteer(session: AgentChatSession, text: string): Promise<void> {
+    session.activity = 'Sending follow-up…';
+    session.error = null;
+    this.emit(session);
+    try {
+      await this.client!.request<TurnSteerResult>('turn/steer', {
+        threadId: session.threadId,
+        expectedTurnId: session.activeTurnId,
+        input: [{ type: 'text', text, text_elements: [] }],
+      });
+      session.activity = 'Thinking…';
+    } catch (error) {
+      const text = `Could not send follow-up: ${message(error)}`;
+      session.error = text;
+      session.messages.push({ id: randomUUID(), role: 'system', text, error: true });
+    }
+    this.emit(session);
   }
 
   async setModel(deckPath: string, model: string): Promise<AgentChatState> {
@@ -250,6 +298,24 @@ export class AgentChatController {
         throw new Error('That model is not available for this account');
       }
       session.model = model;
+      session.fastMode = defaultFastMode(this.models.find((candidate) => candidate.model === model));
+      session.error = null;
+    } catch (error) {
+      session.error = message(error);
+    }
+    this.emit(session);
+    return this.snapshot(session);
+  }
+
+  async setFastMode(deckPath: string, enabled: boolean): Promise<AgentChatState> {
+    const session = this.session(deckPath);
+    try {
+      await this.ensureClient();
+      if (session.busy) throw new Error('Fast mode can be changed after the active turn finishes');
+      if (enabled && !fastTier(this.selectedModel(session))) {
+        throw new Error('Fast mode is not available for the selected model');
+      }
+      session.fastMode = enabled;
       session.error = null;
     } catch (error) {
       session.error = message(error);
@@ -280,6 +346,7 @@ export class AgentChatController {
     session.threadId = null;
     session.activeTurnId = null;
     session.agentPrompt = null;
+    session.queuedFollowUps = [];
     session.messages = [];
     session.busy = false;
     session.activity = null;
@@ -352,7 +419,10 @@ export class AgentChatController {
     await this.refreshAccount();
     if (this.auth !== 'signedIn') {
       this.models = [];
-      for (const session of this.sessions.values()) session.model = null;
+      for (const session of this.sessions.values()) {
+        session.model = null;
+        session.fastMode = false;
+      }
       return;
     }
     await this.refreshModels();
@@ -374,6 +444,8 @@ export class AgentChatController {
           displayName: candidate.displayName,
           description: candidate.description,
           isDefault: candidate.isDefault,
+          serviceTiers: candidate.serviceTiers.map((tier) => ({ ...tier })),
+          defaultServiceTier: candidate.defaultServiceTier,
         });
       }
       cursor = result.nextCursor;
@@ -383,7 +455,15 @@ export class AgentChatController {
       ?? models[0]?.model
       ?? null;
     for (const session of this.sessions.values()) {
-      if (!models.some((candidate) => candidate.model === session.model)) session.model = fallback;
+      const selected = models.find((candidate) => candidate.model === session.model);
+      if (!selected) {
+        session.model = fallback;
+        session.fastMode = defaultFastMode(
+          models.find((candidate) => candidate.model === fallback),
+        );
+      } else if (!fastTier(selected)) {
+        session.fastMode = false;
+      }
     }
   }
 
@@ -434,6 +514,7 @@ export class AgentChatController {
       const turn = record(params.turn);
       session.busy = false;
       session.activeTurnId = null;
+      session.queuedFollowUps = [];
       session.activity = null;
       if (turn.status === 'failed') {
         const error = record(turn.error);
@@ -505,6 +586,10 @@ export class AgentChatController {
         model: this.models.find((candidate) => candidate.isDefault)?.model
           ?? this.models[0]?.model
           ?? null,
+        fastMode: defaultFastMode(
+          this.models.find((candidate) => candidate.isDefault) ?? this.models[0],
+        ),
+        queuedFollowUps: [],
         messages: [],
         busy: false,
         activity: null,
@@ -523,6 +608,7 @@ export class AgentChatController {
       accountLabel: this.accountLabel,
       models: this.models.map((model) => ({ ...model })),
       selectedModel: session.model,
+      fastMode: session.fastMode,
       busy: session.busy,
       activity: session.activity,
       messages: session.messages.map((item) => ({ ...item })),
@@ -537,6 +623,26 @@ export class AgentChatController {
   private emitAll(): void {
     for (const session of this.sessions.values()) this.emit(session);
   }
+
+  private selectedModel(session: AgentChatSession): AgentChatModel | undefined {
+    return this.models.find((candidate) => candidate.model === session.model);
+  }
+
+  private serviceTierFor(session: AgentChatSession): string {
+    return session.fastMode ? fastTier(this.selectedModel(session))?.id ?? 'default' : 'default';
+  }
+}
+
+function fastTier(model: AgentChatModel | undefined): AgentChatModel['serviceTiers'][number] | undefined {
+  return model?.serviceTiers.find((tier) => {
+    const id = tier.id.toLowerCase();
+    return id === 'priority' || id === 'fast' || tier.name.toLowerCase() === 'fast';
+  });
+}
+
+function defaultFastMode(model: AgentChatModel | undefined): boolean {
+  const tier = fastTier(model);
+  return Boolean(tier && tier.id === model?.defaultServiceTier);
 }
 
 function activityForItem(item: Record<string, unknown>): string {

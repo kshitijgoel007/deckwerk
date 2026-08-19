@@ -21,16 +21,21 @@ class FakeAppServer {
         {
           model: 'gpt-5.6-sol', displayName: 'GPT-5.6 Sol', description: 'Frontier',
           hidden: false, isDefault: true,
+          serviceTiers: [{ id: 'priority', name: 'Fast', description: 'Faster responses' }],
+          defaultServiceTier: 'priority',
         },
         {
           model: 'gpt-5.6-terra', displayName: 'GPT-5.6 Terra', description: 'Balanced',
           hidden: false, isDefault: false,
+          serviceTiers: [{ id: 'priority', name: 'Fast', description: 'Faster responses' }],
+          defaultServiceTier: null,
         },
       ],
       nextCursor: null,
     } as T;
     if (method === 'thread/start') return { thread: { id: 'thread-1' } } as T;
     if (method === 'turn/start') return { turn: { id: 'turn-1', status: 'inProgress' } } as T;
+    if (method === 'turn/steer') return { turnId: 'turn-1' } as T;
     if (method === 'account/login/start') return {
       type: 'chatgpt', loginId: 'login-1', authUrl: 'https://chatgpt.com/auth',
     } as T;
@@ -73,6 +78,7 @@ describe('embedded agent chat controller', () => {
       auth: 'signedIn',
       accountLabel: 'slides@example.com',
       selectedModel: 'gpt-5.6-sol',
+      fastMode: true,
     });
 
     const completePrompt = agentClipboardPrompt(
@@ -89,6 +95,7 @@ describe('embedded agent chat controller', () => {
       approvalPolicy: 'never',
       sandbox: 'workspace-write',
       model: 'gpt-5.6-sol',
+      serviceTier: 'priority',
     });
     expect(thread.params.developerInstructions).toBe(completePrompt);
     const turn = server.requests.find((entry) => entry.method === 'turn/start')!;
@@ -99,6 +106,7 @@ describe('embedded agent chat controller', () => {
     });
     expect(turn.params.input[0].text).toBe('Polish this slide');
     expect(turn.params.model).toBe('gpt-5.6-sol');
+    expect(turn.params.serviceTier).toBe('priority');
 
     notify({
       method: 'item/agentMessage/delta',
@@ -112,6 +120,39 @@ describe('embedded agent chat controller', () => {
     expect(complete.busy).toBe(false);
     expect(complete.messages.map((message) => [message.role, message.text]))
       .toEqual([['user', 'Polish this slide'], ['assistant', 'Done']]);
+  });
+
+  it('steers an active turn when the user sends a follow-up', async () => {
+    const { controller, server } = fixture();
+    const prepare = vi.fn(async () => 'HTTP session');
+    await controller.getState('/tmp/talk');
+    await controller.send('/tmp/talk', request, prepare);
+    const steered = await controller.send(
+      '/tmp/talk',
+      { text: 'Also tighten the body copy' },
+      prepare,
+    );
+    expect(steered.busy).toBe(true);
+    expect(prepare).toHaveBeenCalledOnce();
+    expect(server.requests.find((entry) => entry.method === 'turn/steer')?.params)
+      .toMatchObject({
+        threadId: 'thread-1',
+        expectedTurnId: 'turn-1',
+        input: [{ type: 'text', text: 'Also tighten the body copy', text_elements: [] }],
+      });
+    expect(steered.messages.filter((message) => message.role === 'user').map((message) => message.text))
+      .toEqual(['Polish this slide', 'Also tighten the body copy']);
+  });
+
+  it('uses the standard service tier when fast mode is disabled', async () => {
+    const { controller, server } = fixture();
+    await controller.getState('/tmp/talk');
+    expect((await controller.setFastMode('/tmp/talk', false)).fastMode).toBe(false);
+    await controller.send('/tmp/talk', request, async () => 'HTTP session');
+    expect(server.requests.find((entry) => entry.method === 'thread/start')?.params.serviceTier)
+      .toBe('default');
+    expect(server.requests.find((entry) => entry.method === 'turn/start')?.params.serviceTier)
+      .toBe('default');
   });
 
   it('opens managed ChatGPT sign-in when no account is available', async () => {
