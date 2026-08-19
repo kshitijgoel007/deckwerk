@@ -44,6 +44,15 @@ const electronPresent = (): boolean => {
 
 const runnable = existsSync(PYTHON) && existsSync(KEY) && electronPresent();
 
+function fullBleedBackground(slide: Slide, deck: Deck) {
+  return slide.elements.find((element) => element.type === 'image'
+    && element.x === 0
+    && element.y === 0
+    && element.w === deck.canvas.w
+    && element.h === deck.canvas.h
+    && element.z === 0);
+}
+
 describe.skipIf(!runnable)('every Bitter Lesson slide, exported on its own', () => {
   let dir: string;
   let deck: Deck;
@@ -84,7 +93,7 @@ describe.skipIf(!runnable)('every Bitter Lesson slide, exported on its own', () 
     // below vacuously true.
     expect(deck.slides.length).toBeGreaterThan(50);
     expect(rebuilt.length).toBe(deck.slides.length);
-    expect(deck.slides.filter((slide) => slide.background.image).length).toBeGreaterThan(0);
+    expect(deck.slides.filter((slide) => fullBleedBackground(slide, deck)).length).toBeGreaterThan(0);
     expect(deck.slides.flatMap((slide) => slide.elements).length).toBeGreaterThan(150);
   });
 
@@ -101,17 +110,15 @@ describe.skipIf(!runnable)('every Bitter Lesson slide, exported on its own', () 
     expect(differences(deck, rebuilt)).toEqual([]);
   });
 
-  it('resolves the title slide\'s background picture to a file that is there', async () => {
-    // The deck value round-tripping is not the same as the browser finding the
-    // picture: a CSS `url()` is resolved against the page's base, which is one
-    // folder up from `edit/`, and getting that wrong shows up as a slide with
-    // no background rather than as an error.
-    const index = deck.slides.findIndex((slide) => slide.background.image);
+  it('resolves the title slide\'s full-bleed background picture to a file that is there', async () => {
+    // Imported background pictures are ordinary full-bleed image elements so
+    // they remain selectable and animatable. Round-tripping the deck value is
+    // not enough: the browser must also resolve the image relative to edit/.
+    const index = deck.slides.findIndex((slide) => fullBleedBackground(slide, deck));
+    const background = fullBleedBackground(deck.slides[index], deck)!;
     const page = join(dir, 'edit', `${deck.slides[index].id}.html`);
     const [resolved] = await measureSavedPages([page], deck.canvas, `(() => {
-      const slide = document.querySelector('section.slide');
-      const url = getComputedStyle(slide).backgroundImage.match(/url\\(["']?([^"')]+)["']?\\)/);
-      return url ? url[1] : null;
+      return document.querySelector('[data-element-id="${background.id}"]').currentSrc;
     })()`) as (string | null)[];
 
     expect(resolved).toMatch(/^file:\/\//);

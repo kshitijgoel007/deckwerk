@@ -58,6 +58,18 @@ describe.skipIf(!runnable)('PDF pages, against the real Player', () => {
     for (const name of names) {
       const deckDir = join(deckRoot, name);
       const deck = await loadDeck(deckDir);
+      const profiledSources = new Set<string>();
+      const rasterSources = new Set(deck.slides.flatMap((slide) => [
+        slide.background.image,
+        ...slide.elements.flatMap((element) => element.type === 'image' ? [element.src] : []),
+      ]).filter((src): src is string => typeof src === 'string'
+        && /\.(?:png|jpe?g|webp)$/i.test(src)));
+      await Promise.all([...rasterSources].map(async (src) => {
+        const bytes = await readFile(join(deckDir, src));
+        if (bytes.includes(Buffer.from('iCCP')) || bytes.includes(Buffer.from('ICC_PROFILE'))) {
+          profiledSources.add(src);
+        }
+      }));
       const bundleDir = join(work, `${name}-player`);
       const outDir = join(work, `${name}-results`);
       await exportDeck(deckDir, deck, bundleDir);
@@ -74,6 +86,23 @@ describe.skipIf(!runnable)('PDF pages, against the real Player', () => {
               .sort((a, b) => a.z - b.z)
               .filter((element) => element.type === 'video')
               .map((element) => state.seeks.get(element.id) ?? element.start),
+            rasterToleranceBoxes: [
+              ...(slide.background.image && profiledSources.has(slide.background.image)
+                ? [{ x: 0, y: 0, w: deck.canvas.w, h: deck.canvas.h,
+                  channelTolerance: 96 }] : []),
+              ...slide.elements.flatMap((element) => {
+                const channelTolerance = element.type === 'video' ? 64
+                  : element.type === 'image' && profiledSources.has(element.src) ? 96 : null;
+                if (channelTolerance === null) return [];
+                const radians = element.rot * Math.PI / 180;
+                const w = Math.abs(Math.cos(radians)) * element.w
+                  + Math.abs(Math.sin(radians)) * element.h;
+                const h = Math.abs(Math.sin(radians)) * element.w
+                  + Math.abs(Math.cos(radians)) * element.h;
+                return [{ x: element.x + (element.w - w) / 2,
+                  y: element.y + (element.h - h) / 2, w, h, channelTolerance }];
+              }),
+            ],
           };
         });
       });

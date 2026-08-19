@@ -1,8 +1,8 @@
 # Magic Move
 
-Magic Move animates matching objects from one slide into the next. Everything else fades out or in.
+Magic Move animates matching objects from one slide into the next. Objects that are identical across slides don't change at all. Objects that are different, but not paired, fade out or in.
 
-Select the first slide in the transition, make sure no object is selected, then find **Magic Move** under **Props**.
+Select the first slide in the transition, then find **Magic Move** under **Props**.
 
 > Screenshot placeholder: The Magic Move controls in the Props sidebar.
 

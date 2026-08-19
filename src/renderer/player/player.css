@@ -42,6 +42,13 @@
   display: block;
 }
 
+/* Chromium prints a video surface as black when decoding fails. Give the
+   on-screen Player the same stable fallback instead of exposing the slide
+   background through a transparent, unplayable media box. */
+.element video {
+  background: #000;
+}
+
 .media-effect-definition {
   position: absolute;
   overflow: hidden;
@@ -128,7 +135,6 @@
   color: #ffb4ab;
   opacity: 1;
 }
-
 
 
 

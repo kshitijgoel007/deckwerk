@@ -8,7 +8,13 @@ html, body { margin: 0; padding: 0; background: #000; }
   background: #000;
 }
 .pdf-page:last-child { break-after: auto; page-break-after: auto; }
-.pdf-stage { position: absolute; inset: 0 auto auto 0; transform-origin: top left; }
+.pdf-stage {
+  position: absolute;
+  inset: 0 auto auto 0;
+  overflow: hidden;
+  contain: size layout paint;
+  transform-origin: top left;
+}
 @media print {
   html, body, #pages { background: transparent; }
 }

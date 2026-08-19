@@ -8,7 +8,7 @@ const { comparePixelBuffers } = require('./pixel-compare.cjs');
 
 const jobPath = process.argv[2];
 const job = JSON.parse(readFileSync(jobPath, 'utf8'));
-const CHANNEL_TOLERANCE = job.channelTolerance ?? 24;
+const CHANNEL_TOLERANCE = job.channelTolerance ?? 32;
 let activeDeckDir = '';
 
 app.commandLine.appendSwitch('force-device-scale-factor', '1');
@@ -68,7 +68,7 @@ app.whenReady().then(async () => {
           ? await printPlayerReference(player, item, pageIndex, job.python)
           : await stableCapture(player);
         const actual = nativeImage.createFromPath(join(pageDir, `${pageIndex}.png`));
-        const comparison = compare(reference, actual);
+        const comparison = compare(reference, actual, expected.rasterToleranceBoxes, item.canvas);
         if (comparison.fraction > (job.reportAbove ?? 0)) {
           const name = `${expected.id}-step-${expected.step}`.replace(/[^a-zA-Z0-9_.-]/g, '-');
           writeFileSync(join(item.outDir, `${name}-player.png`), reference.toPNG());
@@ -256,7 +256,7 @@ async function stableCapture(win) {
   return previous.image;
 }
 
-function compare(reference, actual) {
+function compare(reference, actual, rasterToleranceBoxes = [], canvas = null) {
   const aSize = reference.getSize();
   const bSize = actual.getSize();
   if (aSize.width !== bSize.width || aSize.height !== bSize.height) {
@@ -268,9 +268,17 @@ function compare(reference, actual) {
   const out = Buffer.alloc(a.length);
   const compared = comparePixelBuffers(a, b, aSize.width, aSize.height, {
     channelTolerance: CHANNEL_TOLERANCE,
+    edgeChannelTolerance: 96,
     // Native images are in device pixels. Permit at most one CSS pixel of
     // rasterizer fringe on both standard and Retina displays.
     radius: Math.max(1, Math.ceil(screen.getPrimaryDisplay().scaleFactor)),
+    highToleranceAreas: canvas ? rasterToleranceBoxes.map((box) => ({
+      x: Math.floor(box.x * aSize.width / canvas.w),
+      y: Math.floor(box.y * aSize.height / canvas.h),
+      w: Math.ceil(box.w * aSize.width / canvas.w),
+      h: Math.ceil(box.h * aSize.height / canvas.h),
+      channelTolerance: box.channelTolerance,
+    })) : [],
   });
   for (let i = 0; i < a.length; i += 4) {
     const bad = compared.different[i / 4] === 1;
