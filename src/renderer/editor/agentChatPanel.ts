@@ -1,10 +1,15 @@
-import type { AgentChatSendRequest, AgentChatState } from '@shared/ipc.js';
+import type {
+  AgentChatSendRequest,
+  AgentChatSetModelRequest,
+  AgentChatState,
+} from '@shared/ipc.js';
 
 export interface AgentChatApi {
   getAgentChatState: () => Promise<AgentChatState>;
   sendAgentChatMessage: (request: AgentChatSendRequest) => Promise<AgentChatState>;
   loginAgentChat: () => Promise<AgentChatState>;
   switchAgentChatAccount: () => Promise<AgentChatState>;
+  setAgentChatModel: (request: AgentChatSetModelRequest) => Promise<AgentChatState>;
   interruptAgentChat: () => Promise<AgentChatState>;
   resetAgentChat: () => Promise<AgentChatState>;
   onAgentChatState: (fn: (state: AgentChatState) => void) => () => void;
@@ -27,6 +32,8 @@ export class AgentChatPanel {
   private readonly error: HTMLElement;
   private readonly signIn: HTMLButtonElement;
   private readonly switchAccount: HTMLButtonElement;
+  private readonly modelRow: HTMLElement;
+  private readonly modelSelect: HTMLSelectElement;
   private readonly input: HTMLTextAreaElement;
   private readonly action: HTMLButtonElement;
   private readonly reset: HTMLButtonElement;
@@ -73,6 +80,16 @@ export class AgentChatPanel {
     this.switchAccount.classList.add('agent-chat-switch-account');
     this.account.append(this.signIn);
 
+    this.modelRow = document.createElement('label');
+    this.modelRow.className = 'agent-chat-model';
+    this.modelRow.hidden = true;
+    const modelLabel = document.createElement('span');
+    modelLabel.textContent = 'Model';
+    this.modelSelect = document.createElement('select');
+    this.modelSelect.setAttribute('aria-label', 'Agent model');
+    this.modelSelect.addEventListener('change', () => void this.changeModel());
+    this.modelRow.append(modelLabel, this.modelSelect);
+
     this.messages = document.createElement('div');
     this.messages.className = 'agent-chat-messages';
     this.messages.setAttribute('aria-live', 'polite');
@@ -114,7 +131,7 @@ export class AgentChatPanel {
     composeRow.append(hint, this.action);
     composer.append(this.input, composeRow);
 
-    panel.append(header, this.account, this.messages, this.error, composer);
+    panel.append(header, this.account, this.modelRow, this.messages, this.error, composer);
     document.body.appendChild(panel);
     this.element = panel;
     options.api.onAgentChatState((state) => this.applyState(state));
@@ -183,6 +200,19 @@ export class AgentChatPanel {
     }
   }
 
+  private async changeModel(): Promise<void> {
+    const previous = this.state?.selectedModel ?? '';
+    this.modelSelect.disabled = true;
+    try {
+      this.applyState(await this.options.api.setAgentChatModel({ model: this.modelSelect.value }));
+    } catch (error) {
+      this.modelSelect.value = previous;
+      this.showLocalError(error);
+    } finally {
+      this.syncControls();
+    }
+  }
+
   private async newChat(): Promise<void> {
     this.reset.disabled = true;
     try {
@@ -215,10 +245,30 @@ export class AgentChatPanel {
       this.account.replaceChildren(this.signIn);
     }
 
+    this.renderModels(state);
+
     this.error.hidden = !state.error;
     this.error.textContent = state.error ?? '';
     this.renderMessages(state);
     this.syncControls();
+  }
+
+  private renderModels(state: AgentChatState): void {
+    this.modelRow.hidden = state.auth !== 'signedIn' || state.models.length === 0;
+    const signature = state.models.map((model) => [
+      model.model, model.displayName, model.description, model.isDefault,
+    ].join('\u0000')).join('\u0001');
+    if (this.modelSelect.dataset.signature !== signature) {
+      this.modelSelect.replaceChildren(...state.models.map((model) => {
+        const option = document.createElement('option');
+        option.value = model.model;
+        option.textContent = `${model.displayName}${model.isDefault ? ' (default)' : ''}`;
+        option.title = model.description;
+        return option;
+      }));
+      this.modelSelect.dataset.signature = signature;
+    }
+    if (state.selectedModel) this.modelSelect.value = state.selectedModel;
   }
 
   private renderMessages(state: AgentChatState): void {
@@ -261,6 +311,7 @@ export class AgentChatPanel {
     this.input.disabled = state?.busy === true || state?.connection === 'unavailable';
     this.reset.disabled = state?.busy === true;
     this.switchAccount.disabled = state?.busy === true;
+    this.modelSelect.disabled = state?.busy === true || state?.auth !== 'signedIn';
   }
 
   private showLocalError(error: unknown): void {

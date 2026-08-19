@@ -5,6 +5,7 @@ import { IPC } from '@shared/ipc.js';
 import type {
   AgentContextDraft,
   AgentChatSendRequest,
+  AgentChatSetModelRequest,
   AgentChatState,
   AgentSessionConnection,
   AgentSessionState,
@@ -106,6 +107,8 @@ const api = {
     ipcRenderer.invoke(IPC.agentChatLogin),
   switchAgentChatAccount: (): Promise<AgentChatState> =>
     ipcRenderer.invoke(IPC.agentChatSwitchAccount),
+  setAgentChatModel: (request: AgentChatSetModelRequest): Promise<AgentChatState> =>
+    ipcRenderer.invoke(IPC.agentChatSetModel, request),
   interruptAgentChat: (): Promise<AgentChatState> =>
     ipcRenderer.invoke(IPC.agentChatInterrupt),
   resetAgentChat: (): Promise<AgentChatState> =>

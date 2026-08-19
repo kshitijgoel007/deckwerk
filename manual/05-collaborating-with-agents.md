@@ -6,6 +6,8 @@ Sign in with ChatGPT if DeckWerk asks you to. The agent receives the same comple
 
 The signed-in email appears at the top of the panel. Choose **Switch account** to use a different ChatGPT account; DeckWerk keeps this login isolated from other Codex clients on the computer.
 
+Choose a model from the **Model** menu. DeckWerk starts with the default reported by Codex for the signed-in account, and a new choice takes effect with the next message.
+
 > Screenshot placeholder: Asking the embedded HTTP agent to polish the presentation.
 
 The agent works through the revision-bound HTTP API while you watch changes appear live. Applied drafts become named changes in **History**. In the background, the editor is a peer of the same authoritative collaboration session, so local and agent edits stay synchronized.

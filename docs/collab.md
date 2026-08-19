@@ -59,6 +59,9 @@ returns the already-open editor to ordinary file-backed persistence.
 The panel displays the ChatGPT email used by its embedded agent. **Switch
 account** signs out only DeckWerk's isolated Codex profile, discards threads
 created by the previous account, and opens the managed ChatGPT sign-in flow.
+The **Model** picker is populated from that account's live Codex model catalog;
+the server-marked default is selected initially, and changes apply on the next
+message in that deck's conversation.
 
 ## Comments
 

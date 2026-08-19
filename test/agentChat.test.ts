@@ -16,6 +16,19 @@ class FakeAppServer {
     if (method === 'account/read') return {
       account: this.account, requiresOpenaiAuth: true,
     } as T;
+    if (method === 'model/list') return {
+      data: [
+        {
+          model: 'gpt-5.6-sol', displayName: 'GPT-5.6 Sol', description: 'Frontier',
+          hidden: false, isDefault: true,
+        },
+        {
+          model: 'gpt-5.6-terra', displayName: 'GPT-5.6 Terra', description: 'Balanced',
+          hidden: false, isDefault: false,
+        },
+      ],
+      nextCursor: null,
+    } as T;
     if (method === 'thread/start') return { thread: { id: 'thread-1' } } as T;
     if (method === 'turn/start') return { turn: { id: 'turn-1', status: 'inProgress' } } as T;
     if (method === 'account/login/start') return {
@@ -55,7 +68,12 @@ describe('embedded agent chat controller', () => {
   it('creates a deck-scoped sandboxed thread and streams the assistant reply', async () => {
     const { controller, server, notify } = fixture();
     const initial = await controller.getState('/tmp/talk');
-    expect(initial).toMatchObject({ connection: 'ready', auth: 'signedIn', accountLabel: 'slides@example.com' });
+    expect(initial).toMatchObject({
+      connection: 'ready',
+      auth: 'signedIn',
+      accountLabel: 'slides@example.com',
+      selectedModel: 'gpt-5.6-sol',
+    });
 
     const completePrompt = agentClipboardPrompt(
       'http://127.0.0.1:5800/?deck=talk&agent=1',
@@ -70,6 +88,7 @@ describe('embedded agent chat controller', () => {
       cwd: expect.stringContaining('deckwerk-agent-runtime'),
       approvalPolicy: 'never',
       sandbox: 'workspace-write',
+      model: 'gpt-5.6-sol',
     });
     expect(thread.params.developerInstructions).toBe(completePrompt);
     const turn = server.requests.find((entry) => entry.method === 'turn/start')!;
@@ -79,6 +98,7 @@ describe('embedded agent chat controller', () => {
       networkAccess: true,
     });
     expect(turn.params.input[0].text).toBe('Polish this slide');
+    expect(turn.params.model).toBe('gpt-5.6-sol');
 
     notify({
       method: 'item/agentMessage/delta',
@@ -99,6 +119,39 @@ describe('embedded agent chat controller', () => {
     expect(await controller.getState('/tmp/talk')).toMatchObject({ auth: 'signedOut' });
     await controller.login('/tmp/talk');
     expect(opened).toEqual(['https://chatgpt.com/auth']);
+  });
+
+  it('uses an available model selected for the deck conversation', async () => {
+    const { controller, server, notify } = fixture();
+    await controller.getState('/tmp/talk');
+    await controller.send('/tmp/talk', request, async () => 'HTTP session');
+    notify({
+      method: 'turn/completed',
+      params: { threadId: 'thread-1', turn: { id: 'turn-1', status: 'completed' } },
+    });
+    const selected = await controller.setModel('/tmp/talk', 'gpt-5.6-terra');
+    expect(selected.selectedModel).toBe('gpt-5.6-terra');
+    await controller.send('/tmp/talk', { text: 'Now use the balanced model' }, async () => 'unused');
+    expect(server.requests.filter((entry) => entry.method === 'thread/start')).toHaveLength(1);
+    expect(server.requests.filter((entry) => entry.method === 'turn/start').map((entry) => entry.params.model))
+      .toEqual(['gpt-5.6-sol', 'gpt-5.6-terra']);
+  });
+
+  it('ignores a stale login cancellation after the account is signed in', async () => {
+    const { controller, server, notify } = fixture(null);
+    await controller.getState('/tmp/talk');
+    await controller.login('/tmp/talk');
+    server.account = { type: 'chatgpt', email: 'slides@example.com', planType: 'plus' };
+    notify({
+      method: 'account/login/completed',
+      params: { loginId: 'login-1', success: false, error: 'Login server error: login cancelled' },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(await controller.getState('/tmp/talk')).toMatchObject({
+      auth: 'signedIn',
+      accountLabel: 'slides@example.com',
+      error: null,
+    });
   });
 
   it('logs out before starting a fresh account login and drops old-account threads', async () => {

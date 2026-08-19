@@ -18,6 +18,7 @@ import { IPC } from '@shared/ipc.js';
 import type {
   AgentContextDraft,
   AgentChatSendRequest,
+  AgentChatSetModelRequest,
   AgentChatState,
   AgentSessionConnection,
   AgentSessionState,
@@ -509,6 +510,14 @@ function registerHandlers(): void {
     const s = requireSession();
     return agentChat.switchAccount(s.dir);
   });
+  ipcMain.handle(
+    IPC.agentChatSetModel,
+    async (_event, request: AgentChatSetModelRequest): Promise<AgentChatState> => {
+      const s = requireSession();
+      if (!request || typeof request.model !== 'string') throw new Error('A model is required');
+      return agentChat.setModel(s.dir, request.model);
+    },
+  );
   ipcMain.handle(
     IPC.agentChatSend,
     async (_event, request: AgentChatSendRequest): Promise<AgentChatState> => {

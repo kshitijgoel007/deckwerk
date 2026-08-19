@@ -8,6 +8,11 @@ const ready = (over: Partial<AgentChatState> = {}): AgentChatState => ({
   connection: 'ready',
   auth: 'signedIn',
   accountLabel: 'slides@example.com',
+  models: [
+    { model: 'gpt-5.6-sol', displayName: 'GPT-5.6 Sol', description: 'Frontier', isDefault: true },
+    { model: 'gpt-5.6-terra', displayName: 'GPT-5.6 Terra', description: 'Balanced', isDefault: false },
+  ],
+  selectedModel: 'gpt-5.6-sol',
   busy: false,
   activity: null,
   messages: [],
@@ -40,6 +45,7 @@ describe('agent chat panel', () => {
       },
       loginAgentChat: async () => ready(),
       switchAgentChatAccount: async () => ready(),
+      setAgentChatModel: async ({ model }) => ready({ selectedModel: model }),
       interruptAgentChat: async () => ready(),
       resetAgentChat: async () => ready(),
       onAgentChatState: (fn) => { listener = fn; return () => undefined; },
@@ -71,6 +77,7 @@ describe('agent chat panel', () => {
       sendAgentChatMessage: async () => ready(),
       loginAgentChat: async () => ready(),
       switchAgentChatAccount: async () => ready(),
+      setAgentChatModel: async ({ model }) => ready({ selectedModel: model }),
       interruptAgentChat: interrupt,
       resetAgentChat: async () => ready(),
       onAgentChatState: (fn) => { listener = fn; return () => undefined; },
@@ -94,6 +101,7 @@ describe('agent chat panel', () => {
       sendAgentChatMessage: async () => ready(),
       loginAgentChat: async () => ready(),
       switchAgentChatAccount: async () => ready(),
+      setAgentChatModel: async ({ model }) => ready({ selectedModel: model }),
       interruptAgentChat: async () => ready(),
       resetAgentChat: async () => ready(),
       onAgentChatState: () => () => undefined,
@@ -125,6 +133,7 @@ describe('agent chat panel', () => {
       sendAgentChatMessage: async () => ready(),
       loginAgentChat: async () => ready(),
       switchAgentChatAccount: switchAccount,
+      setAgentChatModel: async ({ model }) => ready({ selectedModel: model }),
       interruptAgentChat: async () => ready(),
       resetAgentChat: async () => ready(),
       onAgentChatState: (fn) => { listener = fn; return () => undefined; },
@@ -138,5 +147,30 @@ describe('agent chat panel', () => {
     expect(switchAccount).toHaveBeenCalledOnce();
     expect(panel.element.querySelector('.agent-chat-account')?.textContent)
       .toContain('vsitzmann@rhoda.ai');
+  });
+
+  it('shows the account model catalog and applies a selection', async () => {
+    let listener: (state: AgentChatState) => void = () => undefined;
+    const setModel = vi.fn(async ({ model }: { model: string }) => ready({ selectedModel: model }));
+    const api: AgentChatApi = {
+      getAgentChatState: async () => ready(),
+      sendAgentChatMessage: async () => ready(),
+      loginAgentChat: async () => ready(),
+      switchAgentChatAccount: async () => ready(),
+      setAgentChatModel: setModel,
+      interruptAgentChat: async () => ready(),
+      resetAgentChat: async () => ready(),
+      onAgentChatState: (fn) => { listener = fn; return () => undefined; },
+    };
+    const panel = new AgentChatPanel({ api, currentDeckPath: () => '/tmp/talk' });
+    listener(ready());
+    const select = panel.element.querySelector<HTMLSelectElement>('.agent-chat-model select')!;
+    expect([...select.options].map((option) => option.textContent))
+      .toEqual(['GPT-5.6 Sol (default)', 'GPT-5.6 Terra']);
+    select.value = 'gpt-5.6-terra';
+    select.dispatchEvent(new window.Event('change', { bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(setModel).toHaveBeenCalledWith({ model: 'gpt-5.6-terra' });
+    expect(select.value).toBe('gpt-5.6-terra');
   });
 });

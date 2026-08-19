@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type {
   AgentChatMessage,
+  AgentChatModel,
   AgentChatSendRequest,
   AgentChatState,
 } from '@shared/ipc.js';
@@ -29,7 +30,19 @@ interface TurnStartResult {
 
 interface LoginResult {
   type: string;
+  loginId?: string;
   authUrl?: string;
+}
+
+interface ModelListResult {
+  data: Array<{
+    model: string;
+    displayName: string;
+    description: string;
+    hidden: boolean;
+    isDefault: boolean;
+  }>;
+  nextCursor: string | null;
 }
 
 interface AppServerLike {
@@ -43,6 +56,7 @@ interface AgentChatSession {
   threadId: string | null;
   activeTurnId: string | null;
   agentPrompt: string | null;
+  model: string | null;
   messages: AgentChatMessage[];
   busy: boolean;
   activity: string | null;
@@ -68,6 +82,9 @@ export class AgentChatController {
   private connection: AgentChatState['connection'] = 'connecting';
   private auth: AgentChatState['auth'] = 'unknown';
   private accountLabel: string | null = null;
+  private models: AgentChatModel[] = [];
+  private activeLoginId: string | null = null;
+  private loginError: string | null = null;
   private globalError: string | null = null;
   private sessions = new Map<string, AgentChatSession>();
   private readonly runtimeDir = join(tmpdir(), 'deckwerk-agent-runtime');
@@ -97,13 +114,21 @@ export class AgentChatController {
         appBrand: 'chatgpt',
       });
       if (!result.authUrl) throw new Error('Codex did not return a sign-in URL');
+      this.activeLoginId = result.loginId ?? null;
+      this.loginError = null;
       session.activity = 'Finish signing in in your browser…';
       session.error = null;
       this.emit(session);
       await this.options.openExternal?.(result.authUrl);
     } catch (error) {
-      session.error = message(error);
-      session.activity = null;
+      // OAuth completion and request rejection can race. If the account is
+      // already usable, a late "login cancelled" result is stale, not an error.
+      await this.refreshAccountAndModels().catch(() => undefined);
+      if (this.auth === 'signedIn') this.clearLoginStatus();
+      else {
+        this.loginError = message(error);
+        session.activity = null;
+      }
       this.emit(session);
     }
     return this.snapshot(session);
@@ -119,12 +144,16 @@ export class AgentChatController {
       await this.client!.request('account/logout');
       this.auth = 'signedOut';
       this.accountLabel = null;
+      this.models = [];
+      this.activeLoginId = null;
+      this.loginError = null;
       // Threads belong to the account that created them. Never resume one
       // after authentication changes, even when it targeted the same deck.
       for (const candidate of this.sessions.values()) {
         candidate.threadId = null;
         candidate.activeTurnId = null;
         candidate.agentPrompt = null;
+        candidate.model = null;
         candidate.messages = [];
         candidate.activity = null;
         candidate.error = null;
@@ -163,6 +192,7 @@ export class AgentChatController {
         await mkdir(this.runtimeDir, { recursive: true });
         session.agentPrompt = await prepareAgentPrompt();
         const started = await this.client!.request<ThreadStartResult>('thread/start', {
+          ...(session.model ? { model: session.model } : {}),
           // A neutral cwd keeps the dynamically wrapped HTTP brief as the
           // thread's sole DeckWerk-specific instruction source.
           cwd: this.runtimeDir,
@@ -181,6 +211,7 @@ export class AgentChatController {
       this.emit(session);
       const turn = await this.client!.request<TurnStartResult>('turn/start', {
         threadId: session.threadId,
+        ...(session.model ? { model: session.model } : {}),
         input: [{ type: 'text', text, text_elements: [] }],
         cwd: this.runtimeDir,
         approvalPolicy: 'never',
@@ -207,6 +238,23 @@ export class AgentChatController {
       });
       this.emit(session);
     }
+    return this.snapshot(session);
+  }
+
+  async setModel(deckPath: string, model: string): Promise<AgentChatState> {
+    const session = this.session(deckPath);
+    try {
+      await this.ensureClient();
+      if (session.busy) throw new Error('Stop the active agent turn before changing models');
+      if (!this.models.some((candidate) => candidate.model === model)) {
+        throw new Error('That model is not available for this account');
+      }
+      session.model = model;
+      session.error = null;
+    } catch (error) {
+      session.error = message(error);
+    }
+    this.emit(session);
     return this.snapshot(session);
   }
 
@@ -265,7 +313,7 @@ export class AgentChatController {
         ?? new CodexAppServerClient({ ...callbacks, codexHome: this.options.codexHome });
       await this.client.start();
       this.connection = 'ready';
-      await this.refreshAccount();
+      await this.refreshAccountAndModels();
       this.emitAll();
     })().catch((error) => {
       this.client?.close();
@@ -300,22 +348,58 @@ export class AgentChatController {
     }
   }
 
+  private async refreshAccountAndModels(): Promise<void> {
+    await this.refreshAccount();
+    if (this.auth !== 'signedIn') {
+      this.models = [];
+      for (const session of this.sessions.values()) session.model = null;
+      return;
+    }
+    await this.refreshModels();
+  }
+
+  private async refreshModels(): Promise<void> {
+    const models: AgentChatModel[] = [];
+    let cursor: string | null = null;
+    do {
+      const result: ModelListResult = await this.client!.request<ModelListResult>('model/list', {
+        cursor,
+        limit: 100,
+        includeHidden: false,
+      });
+      for (const candidate of result.data) {
+        if (candidate.hidden || models.some((item) => item.model === candidate.model)) continue;
+        models.push({
+          model: candidate.model,
+          displayName: candidate.displayName,
+          description: candidate.description,
+          isDefault: candidate.isDefault,
+        });
+      }
+      cursor = result.nextCursor;
+    } while (cursor);
+    this.models = models;
+    const fallback = models.find((candidate) => candidate.isDefault)?.model
+      ?? models[0]?.model
+      ?? null;
+    for (const session of this.sessions.values()) {
+      if (!models.some((candidate) => candidate.model === session.model)) session.model = fallback;
+    }
+  }
+
   private onNotification(notification: AppServerNotification): void {
     const params = record(notification.params);
     if (notification.method === 'account/login/completed') {
-      if (params.success === true) {
-        void this.refreshAccount().then(() => this.emitAll()).catch((error) => {
-          this.globalError = message(error);
-          this.emitAll();
-        });
-      } else if (typeof params.error === 'string') {
-        this.globalError = params.error;
-        this.emitAll();
-      }
+      const loginId = typeof params.loginId === 'string' ? params.loginId : null;
+      if (this.activeLoginId && loginId && loginId !== this.activeLoginId) return;
+      void this.finishLogin(params.success === true, typeof params.error === 'string' ? params.error : null);
       return;
     }
     if (notification.method === 'account/updated') {
-      void this.refreshAccount().then(() => this.emitAll()).catch(() => undefined);
+      void this.refreshAccountAndModels().then(() => {
+        if (this.auth === 'signedIn') this.clearLoginStatus();
+        this.emitAll();
+      }).catch(() => undefined);
       return;
     }
 
@@ -367,6 +451,30 @@ export class AgentChatController {
     }
   }
 
+  private async finishLogin(success: boolean, error: string | null): Promise<void> {
+    try {
+      await this.refreshAccountAndModels();
+      // Treat the account as authoritative. Some app-server/browser races
+      // report cancellation after credentials have already been installed.
+      if (success || this.auth === 'signedIn') {
+        this.clearLoginStatus();
+      } else {
+        this.activeLoginId = null;
+        this.loginError = error ?? 'ChatGPT sign-in did not complete';
+        for (const session of this.sessions.values()) session.activity = null;
+      }
+    } catch (refreshError) {
+      this.loginError = message(refreshError);
+    }
+    this.emitAll();
+  }
+
+  private clearLoginStatus(): void {
+    this.activeLoginId = null;
+    this.loginError = null;
+    for (const session of this.sessions.values()) session.activity = null;
+  }
+
   private onExit(exitMessage: string): void {
     this.client = null;
     this.connection = 'unavailable';
@@ -394,6 +502,9 @@ export class AgentChatController {
         threadId: null,
         activeTurnId: null,
         agentPrompt: null,
+        model: this.models.find((candidate) => candidate.isDefault)?.model
+          ?? this.models[0]?.model
+          ?? null,
         messages: [],
         busy: false,
         activity: null,
@@ -410,10 +521,12 @@ export class AgentChatController {
       connection: this.connection,
       auth: this.auth,
       accountLabel: this.accountLabel,
+      models: this.models.map((model) => ({ ...model })),
+      selectedModel: session.model,
       busy: session.busy,
       activity: session.activity,
       messages: session.messages.map((item) => ({ ...item })),
-      error: session.error ?? this.globalError,
+      error: session.error ?? this.loginError ?? this.globalError,
     };
   }
 
