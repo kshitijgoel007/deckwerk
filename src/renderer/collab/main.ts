@@ -1,4 +1,5 @@
 import '../player/player.css';
+import '../appChrome.css';
 import '../editor/editor.css';
 import './collab.css';
 import { emptyDeck } from '@shared/deck.js';

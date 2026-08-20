@@ -253,22 +253,29 @@ export class CollabBridge {
         this.seq = message.seq;
         this.shadow = message.deck;
         this.pending = [];
+        if (message.reason !== 'agent-edit') {
+          // A filesystem replacement/resync establishes a new base. Inverses
+          // computed against the discarded base must never be replayed later.
+          this.undoStack = [];
+          this.redoStack = [];
+        }
         this.hooks.onCleanChange(true);
         this.replayingHistory = true;
         try {
-          this.hooks.onDeckReplaced(
-            message.deck,
-            message.reason === 'resync' ? 'Server resync' : 'Agent edit',
-            message.reason === 'resync' ? undefined : {
+          if (message.reason === 'agent-edit') {
+            this.hooks.onDeckReplaced(message.deck, 'Agent edit', {
               coalesce: false,
-              description: message.label ?? (
-                message.reason === 'agent-edit'
-                  ? 'The Agent updated the presentation through its deck authoring workspace.'
-                  : 'The presentation changed through the Agent-facing deck workspace.'
-              ),
+              description: message.label
+                ?? 'The Agent updated the presentation through its deck authoring workspace.',
               agentChatId: message.agentChatId,
-            },
-          );
+            });
+          } else {
+            this.hooks.onDeckReplaced(
+              message.deck,
+              message.reason === 'resync' ? 'Server resync' : 'External edit',
+              { coalesce: false, history: false },
+            );
+          }
         } finally {
           this.replayingHistory = false;
         }

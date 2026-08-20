@@ -1,0 +1,37 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { describe, expect, it } from 'vitest';
+
+const source = (path: string): string => readFileSync(join(process.cwd(), path), 'utf8');
+
+describe('shared application chrome', () => {
+  it('is loaded by every interactive renderer', () => {
+    for (const entry of [
+      'src/renderer/editor/main.ts',
+      'src/renderer/collab/main.ts',
+      'src/renderer/presenter/main.ts',
+      'src/renderer/raster/main.ts',
+      'src/renderer/trim/main.ts',
+    ]) {
+      expect(source(entry)).toContain("import '../appChrome.css';");
+    }
+  });
+
+  it('keeps auxiliary windows from redefining the shared palette or buttons', () => {
+    for (const stylesheet of [
+      'src/renderer/presenter/presenter.css',
+      'src/renderer/raster/raster.css',
+      'src/renderer/trim/trim.css',
+    ]) {
+      const css = source(stylesheet);
+      expect(css).not.toMatch(/:root\s*\{/);
+      expect(css).not.toMatch(/(?:^|\n)button\s*\{/);
+    }
+  });
+
+  it('uses the same semantic action variants in Speaker View', () => {
+    const html = source('src/renderer/presenter/index.html');
+    expect(html).toContain('id="nextButton" class="primary"');
+    expect(html).toContain('id="end" class="danger"');
+  });
+});

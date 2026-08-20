@@ -13,7 +13,7 @@ import { isWebSafeCodec, probeMedia, transcodeToH264, videoCodec } from './ffmpe
  *
  * A deck is a directory, not a file: `deck.json` (content and geometry),
  * `theme.css` (typography and colour, hand-edited), `assets/` (media), and an
- * optional `agent-chats.json` sidecar managed by the embedded Agent panel.
+ * optional `agent-chats.json` and `deck-history.json.gz` sidecars.
  * Keeping media as real files on disk rather than embedded data is what makes
  * video practical — a 200 MB clip is referenced, never copied into the document.
  */

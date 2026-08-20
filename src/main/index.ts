@@ -4,8 +4,9 @@ import { randomUUID } from 'node:crypto';
 import { userInfo } from 'node:os';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { BrowserWindow, app, clipboard, dialog, ipcMain, screen, shell } from 'electron';
-import type { Display, Rectangle } from 'electron';
+import type { Display } from 'electron';
 import type { Deck } from '@shared/deck.js';
+import type { DeckHistoryDocument } from '@shared/deckHistory.js';
 import {
   CLIPBOARD_FORMAT,
   type ClipboardPayload,
@@ -29,6 +30,7 @@ import type {
   AgentResponse,
   CollabStartRequest,
   DeckSession,
+  DeckHistorySession,
   ImportedAsset,
   KeynoteImportResult,
   PresentationCommand,
@@ -65,9 +67,18 @@ import {
 import { exportDeck } from './exportDeck.js';
 import { probeMedia, runTrim } from './ffmpeg.js';
 import { importKeynote } from './keynoteImport.js';
+import { loadDeckHistory, saveDeckHistory } from './deckHistoryStore.js';
 import { HTML_EDIT_DIR, writeHtmlScope } from './htmlAuthoring.js';
 import {
-  captureWindowContinuity, createCollabHostWindow, createEditorWindow, createPdfWindow, createPresentWindow, createPresenterWindow, createRasterWindow, createTrimWindow,
+  captureWindowContinuity,
+  createCollabHostWindow,
+  createEditorWindow,
+  createPdfWindow,
+  createPresentWindow,
+  createPresenterWindow,
+  createRasterWindow,
+  createTrimWindow,
+  showSpeakerWindowAboveFullscreen,
 } from './windows.js';
 import {
   defaultClientDir, startCollabServer, type HtmlDraftPreview, type RunningCollabServer,
@@ -77,6 +88,7 @@ import {
   chooseAudienceDisplay,
   chooseDisplayById,
   shouldOpenSpeakerView,
+  shouldShowAudienceWindow,
   swappedPresentationDisplays,
 } from './presentationDisplays.js';
 
@@ -191,24 +203,11 @@ async function openAgentBrowser(call: DynamicToolCall): Promise<DynamicToolResul
   }
 }
 
-function speakerWindowBounds(display: Display): Rectangle {
-  const area = display.workArea;
-  return {
-    x: area.x + 40,
-    y: area.y + 40,
-    width: Math.max(900, Math.min(1200, area.width - 80)),
-    height: Math.max(620, Math.min(820, area.height - 80)),
-  };
-}
-
-function moveSpeakerWindowToDisplay(display: Display): void {
-  if (!presenterWindow || presenterWindow.isDestroyed()) return;
-  presenterWindow.setBounds(speakerWindowBounds(display));
-}
-
-function moveAudienceWindowToDisplay(display: Display): Promise<void> {
-  if (!presentWindow || presentWindow.isDestroyed()) return Promise.resolve();
-  const win = presentWindow;
+function moveFullscreenWindowToDisplay(
+  win: BrowserWindow | null,
+  display: Display,
+): Promise<void> {
+  if (!win || win.isDestroyed()) return Promise.resolve();
   const enterFullscreen = (): void => {
     if (win.isDestroyed()) return;
     win.setBounds(display.bounds);
@@ -227,6 +226,30 @@ function moveAudienceWindowToDisplay(display: Display): Promise<void> {
   });
 }
 
+function moveSpeakerWindowToDisplay(display: Display): Promise<void> {
+  return moveFullscreenWindowToDisplay(presenterWindow, display);
+}
+
+function moveAudienceWindowToDisplay(display: Display): Promise<void> {
+  return moveFullscreenWindowToDisplay(presentWindow, display);
+}
+
+function openSpeakerWindow(displayId: number, visibleAboveFullscreen: boolean): BrowserWindow {
+  const win = createPresenterWindow(displayId, visibleAboveFullscreen);
+  presenterWindow = win;
+  win.webContents.once('did-finish-load', () => {
+    if (presentationState && !win.isDestroyed()) {
+      win.webContents.send(IPC.presentState, presentationState);
+    }
+  });
+  win.on('closed', () => {
+    if (presenterWindow === win) presenterWindow = null;
+    presentationDisplays = null;
+    if (presentWindow && !presentWindow.isDestroyed()) presentWindow.close();
+  });
+  return win;
+}
+
 async function swapPresentationDisplayRoles(): Promise<void> {
   if (swappingPresentationDisplays || !presentationDisplays || !presenterWindow) return;
   const displays = screen.getAllDisplays();
@@ -241,8 +264,10 @@ async function swapPresentationDisplayRoles(): Promise<void> {
     presenterDisplayId: presenterTarget.id,
   };
   try {
-    moveSpeakerWindowToDisplay(presenterTarget);
-    await moveAudienceWindowToDisplay(audienceTarget);
+    await Promise.all([
+      moveSpeakerWindowToDisplay(presenterTarget),
+      moveAudienceWindowToDisplay(audienceTarget),
+    ]);
     if (presenterWindow && !presenterWindow.isDestroyed()) presenterWindow.focus();
   } finally {
     swappingPresentationDisplays = false;
@@ -514,8 +539,14 @@ app.whenReady().then(async () => {
       audienceDisplayId: primary.id,
       presenterDisplayId: primary.id,
     };
-    moveSpeakerWindowToDisplay(primary);
-    void moveAudienceWindowToDisplay(primary);
+    void Promise.all([
+      moveSpeakerWindowToDisplay(primary),
+      moveAudienceWindowToDisplay(primary),
+    ]).then(() => {
+      if (presenterWindow && !presenterWindow.isDestroyed()) {
+        showSpeakerWindowAboveFullscreen(presenterWindow);
+      }
+    });
   });
 
   app.on('activate', () => {
@@ -561,6 +592,19 @@ function registerHandlers(): void {
   // Pull rather than push: a window that opens mid-session asks for the current
   // deck itself, so it can't miss a broadcast that fired before it loaded.
   ipcMain.handle(IPC.deckGet, (): DeckSession | null => session);
+  ipcMain.handle(IPC.deckHistoryLoad, async (_event, dir: string): Promise<DeckHistorySession> => {
+    const s = requireSession();
+    if (dir !== s.dir) throw new Error('The requested deck is no longer open');
+    return { dir: s.dir, history: await loadDeckHistory(s.dir) };
+  });
+  ipcMain.handle(
+    IPC.deckHistorySave,
+    async (_event, dir: string, history: DeckHistoryDocument): Promise<void> => {
+      const s = requireSession();
+      if (dir !== s.dir) throw new Error('Refusing to save history to a deck that is no longer open');
+      await saveDeckHistory(s.dir, history);
+    },
+  );
 
   ipcMain.handle(IPC.agentContextPublish, async (_event, context: AgentContextDraft) => {
     await agentRuntime.publish(context);
@@ -819,12 +863,32 @@ function registerHandlers(): void {
     }));
   });
   ipcMain.handle(IPC.presentOpen, async (_e, slideIndex: number, options: PresentOptions = {}) => {
+    const displays = screen.getAllDisplays();
+    const primary = screen.getPrimaryDisplay();
     if (presentWindow && !presentWindow.isDestroyed()) {
+      if (options.speakerView && (!presenterWindow || presenterWindow.isDestroyed())) {
+        const audienceDisplay = chooseDisplayById(
+          displays,
+          presentationDisplays?.audienceDisplayId,
+          chooseAudienceDisplay(displays, primary),
+        );
+        const presenterDisplay = chooseDisplayById(
+          displays,
+          options.presenterDisplayId,
+          primary,
+        );
+        presentationDisplays = {
+          audienceDisplayId: audienceDisplay.id,
+          presenterDisplayId: presenterDisplay.id,
+        };
+        openSpeakerWindow(
+          presenterDisplay.id,
+          audienceDisplay.id === presenterDisplay.id,
+        );
+      }
       (presenterWindow ?? presentWindow).focus();
       return;
     }
-    const displays = screen.getAllDisplays();
-    const primary = screen.getPrimaryDisplay();
     const audienceDisplay = chooseDisplayById(
       displays,
       options.audienceDisplayId,
@@ -840,31 +904,31 @@ function registerHandlers(): void {
       presenterDisplay,
       options.speakerView,
     );
+    const showAudienceWindow = shouldShowAudienceWindow(
+      audienceDisplay,
+      presenterDisplay,
+      openSpeakerView,
+    );
 
     presentationState = null;
     presentationDisplays = {
       audienceDisplayId: audienceDisplay.id,
       presenterDisplayId: presenterDisplay.id,
     };
-    presentWindow = createPresentWindow(slideIndex, audienceDisplay.id, options.endSlideIndex);
-    presenterWindow = openSpeakerView ? createPresenterWindow(presenterDisplay.id) : null;
+    presentWindow = createPresentWindow(
+      slideIndex,
+      audienceDisplay.id,
+      options.endSlideIndex,
+      showAudienceWindow,
+    );
+    presenterWindow = openSpeakerView
+      ? openSpeakerWindow(presenterDisplay.id, false)
+      : null;
     presentWindow.on('closed', () => {
       presentWindow = null;
       presentationDisplays = null;
       if (presenterWindow && !presenterWindow.isDestroyed()) presenterWindow.close();
     });
-    if (presenterWindow) {
-      presenterWindow.webContents.once('did-finish-load', () => {
-        if (presentationState && presenterWindow && !presenterWindow.isDestroyed()) {
-          presenterWindow.webContents.send(IPC.presentState, presentationState);
-        }
-      });
-      presenterWindow.on('closed', () => {
-        presenterWindow = null;
-        presentationDisplays = null;
-        if (presentWindow && !presentWindow.isDestroyed()) presentWindow.close();
-      });
-    }
   });
   ipcMain.on(IPC.presentCommand, (_event, command: PresentationCommand) => {
     if (command.type === 'exit') {

@@ -168,6 +168,14 @@ into the HTML so it works straight off `file://`.
 npm test
 ```
 
+The complete suite must run outside restricted agent sandboxes. It binds
+localhost collaboration servers and launches real Electron/Chromium, ffmpeg,
+importer, semaphore, and filesystem-watcher processes. `npm test` runs a
+preflight that fails immediately with this guidance when localhost is blocked,
+instead of producing a misleading cascade of `EPERM`, timeout, `EMFILE`, or
+null-exit failures. Focused pure unit tests may still be run in a sandbox with
+`npx vitest run test/<name>.test.ts`.
+
 The ffmpeg tests run against real binaries and assert on actual output duration
 and pixel dimensions. To run the Keynote import regression suite, point it at a
 folder of real decks:

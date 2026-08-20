@@ -30,15 +30,22 @@ export class HistoryPanel {
     this.host.appendChild(help);
 
     const items = this.store.history();
-    items.forEach((item, index) => {
+    if (items.length === 0) {
+      const empty = document.createElement('p');
+      empty.className = 'insp-hint history-empty';
+      empty.textContent = 'No authored edits yet.';
+      this.host.appendChild(empty);
+    }
+    items.forEach((item) => {
       const row = document.createElement('div');
       row.className = 'history-row';
       const button = document.createElement('button');
       button.className = 'history-item';
       button.dataset.historyId = String(item.id);
-      button.disabled = index === 0;
+      const current = this.store.isHistoryCurrent(item.id);
+      button.disabled = current;
       const label = document.createElement('strong');
-      label.textContent = index === 0 ? `Current · ${item.label}` : item.label;
+      label.textContent = current ? `Current · ${item.label}` : item.label;
       const meta = document.createElement('span');
       meta.textContent = `Slide ${item.slideIndex + 1} · ${formatTime(item.at)}`;
       button.append(label);

@@ -1,0 +1,159 @@
+@font-face {
+  font-family: "Monaspace Krypton";
+  src: url("./editor/fonts/Monaspace-Krypton-Var.woff2") format("woff2-variations");
+  font-style: normal;
+  font-weight: 200 800;
+  font-display: swap;
+}
+
+/* Shared DeckWerk chrome. Slide content keeps using the deck's theme. */
+:root {
+  color-scheme: dark;
+  --bg: #16161e;
+  --panel: #1a1b26;
+  --panel-2: #20212e;
+  --line: #2c2e3d;
+  --text: #c0caf5;
+  --muted: #565f89;
+  --accent: #7aa2f7;
+  --accent-soft: rgb(122 162 247 / 12%);
+  --green: #9ece6a;
+  --yellow: #e0af68;
+  --danger: #f7768e;
+  --radius: 0;
+  --mono: "Monaspace Krypton", monospace;
+  --shadow: 0 1px 2px rgb(0 0 0 / 40%);
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 12px/1.5 var(--mono);
+}
+
+button {
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--text);
+  font: 11.5px var(--mono);
+  letter-spacing: .02em;
+  cursor: pointer;
+  transition: none;
+}
+
+button:hover:not(:disabled) {
+  border-color: var(--muted);
+  background: var(--panel-2);
+}
+
+button:active:not(:disabled) { background: var(--panel-2); }
+button:disabled { opacity: .4; cursor: default; }
+
+button.primary,
+button.ui-button-primary {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+button.primary:hover:not(:disabled),
+button.ui-button-primary:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: rgb(122 162 247 / 22%);
+}
+
+button.danger,
+button.ui-button-danger {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+button.danger:hover:not(:disabled),
+button.ui-button-danger:hover:not(:disabled) {
+  border-color: var(--danger);
+  background: var(--danger);
+  color: var(--bg);
+}
+
+select,
+textarea,
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]) {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background-color: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+}
+
+select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding: 5px 24px 5px 9px;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'><path d='M2 3.5l3 3 3-3' fill='none' stroke='%23565f89' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  cursor: pointer;
+}
+
+textarea,
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]) {
+  padding: 6px 8px;
+}
+
+button:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+input:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.workflow-overlay,
+.app-dialog-backdrop {
+  position: fixed;
+  z-index: 10000;
+  inset: 0;
+  display: grid;
+  padding: 28px;
+  background: rgb(4 5 8 / 82%);
+  backdrop-filter: blur(8px);
+  place-items: center;
+}
+
+.workflow-dialog,
+.app-dialog {
+  display: flex;
+  width: min(560px, calc(100vw - 56px));
+  max-height: calc(100vh - 56px);
+  overflow: auto;
+  flex-direction: column;
+  gap: 12px;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 24px 90px rgb(0 0 0 / 65%);
+}
+
+.workflow-dialog h2,
+.app-dialog h2 {
+  margin: 0;
+  color: var(--accent);
+  font: 600 14px var(--mono);
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.workflow-actions,
+.app-dialog-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}

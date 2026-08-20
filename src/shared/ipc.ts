@@ -1,4 +1,5 @@
 import type { Deck } from './deck.js';
+import type { DeckHistoryDocument } from './deckHistory.js';
 import type { AgentContextDraft, AgentRequest, AgentResponse } from './agent.js';
 import type { EditorViewSnapshot } from './editorView.js';
 
@@ -14,6 +15,8 @@ export const IPC = {
   deckNew: 'deck:new',
   deckSave: 'deck:save',
   deckSaveAs: 'deck:saveAs',
+  deckHistoryLoad: 'deckHistory:load',
+  deckHistorySave: 'deckHistory:save',
   deckLoadTheme: 'deck:loadTheme',
   deckSaveTheme: 'deck:saveTheme',
   deckState: 'deck:state',
@@ -245,6 +248,12 @@ export interface DeckSession {
   /** Absolute path to the deck folder containing deck.json. */
   dir: string;
   deck: Deck;
+}
+
+/** History is returned with its owner so an overlapping deck switch is safe. */
+export interface DeckHistorySession {
+  dir: string;
+  history: DeckHistoryDocument;
 }
 
 /** Result of copying a media file into the deck's assets/ folder. */

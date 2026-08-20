@@ -1,5 +1,15 @@
 # Working on a deck as an agent
 
+## Repository test environment
+
+When working in the slide-editor repository, run the complete `npm test` suite
+outside restricted agent sandboxes. The integration suite binds localhost and
+launches real Electron/Chromium, ffmpeg, importer, semaphore, and filesystem-
+watcher processes; sandbox failures otherwise surface as misleading `EPERM`,
+timeouts, `EMFILE`, or null child-process exits. `npm test` has a fail-fast
+preflight for the localhost restriction. Focused pure unit tests can still run
+inside the sandbox with `npx vitest run test/<name>.test.ts`.
+
 An agent never talks to the Electron app directly, and should almost never
 touch `deck.json`. **You edit an HTML file; the editor watches it and syncs
 what you saved into the presentation.**

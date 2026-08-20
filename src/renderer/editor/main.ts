@@ -1,4 +1,5 @@
 import '../player/player.css';
+import '../appChrome.css';
 import './editor.css';
 import '../collab/collab.css';
 import { applyAgentTransaction } from '@shared/agent.js';
@@ -59,8 +60,13 @@ const el = <T extends HTMLElement>(id: string): T => {
 };
 
 const store = new EditorStore(emptyDeck());
-let currentAgentChatId: string | null = null;
-window.api.onAgentChatState?.((state) => { currentAgentChatId = state.chatId; });
+store.onHistoryChange = (history) => {
+  const dir = store.get().dir;
+  if (!dir) return;
+  void window.api.saveDeckHistory(dir, history).catch((error) => {
+    console.error('Could not save edit history:', error);
+  });
+};
 const initialView = decodeEditorView(new URLSearchParams(location.search).get('view'));
 let initialViewPending = initialView !== null;
 const canvas = new EditorCanvas(el('canvas'), store);
@@ -539,12 +545,21 @@ function addText(): void {
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 
 async function save(): Promise<void> {
-  if (!store.get().dir) return;
+  const dir = store.get().dir;
+  if (!dir) return;
   if (saveTimer) {
     clearTimeout(saveTimer);
     saveTimer = null;
   }
   if (!agentSessionReady) await window.api.saveDeck(store.get().deck);
+  try {
+    // Await the latest snapshot after the deck write. Save As and window close
+    // can now rely on history having reached disk rather than racing a fire-
+    // and-forget IPC call from the original edit.
+    await window.api.saveDeckHistory(dir, store.persistedHistory());
+  } catch (error) {
+    console.error('Could not flush edit history:', error);
+  }
   store.markClean();
 }
 
@@ -557,8 +572,21 @@ function scheduleSave(): void {
   }, 800);
 }
 
+let adoptGeneration = 0;
+
 async function adopt(dir: string, deck: Parameters<typeof store.load>[0]): Promise<void> {
-  store.load(deck, dir);
+  const generation = ++adoptGeneration;
+  let history: NonNullable<Parameters<typeof store.load>[2]>['history'] = [];
+  try {
+    const loaded = await window.api.loadDeckHistory(dir);
+    if (loaded.dir === dir) history = loaded.history.entries;
+  } catch (error) {
+    console.error('Could not load edit history:', error);
+  }
+  // Opening two decks in quick succession must not let the slower first read
+  // install snapshots belonging to a document that is no longer current.
+  if (generation !== adoptGeneration) return;
+  store.load(deck, dir, { history });
   if (initialViewPending) {
     restoreEditorView(store, initialView);
     initialViewPending = false;
@@ -692,11 +720,8 @@ window.api.onDeckState((session) => {
   ) return;
   // A different deck is a genuine open; the same deck rewritten underneath us
   // is an edit, and an edit should be undoable rather than a history wipe.
-  if (session.dir !== state.dir) store.load(session.deck, session.dir, { keepView: true });
-  else store.replaceExternal(session.deck, session.dir, 'Agent edit', {
-    description: 'The Agent updated the presentation through the deck’s file-based authoring workflow.',
-    agentChatId: currentAgentChatId ?? undefined,
-  });
+  if (session.dir !== state.dir) void adopt(session.dir, session.deck);
+  else store.replaceExternal(session.deck, session.dir);
   welcome.setVisible(false);
   themePanel.refreshSwatches();
   setStatusMessage('Deck reloaded from disk.');

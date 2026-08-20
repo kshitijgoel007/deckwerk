@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type { Deck } from '@shared/deck.js';
+import type { DeckHistoryDocument } from '@shared/deckHistory.js';
 import type { ClipboardPayload, ClipboardWriteRequest } from '@shared/clipboard.js';
 import { IPC } from '@shared/ipc.js';
 import type {
@@ -19,6 +20,7 @@ import type {
   AuthoredHtmlFile,
   CollabStartRequest,
   DeckSession,
+  DeckHistorySession,
   ImportedAsset,
   KeynoteImportResult,
   MediaInfo,
@@ -49,6 +51,10 @@ const api = {
     ipcRenderer.invoke(IPC.deckOpenPath, dir),
   saveDeck: (deck: Deck): Promise<void> => ipcRenderer.invoke(IPC.deckSave, deck),
   saveDeckAs: (): Promise<DeckSession | null> => ipcRenderer.invoke(IPC.deckSaveAs),
+  loadDeckHistory: (dir: string): Promise<DeckHistorySession> =>
+    ipcRenderer.invoke(IPC.deckHistoryLoad, dir),
+  saveDeckHistory: (dir: string, history: DeckHistoryDocument): Promise<void> =>
+    ipcRenderer.invoke(IPC.deckHistorySave, dir, history),
 
   loadTheme: (): Promise<string> => ipcRenderer.invoke(IPC.deckLoadTheme),
   saveTheme: (css: string): Promise<void> => ipcRenderer.invoke(IPC.deckSaveTheme, css),

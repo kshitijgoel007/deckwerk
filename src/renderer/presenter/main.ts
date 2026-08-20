@@ -1,4 +1,5 @@
 import '../player/player.css';
+import '../appChrome.css';
 import './presenter.css';
 import type { Deck } from '@shared/deck.js';
 import type { DeckSession, PresentationState } from '@shared/ipc.js';

@@ -1,28 +1,11 @@
 /* Trim & crop window. */
 
-:root {
-  --bg: #1c1c1e;
-  --panel: #252528;
-  --panel-2: #2e2e32;
-  --line: #3a3a3f;
-  --text: #e8e8ea;
-  --muted: #9a9aa2;
-  --accent: #3b82f6;
-  --danger: #e0463c;
-}
-
-* { box-sizing: border-box; }
-
 html, body {
   height: 100%;
-  margin: 0;
   overflow: hidden;
-  background: var(--bg);
-  color: var(--text);
-  font: 13px/1.4 system-ui, -apple-system, sans-serif;
 }
 
-.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.mono { font-family: var(--mono); }
 
 #app {
   display: grid;
@@ -154,25 +137,6 @@ html, body {
   margin-bottom: 10px;
 }
 
-button {
-  padding: 5px 11px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: var(--panel-2);
-  color: var(--text);
-  font: inherit;
-  cursor: pointer;
-}
-
-button:hover:not(:disabled) { background: #38383d; }
-button:disabled { opacity: 0.4; cursor: default; }
-
-button.primary {
-  border-color: transparent;
-  background: var(--accent);
-  color: #fff;
-}
-
 #scrub-wrap { padding: 10px 8px 16px; }
 
 #scrub {
@@ -229,12 +193,6 @@ button.primary {
 
 #crop-controls input[type="number"] {
   width: 74px;
-  padding: 4px 6px;
-  border: 1px solid var(--line);
-  border-radius: 5px;
-  background: var(--panel-2);
-  color: var(--text);
-  font: inherit;
 }
 
 .note { color: var(--muted); font-size: 11px; }

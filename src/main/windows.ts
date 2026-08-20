@@ -12,6 +12,7 @@ import { chooseAudienceDisplay, chooseDisplayById } from './presentationDisplays
  */
 
 const preload = () => join(import.meta.dirname, '../preload/index.mjs');
+const APP_BACKGROUND = '#16161e';
 
 export interface WindowContinuityState {
   bounds: Rectangle;
@@ -54,6 +55,16 @@ function loadRenderer(win: BrowserWindow, name: string, query = ''): void {
   }
 }
 
+/**
+ * Showing a hidden BrowserWindow does not reliably finish its constructor-time
+ * fullscreen transition on macOS when another window is entering fullscreen at
+ * the same time. Reassert the state after the window is ready and visible.
+ */
+function showFullscreenWindow(win: BrowserWindow): void {
+  win.show();
+  win.setFullScreen(true);
+}
+
 export function createEditorWindow(query = '', state?: WindowContinuityState): BrowserWindow {
   const win = new BrowserWindow({
     width: 1600,
@@ -61,7 +72,7 @@ export function createEditorWindow(query = '', state?: WindowContinuityState): B
     ...continuityOptions(state),
     minWidth: 1100,
     minHeight: 700,
-    backgroundColor: '#1c1c1e',
+    backgroundColor: APP_BACKGROUND,
     show: false,
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     webPreferences: {
@@ -89,7 +100,7 @@ export function createCollabHostWindow(url: string, state?: WindowContinuityStat
     ...continuityOptions(state),
     minWidth: 1100,
     minHeight: 700,
-    backgroundColor: '#1c1c1e',
+    backgroundColor: APP_BACKGROUND,
     show: false,
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     webPreferences: {
@@ -112,6 +123,7 @@ export function createPresentWindow(
   cursorSlide = 0,
   displayId?: number,
   endSlideIndex?: number,
+  visible = true,
 ): BrowserWindow {
   const displays = screen.getAllDisplays();
   const primary = screen.getPrimaryDisplay();
@@ -123,7 +135,7 @@ export function createPresentWindow(
     width: target.bounds.width,
     height: target.bounds.height,
     backgroundColor: '#000000',
-    fullscreen: true,
+    fullscreen: visible,
     autoHideMenuBar: true,
     show: false,
     webPreferences: {
@@ -136,34 +148,53 @@ export function createPresentWindow(
       autoplayPolicy: 'no-user-gesture-required',
     },
   });
-  win.once('ready-to-show', () => win.show());
+  if (visible) win.once('ready-to-show', () => showFullscreenWindow(win));
   const query = new URLSearchParams({ slide: String(cursorSlide) });
   if (endSlideIndex !== undefined) query.set('endSlide', String(endSlideIndex));
   loadRenderer(win, 'present', `?${query.toString()}`);
   return win;
 }
 
-/** Laptop control surface; the audience window remains fullscreen externally. */
-export function createPresenterWindow(displayId?: number): BrowserWindow {
+/** Fullscreen control surface; the audience window remains fullscreen separately. */
+export function createPresenterWindow(
+  displayId?: number,
+  visibleAboveFullscreen = false,
+): BrowserWindow {
   const primary = screen.getPrimaryDisplay();
   const target = chooseDisplayById(screen.getAllDisplays(), displayId, primary);
   const win = new BrowserWindow({
-    x: target.workArea.x + 40,
-    y: target.workArea.y + 40,
-    width: Math.min(1200, target.workArea.width - 80),
-    height: Math.min(820, target.workArea.height - 80),
-    minWidth: 900,
-    minHeight: 620,
-    backgroundColor: '#111218',
+    x: target.bounds.x,
+    y: target.bounds.y,
+    width: target.bounds.width,
+    height: target.bounds.height,
+    fullscreen: true,
+    autoHideMenuBar: true,
+    backgroundColor: APP_BACKGROUND,
     title: 'Speaker View',
     show: false,
     webPreferences: {
       preload: preload(), contextIsolation: true, nodeIntegration: false, sandbox: false,
     },
   });
-  win.once('ready-to-show', () => win.show());
+  win.once('ready-to-show', () => {
+    if (visibleAboveFullscreen) showSpeakerWindowAboveFullscreen(win);
+    else showFullscreenWindow(win);
+  });
   loadRenderer(win, 'presenter');
   return win;
+}
+
+/**
+ * Keep Speaker View reachable when it has to share a display with the
+ * fullscreen audience window. On macOS, fullscreen windows live in their own
+ * Space, so always-on-top alone is not enough to make the second window
+ * visible there. The workspace setting is a no-op on Windows.
+ */
+export function showSpeakerWindowAboveFullscreen(win: BrowserWindow): void {
+  win.setAlwaysOnTop(true, 'floating');
+  win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  showFullscreenWindow(win);
+  win.focus();
 }
 
 /** Hidden document that lays every requested slide state out as print pages. */
@@ -191,7 +222,7 @@ export function createTrimWindow(): BrowserWindow {
     height: 820,
     minWidth: 800,
     minHeight: 640,
-    backgroundColor: '#1c1c1e',
+    backgroundColor: APP_BACKGROUND,
     title: 'Trim & Crop',
     show: false,
     webPreferences: {
@@ -214,7 +245,7 @@ export function createRasterWindow(): BrowserWindow {
     height: 860,
     minWidth: 760,
     minHeight: 580,
-    backgroundColor: '#1c1c1e',
+    backgroundColor: APP_BACKGROUND,
     title: 'Raster Paint',
     show: false,
     webPreferences: {

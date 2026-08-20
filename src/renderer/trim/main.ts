@@ -1,3 +1,4 @@
+import '../appChrome.css';
 import './trim.css';
 import type { TrimRequest } from '@shared/ipc.js';
 import { clamp } from '@shared/geometry.js';

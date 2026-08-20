@@ -1539,7 +1539,9 @@ html, body {
 /* Right angles, everywhere. */
 button, .bar-select, .field input, .field select, .field textarea, .media-effect-row input,
 .insp-group, .step-block, .rail-item, .rail-thumb, .handle, .timeline-row select,
-.timeline-row input, #side-tabs button, .crop-size {
+.timeline-row input, #side-tabs button, .crop-size,
+.agent-history-dialog, .agent-history-message, .agent-chat-panel, .agent-scratchpad-panel,
+.color-picker-popover, #comments-popover, .workflow-dialog, .magic-modal {
   border-radius: 0 !important;
 }
 

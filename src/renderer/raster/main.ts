@@ -1,3 +1,4 @@
+import '../appChrome.css';
 import './raster.css';
 import type { RasterTarget } from '@shared/ipc.js';
 import {

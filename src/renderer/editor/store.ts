@@ -6,6 +6,10 @@ import {
   remapSlideIds,
 } from '@shared/clipboard.js';
 import { makeId } from '@shared/geometry.js';
+import type {
+  DeckHistoryDocument,
+  PersistedDeckHistoryEntry,
+} from '@shared/deckHistory.js';
 
 /**
  * Editor state: the deck, the selection, and an undo history.
@@ -42,6 +46,8 @@ export interface HistoryItem {
 
 export interface RemoteHistoryOptions {
   coalesce?: boolean;
+  /** False for synchronization events such as filesystem reloads/resyncs. */
+  history?: boolean;
   description?: string;
   agentChatId?: string;
 }
@@ -68,6 +74,9 @@ export class EditorStore {
     | ((prev: Deck, next: Deck, label: string, coalesceKey?: string) => void)
     | null = null;
 
+  /** Persisted after each new/coalesced restorable snapshot. */
+  onHistoryChange: ((history: DeckHistoryDocument) => void) | null = null;
+
   private state: EditorState;
   private listeners = new Set<Listener>();
   private undoStack: UndoItem[] = [];
@@ -89,7 +98,6 @@ export class EditorStore {
       selection: new Set(),
       dirty: false,
     };
-    this.recordHistory('Initial state');
   }
 
   get(): EditorState {
@@ -109,11 +117,20 @@ export class EditorStore {
     for (const fn of this.listeners) fn(this.state);
   }
 
-  /** Replace the deck wholesale (open, import, external reload). Clears history. */
-  load(deck: Deck, dir: string, opts: { keepView?: boolean } = {}): void {
+  /** Replace the deck wholesale and hydrate its independently persisted history. */
+  load(
+    deck: Deck,
+    dir: string,
+    opts: { keepView?: boolean; history?: PersistedDeckHistoryEntry[] } = {},
+  ): void {
     this.undoStack = [];
     this.redoStack = [];
-    this.historyLog = [];
+    this.historyLog = (opts.history ?? []).slice(-HISTORY_LIMIT).map((item) => ({
+      ...item,
+      id: this.nextHistoryId++,
+      deck: parseDeck(item.deck),
+      slideIndex: Math.min(item.slideIndex, Math.max(0, item.deck.slides.length - 1)),
+    }));
     // An external reload (agent edit, git) must not teleport the editor away
     // from the slide being worked on.
     const slideIndex = opts.keepView
@@ -128,7 +145,6 @@ export class EditorStore {
       selection: new Set(),
       dirty: false,
     };
-    this.recordHistory('Opened deck');
     this.emit();
   }
 
@@ -137,17 +153,16 @@ export class EditorStore {
    * user's undo history or stable-id selection. Agent transactions and hand
    * edits therefore behave like ordinary, reversible editor actions.
    */
-  replaceExternal(
-    deck: Deck,
-    dir: string,
-    label = 'Agent edit',
-    opts: Omit<RemoteHistoryOptions, 'coalesce'> = {},
-  ): void {
+  replaceExternal(deck: Deck, dir: string): void {
     const anchor = this.cursorAnchor();
-    this.pushUndo(this.state.deck, label);
+    // A disk reload is a new synchronization baseline, not an authored edit.
+    // Keeping pre-reload undo entries would make Command-Z silently restore
+    // stale file contents, so both stacks stop at this boundary.
+    this.undoStack = [];
+    this.redoStack = [];
+    this.txnBase = null;
     this.state = { ...this.state, dir, deck: parseDeck(deck), dirty: false };
     this.restoreCursor(anchor);
-    this.recordHistory(label, opts);
     this.emit();
   }
 
@@ -176,16 +191,22 @@ export class EditorStore {
   ): void {
     const anchor = this.cursorAnchor();
     const next = parseDeck(deck);
+    // Server acknowledgements normally contain the optimistic state already
+    // on screen. Recording them again creates duplicate/misattributed rows and
+    // makes the apparent current revision depend on network timing.
+    if (sameDeck(this.state.deck, next)) return;
     shareUnchangedSlides(this.state.deck, next);
     this.state = { ...this.state, deck: next };
     this.restoreCursor(anchor);
     // Live typing arrives as a stream of same-label transactions; folding them
     // into one history entry keeps the History panel legible.
-    this.recordHistory(label, {
-      coalesce: opts.coalesce ?? true,
-      description: opts.description,
-      agentChatId: opts.agentChatId,
-    });
+    if (opts.history !== false) {
+      this.recordHistory(label, {
+        coalesce: opts.coalesce ?? true,
+        description: opts.description,
+        agentChatId: opts.agentChatId,
+      });
+    }
     this.emit();
   }
 
@@ -300,15 +321,28 @@ export class EditorStore {
     return this.historyLog.map(({ deck: _deck, ...item }) => ({ ...item })).reverse();
   }
 
+  isHistoryCurrent(id: number): boolean {
+    const snapshot = this.historyLog.find((item) => item.id === id);
+    return !!snapshot && sameDeck(snapshot.deck, this.state.deck);
+  }
+
+  persistedHistory(): DeckHistoryDocument {
+    return {
+      version: 1,
+      entries: this.historyLog.map(({ id: _id, ...item }) => structuredClone(item)),
+    };
+  }
+
   restoreHistory(id: number): boolean {
     const snapshot = this.historyLog.find((item) => item.id === id);
-    if (!snapshot || snapshot.deck === this.state.deck) return false;
+    if (!snapshot || sameDeck(snapshot.deck, this.state.deck)) return false;
     const previous = this.state.deck;
     const slideIndex = Math.min(
       snapshot.slideIndex,
       Math.max(0, snapshot.deck.slides.length - 1),
     );
-    this.pushUndo(this.state.deck, `Revert to ${snapshot.label}`);
+    const label = `Reverted to ${snapshot.label}`;
+    this.pushUndo(this.state.deck, label);
     this.redoStack = [];
     this.state = {
       ...this.state,
@@ -321,8 +355,8 @@ export class EditorStore {
       dirty: true,
     };
     this.slideSelectionAnchor = this.state.slideIndex;
-    this.recordHistory(`Reverted to ${snapshot.label}`);
-    this.onLocalEdit?.(previous, this.state.deck, `Revert to ${snapshot.label}`);
+    this.recordHistory(label);
+    this.onLocalEdit?.(previous, this.state.deck, label);
     this.emit();
     return true;
   }
@@ -491,6 +525,7 @@ export class EditorStore {
       last.deck = this.state.deck;
       if (opts.description) last.description = opts.description;
       if (opts.agentChatId) last.agentChatId = opts.agentChatId;
+      this.onHistoryChange?.(this.persistedHistory());
       return;
     }
     this.historyLog.push({
@@ -503,7 +538,12 @@ export class EditorStore {
       deck: this.state.deck,
     });
     if (this.historyLog.length > HISTORY_LIMIT) this.historyLog.shift();
+    this.onHistoryChange?.(this.persistedHistory());
   }
+}
+
+function sameDeck(left: Deck, right: Deck): boolean {
+  return left === right || JSON.stringify(left) === JSON.stringify(right);
 }
 
 /**

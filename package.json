@@ -18,6 +18,7 @@
     "dist": "npm run build && npm run build:importer && electron-builder",
     "dist:linux": "npm run build && npm run build:importer && electron-builder --linux",
     "start": "electron-vite preview",
+    "pretest": "node scripts/check-test-environment.cjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",

@@ -27,6 +27,19 @@ export function shouldOpenSpeakerView(
   return forced || audience.id !== presenter.id;
 }
 
+/**
+ * A forced one-display Speaker View owns that display. Its audience player
+ * still runs as the presentation state source, but must never flash on screen
+ * before the speaker controls are ready.
+ */
+export function shouldShowAudienceWindow(
+  audience: { id: number },
+  presenter: { id: number },
+  openSpeakerView: boolean,
+): boolean {
+  return !openSpeakerView || audience.id !== presenter.id;
+}
+
 /** Resolve the inverse of the active audience/presenter mapping. */
 export function swappedPresentationDisplays<T extends { id: number }>(
   displays: T[],
