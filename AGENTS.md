@@ -2,13 +2,24 @@
 
 ## Repository test environment
 
-When working in the slide-editor repository, run the complete `npm test` suite
-outside restricted agent sandboxes. The integration suite binds localhost and
-launches real Electron/Chromium, ffmpeg, importer, semaphore, and filesystem-
-watcher processes; sandbox failures otherwise surface as misleading `EPERM`,
-timeouts, `EMFILE`, or null child-process exits. `npm test` has a fail-fast
-preflight for the localhost restriction. Focused pure unit tests can still run
-inside the sandbox with `npx vitest run test/<name>.test.ts`.
+When working in the slide-editor repository, run only the targeted tests that
+cover your change unless the user or task explicitly asks for broader coverage.
+Focused pure unit tests can run inside the sandbox with
+`npx vitest run test/<name>.test.ts`. If a complete `npm test` run is explicitly
+required, run it outside restricted agent sandboxes: the integration suite binds
+localhost and launches real Electron/Chromium, ffmpeg, importer, semaphore, and
+filesystem-watcher processes. Sandbox failures otherwise surface as misleading
+`EPERM`, timeouts, `EMFILE`, or null child-process exits; `npm test` has a
+fail-fast preflight for the localhost restriction.
+
+## UI consistency
+
+Every new UI element must match the rest of the application. Reuse the shared
+chrome and established component styles for all controls, including buttons,
+dropdowns, text fields, text areas, toggles, and color pickers. Do not ship a
+browser-native default or a one-off visual treatment; check the control's
+normal, hover, focus, disabled, and open states against neighboring UI before
+considering the work complete.
 
 An agent never talks to the Electron app directly, and should almost never
 touch `deck.json`. **You edit an HTML file; the editor watches it and syncs

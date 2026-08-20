@@ -819,7 +819,7 @@ body.panel-resizing iframe { pointer-events: none; }
 
 .rail-item {
   grid-template-areas: "num thumb" "label label" "meta meta";
-  grid-template-columns: 20px 1fr;
+  grid-template-columns: 20px minmax(0, 1fr);
   cursor: grab;
   position: relative;
 }
@@ -862,8 +862,8 @@ body.panel-resizing iframe { pointer-events: none; }
 .rail-stack::after {
   content: "";
   position: absolute;
-  width: 168px;
-  height: 94.5px;
+  width: calc(100% - 8px);
+  aspect-ratio: var(--rail-thumb-aspect, 16 / 9);
   border: 1px solid var(--line);
   border-radius: 3px;
   /* Match a hidden slide's dimmed white card so the peeking edges read as
@@ -898,8 +898,8 @@ body.panel-resizing iframe { pointer-events: none; }
 .rail-thumb {
   position: relative;
   overflow: hidden;
-  width: 168px;
-  height: 94.5px;
+  width: 100%;
+  aspect-ratio: var(--rail-thumb-aspect, 16 / 9);
   border: 1px solid var(--line);
   border-radius: 3px;
   grid-area: thumb;
@@ -2223,10 +2223,6 @@ button.magic-object-hit.selected-source:hover:not(:disabled) {
 .agent-chat-conversation-select {
   width: 148px;
   min-width: 0;
-  padding: 4px 22px 4px 7px;
-  border-color: var(--line);
-  color: var(--muted);
-  font-size: 10.5px;
   text-overflow: ellipsis;
 }
 

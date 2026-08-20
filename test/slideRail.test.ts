@@ -64,6 +64,44 @@ describe('collaborator presence in the slide rail', () => {
   });
 });
 
+describe('resizing the slide rail', () => {
+  beforeEach(() => document.body.replaceChildren());
+
+  it('scales the preview surface and collaboration boxes to the thumbnail width', () => {
+    const original = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientWidth');
+    Object.defineProperty(HTMLElement.prototype, 'clientWidth', {
+      configurable: true,
+      get() { return (this as HTMLElement).classList.contains('rail-thumb') ? 240 : 0; },
+    });
+
+    try {
+      const { store, host, rail } = setup();
+      store.commit((deck) => {
+        deck.slides[0].elements.push({
+          id: 'title-1', type: 'text', x: 160, y: 80, w: 800, h: 160,
+          rot: 0, z: 1, opacity: 1, class: ['role-title'], style: {},
+          html: 'Responsive preview', align: 'left', valign: 'top',
+        });
+      }, { history: false });
+      rail.presenceForSlide = (slideId) => slideId === 'slide-1' ? [{
+        name: 'Ada', color: '#ff3366', selectedElementIds: ['title-1'],
+      }] : [];
+      rail.refreshPresence();
+
+      const thumb = host.querySelector<HTMLElement>('.rail-thumb')!;
+      expect(thumb.style.getPropertyValue('--rail-thumb-aspect')).toBe('1920 / 1080');
+      expect(thumb.querySelector<HTMLElement>('.rail-thumb-inner')!.style.transform)
+        .toBe('scale(0.125)');
+      const selection = thumb.querySelector<HTMLElement>('.rail-presence-selection')!;
+      expect(selection.style.left).toBe('20px');
+      expect(selection.style.width).toBe('100px');
+    } finally {
+      if (original) Object.defineProperty(HTMLElement.prototype, 'clientWidth', original);
+      else delete (HTMLElement.prototype as unknown as { clientWidth?: number }).clientWidth;
+    }
+  });
+});
+
 describe('deleting slides from the rail', () => {
   beforeEach(() => document.body.replaceChildren());
 

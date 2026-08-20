@@ -22,6 +22,8 @@ export interface RailPresence {
 export class SlideRail {
   private host: HTMLElement;
   private store: EditorStore;
+  /** Keeps cached slide surfaces scaled to the fluid thumbnail frame. */
+  private thumbResizeObserver: ResizeObserver | null = null;
   /** Index of the slide being dragged, while a reorder is in progress. */
   private dragFrom: number | null = null;
   /** The slides array last drawn, so a selection change can skip the rebuild. */
@@ -59,6 +61,14 @@ export class SlideRail {
   constructor(host: HTMLElement, store: EditorStore) {
     this.host = host;
     this.store = store;
+    if (typeof ResizeObserver !== 'undefined') {
+      this.thumbResizeObserver = new ResizeObserver((entries) => {
+        for (const entry of entries) this.scaleThumb(entry.target as HTMLElement);
+        // Remote-selection boxes share the thumbnail's scale, so they must
+        // track the frame without forcing its cached slide DOM to be rebuilt.
+        this.refreshPresence();
+      });
+    }
     store.subscribe(() => this.onStoreChange());
     this.bindKeys();
     this.render();
@@ -112,7 +122,11 @@ export class SlideRail {
     // Drop cache entries for slides that no longer exist in this deck version.
     const live = new Set<unknown>(deck.slides);
     for (const key of this.thumbCache.keys()) {
-      if (!live.has(key)) this.thumbCache.delete(key);
+      if (!live.has(key)) {
+        const thumb = this.thumbCache.get(key);
+        if (thumb) this.thumbResizeObserver?.unobserve(thumb);
+        this.thumbCache.delete(key);
+      }
     }
     this.host.replaceChildren();
 
@@ -180,6 +194,7 @@ export class SlideRail {
 
     const stack = document.createElement('div');
     stack.className = 'rail-stack';
+    stack.style.setProperty('--rail-thumb-aspect', `${deck.canvas.w} / ${deck.canvas.h}`);
     stack.appendChild(this.thumbFor(deck, deck.slides[start]));
 
     const badge = document.createElement('span');
@@ -241,11 +256,12 @@ export class SlideRail {
     if (!thumb) {
       thumb = document.createElement('div');
       thumb.className = 'rail-thumb';
+      thumb.dataset.canvasWidth = String(deck.canvas.w);
+      thumb.style.setProperty('--rail-thumb-aspect', `${deck.canvas.w} / ${deck.canvas.h}`);
       const inner = document.createElement('div');
       inner.className = 'rail-thumb-inner';
       inner.style.width = `${deck.canvas.w}px`;
       inner.style.height = `${deck.canvas.h}px`;
-      inner.style.transform = `scale(${THUMB_WIDTH / deck.canvas.w})`;
       if (slide.background.color) inner.style.background = slide.background.color;
       inner.appendChild(
         renderSlide(slide, { resolveSrc: (src) => window.api.assetUrl(src) }),
@@ -257,9 +273,25 @@ export class SlideRail {
         video.pause();
       }
       thumb.appendChild(inner);
+      this.scaleThumb(thumb);
+      this.thumbResizeObserver?.observe(thumb);
       this.thumbCache.set(slide, thumb);
     }
     return thumb;
+  }
+
+  /** Scale the canonical slide surface into its current fluid-width frame. */
+  private scaleThumb(thumb: HTMLElement): void {
+    const canvasWidth = Number(thumb.dataset.canvasWidth);
+    const inner = thumb.querySelector<HTMLElement>('.rail-thumb-inner');
+    if (!inner || !Number.isFinite(canvasWidth) || canvasWidth <= 0) return;
+    inner.style.transform = `scale(${this.thumbWidth(thumb) / canvasWidth})`;
+  }
+
+  private thumbWidth(thumb: HTMLElement): number {
+    // jsdom and detached nodes have no layout; retain the historical width as
+    // a stable fallback until ResizeObserver reports the on-screen frame.
+    return thumb.clientWidth || thumb.getBoundingClientRect().width || THUMB_WIDTH;
   }
 
   /** Re-decorate presence in place, without invalidating thumbnails. */
@@ -299,7 +331,7 @@ export class SlideRail {
       thumb.appendChild(selections);
     }
 
-    const scale = THUMB_WIDTH / deck.canvas.w;
+    const scale = this.thumbWidth(thumb) / deck.canvas.w;
     const byId = new Map(slide.elements.map((element) => [element.id, element]));
     const boxes: HTMLElement[] = [];
     for (const [peerIndex, peer] of peers.entries()) {
