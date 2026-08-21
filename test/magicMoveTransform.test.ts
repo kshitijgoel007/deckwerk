@@ -305,6 +305,20 @@ describe('Magic Move start state', () => {
       );
     });
 
+    it('starts a rotated pair on its source even when the ink sits differently', () => {
+      // The case a matching pair of ink offsets cannot distinguish: the source
+      // is rotated AND its ink sits at a different offset inside its box than
+      // the target's does. Folding the anchor as if rotation dropped out leaves
+      // a residual of (I - R) times the difference, which is a visible fly-in.
+      const from = text({ x: 100, y: 100, w: 900, h: 400, rot: 20, align: 'left' });
+      const to = text({ x: 900, y: 600, w: 500, h: 160, rot: -8, align: 'left' });
+      const sourceInk: Rect = { x: 140, y: 300, w: 420, h: 60 };
+      const targetInk: Rect = { x: 900, y: 618, w: 420, h: 60 };
+      const layout: TextLayout = { sourceInk, targetInk, fontScale: 1, squeeze: 1 };
+
+      expectSameShape(atStart(from, to, targetInk, layout), painted(from, sourceInk));
+    });
+
     it('falls back to box alignment anchors when nothing can be measured', () => {
       // Headless renders (and a source that was hidden when the slide left)
       // have no layout to read. The estimate is only exact for matching

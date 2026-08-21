@@ -128,7 +128,18 @@ function applyLenient(
       const at = indexOfSlide(deck, op.slideId);
       if (at === -1) return skip(op, `slide ${op.slideId} no longer exists`);
       if (op.slide.id !== op.slideId) return skip(op, 'properties change slide id');
-      deck.slides[at] = { ...structuredClone(op.slide), elements: deck.slides[at].elements };
+      // Merge, never replace: the op carries only the fields that changed, so
+      // a concurrent edit to a different field of the same slide survives.
+      deck.slides[at] = {
+        ...deck.slides[at],
+        ...structuredClone(op.slide),
+        elements: deck.slides[at].elements,
+      };
+      // Absence in a patch means "unchanged", so a removal is stated instead.
+      for (const key of op.clear ?? []) {
+        if (key === 'id' || key === 'elements') continue;
+        delete (deck.slides[at] as Record<string, unknown>)[key];
+      }
       return;
     }
   }

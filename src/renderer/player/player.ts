@@ -68,7 +68,11 @@ export class Player {
     this.resizeObserver = new ResizeObserver(() => this.rescale());
     this.resizeObserver.observe(this.container);
 
-    this.goTo({ slide: 0, step: 0 });
+    // A skipped slide is hidden from the audience everywhere else -- Present
+    // walks past it and the PDF export drops it -- so opening a standalone web
+    // export on one would show a slide the author had explicitly hidden.
+    const first = opts.deck.slides.findIndex((slide) => !slide.skipped);
+    this.goTo({ slide: first < 0 ? 0 : first, step: 0 });
   }
 
   destroy(): void {
@@ -123,7 +127,13 @@ export class Player {
       ? explicitMagicMovePairs(previousSlide.elements, slide.elements)
       : [];
     const magicMoveEnabled = slide.magicMoveFromPrevious ?? explicitPairs.length > 0;
-    const magicMove = previousSlideIndex !== slides.indexOf(slide) && previousSlide && magicMoveEnabled;
+    // Only the step from one slide to the very next one is a Magic Move. The
+    // flag describes a slide's relationship to the slide before it, so jumping
+    // -- a rail click, goToSlide, or stepping backwards -- used to animate
+    // between two slides that were never authored as a pair, which reads as
+    // objects flying around at random.
+    const magicMove = slides.indexOf(slide) === previousSlideIndex + 1
+      && previousSlide !== undefined && magicMoveEnabled;
     const steps = stepCount(slide);
     this.cursor = {
       slide: slides.indexOf(slide),
@@ -141,21 +151,30 @@ export class Player {
     // in one of them. Handing it to every slot in turn would move it out of
     // each one as the next claimed it, leaving empty wrappers whose border
     // overlays still paint — a video that reads as having gone transparent.
-    const carry = new Map<string, HTMLVideoElement[]>();
+    // Identity first, file second. Keying on the file alone handed the live
+    // element to whichever slot happened to paint first, so a deck showing one
+    // clip in two elements continued the wrong one: the element that was really
+    // playing got a fresh node, and the adopter -- not in the new state's
+    // playing set -- was then paused. Matching on element id keeps continuity
+    // with the object it belongs to, and the file is the fallback for the case
+    // the feature exists for: the same clip re-placed under a new id.
+    const carried: Array<{ video: HTMLVideoElement; id: string | null; src: string }> = [];
     for (const video of this.stage.querySelectorAll('video')) {
-      if (!video.paused && video.currentTime > 0) {
-        const src = video.getAttribute('src') ?? '';
-        const queue = carry.get(src);
-        if (queue) queue.push(video);
-        else carry.set(src, [video]);
-      }
+      if (video.paused || video.currentTime <= 0) continue;
+      carried.push({
+        video,
+        id: video.closest<HTMLElement>('[data-element-id]')?.dataset.elementId ?? null,
+        src: video.getAttribute('src') ?? '',
+      });
     }
     const previousNodes = new Map<string, HTMLElement>();
     if (magicMove) {
       for (const node of this.stage.querySelectorAll<HTMLElement>('[data-element-id]')) {
         const id = node.dataset.elementId;
         if (id && node.style.visibility !== 'hidden') {
-          previousNodes.set(id, node.cloneNode(true) as HTMLElement);
+          const clone = node.cloneNode(true) as HTMLElement;
+          freezeClonedVideos(node, clone);
+          previousNodes.set(id, clone);
         }
       }
     }
@@ -163,19 +182,44 @@ export class Player {
     const rendered = renderSlide(slide, { resolveSrc: this.resolveSrc });
     this.stage.replaceChildren(rendered);
 
-    for (const video of this.stage.querySelectorAll('video')) {
-      // Consumed, never merely looked up, so each live element is adopted at
-      // most once and the remaining slots keep their freshly rendered video.
-      const live = carry.get(video.getAttribute('src') ?? '')?.shift();
-      if (!live || live === video) continue;
+    // Two passes, because identity has to win globally rather than per node: a
+    // single pass let an earlier-painting element claim the live video by file
+    // before the element it actually belongs to was even considered.
+    const adopted = new Set<HTMLVideoElement>();
+    const adopt = (rendered: HTMLVideoElement, live: HTMLVideoElement): void => {
+      adopted.add(live);
       // The rendered element carries the new slide's presentation (crop
       // offsets, fit, trim-aware loop flag); move all of it onto the live
       // element before it takes the rendered one's place.
-      live.style.cssText = video.style.cssText;
-      live.loop = video.loop;
-      live.muted = video.muted;
-      live.controls = video.controls;
-      video.replaceWith(live);
+      live.style.cssText = rendered.style.cssText;
+      live.loop = rendered.loop;
+      live.muted = rendered.muted;
+      live.controls = rendered.controls;
+      rendered.replaceWith(live);
+    };
+    const idOf = (video: HTMLVideoElement): string | null =>
+      video.closest<HTMLElement>('[data-element-id]')?.dataset.elementId ?? null;
+
+    for (const pass of ['id', 'src'] as const) {
+      for (const video of [...this.stage.querySelectorAll('video')]) {
+        if (adopted.has(video)) continue;
+        const id = idOf(video);
+        const src = video.getAttribute('src') ?? '';
+        const match = pass === 'id'
+          ? carried.find((c) => !adopted.has(c.video) && c.id !== null && c.id === id)
+          : carried.find((c) => !adopted.has(c.video) && c.src === src);
+        if (!match || match.video === video) continue;
+        adopt(video, match.video);
+      }
+    }
+
+    // Anything left over is detached but still playing: in Chromium a media
+    // element removed from the document keeps going, and `applyState` only ever
+    // pauses videos it can still find under the stage. That is how a clip's
+    // audio used to carry on over the rest of the deck.
+    for (const { video } of carried) {
+      if (adopted.has(video) || video.isConnected) continue;
+      video.pause();
     }
 
     this.rescale();
@@ -257,6 +301,11 @@ export class Player {
       ];
     };
 
+    // Whether anything in this transition carries an explicit z-index. Objects
+    // that do would otherwise paint over every untouched object regardless of
+    // authored order, since a settled slide relies on DOM order alone.
+    let zIndexInUse = false;
+
     // Text is positioned from what the DOM actually laid out, so measure both
     // slides' glyphs before any transform is written.
     const textLayouts = measureTextLayouts(targetSlide, pairs, previousNodes);
@@ -266,12 +315,20 @@ export class Player {
         `[data-element-id="${CSS.escape(to.id)}"]`,
       );
       if (!node?.animate) continue;
+      // A target that a build step has not revealed yet is not on screen, so
+      // there is nothing to animate into. Release the source instead, so it
+      // fades out as a ghost rather than popping out of existence.
+      if (node.style.visibility === 'hidden') {
+        pairedSources.delete(from.id);
+        continue;
+      }
       const {
         start: startTransform,
         final: finalTransform,
         origin,
       } = magicMoveTransforms(from, to, textLayouts.get(to.id) ?? null);
       const stacking = stackingFrames(to.id) ?? [];
+      if (stacking.length) zIndexInUse = true;
       // The ease lives on the first keyframe, not the timing options: keyframe
       // easing applies per property segment, so the motion still eases across
       // the whole duration while the stacking offsets below stay in wall time,
@@ -309,6 +366,7 @@ export class Player {
       if (!node?.animate || node.style.visibility === 'hidden') continue;
       const dom = domRank.get(target.id);
       const zIndex = dom === undefined ? {} : { zIndex: String(dom) };
+      if (dom !== undefined) zIndexInUse = true;
       node.animate([
         { opacity: '0', offset: 0, ...zIndex },
         { opacity: '0', offset: 0.75, ...zIndex },
@@ -346,11 +404,12 @@ export class Player {
       void animation.finished.then(() => ghost.remove(), () => ghost.remove());
     }
 
-    // Ghosts only stack correctly against the rest of the source content if
-    // that content is ranked on the same scale, so visually-unchanged pairs
-    // join the stacking timeline — but only when there is a ghost to order
-    // against, keeping ghost-free transitions free of animations entirely.
-    if (hasGhosts) {
+    // Anything given an explicit z-index paints above everything without one,
+    // so once a single participant is stacked, the visually-unchanged objects
+    // have to join the same scale -- otherwise a mover slides over the box that
+    // is meant to cover it. A transition where nothing was stacked stays free
+    // of animations entirely.
+    if (zIndexInUse || hasGhosts) {
       for (const [, target] of unchanged) {
         const node = this.stage.querySelector<HTMLElement>(
           `[data-element-id="${CSS.escape(target.id)}"]`,
@@ -698,4 +757,39 @@ export function matchMagicMoveElements(
   next: SlideElement[],
 ): Array<[SlideElement, SlideElement]> {
   return explicitMagicMovePairs(previous, next);
+}
+
+/**
+ * Replace the `<video>` nodes in a cloned subtree with a still of the frame the
+ * live video is showing.
+ *
+ * A cloned video carries no decoded frame: it paints its own black background
+ * until it loads, while the cloned border overlay paints at once. During a
+ * Magic Move fade that reads exactly as the video having vanished and left its
+ * frame behind. A canvas holding the current frame fades out as the picture.
+ */
+function freezeClonedVideos(source: HTMLElement, clone: HTMLElement): void {
+  const live = source.querySelectorAll('video');
+  const copies = clone.querySelectorAll('video');
+  for (let i = 0; i < copies.length; i += 1) {
+    const video = live[i];
+    const copy = copies[i];
+    if (!video) continue;
+    const width = video.videoWidth || Math.round(video.getBoundingClientRect().width);
+    const height = video.videoHeight || Math.round(video.getBoundingClientRect().height);
+    if (!width || !height) continue;
+    try {
+      const still = document.createElement('canvas');
+      still.width = width;
+      still.height = height;
+      const context = still.getContext('2d');
+      if (!context) continue;
+      context.drawImage(video, 0, 0, width, height);
+      still.style.cssText = copy.style.cssText;
+      copy.replaceWith(still);
+    } catch {
+      // No frame available (or no canvas support): leaving the cloned video in
+      // place is no worse than before.
+    }
+  }
 }

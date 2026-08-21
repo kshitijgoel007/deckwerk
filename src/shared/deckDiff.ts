@@ -117,7 +117,26 @@ function diffSlide(prev: Slide, next: Slide): AgentOperation[] {
   const { elements: prevElements, ...prevProps } = prev;
   const { elements: nextElements, ...nextProps } = next;
   if (JSON.stringify(prevProps) !== JSON.stringify(nextProps)) {
-    ops.push({ op: 'setSlideProperties', slideId: next.id, slide: structuredClone(nextProps) });
+    // Only the fields that actually changed. Sending the whole blob made a
+    // notes edit overwrite a peer's concurrent timeline edit on the same slide.
+    const before = prevProps as Record<string, unknown>;
+    const after = nextProps as Record<string, unknown>;
+    const changed: Record<string, unknown> = { id: next.id };
+    const clear: string[] = [];
+    for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
+      if (key === 'id') continue;
+      if (JSON.stringify(before[key]) === JSON.stringify(after[key])) continue;
+      // An optional field that went away must be stated as a removal: a patch
+      // that simply omits it would read as "leave it alone".
+      if (after[key] === undefined) clear.push(key);
+      else changed[key] = structuredClone(after[key]);
+    }
+    ops.push({
+      op: 'setSlideProperties',
+      slideId: next.id,
+      slide: changed as typeof nextProps,
+      ...(clear.length ? { clear } : {}),
+    });
   }
 
   const nextById = new Map(nextElements.map((element) => [element.id, element]));

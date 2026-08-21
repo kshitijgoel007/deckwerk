@@ -327,28 +327,28 @@ describe.skipIf(!electronBinary)('text formatting in the collaboration browser',
 
     await editor.evaluate(`[...document.querySelectorAll('#toolbar button')]
       .find((button) => button.textContent.trim() === 'Present')?.click()`);
-    const presentationTarget = await findTarget(
-      browser.debugPort,
-      (candidate) => candidate.url.includes('/present.html')
-        && candidate.url.includes(`deck=${DECK_ID}`),
-      browser.log,
-    );
-    presentation = await Cdp.connect(presentationTarget.webSocketDebuggerUrl!);
-    const presented = await eventually(async () => presentation!.evaluate<{
+    // The present view is mounted in a same-origin iframe over the editor, not
+    // in a second window, so it has no DevTools target of its own and is read
+    // through the editor's document.
+    const presented = await eventually(async () => editor!.evaluate<{
       bodyAlign: string; bodyColor: string; items: number; titleAlign: string; spacing: string;
-    }>(`(() => {
-      const bodyNode = document.querySelector('[data-element-id="${BODY_ID}"]');
-      const bodyText = bodyNode.querySelector('.text-body');
+    } | null>(`(() => {
+      const frame = document.querySelector('iframe[src*="present.html"]');
+      const doc = frame?.contentDocument;
+      const bodyNode = doc?.querySelector('[data-element-id="${BODY_ID}"]');
+      const titleText = doc?.querySelector('[data-element-id="${TITLE_ID}"] .text-body');
+      const bodyText = bodyNode?.querySelector('.text-body');
+      if (!bodyText || !titleText) return null;
+      const view = frame.contentWindow;
       return {
-        bodyAlign: getComputedStyle(bodyText).textAlign,
-        bodyColor: getComputedStyle(bodyText).color,
+        bodyAlign: view.getComputedStyle(bodyText).textAlign,
+        bodyColor: view.getComputedStyle(bodyText).color,
         items: bodyNode.querySelectorAll('li').length,
-        titleAlign: getComputedStyle(
-          document.querySelector('[data-element-id="${TITLE_ID}"] .text-body')).textAlign,
+        titleAlign: view.getComputedStyle(titleText).textAlign,
         spacing: bodyNode.style.getPropertyValue('--paragraph-spacing')
       };
     })()`), 'the presentation did not paint the formatted deck',
-      (value) => value.items === 2);
+      (value) => value !== null && value.items === 2);
     expect(presented).toEqual({
       bodyAlign: 'justify',
       bodyColor: 'rgb(29, 125, 69)',

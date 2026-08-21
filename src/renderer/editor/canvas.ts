@@ -1,17 +1,20 @@
-import { MIRRORED_TEXT_STYLE_PROPERTIES } from '@shared/deck.js';
 import type { Deck, Slide, SlideElement } from '@shared/deck.js';
 import { type Rect, fitScale, makeId } from '@shared/geometry.js';
 import {
+  applyElementBoxStyles,
+  applyMediaFitStyles,
+  applySlideRootStyles,
+  applyVideoPlaybackState,
+  applyTextRenderState,
+  syncShapeBody,
   fitAutoText,
-  quadraticPath,
   renderElement,
   renderSlide,
   scheduleAutoFit,
   syncMediaFrame,
 } from '../player/render.js';
-import { typedPropertyOwnsCss } from '@shared/nativeCss.js';
 import { expandTimeline } from '@shared/timeline.js';
-import { classifyMediaName, makePendingSrc } from '@shared/media.js';
+import { classifyMediaName, makePendingSrc, pendingToken } from '@shared/media.js';
 import { normalizeParagraphHtml, paragraphUnits } from '@shared/paragraphs.js';
 import {
   applyPendingHud,
@@ -22,6 +25,7 @@ import {
   setPendingProgress,
 } from './pendingUploads.js';
 import { newComment, openCommentsPopover, openCount } from './comments.js';
+import { reportRenderDivergences } from './renderInvariants.js';
 import { HANDLES, type SnapLine, snapMove, snapResize } from './snapping.js';
 import type { EditorStore } from './store.js';
 
@@ -221,6 +225,21 @@ export class EditorCanvas {
       this.applyGeometry(slide, previous);
       this.rescale();
       this.drawOverlay(deck, slide.elements, selection);
+      // In development, verify that patching left the DOM where a full render
+      // would have. A property handled by `renderElement` and not by the patch
+      // path updates the deck without changing the pixels, and the only symptom
+      // is that the change appears once something forces a rebuild. The element
+      // being edited is excluded: its live DOM is deliberately the raw authored
+      // source while the caret is in it.
+      reportRenderDivergences(
+        this.slideLayer,
+        slide,
+        (src) => window.api.assetUrl(src),
+        {
+          context: 'an in-place patch',
+          skipElementIds: this.editingId ? [this.editingId] : [],
+        },
+      );
       return;
     }
 
@@ -228,7 +247,16 @@ export class EditorCanvas {
 
     // Re-rendering under an active text edit would destroy the node the caret
     // lives in, so the edit is committed first.
-    if (this.editingId) this.commitTextEdit();
+    if (this.editingId) {
+      this.commitTextEdit();
+      // Committing re-enters the store, which notifies this canvas and runs a
+      // nested render that has already painted the post-commit slide. Carrying
+      // on here would paint the slide as it was *before* that commit, throwing
+      // away the text just typed -- the way a collaborator's structural edit
+      // used to swallow a word mid-sentence. The nested pass has done the work.
+      const settled = this.store.get();
+      if (settled.deck.slides[settled.slideIndex] !== slide) return;
+    }
 
     // Which videos were playing before the redraw, so playback survives an
     // unrelated edit elsewhere on the slide.
@@ -292,8 +320,9 @@ export class EditorCanvas {
     // Layout identity lives on the rendered slide root. A preset change usually
     // keeps the same elements, so it takes this fast path rather than rebuilding
     // the DOM; keep the root class in sync as well as the element geometry.
+    const resolve = { resolveSrc: (src: string) => window.api.assetUrl(src) };
     const rendered = this.slideLayer.querySelector<HTMLElement>(':scope > .slide');
-    if (rendered) rendered.className = `slide layout-${slide.layout ?? 'freeform'}`;
+    if (rendered) applySlideRootStyles(rendered, slide, resolve);
 
     for (const el of slide.elements) {
       const node = this.slideLayer.querySelector<HTMLElement>(
@@ -301,107 +330,25 @@ export class EditorCanvas {
       );
       if (!node) continue;
 
-      // Inline styles (colour above all) change without changing structure and
-      // must land here — before this, picking a text colour updated the deck
-      // but never the pixels. Keys removed since the last render are cleared.
+      // The box and the text render state are written by the same functions
+      // `renderElement` uses, so a property can never be handled by one path
+      // and forgotten by the other. Everything below is genuinely editor-side:
+      // details that live on child nodes a rebuild would have recreated.
       const before = previous?.elements.find((e) => e.id === el.id);
-      if (before) {
-        for (const key of Object.keys(before.style)) {
-          if (!(key in el.style) || typedPropertyOwnsCss(el, key)) node.style.removeProperty(key);
-        }
-      }
-      for (const [key, value] of Object.entries(el.style)) {
-        if (typedPropertyOwnsCss(el, key)) {
-          node.style.removeProperty(key);
-          continue;
-        }
-        node.style.setProperty(key, value);
-      }
-      // Inheritable text properties are also mirrored onto .text-content
-      // (see MIRRORED_TEXT_STYLE_PROPERTIES): theme rules that target the
-      // content node directly would otherwise override the element's inline
-      // style, and colour changes from the inspector would never show.
-      if (el.type === 'text') {
-        // Alignment is a typed property, not an entry in el.style, so nothing
-        // above touches it: without this an align change updated the deck but
-        // never the pixels until the slide was rebuilt from scratch.
-        const body = node.querySelector<HTMLElement>('.text-body');
-        if (body) {
-          body.style.textAlign = el.align;
-          body.style.justifyContent =
-            el.valign === 'top' ? 'flex-start' : el.valign === 'bottom' ? 'flex-end' : 'center';
-        }
-        const content = node.querySelector<HTMLElement>('.text-content');
-        if (content) {
-          for (const property of MIRRORED_TEXT_STYLE_PROPERTIES) {
-            const value = el.style[property];
-            if (value !== undefined) content.style.setProperty(property, value);
-            else content.style.removeProperty(property);
-          }
-        }
-      }
-
-      node.style.left = `${el.x}px`;
-      node.style.top = `${el.y}px`;
-      node.style.width = `${el.w}px`;
-      node.style.height = `${el.h}px`;
-      node.style.opacity = String(el.opacity);
-      node.style.transform = el.rot ? `rotate(${el.rot}deg)` : '';
-      if (el.type === 'text') {
-        // Mirrored here as well as in renderElement so a spacing change shows
-        // immediately — including mid-edit — instead of on the next rebuild.
-        if (el.paragraphSpacing !== undefined) {
-          node.dataset.paragraphSpacing = String(el.paragraphSpacing);
-          node.style.setProperty('--paragraph-spacing', `${el.paragraphSpacing}px`);
-        } else {
-          delete node.dataset.paragraphSpacing;
-          node.style.removeProperty('--paragraph-spacing');
-        }
-        if (el.noWrap) node.dataset.noWrap = 'true';
-        else delete node.dataset.noWrap;
-        if (el.noWrap && el.noWrapMode === 'condense') node.dataset.fitMode = 'condense';
-        else delete node.dataset.fitMode;
-        // noWrap implies the fit: with soft wrapping off, shrinking is the
-        // only way an overlong line stays inside the box.
-        if (el.autoFit || el.noWrap) {
-          node.dataset.autoFit = 'true';
-          scheduleAutoFit(node);
-        } else {
-          delete node.dataset.autoFit;
-          node.querySelector<HTMLElement>('.text-content')?.style.removeProperty('font-size');
-        }
-      }
+      applyElementBoxStyles(node, el, before);
+      applyTextRenderState(node, el, before);
       if (el.type === 'image' || el.type === 'video') {
         syncMediaFrame(node, el);
+        applyMediaFitStyles(node, el);
       }
       if (el.type === 'video') {
         const video = node.querySelector<HTMLVideoElement>('video');
-        if (video) video.controls = el.controls;
+        if (video) applyVideoPlaybackState(video, el, resolve);
       }
 
-      if (el.type === 'shape' && el.control) {
-        node.querySelector('svg > path')?.setAttribute('d', quadraticPath(el));
-      }
-
-      // "Keep aspect ratio" flips `fit` without changing structure, so the
-      // inner tag's object-fit must follow here — otherwise a resize with the
-      // toggle off keeps letterboxing instead of stretching the picture.
-      if ((el.type === 'image' || el.type === 'video') && !el.sourceBox) {
-        const media = node.querySelector<HTMLElement>('img, video');
-        if (media) media.style.objectFit = el.fit;
-      }
-
-      // Cropped media: the inner tag is positioned in the window's coordinates
-      // and has to follow crop changes here, since they no longer rebuild.
-      if ((el.type === 'image' || el.type === 'video') && el.sourceBox) {
-        const media = node.querySelector<HTMLElement>('img, video');
-        if (media) {
-          media.style.left = `${el.sourceBox.x}px`;
-          media.style.top = `${el.sourceBox.y}px`;
-          media.style.width = `${el.sourceBox.w}px`;
-          media.style.height = `${el.sourceBox.h}px`;
-        }
-      }
+      // A shape's drawing is sized by its own viewBox, so the wrapper's new
+      // box is not enough: rebuild the SVG for the current geometry.
+      if (el.type === 'shape') syncShapeBody(node, el);
     }
   }
 
@@ -1123,13 +1070,21 @@ export class EditorCanvas {
         }
 
         const ids = new Set(drag.origin.keys());
+        // Snap to the boxes the author can see: a rotated neighbour's on-screen
+        // extent is its rotated bounding box.
         const others = slide.elements
           .filter((e) => !ids.has(e.id))
-          .map((e) => ({ x: e.x, y: e.y, w: e.w, h: e.h }));
+          .map((e) => rotatedBounds(e));
 
         // Snap the group by its bounding box, then apply one delta to all
         // members, so relative positions inside a multi-selection are preserved.
-        const bounds = unionRect([...drag.origin.values()]);
+        // The box is measured after rotation, since that is the outline the
+        // author is lining up; a move is a pure translation, so the delta the
+        // snap produces applies unchanged to the unrotated positions.
+        const bounds = unionRect([...drag.origin.entries()].map(([id, origin]) => {
+          const rot = slide.elements.find((e) => e.id === id)?.rot ?? 0;
+          return rot ? rotatedBounds({ ...origin, rot } as SlideElement) : origin;
+        }));
         const moved = { ...bounds, x: bounds.x + dx, y: bounds.y + dy };
         const snapped = ev.metaKey
           ? { rect: moved, guides: [] } // Command suspends snapping for fine placement.
@@ -1156,9 +1111,19 @@ export class EditorCanvas {
       case 'resize': {
         const drag = this.drag;
         const edges = HANDLES[drag.handle];
-        const dx = point.x - drag.startCanvas.x;
-        const dy = point.y - drag.startCanvas.y;
         const o = drag.origin;
+        const resizing = slide.elements.find((e) => e.id === drag.elementId);
+        // Handles are drawn rotated with the element, so a drag along a handle's
+        // own axis has to be read in the element's frame, not the canvas's.
+        // Applying the raw canvas delta to unrotated edges made every handle on
+        // a rotated object grow the wrong axis and drift the box as it went.
+        const radians = ((resizing?.rot ?? 0) * Math.PI) / 180;
+        const cos = Math.cos(radians);
+        const sin = Math.sin(radians);
+        const canvasDx = point.x - drag.startCanvas.x;
+        const canvasDy = point.y - drag.startCanvas.y;
+        const dx = radians ? canvasDx * cos + canvasDy * sin : canvasDx;
+        const dy = radians ? -canvasDx * sin + canvasDy * cos : canvasDy;
 
         // Option resizes about the element's center:
         // both sides move, and the center is re-pinned after constraints.
@@ -1196,27 +1161,45 @@ export class EditorCanvas {
 
         // Shift constrains, and so does "Keep aspect ratio" on media — with it
         // off (fit: fill) a resize genuinely stretches the picture.
-        const target = slide.elements.find((e) => e.id === drag.elementId);
         const keepAspect =
-          (target?.type === 'image' || target?.type === 'video') &&
-          target.fit !== 'fill' &&
-          !target.sourceBox;
-        if (ev.shiftKey || keepAspect) rect = constrainAspect(rect, o, edges, drag.aspect);
+          (resizing?.type === 'image' || resizing?.type === 'video') &&
+          resizing.fit !== 'fill' &&
+          !resizing.sourceBox;
+        const constrained = ev.shiftKey || keepAspect;
+        if (constrained) rect = constrainAspect(rect, o, edges, drag.aspect);
 
+        // Guides align to what is on screen, which for a rotated neighbour is
+        // its rotated bounding box, not its unrotated one.
         const others = slide.elements
           .filter((e) => e.id !== drag.elementId)
-          .map((e) => ({ x: e.x, y: e.y, w: e.w, h: e.h }));
-        const snapped = ev.altKey
+          .map((e) => rotatedBounds(e));
+        // A rotated element's own edges are not axis-aligned, so there is
+        // nothing meaningful to snap them to; snapping it would only nudge the
+        // box away from the pointer. Alt suspends snapping outright.
+        const snapped = ev.altKey || radians
           ? { rect, guides: [] }
           : snapResize(rect, edges, deck.canvas, others, threshold);
         this.guides = snapped.guides;
 
-        const r = { ...snapped.rect };
+        let r = { ...snapped.rect };
+        // Snapping moves a single edge, which breaks the ratio the constraint
+        // just imposed. Re-impose it so a keep-aspect resize cannot distort.
+        if (constrained) r = constrainAspect(r, o, edges, drag.aspect);
         if (centered) {
           // Aspect constraints and snapping anchor the opposite corner, which
           // would drift the center — pin it back to where the drag started.
           r.x = o.x + (o.w - r.w) / 2;
           r.y = o.y + (o.h - r.h) / 2;
+        }
+        if (radians) {
+          // CSS rotates about the box centre, so growing an edge in the local
+          // frame swings the whole box around that centre. Move the centre by
+          // the rotated version of its local displacement, which is what keeps
+          // the edge opposite the handle pinned where the author sees it.
+          const localDx = r.x + r.w / 2 - (o.x + o.w / 2);
+          const localDy = r.y + r.h / 2 - (o.y + o.h / 2);
+          r.x = o.x + o.w / 2 + (localDx * cos - localDy * sin) - r.w / 2;
+          r.y = o.y + o.h / 2 + (localDx * sin + localDy * cos) - r.h / 2;
         }
         if (this.maskingId === drag.elementId) {
           // Cropping, not scaling: the window moves, the picture stays put.
@@ -1634,7 +1617,15 @@ export class EditorCanvas {
     // Live sync may have already streamed the final html; the session still
     // counts as an edit (and strips the placeholder class) if the text ends
     // up different from where it started.
-    if (current.html === html && html === (originalHtml ?? html)) return;
+    if (current.html === html && html === (originalHtml ?? html)) {
+      // Nothing changed, so there is no commit and therefore no re-render --
+      // but the node still holds what `beginTextEdit` swapped in: the authored
+      // source. For anything the renderer transforms, that is the wrong DOM to
+      // leave behind; TeX is the visible case, where the box keeps showing a
+      // literal `$E=mc^2$` where KaTeX output belongs until an unrelated redraw.
+      this.restoreRenderedForm(current, body);
+      return;
+    }
 
     this.store.commit((deck) => {
       const el = deck.slides[this.store.get().slideIndex].elements.find(
@@ -1645,6 +1636,27 @@ export class EditorCanvas {
         el.class = el.class.filter((name) => name !== 'placeholder');
       }
     }, { label: 'Edit text', coalesceKey });
+  }
+
+  /**
+   * Put the rendered form of an element back after an edit session that changed
+   * nothing, but only where the renderer actually transforms the source.
+   *
+   * Editing swaps the authored source into the node, so for markup the renderer
+   * rewrites -- TeX above all -- ending an edit without a change would otherwise
+   * leave a literal `$E=mc^2$` on the slide until an unrelated redraw. Plain
+   * text renders to itself, and there the existing node is kept: replacing it
+   * needlessly would discard the editing state the caller just settled.
+   */
+  private restoreRenderedForm(el: SlideElement, body: HTMLElement): void {
+    const node = this.slideLayer.querySelector<HTMLElement>(
+      `[data-element-id="${CSS.escape(el.id)}"]`,
+    );
+    if (!node) return;
+    const fresh = renderElement(el, { resolveSrc: (src) => window.api.assetUrl(src) });
+    const rendered = fresh.querySelector<HTMLElement>('.text-content');
+    if (!rendered || rendered.innerHTML === body.innerHTML) return;
+    node.replaceWith(fresh);
   }
 
   /** True while a text element is being edited, so callers can defer redraws. */
@@ -1942,23 +1954,29 @@ export class EditorCanvas {
 
       clearPending(drop.id);
       this.store.commit((d) => {
+        // Every element still holding this upload's placeholder src, not just
+        // the one that was dropped. Duplicating (or copy-pasting) an element
+        // mid-upload clones the `pending:` src under a fresh id, and resolving
+        // by id alone left the copy a placeholder for good -- saved into the
+        // deck, so it stayed broken after a reload too.
         for (const slide of d.slides) {
-          const el = slide.elements.find((x) => x.id === drop.id);
-          if (!el || (el.type !== 'image' && el.type !== 'video')) continue;
-          el.src = asset.src;
-          // If the box is untouched and the real dimensions differ from the
-          // local guess (a PDF, or an undecodable codec), refit it in place.
-          if (el.w === drop.w && el.h === drop.h && asset.width && asset.height) {
-            const maxW = d.canvas.w * 0.6;
-            const scale = Math.min(1, maxW / asset.width);
-            const w = Math.round(asset.width * scale);
-            const h = Math.round(asset.height * scale);
-            el.x = Math.round(el.x + (el.w - w) / 2);
-            el.y = Math.round(el.y + (el.h - h) / 2);
-            el.w = w;
-            el.h = h;
+          for (const el of slide.elements) {
+            if (el.type !== 'image' && el.type !== 'video') continue;
+            if (pendingToken(el.src) !== drop.id) continue;
+            el.src = asset.src;
+            // If the box is untouched and the real dimensions differ from the
+            // local guess (a PDF, or an undecodable codec), refit it in place.
+            if (el.w === drop.w && el.h === drop.h && asset.width && asset.height) {
+              const maxW = d.canvas.w * 0.6;
+              const scale = Math.min(1, maxW / asset.width);
+              const w = Math.round(asset.width * scale);
+              const h = Math.round(asset.height * scale);
+              el.x = Math.round(el.x + (el.w - w) / 2);
+              el.y = Math.round(el.y + (el.h - h) / 2);
+              el.w = w;
+              el.h = h;
+            }
           }
-          return;
         }
       });
     } catch (err) {

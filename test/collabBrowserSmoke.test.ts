@@ -188,25 +188,28 @@ describe.skipIf(!electronBinary)('standalone collaboration browser', () => {
     })()`);
     expect(presentClicked).toBe(true);
 
-    const presentationTarget = await findTarget(
-      browser.debugPort,
-      (target) => target.url.includes('/present.html') && target.url.includes(`deck=${DECK_ID}`),
-      browser.log,
-    );
-    presentation = await Cdp.connect(presentationTarget.webSocketDebuggerUrl!);
-    const presented = await eventually(async () => presentation!.evaluate<{
+    // Presenting mounts the present view in a same-origin iframe over the
+    // editor rather than opening a second window: fullscreen is only granted
+    // from a live user gesture, and a gesture does not carry into a popup. An
+    // iframe is not a separate DevTools page target, so the presentation is
+    // read through the editor's own document.
+    const presented = await eventually(async () => editor!.evaluate<{
       marker: boolean;
       imageLoaded: boolean;
       background: string;
-    }>(`(() => {
-      const image = document.querySelector('[data-element-id="browser-smoke-image"] img');
+    } | null>(`(() => {
+      const frame = document.querySelector('iframe[src*="present.html"]');
+      const doc = frame?.contentDocument;
+      const slide = doc?.querySelector('.slide');
+      if (!doc || !slide) return null;
+      const image = doc.querySelector('[data-element-id="browser-smoke-image"] img');
       return {
-        marker: document.body.textContent?.includes(${JSON.stringify(TEXT_MARKER)}) === true,
+        marker: doc.body.textContent?.includes(${JSON.stringify(TEXT_MARKER)}) === true,
         imageLoaded: image?.complete === true && image.naturalWidth > 0,
-        background: getComputedStyle(document.querySelector('.slide')).backgroundColor
+        background: frame.contentWindow.getComputedStyle(slide).backgroundColor
       };
     })()`), 'live presentation did not paint the synchronized deck', (value) => (
-      value.marker && value.imageLoaded && value.background === THEME_MARKER
+      value !== null && value.marker && value.imageLoaded && value.background === THEME_MARKER
     ));
     expect(presented).toEqual({ marker: true, imageLoaded: true, background: THEME_MARKER });
 

@@ -135,10 +135,40 @@ const UpdateDeckOperation = z.object({
  * (name, background, layout, timeline, …) can merge alongside concurrent
  * element edits on the same slide instead of stomping them via replaceSlide.
  */
+/**
+ * The non-element fields of a slide, each optional: an omitted field means
+ * "leave as it is", not "reset".
+ *
+ * Sending the whole blob whenever any one field changed made every property
+ * edit a full overwrite, so a peer editing the speaker notes silently deleted
+ * a build animation another peer had just authored on the same slide (and the
+ * other way round). A field-wise patch merges instead of stomping.
+ *
+ * A full blob is still a valid patch, so senders that predate this keep working.
+ * `.partial()` alone is not enough: zod applies a field's `.default()` when the
+ * key is absent, which would turn "unchanged" back into "reset", so the
+ * defaulted fields are restated without their defaults.
+ */
+const SlidePropertiesPatch = SlideSchema.omit({ elements: true }).partial().extend({
+  id: SlideSchema.shape.id,
+  name: SlideSchema.shape.name.removeDefault().optional(),
+  background: SlideSchema.shape.background.removeDefault().optional(),
+  notes: SlideSchema.shape.notes.removeDefault().optional(),
+  timeline: SlideSchema.shape.timeline.removeDefault().optional(),
+});
+
+export type SlidePropertiesPatchValue = z.infer<typeof SlidePropertiesPatch>;
+
 const SetSlidePropertiesOperation = z.object({
   op: z.literal('setSlideProperties'),
   slideId: z.string(),
-  slide: SlideSchema.omit({ elements: true }),
+  slide: SlidePropertiesPatch,
+  /**
+   * Optional fields to remove. A patch says nothing about a key it omits, so
+   * clearing one -- un-skipping a slide, dropping a layout preset or the last
+   * comment -- has to be stated rather than implied by absence.
+   */
+  clear: z.array(z.string()).optional(),
 });
 
 export const AgentOperationSchema = z.discriminatedUnion('op', [
@@ -276,7 +306,15 @@ function applyOperation(deck: Deck, operation: AgentOperation): void {
       if (operation.slide.id !== operation.slideId) {
         throw new Error(`Slide properties id must remain ${operation.slideId}`);
       }
-      deck.slides[at] = { ...structuredClone(operation.slide), elements: deck.slides[at].elements };
+      deck.slides[at] = {
+        ...deck.slides[at],
+        ...structuredClone(operation.slide),
+        elements: deck.slides[at].elements,
+      };
+      for (const key of operation.clear ?? []) {
+        if (key === 'id' || key === 'elements') continue;
+        delete (deck.slides[at] as Record<string, unknown>)[key];
+      }
       return;
     }
   }

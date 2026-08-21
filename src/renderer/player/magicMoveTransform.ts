@@ -84,7 +84,9 @@ export function magicMoveTransforms(
   const anchors = isText && text
     ? textAnchors(from as TextElement, to as TextElement, text)
     : { source: centerOf(from), target: centerOf(to) };
-  const shift = foldAnchor(anchors, centerOf(to), scaleX, scaleY);
+  const shift = foldAnchor(
+    anchors, centerOf(from), centerOf(to), scaleX, scaleY, sourceRotation(from),
+  );
   // A source-side authored transform stands in for the rotation the renderer
   // would have skipped (`style.transform` overrides `rot` in the render), and
   // sits between the translate and the scale so it acts in the source's own
@@ -133,25 +135,59 @@ function textAnchors(
 }
 
 /**
- * The translate that makes `anchors.target` land on `anchors.source` when the
- * scale is applied about `center` instead of about the anchor.
+ * The translate that puts the target's anchor where the source's anchor is
+ * actually painted, given that the scale is applied about the target's centre.
  *
- * Scaling about the centre and translating by this is identical to scaling
- * about the anchor: with origin C the transform list maps p to
- * C + d + R(S(p - C)), and requiring the anchor A to map to A_s gives
- * d = (A_s - A) + (1 - S)(A - C) — independent of the rotation R, so it holds
- * for rotated movers and authored transforms too.
+ * With transform-origin C_t the list `translate(d) R scale(S)` maps p to
+ * C_t + d + R S (p - C_t), and the source anchor is painted at
+ * C_s + R (A_s - C_s) because the source slide drew it rotated too. Equating
+ * the two and solving gives
+ *
+ *   d = (C_s - C_t) + R [ (A_s - C_s) - S (A_t - C_t) ]
+ *
+ * The rotation only drops out when the bracket vanishes -- which it does for
+ * centre anchors, and for ink boxes that sit identically inside both boxes.
+ * Folding the anchor as if R were always absent left a residual of
+ * (I - R)[S(A_t - C_t) - (A_s - C_s)], so a rotated text pair whose ink sits
+ * differently inside its box than the target's does started from the wrong
+ * place and flew into position.
  */
 function foldAnchor(
   anchors: { source: Point; target: Point },
-  center: Point,
+  sourceCenter: Point,
+  targetCenter: Point,
   scaleX: number,
   scaleY: number,
+  radians = 0,
 ): Point {
-  return {
-    x: anchors.source.x - anchors.target.x + (1 - scaleX) * (anchors.target.x - center.x),
-    y: anchors.source.y - anchors.target.y + (1 - scaleY) * (anchors.target.y - center.y),
+  const offset = {
+    x: (anchors.source.x - sourceCenter.x) - scaleX * (anchors.target.x - targetCenter.x),
+    y: (anchors.source.y - sourceCenter.y) - scaleY * (anchors.target.y - targetCenter.y),
   };
+  const cos = Math.cos(radians);
+  const sin = Math.sin(radians);
+  const rotated = radians
+    ? { x: offset.x * cos - offset.y * sin, y: offset.x * sin + offset.y * cos }
+    : offset;
+  return {
+    x: sourceCenter.x - targetCenter.x + rotated.x,
+    y: sourceCenter.y - targetCenter.y + rotated.y,
+  };
+}
+
+/**
+ * The rotation the source side applies, in radians, or 0 when it cannot be
+ * determined. An authored `style.transform` overrides `rot` in the render; a
+ * plain rotate() is read back, anything more elaborate is left to the
+ * unrotated fold rather than guessed at.
+ */
+function sourceRotation(el: SlideElement): number {
+  const authored = el.style.transform;
+  if (authored !== undefined) {
+    const match = /^\s*rotate\(\s*(-?[\d.]+)deg\s*\)\s*$/.exec(authored);
+    return match ? (Number.parseFloat(match[1]) * Math.PI) / 180 : 0;
+  }
+  return el.rot ? (el.rot * Math.PI) / 180 : 0;
 }
 
 function anchorOf(rect: Rect, ax: number, ay: number): Point {

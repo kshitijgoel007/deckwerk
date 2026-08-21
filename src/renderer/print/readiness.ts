@@ -95,6 +95,11 @@ export async function waitForPdfPage(
   const images = deepImages(page);
   await Promise.all(images.map(freezeAnimatedImage));
   await Promise.all(images.map(settleImage));
+  // A plugin-rendered <embed> (a PDF used as an image) never paints into
+  // printed output, and waiting on it is all this layer can do about that; at
+  // least the wait means a slow plugin cannot also cost the page its images.
+  await Promise.all([...page.querySelectorAll<HTMLEmbedElement>('embed')].map((embed) =>
+    Promise.race([eventOrTimeout(embed, 'load'), eventOrTimeout(embed, 'error')])));
   await Promise.all([...page.querySelectorAll<HTMLVideoElement>('video')].map((video) => {
     const id = video.closest<HTMLElement>('[data-element-id]')?.dataset.elementId;
     const element = slide.elements.find((candidate) => candidate.id === id);

@@ -37,7 +37,7 @@ function hint(): HTMLElement {
 }
 
 function goFullscreen(): void {
-  if (document.fullscreenElement) return;
+  if (embedded || document.fullscreenElement) return;
   document.documentElement.requestFullscreen().then(() => {
     awaitingFullscreenGesture = false;
     hint().remove();
@@ -68,6 +68,14 @@ if (!deckId) {
 }
 const startSlide = Math.max(0, Number(params.get('slide') ?? '1') - 1);
 const agentViewer = params.get('agent') === '1';
+// Embedded: the editor tab mounted us in an iframe it already fullscreened, so
+// fullscreen is somebody else's job and exiting means telling the parent.
+const embedded = params.get('embed') === '1' && window.parent !== window;
+
+function exitPresentation(): void {
+  if (embedded) window.parent.postMessage({ type: 'present-exit' }, location.origin);
+  else window.close();
+}
 
 const themeTag = document.createElement('style');
 document.head.appendChild(themeTag);
@@ -105,17 +113,19 @@ const bridge = new CollabBridge(wsUrl, name ? `${name} (presenting)` : 'Presenti
       player.goToSlide(startSlide);
       readiness.painting();
       if (!agentViewer) {
-        bindPresentKeys(window, player, { onExit: () => window.close() });
+        bindPresentKeys(window, player, { onExit: exitPresentation });
         // A click advances, like a presenter remote; double-click toggles fullscreen.
         window.addEventListener('click', () => {
           if (consumeFullscreenGesture()) return;
           player?.next();
         });
         window.addEventListener('dblclick', () => {
-          if (document.fullscreenElement) void document.exitFullscreen();
+          if (embedded) exitPresentation();
+          else if (document.fullscreenElement) void document.exitFullscreen();
           else void document.documentElement.requestFullscreen();
         });
         goFullscreen();
+        window.focus();
       }
     } else {
       replaceDeck(welcome.deck);

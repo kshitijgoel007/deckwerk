@@ -210,6 +210,34 @@ export class EditorStore {
     this.emit();
   }
 
+  /**
+   * Re-baseline on the server's deck after a reconnect.
+   *
+   * A dropped WebSocket is not a new document. Reloading through `load` reset
+   * the restorable revision log, both undo stacks and the element selection, so
+   * a momentary network blip destroyed every revision the History panel held
+   * even though the document had not changed. The log and the selection survive
+   * here; the undo stacks deliberately do not, because a reconnect abandons the
+   * unconfirmed transactions those inverses were computed against, and replaying
+   * them would apply edits to a base the server never saw.
+   */
+  resyncRemote(deck: Deck, dir: string): void {
+    const anchor = this.cursorAnchor();
+    const next = parseDeck(deck);
+    this.undoStack = [];
+    this.redoStack = [];
+    shareUnchangedSlides(this.state.deck, next);
+    this.state = { ...this.state, dir, deck: next, dirty: false };
+    this.restoreCursor(anchor);
+    // Selection is by stable id, so drop only ids the new deck no longer has.
+    const live = new Set(this.state.deck.slides.flatMap((slide) => slide.elements.map((e) => e.id)));
+    this.state = {
+      ...this.state,
+      selection: new Set([...this.state.selection].filter((id) => live.has(id))),
+    };
+    this.emit();
+  }
+
   /** The slide the user is looking at, named by id rather than by position. */
   private cursorAnchor(): string | null {
     return this.state.deck.slides[this.state.slideIndex]?.id ?? null;

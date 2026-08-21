@@ -49,6 +49,7 @@ import { TimelinePanel } from './timelinePanel.js';
 import { WelcomeScreen } from './welcomeScreen.js';
 import { CollabBridge } from '../collab/collabBridge.js';
 import { PresenceOverlay } from '../collab/presenceOverlay.js';
+import { setRenderInvariantChecks } from './renderInvariants.js';
 
 /**
  * Editor shell: wires the panels to one store, owns the toolbar, the keyboard
@@ -71,6 +72,10 @@ store.onHistoryChange = (history) => {
 };
 const initialView = decodeEditorView(new URLSearchParams(location.search).get('view'));
 let initialViewPending = initialView !== null;
+// Development builds verify after every in-place patch that the canvas DOM
+// still matches a fresh render of the deck, and report any property the two
+// paths disagree about. See renderInvariants.ts.
+setRenderInvariantChecks(import.meta.env.DEV);
 const canvas = new EditorCanvas(el('canvas'), store);
 const inspector = new Inspector(el('inspector'), store);
 new TimelinePanel(el('timeline'), store);

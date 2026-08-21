@@ -36,6 +36,8 @@ import { createSharedAgentApi, type SharedAgentBrowserApi } from './sharedAgentA
 import { openEndCollaborationPopover } from './endCollaborationPopover.js';
 import { decodeEditorView, restoreEditorView } from '@shared/editorView.js';
 import { AgentChatPanel } from '../editor/agentChatPanel.js';
+import { startPresenting } from './presentOverlay.js';
+import { setRenderInvariantChecks } from '../editor/renderInvariants.js';
 
 /**
  * Browser collaboration shell: the same canvas, rail, inspector, theme
@@ -136,6 +138,10 @@ if (!deckId) {
 installNetApi({ deckId, saveTheme: (css) => bridge.sendTheme(css) });
 
 const store = new EditorStore(emptyDeck('Connecting…'));
+// Development builds verify after every in-place patch that the canvas DOM
+// still matches a fresh render of the deck, and report any property the two
+// paths disagree about. See renderInvariants.ts.
+setRenderInvariantChecks(import.meta.env.DEV);
 const canvas = new EditorCanvas(el('canvas'), store);
 // Peers should watch each other type, not just see the result on blur.
 canvas.liveTextSync = true;
@@ -171,6 +177,8 @@ el('themePanel').appendChild(themePanel.element);
 el('themePanel').classList.add('theme-panel');
 
 let connectionState = 'connecting…';
+/** Whether a welcome has already been handled, i.e. later ones are reconnects. */
+let welcomed = false;
 
 const wsUrl = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws?deck=${encodeURIComponent(deckId)}`;
 const bridge = new CollabBridge(wsUrl, userName() || undefined, {
@@ -179,7 +187,11 @@ const bridge = new CollabBridge(wsUrl, userName() || undefined, {
     setIdSuffix(welcome.clientId.slice(0, 4));
     setAgentName(welcome.self.name);
     connectionState = `connected as ${welcome.self.name}`;
-    store.load(welcome.deck, `(collab) ${deckId}`, { keepView: true });
+    // The first welcome opens the document; every later one is a reconnect of
+    // the same session, where the revision log and the selection must survive.
+    if (welcomed) store.resyncRemote(welcome.deck, `(collab) ${deckId}`);
+    else store.load(welcome.deck, `(collab) ${deckId}`, { keepView: true });
+    welcomed = true;
     if (initialViewPending) {
       restoreEditorView(store, initialView);
       initialViewPending = false;
@@ -423,21 +435,7 @@ function buildToolbar(): void {
   }
   right.append(
     barButton('Present', () => {
-      const slideIndex = store.get().slideIndex;
-      // A chromeless window the size of the screen, like Google Slides: the
-      // present view then asks for real fullscreen as soon as it loads.
-      const features = [
-        'popup=yes',
-        `width=${screen.availWidth}`,
-        `height=${screen.availHeight}`,
-        'left=0',
-        'top=0',
-      ].join(',');
-      window.open(
-        `present.html?deck=${encodeURIComponent(deckId!)}&slide=${slideIndex + 1}`,
-        'slide-editor-present',
-        features,
-      );
+      startPresenting(deckId!, store.get().slideIndex);
     }, 'primary'),
   );
 

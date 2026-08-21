@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs';
-import { copyFile, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { dirname, join, relative, resolve } from 'node:path';
 import type { Deck } from '@shared/deck.js';
 import { loadTheme } from './deckStore.js';
 
@@ -84,16 +84,29 @@ async function copyAssets(
 ): Promise<void> {
   if (wanted.size === 0) return;
 
-  const srcAssets = join(deckDir, 'assets');
-  const destAssets = join(outDir, 'assets');
-  await mkdir(destAssets, { recursive: true });
+  await mkdir(join(outDir, 'assets'), { recursive: true });
 
-  const available = new Set(await readdir(srcAssets).catch(() => []));
   for (const rel of wanted) {
-    const name = rel.split('/').pop();
-    if (name) beforeCopy?.(name);
-    if (name && available.has(name)) {
-      await copyFile(join(srcAssets, name), join(destAssets, name));
+    beforeCopy?.(rel.split('/').pop() ?? rel);
+    // Copy to the same relative path the deck refers to. Flattening to the
+    // basename and looking it up in a non-recursive listing of `assets/` meant
+    // anything in a subfolder -- `assets/figures/plot.png`, which every other
+    // path in the app loads happily -- was skipped without a word, and would
+    // have landed under a name the exported deck does not reference anyway.
+    const from = resolve(deckDir, rel);
+    // Never follow a reference out of the deck folder.
+    const within = relative(resolve(deckDir), from);
+    if (within.startsWith('..') || within === '') {
+      afterCopy?.();
+      continue;
+    }
+    const to = join(outDir, within);
+    try {
+      await mkdir(dirname(to), { recursive: true });
+      await copyFile(from, to);
+    } catch {
+      // A reference to a file that is not there is the deck's problem to show,
+      // not a reason to abandon the export.
     }
     afterCopy?.();
   }

@@ -29,15 +29,8 @@ export { fitAutoTextElement };
 /** Build the `<div class="slide">` for a slide, with elements absolutely placed. */
 export function renderSlide(slide: Slide, opts: RenderOptions): HTMLElement {
   const root = document.createElement('div');
-  root.className = `slide layout-${slide.layout ?? 'freeform'}`;
   root.dataset.slideId = slide.id;
-
-  if (slide.background.color) root.style.background = slide.background.color;
-  if (slide.background.image) {
-    root.style.backgroundImage = `url("${opts.resolveSrc(slide.background.image)}")`;
-    root.style.backgroundSize = 'cover';
-    root.style.backgroundPosition = 'center';
-  }
+  applySlideRootStyles(root, slide, opts);
 
   // Sort by z so paint order is explicit rather than relying on array order;
   // a stable sort keeps array order as the tie-breaker.
@@ -45,6 +38,148 @@ export function renderSlide(slide: Slide, opts: RenderOptions): HTMLElement {
     root.appendChild(renderElement(el, opts));
   }
   return root;
+}
+
+/**
+ * The child of an element wrapper that holds its content, as opposed to the
+ * decorations `renderElement` puts around it: the media border overlay and the
+ * SVG filter definitions backing a visual effect.
+ *
+ * Needed because the content node is not always the tag itself. Cropped media
+ * is a positioning wrapper containing the `<img>`/`<video>`, and properties that
+ * belong on the body -- a corner radius, a circular mask -- belong on that
+ * wrapper. Reaching for the first `img, video` *descendant* instead put the
+ * radius on the inner tag, where the crop wrapper's own box then clipped it
+ * square: a rounded or circular crop stayed rectangular after any in-place
+ * edit, and matched only after a rebuild.
+ */
+export function elementBody(node: HTMLElement): HTMLElement | SVGElement | null {
+  for (const child of node.children) {
+    if (child.classList.contains('media-border-overlay')) continue;
+    // Effect definitions are inert <svg><filter> holders, never the content.
+    if (child.tagName.toLowerCase() === 'svg' && child.querySelector('filter')) continue;
+    return child as HTMLElement | SVGElement;
+  }
+  return null;
+}
+
+/**
+ * Write a video element's playback flags onto a `<video>` node.
+ *
+ * Shared with the editor's patch path, which keeps the existing `<video>` for a
+ * non-structural change -- rebuilding it would reload the clip and lose the
+ * playhead. Before this was shared, the patch path mirrored `controls` alone, so
+ * toggling Mute or Loop in the inspector updated the deck while the video on the
+ * canvas kept playing under its old flags until the slide was rebuilt.
+ */
+export function applyVideoPlaybackState(
+  video: HTMLVideoElement,
+  el: Extract<SlideElement, { type: 'video' }>,
+  opts: RenderOptions,
+): void {
+  // Chromium refuses unmuted autoplay without a user gesture, so an unmuted
+  // autoplaying video would silently never start. Muting is the only way the
+  // default actually plays; sound is opt-in per element.
+  video.muted = el.muted;
+  video.controls = el.controls;
+  // Native looping always restarts at zero, which would ignore the trim. The
+  // player's runtime loops start -> end instead, so the flag stays off whenever
+  // an in- or out-point is set.
+  video.loop = el.loop && el.start <= 0 && el.end === null;
+  if (el.poster) video.poster = opts.resolveSrc(el.poster);
+  else video.removeAttribute('poster');
+}
+
+/**
+ * Write the fit and crop geometry of a media element onto the inner `<img>` or
+ * `<video>` tag.
+ *
+ * Shared for the same reason as the playback flags: these live on the media tag
+ * rather than the wrapper, so the editor's in-place patch has to reach through
+ * to them, and `object-position` in particular was applied only when the node
+ * was first built -- nudging a cover-cropped image's focal point did nothing
+ * until the slide was rebuilt.
+ */
+export function applyMediaFitStyles(
+  node: HTMLElement,
+  el: Extract<SlideElement, { type: 'image' | 'video' }>,
+): void {
+  const body = elementBody(node);
+  if (!body) return;
+  const tag = /^(img|video|embed)$/.test(body.tagName.toLowerCase())
+    ? (body as HTMLElement)
+    : body.querySelector<HTMLElement>('img, video, embed');
+  if (!tag) return;
+
+  if (el.sourceBox) {
+    // Cropped: the element box is a window onto a larger frame, so the media is
+    // positioned in the window's coordinates and always fills its own box.
+    tag.style.position = 'absolute';
+    tag.style.objectFit = 'fill';
+    tag.style.left = `${el.sourceBox.x}px`;
+    tag.style.top = `${el.sourceBox.y}px`;
+    tag.style.width = `${el.sourceBox.w}px`;
+    tag.style.height = `${el.sourceBox.h}px`;
+    return;
+  }
+
+  tag.style.width = '100%';
+  tag.style.height = '100%';
+  tag.style.objectFit = el.fit;
+  const position = el.style['object-position'];
+  if (position) tag.style.objectPosition = position;
+  else tag.style.removeProperty('object-position');
+}
+
+/**
+ * Rebuild a shape's SVG for its current size.
+ *
+ * A shape's geometry lives in its `viewBox` and in its child primitive's own
+ * width/height, not in the wrapper's CSS box, so resizing the wrapper alone
+ * left the drawing at its original dimensions. The editor patches wrappers in
+ * place for a resize -- rebuilding the slide would recreate every `<video>` --
+ * which meant dragging a shape's handle moved its bounds while the rectangle
+ * inside kept its old size. The SVG holds no state worth preserving, so the
+ * cheapest correct patch is to build it again.
+ */
+export function syncShapeBody(
+  node: HTMLElement,
+  el: Extract<SlideElement, { type: 'shape' }>,
+): void {
+  const body = elementBody(node);
+  if (!body || body.tagName.toLowerCase() !== 'svg') return;
+  const next = renderShape(el);
+  // Preserve any effect filter applied to the body it replaces.
+  const filter = (body as SVGElement).style.filter;
+  if (filter) next.style.filter = filter;
+  body.replaceWith(next);
+}
+
+/**
+ * Write the slide root's layout class and background onto a node.
+ *
+ * Shared with the editor's patch path, which keeps the existing root when a
+ * change does not alter the element structure. Before this was shared, that
+ * path updated the layout class but not the background, so changing a slide's
+ * background colour left the canvas untouched until the slide was rebuilt.
+ */
+export function applySlideRootStyles(
+  root: HTMLElement,
+  slide: Slide,
+  opts: RenderOptions,
+): void {
+  root.className = `slide layout-${slide.layout ?? 'freeform'}`;
+  if (slide.background.color) root.style.background = slide.background.color;
+  else root.style.removeProperty('background');
+  if (slide.background.image) {
+    root.style.backgroundImage = `url("${opts.resolveSrc(slide.background.image)}")`;
+    root.style.backgroundSize = 'cover';
+    root.style.backgroundPosition = 'center';
+  } else {
+    root.style.removeProperty('background-image');
+    root.style.removeProperty('background-size');
+    root.style.removeProperty('background-position');
+  }
 }
 
 /** Build the positioned wrapper for one element and fill in its type-specific body. */
@@ -57,18 +192,7 @@ export function renderElement(
   node.dataset.elementId = el.id;
   node.dataset.elementType = el.type;
 
-  const s = node.style;
-  s.position = 'absolute';
-  s.left = `${el.x}px`;
-  s.top = `${el.y}px`;
-  s.width = `${el.w}px`;
-  s.height = `${el.h}px`;
-  s.opacity = String(el.opacity);
-  if (el.rot) s.transform = `rotate(${el.rot}deg)`;
-  for (const [k, v] of Object.entries(el.style)) {
-    if (typedPropertyOwnsCss(el, k)) continue;
-    s.setProperty(k, v);
-  }
+  applyElementBoxStyles(node, el);
 
   const body = renderBody(el, opts);
   if (
@@ -82,21 +206,138 @@ export function renderElement(
 
   node.appendChild(body);
   if (el.type === 'image' || el.type === 'video') syncMediaFrame(node, el, body);
-  if (el.type === 'text' && el.paragraphSpacing !== undefined) {
+  applyTextRenderState(node, el);
+  return node;
+}
+
+/**
+ * Write the wrapper box -- geometry, opacity, rotation and the element's own
+ * CSS -- onto a node.
+ *
+ * Shared with the editor rather than private to `renderElement`, because the
+ * editor patches existing nodes in place for non-structural changes instead of
+ * rebuilding the slide (rebuilding recreates every `<video>` and makes clips
+ * flicker on each edit). When the patch path kept its own copy of these rules,
+ * any property added to one side and not the other updated the deck without
+ * ever changing the pixels -- visible only once something forced a rebuild.
+ * One function, called by both paths, removes that whole failure mode.
+ *
+ * `previous` is the element as it was last rendered, when known: keys it had
+ * and this one does not must be cleared from a reused node.
+ */
+export function applyElementBoxStyles(
+  node: HTMLElement,
+  el: SlideElement,
+  previous?: SlideElement,
+): void {
+  const s = node.style;
+  if (previous) {
+    for (const key of Object.keys(previous.style)) {
+      if (!(key in el.style) || typedPropertyOwnsCss(el, key)) s.removeProperty(key);
+    }
+  }
+  s.position = 'absolute';
+  s.left = `${el.x}px`;
+  s.top = `${el.y}px`;
+  s.width = `${el.w}px`;
+  s.height = `${el.h}px`;
+  s.opacity = String(el.opacity);
+  s.transform = el.rot ? `rotate(${el.rot}deg)` : '';
+  for (const [k, v] of Object.entries(el.style)) {
+    if (typedPropertyOwnsCss(el, k)) {
+      s.removeProperty(k);
+      continue;
+    }
+    s.setProperty(k, v);
+  }
+}
+
+/**
+ * Write the text-specific render state -- the fit and wrapping flags on the
+ * wrapper, alignment on the body, and the styles mirrored onto the content
+ * node -- onto an already-built node. A no-op for every other element type.
+ *
+ * Called after the body exists, since autofit measures it. Shared with the
+ * editor's patch path for the reason given on `applyElementBoxStyles`: text
+ * alignment used to be mirrored only by `renderElement`, so choosing an
+ * alignment updated the deck and left the pixels alone until the slide was
+ * rebuilt.
+ */
+export function applyTextRenderState(
+  node: HTMLElement,
+  el: SlideElement,
+  previous?: SlideElement,
+): void {
+  if (el.type !== 'text') return;
+
+  if (el.paragraphSpacing !== undefined) {
     node.dataset.paragraphSpacing = String(el.paragraphSpacing);
-    s.setProperty('--paragraph-spacing', `${el.paragraphSpacing}px`);
+    node.style.setProperty('--paragraph-spacing', `${el.paragraphSpacing}px`);
+  } else {
+    delete node.dataset.paragraphSpacing;
+    node.style.removeProperty('--paragraph-spacing');
   }
-  if (el.type === 'text' && el.noWrap) {
-    node.dataset.noWrap = 'true';
-    if (el.noWrapMode === 'condense') node.dataset.fitMode = 'condense';
+
+  if (el.noWrap) node.dataset.noWrap = 'true';
+  else delete node.dataset.noWrap;
+  if (el.noWrap && el.noWrapMode === 'condense') node.dataset.fitMode = 'condense';
+  else delete node.dataset.fitMode;
+
+  const body = node.querySelector<HTMLElement>('.text-body');
+  if (body) {
+    body.style.textAlign = el.align;
+    body.style.display = 'flex';
+    body.style.flexDirection = 'column';
+    body.style.justifyContent =
+      el.valign === 'top' ? 'flex-start' : el.valign === 'bottom' ? 'flex-end' : 'center';
+    body.style.width = '100%';
+    body.style.height = '100%';
   }
+
+  // Element inline styles sit on the wrapper and reach the text only by
+  // inheritance; a theme rule targeting .text-content directly would beat them.
+  // Mirror them here so the element's own style always wins.
+  const content = node.querySelector<HTMLElement>('.text-content');
+  if (content) {
+    content.style.width = '100%';
+    for (const property of MIRRORED_TEXT_STYLE_PROPERTIES) {
+      const value = el.style[property];
+      if (value !== undefined) content.style.setProperty(property, value);
+      else content.style.removeProperty(property);
+    }
+    // Keys the last render wrote and this one does not must be cleared, or the
+    // old declaration keeps winning. Gradient text is the case that bites:
+    // clipped-text markup leaves `-webkit-text-fill-color: transparent` behind,
+    // so picking a solid colour afterwards left the glyphs invisible until the
+    // slide was rebuilt.
+    if (previous?.type === 'text') {
+      for (const property of Object.keys(previous.contentStyle ?? {})) {
+        if (!(property in (el.contentStyle ?? {}))) content.style.removeProperty(property);
+      }
+    }
+    for (const [property, value] of Object.entries(el.contentStyle ?? {})) {
+      content.style.setProperty(property, value);
+    }
+  }
+
   // noWrap implies the fit: with soft wrapping off, shrinking is the only way
   // an overlong line stays inside the box.
-  if (el.type === 'text' && (el.autoFit || el.noWrap)) {
+  if (el.autoFit || el.noWrap) {
     node.dataset.autoFit = 'true';
     scheduleAutoFit(node);
+  } else {
+    delete node.dataset.autoFit;
+    // Everything a fit pass writes has to come off together. Only the font size
+    // used to be cleared, so turning no-wrap off left the condense mode's
+    // horizontal squeeze on the text: it re-wrapped while staying distorted.
+    if (content) {
+      content.style.removeProperty('font-size');
+      content.style.removeProperty('transform');
+      content.style.removeProperty('transform-origin');
+      delete content.dataset.fittedScaleX;
+      delete content.dataset.fittedFontSize;
+    }
   }
-  return node;
 }
 
 /**
@@ -182,7 +423,7 @@ export function syncMediaFrame(
   // The radius goes on the media node itself as well as on the wrapper: a
   // <video> gets its own compositing layer, which an ancestor's overflow clip
   // does not always constrain consistently.
-  const mediaBody = body ?? node.querySelector<HTMLElement>('img, video, embed, .pending-asset');
+  const mediaBody = body ?? elementBody(node);
   if (mediaBody) {
     if (radius) mediaBody.style.borderRadius = radius;
     else mediaBody.style.removeProperty('border-radius');
@@ -333,35 +574,15 @@ export function scheduleAutoFit(node: HTMLElement): void {
 function renderBody(el: SlideElement, opts: RenderOptions): HTMLElement | SVGElement {
   switch (el.type) {
     case 'text': {
+      // Structure only: alignment and the mirrored content styles are written
+      // by `applyTextRenderState`, which the editor's patch path shares.
       const div = document.createElement('div');
       div.className = 'text-body';
-      div.style.textAlign = el.align;
-      div.style.display = 'flex';
-      div.style.flexDirection = 'column';
-      div.style.justifyContent =
-        el.valign === 'top'
-          ? 'flex-start'
-          : el.valign === 'bottom'
-            ? 'flex-end'
-            : 'center';
-      div.style.width = '100%';
-      div.style.height = '100%';
       // Keep vertical alignment on the outer flex box, but put all authored
       // markup inside one flow container. Otherwise every KaTeX inline span
       // becomes its own flex item and is forced onto a separate line.
       const content = document.createElement('div');
       content.className = 'text-content';
-      content.style.width = '100%';
-      // Element inline styles sit on the wrapper and reach the text only by
-      // inheritance; a theme rule targeting .text-content directly would beat
-      // them. Mirror them here so the element's own style always wins.
-      for (const property of MIRRORED_TEXT_STYLE_PROPERTIES) {
-        const value = el.style[property];
-        if (value !== undefined) content.style.setProperty(property, value);
-      }
-      for (const [property, value] of Object.entries(el.contentStyle ?? {})) {
-        content.style.setProperty(property, value);
-      }
       // KaTeX auto-render does not exclude escaped delimiter characters before
       // pairing `$...$`. Protect literal dollars, render, then restore them.
       const escapedDollar = '\uE000';
@@ -447,15 +668,20 @@ function renderBody(el: SlideElement, opts: RenderOptions): HTMLElement | SVGEle
         body.style.width = '100%';
         body.style.height = '100%';
         body.innerHTML = el.html;
-        for (const media of body.querySelectorAll<HTMLElement>('[src], [poster]')) {
-          for (const attribute of ['src', 'poster']) {
-            const value = media.getAttribute(attribute);
-            if (value && !/^(?:[a-z]+:|\/)/i.test(value)) media.setAttribute(attribute, opts.resolveSrc(value));
-          }
-        }
+        resolveHtmlAssetRefs(body, opts.resolveSrc);
         root.append(style, body);
       } else {
         div.innerHTML = el.html;
+        // Deck-relative references need resolving whether or not the region is
+        // sandboxed: without this they resolve against the host page, so an
+        // unsandboxed html element's images were simply missing everywhere the
+        // host page is not the deck folder (the app, and every export).
+        resolveHtmlAssetRefs(div, opts.resolveSrc);
+        if (el.css) {
+          const style = document.createElement('style');
+          style.textContent = rewriteCssAssetUrls(el.css, opts.resolveSrc);
+          div.prepend(style);
+        }
       }
       return div;
     }
@@ -467,6 +693,21 @@ function renderBody(el: SlideElement, opts: RenderOptions): HTMLElement | SVGEle
       div.className = 'unsupported-body';
       div.textContent = el.note || el.originalType;
       return div;
+    }
+  }
+}
+
+/**
+ * Point every deck-relative `src`/`poster` in a subtree at the host's resolved
+ * URL, leaving absolute, data and blob references alone.
+ */
+function resolveHtmlAssetRefs(root: HTMLElement, resolveSrc: (src: string) => string): void {
+  for (const media of root.querySelectorAll<HTMLElement>('[src], [poster]')) {
+    for (const attribute of ['src', 'poster']) {
+      const value = media.getAttribute(attribute);
+      if (value && !/^(?:[a-z]+:|\/)/i.test(value)) {
+        media.setAttribute(attribute, resolveSrc(value));
+      }
     }
   }
 }
@@ -515,20 +756,9 @@ function renderVideo(
   if (isPendingSrc(el.src)) return renderPendingPlaceholder(el.src);
   const video = document.createElement('video');
   video.src = opts.resolveSrc(el.src);
-  video.loop = el.loop;
-  // Chromium refuses unmuted autoplay without a user gesture, so an unmuted
-  // autoplaying video would silently never start. Muting is the only way the
-  // default actually plays; sound is opt-in per element.
-  video.muted = el.muted;
-  video.controls = el.controls;
   video.playsInline = true;
   video.preload = 'auto';
-  if (el.poster) video.poster = opts.resolveSrc(el.poster);
-
-  // Native looping always restarts at zero, which would ignore the trim. The
-  // player's runtime loops start -> end instead, so the attribute stays off
-  // whenever an in-point is set.
-  video.loop = el.loop && el.start <= 0 && el.end === null;
+  applyVideoPlaybackState(video, el, opts);
 
   // Autoplay is driven by the timeline runtime, not the `autoplay` attribute,
   // so that reveal-then-play ordering stays under our control.

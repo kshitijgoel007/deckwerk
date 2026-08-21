@@ -213,8 +213,13 @@ export class CollabBridge {
         this.seq = message.seq;
         this.shadow = message.deck;
         // A reconnect abandons unconfirmed work: the server state wins, the
-        // same contract as an external rewrite.
+        // same contract as an external rewrite. That makes the server's deck a
+        // new base, so the inverses queued against the discarded optimistic one
+        // must go with it -- replaying them would apply edits the server never
+        // saw, exactly as the `deck` resync below guards against.
         this.pending = [];
+        this.undoStack = [];
+        this.redoStack = [];
         this.hooks.onCleanChange(true);
         this.hooks.onWelcome(message);
         return;
