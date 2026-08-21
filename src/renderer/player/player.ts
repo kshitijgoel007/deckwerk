@@ -136,10 +136,18 @@ export class Player {
     // the same position — paints nothing until its decoder produces a frame,
     // which shows as a white flash at the slide switch. The live element keeps
     // its decoded frame, so the picture never drops out.
-    const carry = new Map<string, HTMLVideoElement>();
+    // Keyed by file, but a *queue* per file: a deck routinely shows the same
+    // clip in several elements at once, and one live element can only continue
+    // in one of them. Handing it to every slot in turn would move it out of
+    // each one as the next claimed it, leaving empty wrappers whose border
+    // overlays still paint — a video that reads as having gone transparent.
+    const carry = new Map<string, HTMLVideoElement[]>();
     for (const video of this.stage.querySelectorAll('video')) {
       if (!video.paused && video.currentTime > 0) {
-        carry.set(video.getAttribute('src') ?? '', video);
+        const src = video.getAttribute('src') ?? '';
+        const queue = carry.get(src);
+        if (queue) queue.push(video);
+        else carry.set(src, [video]);
       }
     }
     const previousNodes = new Map<string, HTMLElement>();
@@ -156,7 +164,9 @@ export class Player {
     this.stage.replaceChildren(rendered);
 
     for (const video of this.stage.querySelectorAll('video')) {
-      const live = carry.get(video.getAttribute('src') ?? '');
+      // Consumed, never merely looked up, so each live element is adopted at
+      // most once and the remaining slots keep their freshly rendered video.
+      const live = carry.get(video.getAttribute('src') ?? '')?.shift();
       if (!live || live === video) continue;
       // The rendered element carries the new slide's presentation (crop
       // offsets, fit, trim-aware loop flag); move all of it onto the live
