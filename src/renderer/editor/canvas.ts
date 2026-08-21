@@ -1572,8 +1572,11 @@ export class EditorCanvas {
       // the element you are typing into).
       e.stopPropagation();
       if (e.key === 'Escape') {
+        // Escape leaves edit mode but keeps what was typed — it is "done
+        // editing", not "undo my edit". Undo is still one keystroke away.
         e.preventDefault();
-        finish(false);
+        finish(true);
+        body.blur();
       } else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
         e.preventDefault();
         finish(true);

@@ -606,16 +606,16 @@ describe('inline text editing', () => {
     expect(canvas.isEditing()).toBe(true);
   });
 
-  it('discards the edit on Escape', () => {
+  it('keeps the edit and leaves edit mode on Escape', () => {
     const { store, canvas, host } = setup();
     canvas.beginTextEdit('text-1');
 
     const body = bodyOf(host, 'text-1');
-    body.innerHTML = 'Should not stick';
+    body.innerHTML = 'Should stick';
     body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
 
     const el = store.slide!.elements.find((e) => e.id === 'text-1')!;
-    expect((el as { html: string }).html).toBe('Original text');
+    expect((el as { html: string }).html).toBe('Should stick');
     expect(canvas.isEditing()).toBe(false);
   });
 
