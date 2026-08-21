@@ -37,6 +37,15 @@ export interface PlayerOptions {
   onCursor?: (cursor: Cursor, steps: number) => void;
 }
 
+/**
+ * How hard to insist that a video the deck wants running is actually running.
+ * Chromium can pause muted, audio-less video the moment it treats the frame as
+ * background; a handful of spaced retries recovers from that without turning a
+ * genuinely hidden tab into a busy loop.
+ */
+const PLAY_RETRY_LIMIT = 12;
+const PLAY_RETRY_DELAY_MS = 400;
+
 export class Player {
   private deck: Deck;
   private container: HTMLElement;
@@ -52,6 +61,13 @@ export class Player {
   private mediaListeners: Array<() => void> = [];
   /** Videos already given a trim watcher, so listeners are not stacked. */
   private trimmed = new Set<string>();
+  /**
+   * Videos the current build state says should be running, and the recovery
+   * bookkeeping for keeping them that way. See `keepPlaying`.
+   */
+  private intendedPlaying = new Set<string>();
+  private playAttempts = new Map<string, number>();
+  private playWatched = new WeakSet<HTMLVideoElement>();
   private resizeObserver: ResizeObserver;
 
   constructor(opts: PlayerOptions) {
@@ -485,13 +501,60 @@ export class Player {
       this.enforceTrim(el, video);
 
       if (state.playing.has(el.id) && state.visible.has(el.id) && !this.blanked) {
-        // A rejected play() is normal (autoplay policy, or the element being
-        // torn down mid-promise) and must not break the rest of the build.
-        void video.play().catch(() => {});
-      } else if (!video.paused) {
-        video.pause();
+        this.keepPlaying(el.id, video);
+      } else {
+        this.intendedPlaying.delete(el.id);
+        this.playAttempts.delete(el.id);
+        if (!video.paused) video.pause();
       }
     }
+  }
+
+  /**
+   * Start a video and keep it started.
+   *
+   * `play()` is not a promise you can ignore. Chromium pauses muted,
+   * audio-less video it decides is "background media ... to save power", which
+   * both rejects the in-flight play() with an AbortError and fires `pause` --
+   * and a deck full of silent, looping clips is exactly that kind of media. The
+   * old code swallowed the rejection, so a slide's videos sat on their first
+   * frame for the whole presentation with nothing left to restart them.
+   *
+   * So intent is recorded and reconciled: whenever a video stops while the
+   * build state still wants it running, it is started again. Retries are capped
+   * and only attempted while the page is actually visible, so a genuinely
+   * hidden tab settles instead of spinning.
+   */
+  private keepPlaying(id: string, video: HTMLVideoElement): void {
+    this.intendedPlaying.add(id);
+    if (!this.playWatched.has(video)) {
+      this.playWatched.add(video);
+      // Resetting on a real start is what stops a long presentation from
+      // exhausting the retry budget on its first hiccup.
+      video.addEventListener('playing', () => this.playAttempts.delete(id));
+      video.addEventListener('pause', () => {
+        if (!this.intendedPlaying.has(id) || this.blanked) return;
+        this.retryPlayback(id, video);
+      });
+    }
+    void video.play().catch(() => {
+      if (!this.intendedPlaying.has(id) || this.blanked) return;
+      this.retryPlayback(id, video);
+    });
+  }
+
+  private retryPlayback(id: string, video: HTMLVideoElement): void {
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+    const attempts = this.playAttempts.get(id) ?? 0;
+    if (attempts >= PLAY_RETRY_LIMIT) return;
+    this.playAttempts.set(id, attempts + 1);
+    const timer = setTimeout(() => {
+      if (!this.intendedPlaying.has(id) || this.blanked || !video.isConnected) return;
+      void video.play().catch(() => {
+        if (this.intendedPlaying.has(id) && !this.blanked) this.retryPlayback(id, video);
+      });
+    }, PLAY_RETRY_DELAY_MS);
+    this.pending.push(timer);
   }
 
   /**

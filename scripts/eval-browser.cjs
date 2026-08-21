@@ -7,6 +7,12 @@ if (!url) throw new Error('usage: electron eval-browser.cjs <url> <debug-port> [
 if (profileDir) app.setPath('userData', profileDir);
 app.commandLine.appendSwitch('remote-debugging-port', port);
 app.commandLine.appendSwitch('remote-allow-origins', '*');
+// A presentation is video wall-to-wall, and these windows are hidden (show:
+// false), which Chromium treats as background: muted, audio-less video gets
+// suspended "to save power". Without this, no test could ever observe a clip
+// actually playing.
+app.commandLine.appendSwitch('disable-background-media-suspend');
+app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 
 let mainWindow;
 app.whenReady().then(async () => {

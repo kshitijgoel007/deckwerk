@@ -113,6 +113,47 @@ describe('player: slide changes', () => {
     expect(stage.querySelector('[data-element-id="v-front"] video')).toBe(live);
   });
 
+  it('restarts a video that something else paused while the build wants it playing', async () => {
+    // Chromium suspends muted, audio-less video it treats as background media
+    // "to save power": it fires `pause` and rejects the in-flight play() with an
+    // AbortError. The player used to swallow that, so a deck of silent figure
+    // animations sat frozen on its first frame with nothing left to restart it.
+    const deck = deckOf({ elements: [video({ id: 'v', autoplay: true })] });
+    const { stage } = mount(deck);
+    const node = stage.querySelector<HTMLVideoElement>('video')!;
+
+    const play = vi.fn(() => Promise.resolve());
+    node.play = play as unknown as HTMLVideoElement['play'];
+    expect(play).not.toHaveBeenCalled();
+
+    // Exactly what Chromium does: pause it out from under us, and say so.
+    Object.defineProperty(node, 'paused', { value: true, configurable: true });
+    node.dispatchEvent(new Event('pause'));
+
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    expect(play, 'the player never tried to resume the clip').toHaveBeenCalled();
+  });
+
+  it('leaves a video alone once the build state stops wanting it', async () => {
+    // The flip side: the reconciler must not fight a deliberate pause, or
+    // stepping past a video would restart it forever.
+    const deck = deckOf(
+      { elements: [video({ id: 'v', autoplay: true })] },
+      { elements: [text('t')] },
+    );
+    const { stage, player } = mount(deck);
+    const node = stage.querySelector<HTMLVideoElement>('video')!;
+    const play = vi.fn(() => Promise.resolve());
+    node.play = play as unknown as HTMLVideoElement['play'];
+
+    player.goToSlide(1); // the video is gone from the stage; intent is dropped
+    Object.defineProperty(node, 'paused', { value: true, configurable: true });
+    node.dispatchEvent(new Event('pause'));
+
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    expect(play).not.toHaveBeenCalled();
+  });
+
   it('does not animate a Magic Move between slides that are not neighbours', () => {
     // The flag describes a slide's relation to the one before it, so jumping
     // from the rail (or stepping backwards) used to animate two slides that
