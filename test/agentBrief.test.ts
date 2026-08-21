@@ -40,6 +40,15 @@ describe('agent clipboard brief', () => {
     expect(AGENT_BRIEF).not.toContain('Never install');
   });
 
+  it('matches an established deck style and asks when visual direction is ambiguous', () => {
+    expect(AGENT_BRIEF).toContain('Treat the existing deck as the default style brief');
+    expect(AGENT_BRIEF).toContain('New slides should feel native to the deck');
+    expect(AGENT_BRIEF).toContain('"Professional" does not mean elaborate');
+    expect(AGENT_BRIEF).toMatch(/If it is not[\s\S]*ask the\s+user one brief question/);
+    expect(AGENT_BRIEF).toMatch(/basic or understated\s+option/);
+    expect(AGENT_BRIEF).toContain('Do not silently choose a more elaborate aesthetic');
+  });
+
   it('uses localhost for desktop agents and the LAN address for people', () => {
     const urls = ['http://127.0.0.1:5800/', 'http://10.0.0.4:5800/'];
     expect(collaborationInviteUrl(urls, 'research deck', true))

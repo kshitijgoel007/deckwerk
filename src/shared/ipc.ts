@@ -14,6 +14,7 @@ export const IPC = {
   deckGet: 'deck:get',
   deckNew: 'deck:new',
   deckSave: 'deck:save',
+  deckSyncSnapshot: 'deck:syncSnapshot',
   deckSaveAs: 'deck:saveAs',
   deckHistoryLoad: 'deckHistory:load',
   deckHistorySave: 'deckHistory:save',
@@ -42,6 +43,7 @@ export const IPC = {
   exportBundle: 'export:bundle',
   exportPdf: 'export:pdf',
   exportPdfReady: 'export:pdfReady',
+  operationProgress: 'operation:progress',
   htmlExport: 'html:export',
   htmlEdit: 'html:edit',
   htmlAdopt: 'html:adopt',
@@ -250,6 +252,16 @@ export interface DeckSession {
   deck: Deck;
 }
 
+/**
+ * Authoritative renderer state while the collaboration server owns disk writes.
+ * Main-process consumers (Present/PDF/web export) read this without becoming a
+ * competing deck.json writer.
+ */
+export interface DeckSessionSnapshot {
+  deck: Deck;
+  themeCss: string;
+}
+
 /** History is returned with its owner so an overlapping deck switch is safe. */
 export interface DeckHistorySession {
   dir: string;
@@ -278,6 +290,16 @@ export interface AssetImportProgress {
   /** 'upload' is browser-only; the desktop app skips straight to processing. */
   phase: 'upload' | 'processing';
   /** 0..1, or null when the phase has no measurable progress. */
+  ratio: number | null;
+}
+
+/** A phase update for a renderer-initiated operation that may take a while. */
+export interface OperationProgress {
+  /** Opaque renderer-generated id, so overlapping operations cannot cross-talk. */
+  id: string;
+  /** Human-readable current work, ideally naming the file being handled. */
+  message: string;
+  /** 0..1 when the operation can measure progress; null for an indeterminate phase. */
   ratio: number | null;
 }
 

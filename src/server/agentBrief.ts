@@ -33,6 +33,24 @@ Do this before every task, including a change to only one object:
 This context pass is mandatory, but it is read-only and compact. It should happen
 once up front rather than being rediscovered after an edit fails.
 
+## Resolve the visual direction before creating slides
+
+Treat the existing deck as the default style brief. When it has a coherent visual
+language, match its typography, palette, spacing, density, composition, imagery,
+diagram treatment, and overall level of ornament unless the user asks for a
+restyle. New slides should feel native to the deck, not like a separate template
+or a sales pitch. "Professional" does not mean elaborate: do not add decorative
+cards, gradients, badges, oversized marketing copy, or other visual flourish just
+to make a slide look designed.
+
+Before creating slides, make sure the intended style is actually constrained by
+either the user's request or clear examples in the existing deck. If it is, proceed
+without asking and follow that direction. If it is not — for example, the deck is
+blank, visually inconsistent, or too sparse to establish a precedent — ask the
+user one brief question about the desired style before authoring. Offer a small
+number of concrete directions when helpful, including a basic or understated
+option. Do not silently choose a more elaborate aesthetic.
+
 ## Choose the smallest editing lane
 
 ### Native edits — existing content and local changes

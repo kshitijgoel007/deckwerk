@@ -99,6 +99,37 @@ tailscale address is among them). Collaborators open the URL in a browser and
 pick a presentation; `?name=Alice` sets the display name, otherwise the client
 asks once and the server falls back to `Guest n`.
 
+### Shared-agent test mode
+
+For demos, the headless server can run one Codex App Server identity that every
+browser participant shares:
+
+```bash
+npm run collab -- path/to/decks --shared-agent
+```
+
+The server machine must have the `codex` executable available. DeckWerk finds
+the copy bundled with ChatGPT on macOS or `codex` on `PATH`; set
+`DECKWERK_CODEX_PATH=/absolute/path/to/codex` to select one explicitly.
+
+Open the printed `http://127.0.0.1:…` URL on the server machine, choose a deck,
+open **Shared Agent**, and sign in with the ChatGPT account that should fund and
+own the demo agent. Login and account switching are accepted only over loopback;
+remote collaborators can use the resulting agent but cannot replace its account.
+
+The credentials live in an isolated Codex home at
+`~/.deckwerk/shared-agent-codex`, not in the normal Codex profile. Override it
+with `--agent-codex-home <dir>` or `DECKWERK_AGENT_CODEX_HOME`; set the visible
+name with `--agent-name "Workshop Agent"`. Every browser participant gets an
+independent conversation for each deck, so **New chat**, Stop, model settings,
+follow-ups, and transcript selection affect only that participant. The browser
+identity survives reloads through local storage; these test-mode conversations
+remain in server memory until the headless server exits.
+
+This is intentionally a trusted-network test mode: all participants share the
+same account and model allowance, even though their conversations are separate.
+Do not expose it to an untrusted network.
+
 ## In the client
 
 - **Open / New** — the toolbar lists every deck on the server, creates new
@@ -110,6 +141,17 @@ asks once and the server falls back to `Guest n`.
   the whole deck folder (`deck.json`, `theme.css`, `assets/`). The server
   flushes the live session first, so the archive is exactly what everyone
   currently sees; unzip it and open the folder in the desktop app.
+- **Save As… → PDF…** — opens a print tab (`print.html?deck=…&mode=…`) that
+  builds the same `.pdf-page` document the desktop exporter renders — one page
+  per slide, or per build stage when "Include each stage of builds" is ticked —
+  at the deck's native pixel canvas, then opens the browser's print dialog:
+  choose "Save as PDF". The headless server is plain Node with no Chromium, so
+  there is no server-side equivalent of the desktop app's `printToPDF`; the
+  page layout is shared with it (`src/renderer/print/pages.ts`) so both
+  produce the same document. The deck comes from `/api/deck`, so the export is
+  the live session. Because the readiness wait needs painted frames and
+  browsers suspend those in a background tab, the tab asks to be brought
+  forward, and offers the pages anyway after 20s rather than hanging.
 - **Present** — opens the real Player in a new browser tab, fed by the same
   WebSocket session: edits made while presenting land on the presentation
   live, exactly like the desktop projector window. Arrow keys/space/click

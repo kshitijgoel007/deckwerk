@@ -9,6 +9,7 @@ import {
   scheduleAutoFit,
   syncMediaFrame,
 } from '../player/render.js';
+import { typedPropertyOwnsCss } from '@shared/nativeCss.js';
 import { expandTimeline } from '@shared/timeline.js';
 import { classifyMediaName, makePendingSrc } from '@shared/media.js';
 import { normalizeParagraphHtml, paragraphUnits } from '@shared/paragraphs.js';
@@ -242,7 +243,8 @@ export class EditorCanvas {
     );
 
     // Videos hold on their first frame while editing: a wall of looping clips
-    // makes the canvas unreadable and burns CPU. Playback is opt-in per video.
+    // makes the canvas unreadable and burns CPU. Playback is opt-in per video,
+    // while native controls remain visible when the element requests them.
     for (const node of this.slideLayer.querySelectorAll<HTMLElement>('[data-element-id]')) {
       const video = node.querySelector('video');
       if (!video) continue;
@@ -253,7 +255,6 @@ export class EditorCanvas {
       badge.setAttribute('aria-label', 'Video');
       node.appendChild(badge);
       video.removeAttribute('autoplay');
-      video.controls = false;
       if (playing.has(node.dataset.elementId!)) void video.play().catch(() => {});
       else video.pause();
     }
@@ -288,6 +289,12 @@ export class EditorCanvas {
 
   /** Reposition and restyle existing nodes for a non-structural change. */
   private applyGeometry(slide: Slide, previous?: Slide): void {
+    // Layout identity lives on the rendered slide root. A preset change usually
+    // keeps the same elements, so it takes this fast path rather than rebuilding
+    // the DOM; keep the root class in sync as well as the element geometry.
+    const rendered = this.slideLayer.querySelector<HTMLElement>(':scope > .slide');
+    if (rendered) rendered.className = `slide layout-${slide.layout ?? 'freeform'}`;
+
     for (const el of slide.elements) {
       const node = this.slideLayer.querySelector<HTMLElement>(
         `[data-element-id="${CSS.escape(el.id)}"]`,
@@ -300,10 +307,14 @@ export class EditorCanvas {
       const before = previous?.elements.find((e) => e.id === el.id);
       if (before) {
         for (const key of Object.keys(before.style)) {
-          if (!(key in el.style)) node.style.removeProperty(key);
+          if (!(key in el.style) || typedPropertyOwnsCss(el, key)) node.style.removeProperty(key);
         }
       }
       for (const [key, value] of Object.entries(el.style)) {
+        if (typedPropertyOwnsCss(el, key)) {
+          node.style.removeProperty(key);
+          continue;
+        }
         node.style.setProperty(key, value);
       }
       // Inheritable text properties are also mirrored onto .text-content
@@ -311,6 +322,15 @@ export class EditorCanvas {
       // content node directly would otherwise override the element's inline
       // style, and colour changes from the inspector would never show.
       if (el.type === 'text') {
+        // Alignment is a typed property, not an entry in el.style, so nothing
+        // above touches it: without this an align change updated the deck but
+        // never the pixels until the slide was rebuilt from scratch.
+        const body = node.querySelector<HTMLElement>('.text-body');
+        if (body) {
+          body.style.textAlign = el.align;
+          body.style.justifyContent =
+            el.valign === 'top' ? 'flex-start' : el.valign === 'bottom' ? 'flex-end' : 'center';
+        }
         const content = node.querySelector<HTMLElement>('.text-content');
         if (content) {
           for (const property of MIRRORED_TEXT_STYLE_PROPERTIES) {
@@ -353,6 +373,10 @@ export class EditorCanvas {
       }
       if (el.type === 'image' || el.type === 'video') {
         syncMediaFrame(node, el);
+      }
+      if (el.type === 'video') {
+        const video = node.querySelector<HTMLVideoElement>('video');
+        if (video) video.controls = el.controls;
       }
 
       if (el.type === 'shape' && el.control) {
@@ -1461,14 +1485,20 @@ export class EditorCanvas {
     body.style.cursor = 'text';
     body.focus();
 
-    // Select everything: double-clicking a placeholder should let you type over
-    // it, which is the common case for a freshly added text box.
-    const range = document.createRange();
-    range.selectNodeContents(body);
     const selection = window.getSelection();
-    selection?.removeAllRanges();
-    selection?.addRange(range);
-    this.textSelectionRange = range.cloneRange();
+    // Select-all is a placeholder affordance, not the default editing state.
+    // Re-selecting all authored text on every entry makes the next keystroke
+    // erase the box. For ordinary content, preserve the browser's caret/word
+    // selection from the double-click instead.
+    if (el.class.includes('placeholder')) {
+      const range = document.createRange();
+      range.selectNodeContents(body);
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+      this.textSelectionRange = range.cloneRange();
+    } else {
+      this.textSelectionRange = null;
+    }
     this.textEditCoalesceKey = `text:${elementId}:${++this.textEditSession}`;
     this.textEditOriginalHtml = el.html;
     this.onTextEditModeChange?.(elementId);
@@ -1507,6 +1537,7 @@ export class EditorCanvas {
       else {
         this.editingId = null;
         this.textSelectionRange = null;
+        window.getSelection()?.removeAllRanges();
         this.onTextEditModeChange?.(null);
         // Escape means discard — including anything live sync already
         // streamed. The revert shares the session's coalesce key, so in the
@@ -1585,6 +1616,10 @@ export class EditorCanvas {
     const html = normalizeParagraphHtml(body.innerHTML);
     body.contentEditable = 'false';
     node!.classList.remove('editing');
+    // contenteditable selections survive blur in Chromium. Clear that native
+    // highlight when edit mode ends; the object selection outline remains the
+    // sole blue selection affordance outside editing.
+    window.getSelection()?.removeAllRanges();
 
     const coalesceKey = this.textEditCoalesceKey ?? undefined;
     const originalHtml = this.textEditOriginalHtml;

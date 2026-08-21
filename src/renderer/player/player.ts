@@ -11,7 +11,13 @@ import {
 } from '@shared/timeline.js';
 import { applyStageScale, fitAutoTextElement, renderSlide } from './render.js';
 import { applyStaticSlideState } from './staticState.js';
-import { essentialMagicMovePairs, explicitMagicMovePairs, unchangedMagicMovePairs } from '@shared/magicMove.js';
+import {
+  essentialMagicMovePairs,
+  explicitMagicMovePairs,
+  unchangedMagicMovePairs,
+  type MagicMovePair,
+} from '@shared/magicMove.js';
+import { magicMoveTransforms, type Rect, type TextLayout } from './magicMoveTransform.js';
 
 /**
  * The runtime that owns navigation and turns timeline entries into DOM and
@@ -241,42 +247,20 @@ export class Player {
       ];
     };
 
+    // Text is positioned from what the DOM actually laid out, so measure both
+    // slides' glyphs before any transform is written.
+    const textLayouts = measureTextLayouts(targetSlide, pairs, previousNodes);
+
     for (const [from, to] of pairs) {
       const node = this.stage.querySelector<HTMLElement>(
         `[data-element-id="${CSS.escape(to.id)}"]`,
       );
       if (!node?.animate) continue;
-      // The settled render rotates about the element's center (the CSS
-      // default), so the animation must too: translate between centers and
-      // rotate before scaling, exactly mirroring how the source slide drew
-      // the box. Any other origin makes rotated elements (a thin arrow stored
-      // as a 90°-rotated horizontal box, say) lurch at frame 0 and snap back
-      // when the fill-none animation ends.
-      let dx = from.x + from.w / 2 - (to.x + to.w / 2);
-      let dy = from.y + from.h / 2 - (to.y + to.h / 2);
-      const sx = from.w / to.w;
-      const sy = from.h / to.h;
-      let origin = 'center';
-      let startTransform =
-        `translate(${dx}px, ${dy}px)${from.rot ? ` rotate(${from.rot}deg)` : ''} scale(${sx}, ${sy})`;
-      if (from.type === 'text' && to.type === 'text') {
-        // A text box is a layout container, not the glyphs: its width can
-        // change without the rendered text changing at all, and scaling by the
-        // box ratio would smear the glyphs. Scale by the rendered font size
-        // instead, anchored at the alignment point so the text tracks the spot
-        // it is aligned to within each box.
-        const scale = textFontScale(from, to, previousNodes.get(from.id), node);
-        const ax = { left: 0, center: 0.5, right: 1, justify: 0 }[to.align] ?? 0;
-        const ay = { top: 0, middle: 0.5, bottom: 1 }[to.valign] ?? 0;
-        const axFrom = { left: 0, center: 0.5, right: 1, justify: 0 }[from.align] ?? 0;
-        const ayFrom = { top: 0, middle: 0.5, bottom: 1 }[from.valign] ?? 0;
-        dx = from.x + axFrom * from.w - (to.x + ax * to.w);
-        dy = from.y + ayFrom * from.h - (to.y + ay * to.h);
-        origin = `${ax * 100}% ${ay * 100}%`;
-        startTransform =
-          `translate(${dx}px, ${dy}px) scale(${scale}, ${scale})${from.rot ? ` rotate(${from.rot}deg)` : ''}`;
-      }
-      const finalTransform = to.style.transform ?? (to.rot ? `rotate(${to.rot}deg)` : 'none');
+      const {
+        start: startTransform,
+        final: finalTransform,
+        origin,
+      } = magicMoveTransforms(from, to, textLayouts.get(to.id) ?? null);
       const stacking = stackingFrames(to.id) ?? [];
       // The ease lives on the first keyframe, not the timing options: keyframe
       // easing applies per property segment, so the motion still eases across
@@ -514,7 +498,12 @@ export class Player {
   /** Blank the screen (the `B` key) without losing position. */
   toggleBlank(): boolean {
     this.blanked = !this.blanked;
-    this.stage.style.visibility = this.blanked ? 'hidden' : 'visible';
+    // Element build state writes `visibility: visible` on descendants, which
+    // can override an inherited `visibility: hidden` on the stage. Opacity is
+    // composited for the stage as a whole, so no slide element can punch
+    // through while the audience display is blanked. Keeping the stage laid
+    // out also lets navigation and auto-fit continue while it is blank.
+    this.stage.style.opacity = this.blanked ? '0' : '1';
     for (const video of this.stage.querySelectorAll('video')) {
       if (this.blanked) video.pause();
     }
@@ -533,11 +522,145 @@ export class Player {
 }
 
 /**
- * The visual scale between two renders of a paired text element: the ratio of
- * rendered font sizes, not of box sizes. Auto-fitted text reports the size it
- * actually settled on; otherwise the authored size decides. The target is
- * fitted synchronously here because its scheduled fit only lands on the next
- * frame, after the animation has already read the geometry.
+ * Where the glyphs of every paired text element actually sit, on both slides,
+ * in slide coordinates.
+ *
+ * The deck model cannot answer this. Autofit and condense change the rendered
+ * size, an overlong no-wrap line is pinned to the box's left edge whatever
+ * `align` says, and a box that grew wider does not move its text at all — so a
+ * transform derived from box geometry alone can start a title half its own
+ * width away from where it was, which reads as a fly-in. The source slide's
+ * clones are laid out (hidden, and with their element ids stripped so nothing
+ * else can find them) purely to be measured, then removed.
+ */
+function measureTextLayouts(
+  slide: HTMLElement,
+  pairs: MagicMovePair[],
+  previousNodes: Map<string, HTMLElement>,
+): Map<string, TextLayout> {
+  const layouts = new Map<string, TextLayout>();
+  const scale = slide.offsetWidth > 0
+    ? slide.getBoundingClientRect().width / slide.offsetWidth
+    : 0;
+  const probes: Array<{
+    from: Extract<SlideElement, { type: 'text' }>;
+    to: Extract<SlideElement, { type: 'text' }>;
+    target: HTMLElement;
+    sourceClone: HTMLElement | undefined;
+    probe: HTMLElement | null;
+  }> = [];
+  for (const [from, to] of pairs) {
+    if (from.type !== 'text' || to.type !== 'text') continue;
+    const target = slide.querySelector<HTMLElement>(
+      `[data-element-id="${CSS.escape(to.id)}"]`,
+    );
+    if (!target) continue;
+    // The target's own fit is scheduled for the next frame, after the
+    // animation has already read its geometry; settle it now.
+    if (to.autoFit || to.noWrap) fitAutoTextElement(target);
+    const sourceClone = previousNodes.get(from.id);
+    let probe: HTMLElement | null = null;
+    if (sourceClone && scale > 0) {
+      probe = sourceClone.cloneNode(true) as HTMLElement;
+      delete probe.dataset.elementId;
+      probe.style.visibility = 'hidden';
+      probe.style.pointerEvents = 'none';
+      slide.appendChild(probe);
+    }
+    probes.push({ from, to, target, sourceClone, probe });
+  }
+  // Ink is measured in each element's own untransformed frame: a rotated
+  // element reports a rotated bounding box, and the transform below applies
+  // the source's rotation itself, so measuring through it would count the
+  // rotation twice — which lands the object off its source by the width of
+  // the swing.
+  const restore: Array<() => void> = [];
+  for (const { target, probe } of probes) {
+    for (const node of [target, probe]) {
+      if (!node || !node.style.transform) continue;
+      const previous = node.style.transform;
+      node.style.transform = 'none';
+      restore.push(() => { node.style.transform = previous; });
+    }
+  }
+  // One layout pass for every probe, then one read pass.
+  const origin = scale > 0 ? slide.getBoundingClientRect() : null;
+  for (const { from, to, target, sourceClone, probe } of probes) {
+    const sourceInk = origin ? inkRect(probe, origin, scale) : null;
+    const targetInk = origin ? inkRect(target, origin, scale) : null;
+    const sourceFont = renderedFontSize(probe);
+    const targetFont = renderedFontSize(target);
+    const measured = sourceInk && targetInk && sourceFont > 0 && targetFont > 0;
+    layouts.set(to.id, measured
+      ? {
+        sourceInk,
+        targetInk,
+        fontScale: sourceFont / targetFont,
+        squeeze: condenseScale(probe) / condenseScale(target),
+      }
+      : {
+        sourceInk: null,
+        targetInk: null,
+        fontScale: textFontScale(from, to, sourceClone, target),
+        squeeze: 1,
+      });
+  }
+  for (const undo of restore) undo();
+  for (const { probe } of probes) probe?.remove();
+  return layouts;
+}
+
+/**
+ * The box the rendered glyphs occupy inside an element, in slide coordinates.
+ *
+ * A range over the content reports where the text really is — alignment, wrap,
+ * condense squeeze and KaTeX boxes included — rather than where its container
+ * is. Returns null wherever there is no layout to read (a headless DOM), which
+ * is the signal to fall back to the box-alignment estimate.
+ */
+function inkRect(
+  node: HTMLElement | null | undefined,
+  origin: DOMRect,
+  scale: number,
+): Rect | null {
+  const content = node?.querySelector<HTMLElement>('.text-content');
+  if (!content || typeof document.createRange !== 'function') return null;
+  const range = document.createRange();
+  range.selectNodeContents(content);
+  const rect = range.getBoundingClientRect();
+  range.detach?.();
+  if (!rect || !(rect.width > 0) || !(rect.height > 0)) return null;
+  return {
+    x: (rect.left - origin.left) / scale,
+    y: (rect.top - origin.top) / scale,
+    w: rect.width / scale,
+    h: rect.height / scale,
+  };
+}
+
+/**
+ * The horizontal squeeze a condensed no-wrap line settled on, or 1 for text
+ * that shrank (or never overflowed) instead.
+ */
+function condenseScale(node: HTMLElement | null | undefined): number {
+  const raw = node?.querySelector<HTMLElement>('.text-content')?.dataset.fittedScaleX;
+  const value = raw ? Number.parseFloat(raw) : NaN;
+  return Number.isFinite(value) && value > 0 ? value : 1;
+}
+
+/** The font size the text actually rendered at, theme rules included. */
+function renderedFontSize(node: HTMLElement | null | undefined): number {
+  const content = node?.querySelector<HTMLElement>('.text-content');
+  if (!content || typeof getComputedStyle !== 'function') return 0;
+  const size = Number.parseFloat(getComputedStyle(content).fontSize);
+  return Number.isFinite(size) && size > 0 ? size : 0;
+}
+
+/**
+ * The visual scale between two renders of a paired text element when nothing
+ * could be measured: the ratio of rendered font sizes, not of box sizes.
+ * Auto-fitted text reports the size it actually settled on; otherwise the
+ * authored size decides.
  */
 function textFontScale(
   from: Extract<SlideElement, { type: 'text' }>,
@@ -554,8 +677,7 @@ function textFontScale(
     const value = Number.parseFloat(style['font-size'] ?? '');
     return Number.isFinite(value) && value > 0 ? value : undefined;
   };
-  const toSize = (to.autoFit || to.noWrap ? fitAutoTextElement(targetNode) ?? undefined : undefined)
-    ?? fitted(targetNode) ?? authored(to.style);
+  const toSize = fitted(targetNode) ?? authored(to.style);
   const fromSize = fitted(sourceClone) ?? authored(from.style);
   return fromSize !== undefined && toSize !== undefined && toSize > 0 ? fromSize / toSize : 1;
 }

@@ -9,6 +9,7 @@ import { createDeckWerkButton } from '../editor/aboutDialog.js';
 import { installAgentApi, setAgentName } from './agentApi.js';
 import { CssEditor } from '../editor/cssEditor.js';
 import { createToolbarPicker } from '../editor/exportPicker.js';
+import { showPdfExportDialog } from '../editor/pdfExportDialog.js';
 import { HistoryPanel } from '../editor/historyPanel.js';
 import { createShapeInsertPicker, insertText } from '../editor/elementCreation.js';
 import { Inspector } from '../editor/inspector.js';
@@ -31,8 +32,10 @@ import { createDeckOnServer, importKeynoteToServer, showDeckPicker } from './dec
 import { installNetApi } from './netApi.js';
 import { PresenceOverlay } from './presenceOverlay.js';
 import { installAgentWorkspace } from './agentWorkspace.js';
+import { createSharedAgentApi, type SharedAgentBrowserApi } from './sharedAgentApi.js';
 import { openEndCollaborationPopover } from './endCollaborationPopover.js';
 import { decodeEditorView, restoreEditorView } from '@shared/editorView.js';
+import { AgentChatPanel } from '../editor/agentChatPanel.js';
 
 /**
  * Browser collaboration shell: the same canvas, rail, inspector, theme
@@ -78,9 +81,14 @@ interface ServerConfig {
   hosted: boolean;
   deckId: string | null;
   urls: string[];
+  sharedAgent: null | {
+    enabled: true;
+    name: string;
+    canManageAccount: boolean;
+  };
 }
 
-let serverConfig: ServerConfig = { hosted: false, deckId: null, urls: [] };
+let serverConfig: ServerConfig = { hosted: false, deckId: null, urls: [], sharedAgent: null };
 
 async function fetchServerConfig(): Promise<ServerConfig> {
   try {
@@ -89,7 +97,7 @@ async function fetchServerConfig(): Promise<ServerConfig> {
   } catch {
     // Older server without /api/config; behave like the multi-deck server.
   }
-  return { hosted: false, deckId: null, urls: [] };
+  return { hosted: false, deckId: null, urls: [], sharedAgent: null };
 }
 
 /* --- deck selection -------------------------------------------------------- */
@@ -99,6 +107,9 @@ const initialView = decodeEditorView(new URLSearchParams(location.search).get('v
 let initialViewPending = initialView !== null;
 
 let statusMessage = '';
+let participantName = '';
+let sharedAgentPanel: AgentChatPanel | null = null;
+let sharedAgentBrowserApi: SharedAgentBrowserApi | null = null;
 function setStatusMessage(text: string): void {
   statusMessage = text;
   renderStatus();
@@ -164,6 +175,7 @@ let connectionState = 'connecting…';
 const wsUrl = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws?deck=${encodeURIComponent(deckId)}`;
 const bridge = new CollabBridge(wsUrl, userName() || undefined, {
   onWelcome: (welcome) => {
+    participantName = welcome.self.name;
     setIdSuffix(welcome.clientId.slice(0, 4));
     setAgentName(welcome.self.name);
     connectionState = `connected as ${welcome.self.name}`;
@@ -305,6 +317,27 @@ async function copyText(text: string): Promise<void> {
   if (!ok) throw new Error('copy rejected');
 }
 
+/**
+ * Open the print tab for the live deck.
+ *
+ * The pages are built from `/api/deck`, so the export is whatever every
+ * collaborator currently sees — there is nothing local to flush first.
+ */
+async function exportPdf(): Promise<void> {
+  const choice = await showPdfExportDialog();
+  if (!choice) return;
+  const query = new URLSearchParams({
+    deck: deckId!,
+    mode: choice.includeEachBuildStage ? 'every' : 'final',
+  });
+  const tab = window.open(`./print.html?${query.toString()}`, '_blank');
+  if (!tab) {
+    setStatusMessage('PDF export needs a new tab — allow pop-ups for this site and try again.');
+    return;
+  }
+  setStatusMessage('Preparing the PDF in a new tab…');
+}
+
 function buildToolbar(): void {
   const bar = el('toolbar');
   bar.replaceChildren();
@@ -326,8 +359,10 @@ function buildToolbar(): void {
       ]),
     );
   }
-  // In collaboration the available Save As format is the editable deck
-  // archive; the server flushes the live session before streaming it.
+  // In collaboration the deck archive comes straight off the server (which
+  // flushes the live session before streaming it), while PDF is produced in a
+  // print tab: the headless server has no Chromium of its own, so the
+  // browser's own "Save as PDF" stands in for the desktop app's printToPDF.
   left.append(
     createToolbarPicker('Save As…', [
       {
@@ -339,6 +374,7 @@ function buildToolbar(): void {
           link.click();
         },
       },
+      { label: 'PDF…', action: () => void exportPdf() },
     ], { deckOnly: true }),
   );
 
@@ -351,6 +387,9 @@ function buildToolbar(): void {
 
   const right = document.createElement('div');
   right.className = 'bar-group bar-right';
+  if (serverConfig.sharedAgent?.enabled) {
+    right.append(barButton('Shared Agent', () => sharedAgentPanel?.toggle()));
+  }
   if (serverConfig.hosted) {
     right.append(
       barButton('Copy Invite Link', () => {
@@ -385,9 +424,19 @@ function buildToolbar(): void {
   right.append(
     barButton('Present', () => {
       const slideIndex = store.get().slideIndex;
+      // A chromeless window the size of the screen, like Google Slides: the
+      // present view then asks for real fullscreen as soon as it loads.
+      const features = [
+        'popup=yes',
+        `width=${screen.availWidth}`,
+        `height=${screen.availHeight}`,
+        'left=0',
+        'top=0',
+      ].join(',');
       window.open(
         `present.html?deck=${encodeURIComponent(deckId!)}&slide=${slideIndex + 1}`,
-        '_blank',
+        'slide-editor-present',
+        features,
       );
     }, 'primary'),
   );
@@ -460,6 +509,7 @@ function renderStatus(): void {
     const invite = serverConfig.urls.find((u) => !u.includes('127.0.0.1')) ?? serverConfig.urls[0];
     if (invite) bits.push(`invite: ${invite}`);
   }
+  if (serverConfig.sharedAgent?.enabled) bits.push(`${serverConfig.sharedAgent.name}: shared test mode`);
   // Visible in any screenshot or accessibility read of the page, so an agent
   // that lands here cold finds its onboarding without guessing endpoints.
   bits.push('agents: GET /api/brief · await window.agent.seeComments()');
@@ -470,6 +520,16 @@ function renderStatus(): void {
 // before first paint of the buttons keeps New/Open/Import from flashing in.
 void fetchServerConfig().then((config) => {
   serverConfig = config;
+  if (config.sharedAgent?.enabled && !sharedAgentPanel) {
+    sharedAgentBrowserApi = createSharedAgentApi(deckId!, () => participantName || 'Guest');
+    sharedAgentPanel = new AgentChatPanel({
+      api: sharedAgentBrowserApi.api,
+      currentDeckPath: () => deckId,
+      title: `${config.sharedAgent.name} · test mode`,
+      userRoleLabel: 'Participant',
+      canManageAccount: config.sharedAgent.canManageAccount,
+    });
+  }
   buildToolbar();
   renderStatus();
 });
@@ -480,3 +540,4 @@ bridge.connect();
 
 // Console access for debugging and driving a session from devtools.
 Object.assign(window, { store, canvas, rail, bridge });
+window.addEventListener('beforeunload', () => sharedAgentBrowserApi?.close());

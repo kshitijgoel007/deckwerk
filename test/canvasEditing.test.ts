@@ -303,6 +303,35 @@ describe('inline text editing', () => {
     expect(inspectorHost.textContent).not.toContain('Inline style');
   });
 
+  it('aligns text on the canvas from the inspector alignment buttons', () => {
+    const { store, host: canvasHost } = setup();
+    store.select(['text-1']);
+    const inspectorHost = document.createElement('aside');
+    document.body.appendChild(inspectorHost);
+    new Inspector(inspectorHost, store);
+
+    const buttons = [...inspectorHost.querySelectorAll<HTMLButtonElement>('.align-button')];
+    expect(buttons.map((button) => button.title))
+      .toEqual(['Align left', 'Align centre', 'Align right', 'Justify']);
+    expect(buttons[0].getAttribute('aria-pressed')).toBe('true');
+
+    const body = () => canvasHost.querySelector<HTMLElement>(
+      '[data-element-id="text-1"] .text-body',
+    )!;
+    expect(body().style.textAlign).toBe('left');
+
+    buttons[1].click();
+
+    const el = store.slide!.elements.find((e) => e.id === 'text-1')!;
+    expect((el as { align: string }).align).toBe('center');
+    // The bug: align is a typed property, so the in-place restyle pass never
+    // touched the DOM and the canvas kept showing the old alignment.
+    expect(body().style.textAlign).toBe('center');
+    expect([...inspectorHost.querySelectorAll<HTMLButtonElement>('.align-button')]
+      .map((button) => button.getAttribute('aria-pressed')))
+      .toEqual(['false', 'true', 'false', 'false']);
+  });
+
   it('changes text, shape, image, and video opacity with one live slider edit', () => {
     const { store, host: canvasHost } = setup();
     const shape = insertShape(store, 'rect');
@@ -610,6 +639,78 @@ describe('inline text editing', () => {
     canvas.beginTextEdit('text-1');
     bodyOf(host, 'text-1').dispatchEvent(new FocusEvent('blur'));
     expect(store.canUndo()).toBe(false);
+  });
+
+  it('commits on click-away, clears the native highlight, and safely re-enters editing', () => {
+    const { store, canvas, host } = setup();
+    store.commit((deck) => {
+      deck.slides[0].elements.find((element) => element.id === 'text-1')!
+        .class.push('placeholder');
+    });
+    const stage = host.querySelector<HTMLElement>('.stage')!;
+    stage.getBoundingClientRect = () =>
+      ({ left: 0, top: 0, width: 1920, height: 1080 }) as DOMRect;
+
+    canvas.beginTextEdit('text-1');
+    expect(window.getSelection()?.toString()).toBe('Original text');
+    bodyOf(host, 'text-1').innerHTML = 'Kept after editing';
+
+    // The real click-away path commits on pointerdown before focus/blur settles.
+    host.dispatchEvent(new PointerEvent('pointerdown', {
+      clientX: 1000, clientY: 900, pointerId: 1, bubbles: true,
+    }));
+    host.dispatchEvent(new PointerEvent('pointerup', {
+      clientX: 1000, clientY: 900, pointerId: 1, bubbles: true,
+    }));
+
+    expect(canvas.isEditing()).toBe(false);
+    expect(host.querySelector('.element.editing')).toBeNull();
+    expect(window.getSelection()?.rangeCount).toBe(0);
+    expect(store.get().selection.size).toBe(0);
+    expect(host.querySelector('.sel-box')).toBeNull();
+    expect((store.slide!.elements.find((element) => element.id === 'text-1') as { html: string }).html)
+      .toBe('Kept after editing');
+    expect(store.slide!.elements.find((element) => element.id === 'text-1')!.class)
+      .not.toContain('placeholder');
+
+    host.dispatchEvent(
+      new MouseEvent('dblclick', { clientX: 200, clientY: 150, bubbles: true }),
+    );
+    expect(canvas.isEditing()).toBe(true);
+    expect(bodyOf(host, 'text-1').textContent).toBe('Kept after editing');
+    expect(window.getSelection()?.toString()).not.toBe('Kept after editing');
+  });
+
+  it('selects all only for placeholder text', () => {
+    const { store, canvas, host } = setup();
+    store.commit((deck) => {
+      deck.slides[0].elements.find((element) => element.id === 'text-1')!
+        .class.push('placeholder');
+    });
+
+    canvas.beginTextEdit('text-1');
+    expect(window.getSelection()?.toString()).toBe('Original text');
+    bodyOf(host, 'text-1').dispatchEvent(new FocusEvent('blur'));
+
+    store.commit((deck) => {
+      deck.slides[0].elements[0].class = [];
+    });
+    canvas.beginTextEdit('text-1');
+    expect(window.getSelection()?.toString()).not.toBe('Original text');
+  });
+
+  it('leaves the object selected, but not editing, when focus moves outside the canvas', () => {
+    const { store, canvas, host } = setup();
+    store.select(['text-1']);
+    canvas.beginTextEdit('text-1');
+    bodyOf(host, 'text-1').dispatchEvent(new FocusEvent('blur'));
+
+    expect(canvas.isEditing()).toBe(false);
+    expect(bodyOf(host, 'text-1').contentEditable).toBe('false');
+    expect(host.querySelector('.element.editing')).toBeNull();
+    expect(window.getSelection()?.rangeCount).toBe(0);
+    expect([...store.get().selection]).toEqual(['text-1']);
+    expect(host.querySelector('.sel-box')).not.toBeNull();
   });
 
   it('starts editing when the text is double-clicked', () => {
@@ -1451,6 +1552,12 @@ describe('object creation and manipulation', () => {
     expect([...store.get().selection]).toEqual([ellipse.id]);
   });
 
+  it('inserts an ellipse as a circle', () => {
+    const { store } = setup();
+    const ellipse = insertShape(store, 'ellipse');
+    expect(ellipse.w).toBe(ellipse.h);
+  });
+
   it('releases shape-picker focus so Backspace can delete a new arrow immediately', () => {
     const { store } = setup();
     const wrap = createShapeInsertPicker(store);
@@ -1479,7 +1586,40 @@ describe('object creation and manipulation', () => {
     const text = insertText(store);
     expect(text.z).toBe(3);
     expect(text.html).toBe('New text');
+    expect(text.class).toContain('placeholder');
     expect([...store.get().selection]).toEqual([text.id]);
+  });
+
+  it('updates the rendered layout class when switching presets on the fast path', () => {
+    const styles = document.createElement('style');
+    styles.textContent = readFileSync(
+      join(process.cwd(), 'src/renderer/player/player.css'),
+      'utf8',
+    );
+    document.head.appendChild(styles);
+    const { store, host } = setup();
+    store.commit((deck) => applySlideLayout(deck.slides[0], 'standard'));
+    expect(host.querySelector('.slide')?.classList).toContain('layout-standard');
+    const body = store.slide!.elements.find((element) => element.class.includes('role-body'))!;
+    store.commit((deck) => {
+      const target = deck.slides[0].elements.find((element) => element.id === body.id)!;
+      if (target.type === 'text') target.html = 'Edited body survives preset changes';
+    });
+
+    store.commit((deck) => applySlideLayout(deck.slides[0], 'title'));
+
+    expect(host.querySelector('.slide')?.classList).toContain('layout-title');
+    // Title-only is deliberately non-destructive: its body comes back when the
+    // user switches to Title + body again, but the title layout hides it now.
+    const hidden = host.querySelector<HTMLElement>(`[data-element-id="${body.id}"]`)!;
+    expect(getComputedStyle(hidden).display).toBe('none');
+
+    store.commit((deck) => applySlideLayout(deck.slides[0], 'standard'));
+    expect(host.querySelector('.slide')?.classList).toContain('layout-standard');
+    const restored = host.querySelector<HTMLElement>(`[data-element-id="${body.id}"]`)!;
+    expect(getComputedStyle(restored).display).not.toBe('none');
+    expect(restored.textContent).toBe('Edited body survives preset changes');
+    styles.remove();
   });
 
   it('moves an inserted ellipse by dragging it', () => {
@@ -1728,6 +1868,46 @@ describe('inline styles reach the DOM', () => {
     });
     const node = host.querySelector<HTMLElement>('[data-element-id="text-1"]')!;
     expect(node.style.getPropertyValue('color')).toBe('');
+  });
+
+  it('suppresses stale CSS immediately when typed properties take ownership', () => {
+    const { store, host } = setup();
+    store.select(['video-1']);
+    store.updateSelected((element) => {
+      if (element.type !== 'video') return;
+      element.style = {
+        border: '6px solid red',
+        'border-radius': '50%',
+        filter: 'blur(12px)',
+      };
+    });
+    const videoNode = host.querySelector<HTMLElement>('[data-element-id="video-1"]')!;
+    expect(videoNode.style.borderRadius).toBe('50%');
+    expect(videoNode.style.filter).toBe('blur(12px)');
+
+    store.updateSelected((element) => {
+      if (element.type !== 'video') return;
+      // Deliberately leave the legacy style object intact: the central
+      // precedence rule must protect every live-update path on its own.
+      element.borderWidth = 0;
+      element.borderRadius = 0;
+      element.maskShape = 'rect';
+      element.effects = [];
+    });
+    expect(videoNode.style.border).toBe('');
+    expect(videoNode.style.borderRadius).toBe('');
+    expect(videoNode.style.filter).toBe('');
+
+    store.select(['text-1']);
+    store.updateSelected((element) => {
+      if (element.type === 'text') element.style = { 'white-space': 'nowrap' };
+    });
+    const textNode = host.querySelector<HTMLElement>('[data-element-id="text-1"]')!;
+    expect(textNode.style.whiteSpace).toBe('nowrap');
+    store.updateSelected((element) => {
+      if (element.type === 'text') element.noWrap = false;
+    });
+    expect(textNode.style.whiteSpace).toBe('');
   });
 
   it('applies paragraph spacing on the fast path, even mid text edit', () => {

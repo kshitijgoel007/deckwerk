@@ -84,6 +84,33 @@ describe('Magic Move matching', () => {
       .toEqual([[deck.slides[0].elements[0], deck.slides[1].elements[0]]]);
   });
 
+  it('pairs a duplicated pairing id with the nearest object, not the last one', () => {
+    // Copied authoring HTML can put one pairing id on two objects. Whichever
+    // the map happened to keep would animate from the far side of the slide.
+    const previous = [
+      text('far', 'Duplicated id', 1600),
+      text('near', 'Duplicated id', 20),
+    ];
+    previous[0].magicMoveId = 'dup';
+    previous[1].magicMoveId = 'dup';
+    const target = text('landing', 'Duplicated id', 40);
+    target.magicMoveId = 'dup';
+
+    expect(explicitMagicMovePairs(previous, [target])).toEqual([[previous[1], target]]);
+  });
+
+  it('gives two objects sharing one id a source each rather than one twice', () => {
+    const previous = [text('left', 'Split', 0), text('right', 'Split', 900)];
+    for (const element of previous) element.magicMoveId = 'dup';
+    const targets = [text('to-right', 'Split', 940), text('to-left', 'Split', 60)];
+    for (const element of targets) element.magicMoveId = 'dup';
+
+    expect(explicitMagicMovePairs(previous, targets)).toEqual([
+      [previous[1], targets[0]],
+      [previous[0], targets[1]],
+    ]);
+  });
+
   it('skips objects that are visually identical and therefore never animate', () => {
     const source = [text('a', 'The same title')];
     const target = [text('c', 'The same title')];
@@ -329,9 +356,12 @@ describe('Magic Move matching', () => {
     player.goToSlide(1);
 
     const frames = animate.mock.calls[0][0] as unknown as Keyframe[];
-    // Anchors: centers of the two boxes (x 0 w 300 vs x 600 w 300), scale 80/40.
-    expect(frames[0].transform).toBe('translate(-600px, 0px) scale(2, 2)');
-    expect(frames[0].transformOrigin).toBe('50% 0%');
+    // Anchors: the top-centre of each box (x 0 w 300 vs x 600 w 300), scale
+    // 80/40. The anchor is folded into the translate so the origin stays the
+    // element centre: scaling by 2 about the centre lifts the box top by 40,
+    // and the extra 40 puts it back on the source's top edge.
+    expect(frames[0].transform).toBe('translate(-600px, 40px) scale(2, 2)');
+    expect(frames[0].transformOrigin).toBe('center');
     player.destroy();
   });
 

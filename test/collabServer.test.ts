@@ -8,8 +8,70 @@ import { emptyDeck, parseDeck, type Deck } from '../src/shared/deck.js';
 import { saveDeck } from '../src/main/deckStore.js';
 import { COLLAB_PROTOCOL_VERSION, ServerMessageSchema, type ClientMessage, type ServerMessage } from '../src/shared/collab.js';
 import { startCollabServer, type RunningCollabServer } from '../src/server/collabServer.js';
+import type { AgentChatState } from '../src/shared/ipc.js';
+import type { SharedAgentRuntimeLike } from '../src/server/sharedAgent.js';
 
 const DECK_ID = 'demo';
+
+const sharedAgentState = (deckPath: string, over: Partial<AgentChatState> = {}): AgentChatState => ({
+  deckPath,
+  chatId: 'shared-thread-1',
+  conversations: [],
+  connection: 'ready',
+  auth: 'signedIn',
+  accountLabel: 'owner@example.com',
+  models: [],
+  selectedModel: null,
+  selectedReasoningEffort: null,
+  fastMode: false,
+  scratchpad: null,
+  busy: false,
+  activity: null,
+  messages: [],
+  error: null,
+  ...over,
+});
+
+class FakeSharedAgent implements SharedAgentRuntimeLike {
+  readonly name = 'Workshop Agent';
+  sent: Array<{ participantId: string; text: string }> = [];
+  prompts: string[] = [];
+  private listeners = new Set<(state: AgentChatState, participantId: string) => void>();
+
+  async getState(deckPath: string, participantId: string) {
+    return sharedAgentState(deckPath, { chatId: `thread-${participantId}` });
+  }
+  async send(deckPath: string, participantId: string, request: { text: string }, prepare: () => Promise<string>) {
+    this.sent.push({ participantId, text: request.text });
+    this.prompts.push(await prepare());
+    const state = sharedAgentState(deckPath, {
+      chatId: `thread-${participantId}`,
+      messages: [{ id: 'user-1', role: 'user', text: request.text }],
+    });
+    for (const listener of this.listeners) listener(state, participantId);
+    return state;
+  }
+  async login(deckPath: string, participantId: string) {
+    void participantId;
+    return { state: sharedAgentState(deckPath), authUrl: 'https://chatgpt.com/auth/demo' };
+  }
+  async switchAccount(deckPath: string, participantId: string) { return this.login(deckPath, participantId); }
+  async setModel(deckPath: string) { return sharedAgentState(deckPath); }
+  async setReasoningEffort(deckPath: string) { return sharedAgentState(deckPath); }
+  async setFastMode(deckPath: string) { return sharedAgentState(deckPath); }
+  async interrupt(deckPath: string) { return sharedAgentState(deckPath); }
+  async reset(deckPath: string) { return sharedAgentState(deckPath); }
+  async select(deckPath: string) { return sharedAgentState(deckPath); }
+  setScratchpad(deckPath: string, _participantId: string, scratchpad: AgentChatState['scratchpad']) {
+    return sharedAgentState(deckPath, { scratchpad });
+  }
+  chatId(_deckPath: string, participantId: string) { return `thread-${participantId}`; }
+  subscribe(listener: (state: AgentChatState, participantId: string) => void) {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+  close() { this.listeners.clear(); }
+}
 
 class TestClient {
   private socket: WebSocket;
@@ -114,6 +176,61 @@ describe('collab server', () => {
     const decks = await (await fetch(`http://127.0.0.1:${server.port}/api/decks`)).json() as
       Array<{ id: string; title: string; slides: number }>;
     expect(decks).toEqual([{ id: DECK_ID, title: 'Collab', slides: 2 }]);
+  });
+
+  it('exposes one server-owned shared agent to every browser in opt-in test mode', async () => {
+    await server.close();
+    const sharedAgent = new FakeSharedAgent();
+    server = await startCollabServer({
+      rootDir,
+      port: 0,
+      host: '127.0.0.1',
+      sharedAgent,
+    });
+    const base = `http://127.0.0.1:${server.port}`;
+    const participant = 'participant-alice';
+
+    const config = await (await fetch(`${base}/api/config`)).json() as any;
+    expect(config.sharedAgent).toEqual({
+      enabled: true,
+      name: 'Workshop Agent',
+      canManageAccount: true,
+    });
+
+    const state = await (await fetch(
+      `${base}/api/shared-agent/state?deck=${DECK_ID}&participant=${participant}`,
+    )).json() as AgentChatState;
+    expect(state).toMatchObject({
+      deckPath: DECK_ID,
+      chatId: 'thread-participant-alice',
+      accountLabel: 'owner@example.com',
+    });
+    const bob = await (await fetch(
+      `${base}/api/shared-agent/state?deck=${DECK_ID}&participant=participant-bob`,
+    )).json() as AgentChatState;
+    expect(bob.chatId).toBe('thread-participant-bob');
+
+    const sent = await fetch(`${base}/api/shared-agent/send?deck=${DECK_ID}&participant=${participant}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ author: 'Alice', text: 'Polish slide two' }),
+    });
+    expect(sent.status).toBe(200);
+    expect(sharedAgent.sent).toEqual([{
+      participantId: participant,
+      text: '[Request from Alice]\nPolish slide two',
+    }]);
+    expect(sharedAgent.prompts[0]).toContain(
+      `http://127.0.0.1:${server.port}/?deck=${DECK_ID}&agent=1&agentSession=${participant}`,
+    );
+
+    const login = await fetch(`${base}/api/shared-agent/login?deck=${DECK_ID}&participant=${participant}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    });
+    expect(login.status).toBe(200);
+    expect(await login.json()).toMatchObject({ authUrl: 'https://chatgpt.com/auth/demo' });
   });
 
   it('returns a compact deck-wide transcript in reading order with neighboring slides', async () => {

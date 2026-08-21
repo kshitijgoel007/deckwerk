@@ -4,6 +4,14 @@ import type { Deck, MediaEffect, Slide, SlideElement, TimelineEntry } from './de
 import { fitAutoTextElement } from './autoFit.js';
 import { KATEX_AUTO_RENDER_JS, KATEX_CSS, KATEX_JS } from './katexInline.js';
 import { shapeSvg } from './shapeSvg.js';
+import {
+  cssMediaBorder,
+  cssMediaRadius,
+  cssNoWrap,
+  cssVisualEffects,
+  isMediaBorderPaint,
+  typedPropertyOwnsCss,
+} from './nativeCss.js';
 
 /**
  * HTML as the authoring surface for slides.
@@ -528,7 +536,7 @@ export function elementFromNode(
     const common = {
       ...mediaBase,
       ...mediaDecoration,
-      ...effectsFromNode(node),
+      ...effectsFromNode(node, mediaBase.style),
       src: node.dataset.src ?? '',
       fit: fitFrom(node.dataset.fit),
       sourceBox: cropFrom(node.dataset.crop),
@@ -536,7 +544,6 @@ export function elementFromNode(
     if (node.dataset.element === 'image') {
       return {
         ...common, type: 'image', alt: node.dataset.alt ?? '',
-        ...(node.dataset.maskShape === 'circle' ? { maskShape: 'circle' as const } : {}),
       };
     }
     const [start, end] = trimFrom(node.dataset.trim);
@@ -550,7 +557,6 @@ export function elementFromNode(
       start,
       end,
       poster: node.dataset.poster ?? null,
-      ...(node.dataset.maskShape === 'circle' ? { maskShape: 'circle' as const } : {}),
     };
   }
 
@@ -558,13 +564,12 @@ export function elementFromNode(
     return {
       ...mediaBase,
       ...mediaDecoration,
-      ...effectsFromNode(node),
+      ...effectsFromNode(node, mediaBase.style),
       type: 'image',
       src: node.attrs.src ?? '',
       fit: fitFrom(node.attrs.objectFit),
       alt: node.attrs.alt ?? '',
       sourceBox: cropFrom(node.dataset.crop),
-      ...(node.dataset.maskShape === 'circle' ? { maskShape: 'circle' as const } : {}),
     };
   }
 
@@ -573,7 +578,7 @@ export function elementFromNode(
     return {
       ...mediaBase,
       ...mediaDecoration,
-      ...effectsFromNode(node),
+      ...effectsFromNode(node, mediaBase.style),
       type: 'video',
       src: withoutFragment(node.attrs.src ?? ''),
       fit: fitFrom(node.attrs.objectFit),
@@ -585,15 +590,20 @@ export function elementFromNode(
       end,
       poster: node.attrs.poster ?? null,
       sourceBox: cropFrom(node.dataset.crop),
-      ...(node.dataset.maskShape === 'circle' ? { maskShape: 'circle' as const } : {}),
     };
   }
 
   if (node.dataset.element === 'shape') {
     const [cx, cy] = numbers(node.dataset.control);
     const [pw, ph] = numbers(node.dataset.pathSize);
+    const shapeBase = { ...base, style: { ...base.style } };
+    for (const property of Object.keys(shapeBase.style)) {
+      if (isMediaBorderPaint(property) || property === 'border-radius') {
+        delete shapeBase.style[property];
+      }
+    }
     return {
-      ...base,
+      ...shapeBase,
       type: 'shape',
       shape: shapeKind(node.dataset.shape),
       fill: node.dataset.fill ?? null,
@@ -634,9 +644,10 @@ export function elementFromNode(
     };
   }
 
+  const noWrap = noWrapFromNode(node, base.style);
   return {
     ...base,
-    ...effectsFromNode(node),
+    ...effectsFromNode(node, base.style),
     type: 'text',
     // A list is one text object; without its own tag around the items the
     // markers and indentation would not survive into the deck.
@@ -647,7 +658,7 @@ export function elementFromNode(
     valign: valignFrom(node.dataset.valign),
     ...(contentStyle ? { contentStyle } : {}),
     ...(node.dataset.autofit !== undefined ? { autoFit: node.dataset.autofit !== 'false' } : {}),
-    ...(node.dataset.nowrap !== undefined ? { noWrap: node.dataset.nowrap !== 'false' } : {}),
+    ...noWrap,
     ...(node.dataset.fitMode === 'condense' ? { noWrapMode: 'condense' as const } : {}),
     ...(Number.isFinite(Number.parseFloat(node.dataset.paragraphSpacing ?? ''))
       ? { paragraphSpacing: Math.max(0, Number.parseFloat(node.dataset.paragraphSpacing!)) }
@@ -721,10 +732,8 @@ function elementToHtml(element: SlideElement, build?: TimelineEntry): string {
     + ` width:${element.w}px; height:${element.h}px;`
     + (element.rot ? ` transform:rotate(${element.rot}deg);` : '')
     + (element.opacity !== 1 ? ` opacity:${element.opacity};` : '');
-  const typedMediaBorder = (element.type === 'image' || element.type === 'video')
-    && element.borderWidth !== undefined;
   const inline = Object.entries(element.style)
-    .filter(([property]) => !typedMediaBorder || !isMediaBorderPaint(property))
+    .filter(([property]) => !typedPropertyOwnsCss(element, property))
     .map(([property, value]) => ` ${property}:${value};`)
     .join('');
   const attrs = [
@@ -770,7 +779,7 @@ function elementToHtml(element: SlideElement, build?: TimelineEntry): string {
         + `${element.contentStyle && Object.keys(element.contentStyle).length > 0
           ? ` data-content-style="${escape(encodeURIComponent(JSON.stringify(element.contentStyle)))}"` : ''}`
         + `${element.autoFit ? ' data-autofit="true"' : ''}`
-        + `${element.noWrap ? ' data-nowrap="true"' : ''}`
+        + `${element.noWrap !== undefined ? ` data-nowrap="${element.noWrap}"` : ''}`
         + `${element.noWrap && element.noWrapMode === 'condense' ? ' data-fit-mode="condense"' : ''}`
         + `${element.paragraphSpacing !== undefined
           ? ` data-paragraph-spacing="${element.paragraphSpacing}"` : ''}`
@@ -785,7 +794,6 @@ function elementToHtml(element: SlideElement, build?: TimelineEntry): string {
           + ` data-fit="${element.fit}" data-crop="${boxAttr(element.sourceBox)}"`
           + effectsDataAttrs(element)
           + mediaDataAttrs(element)
-          + `${element.maskShape === 'circle' ? ' data-mask-shape="circle"' : ''}`
           + ` ${styleAttr(position, inline, media(element), 'overflow:hidden;')}>`
           + `${notAnObject(croppedMedia('img', element.src, element.sourceBox,
             ` alt="${escape(element.alt)}"`))}</div>`;
@@ -793,7 +801,6 @@ function elementToHtml(element: SlideElement, build?: TimelineEntry): string {
       return `  <img ${attrs} src="${escape(element.src)}" alt="${escape(element.alt)}"`
         + effectsDataAttrs(element)
         + mediaDataAttrs(element)
-        + `${element.maskShape === 'circle' ? ' data-mask-shape="circle"' : ''}`
         + ` ${styleAttr(position, inline, media(element), `object-fit:${element.fit};`)}>`;
     case 'video': {
       const flags = `${element.loop ? ' loop' : ''}${element.muted ? ' muted' : ''}`
@@ -805,7 +812,6 @@ function elementToHtml(element: SlideElement, build?: TimelineEntry): string {
           + ` data-crop="${boxAttr(element.sourceBox)}"`
           + effectsDataAttrs(element)
           + mediaDataAttrs(element)
-          + `${element.maskShape === 'circle' ? ' data-mask-shape="circle"' : ''}`
           + `${element.loop ? ' data-loop="true"' : ''}`
           + `${element.muted ? ' data-muted="true"' : ''}`
           + `${element.autoplay ? ' data-autoplay="true"' : ''}`
@@ -819,7 +825,6 @@ function elementToHtml(element: SlideElement, build?: TimelineEntry): string {
       return `  <video ${attrs} src="${escape(mediaFragment(element))}"${trim}${flags}`
         + effectsDataAttrs(element)
         + mediaDataAttrs(element)
-        + `${element.maskShape === 'circle' ? ' data-mask-shape="circle"' : ''}`
         + `${element.poster ? ` poster="${escape(element.poster)}"` : ''}`
         + ` ${styleAttr(position, inline, media(element), `object-fit:${element.fit};`)}></video>`;
     }
@@ -907,9 +912,9 @@ function media(element: SlideElement): string {
   if (element.type !== 'image' && element.type !== 'video') return '';
   const radius = element.maskShape === 'circle'
     ? '50%'
-    : (element.borderRadius ?? 0) > 0
-      ? `${element.borderRadius}px`
-      : element.style['border-radius'] ?? '';
+    : element.borderRadius !== undefined
+      ? (element.borderRadius > 0 ? `${element.borderRadius}px` : '')
+      : element.maskShape === 'rect' ? '' : element.style['border-radius'] ?? '';
   const border = (element.borderWidth ?? 0) > 0
     ? `outline:${element.borderWidth}px solid ${element.borderColor ?? '#000000'};`
       + ` outline-offset:-${element.borderWidth}px;`
@@ -928,32 +933,62 @@ function media(element: SlideElement): string {
 
 /** Typed media decoration survives an inspect/edit/save HTML round trip. */
 function mediaDataAttrs(element: Extract<SlideElement, { type: 'image' | 'video' }>): string {
-  const border = (element.borderWidth ?? 0) > 0
+  const border = element.borderWidth !== undefined
     ? ` data-border-width="${element.borderWidth}" data-border-color="${escape(element.borderColor ?? '#000000')}"`
     : '';
-  const radius = (element.borderRadius ?? 0) > 0
+  const radius = element.borderRadius !== undefined
     ? ` data-border-radius="${element.borderRadius}"`
     : '';
-  return border + radius;
+  const mask = element.maskShape !== undefined
+    ? ` data-mask-shape="${element.maskShape}"`
+    : '';
+  return border + radius + mask;
 }
 
 function effectsDataAttrs(
   element: Extract<SlideElement, { type: 'text' | 'image' | 'video' }>,
 ): string {
-  if (!element.effects?.length) return '';
+  if (element.effects === undefined) return '';
   return ` data-effects="${escape(encodeURIComponent(JSON.stringify(element.effects)))}"`;
 }
 
-function effectsFromNode(node: MeasuredNode): { effects?: MediaEffect[] } {
-  if (!node.dataset.effects) return {};
-  try {
-    const parsed = MediaEffectSchema.array().safeParse(
-      JSON.parse(decodeURIComponent(node.dataset.effects)),
-    );
-    return parsed.success && parsed.data.length > 0 ? { effects: parsed.data } : {};
-  } catch {
-    return {};
+function effectsFromNode(
+  node: MeasuredNode,
+  style: Record<string, string>,
+): { effects?: MediaEffect[] } {
+  if (node.dataset.effects !== undefined) {
+    try {
+      const parsed = MediaEffectSchema.array().safeParse(
+        JSON.parse(decodeURIComponent(node.dataset.effects)),
+      );
+      if (parsed.success) {
+        // `filter` is generated beside data-effects solely for the editable
+        // HTML preview. Keeping both would apply blur/greyscale twice after a
+        // round trip, once to the wrapper and once to the native media body.
+        delete style.filter;
+        return { effects: parsed.data };
+      }
+    } catch {
+      // Fall through to a representable authored CSS filter, if present.
+    }
   }
+  const effects = cssVisualEffects(style.filter);
+  if (!effects) return {};
+  delete style.filter;
+  return { effects };
+}
+
+function noWrapFromNode(
+  node: MeasuredNode,
+  style: Record<string, string>,
+): { noWrap?: boolean } {
+  if (node.dataset.nowrap !== undefined) {
+    delete style['white-space'];
+    return { noWrap: node.dataset.nowrap !== 'false' };
+  }
+  if (!cssNoWrap(style['white-space'])) return {};
+  delete style['white-space'];
+  return { noWrap: true };
 }
 
 function mediaDecorationFromNode(
@@ -963,14 +998,16 @@ function mediaDecorationFromNode(
   borderColor?: string;
   borderWidth?: number;
   borderRadius?: number;
+  maskShape?: 'rect' | 'circle';
 } {
   const decoration: {
     borderColor?: string;
     borderWidth?: number;
     borderRadius?: number;
+    maskShape?: 'rect' | 'circle';
   } = {};
   const width = Number(node.dataset.borderWidth);
-  if (node.dataset.borderWidth !== undefined && Number.isFinite(width) && width > 0) {
+  if (node.dataset.borderWidth !== undefined && Number.isFinite(width) && width >= 0) {
     decoration.borderWidth = width;
     decoration.borderColor = node.dataset.borderColor ?? '#000000';
     // Exported Agent HTML may carry the same border both as durable typed
@@ -982,19 +1019,36 @@ function mediaDecorationFromNode(
     // The outline in the exported page is generated only to make the
     // authoring preview match the player. It is not a stored media style; the
     // typed fields above are the durable deck representation.
+  } else {
+    const border = cssMediaBorder(style);
+    if (border) {
+      decoration.borderWidth = border.width;
+      decoration.borderColor = border.color;
+      for (const property of Object.keys(style)) {
+        if (isMediaBorderPaint(property)) delete style[property];
+      }
+    }
   }
-  const radius = Number(node.dataset.borderRadius);
-  if (node.dataset.borderRadius !== undefined && Number.isFinite(radius) && radius > 0) {
-    decoration.borderRadius = radius;
+  const typedRadius = Number(node.dataset.borderRadius);
+  if (node.dataset.borderRadius !== undefined && Number.isFinite(typedRadius) && typedRadius >= 0) {
+    decoration.borderRadius = typedRadius;
+    delete style['border-radius'];
+  } else if (node.dataset.maskShape !== 'circle') {
+    // Independent Agent HTML commonly styles a video through a class, e.g.
+    // `video { border-radius:28px }`. Chromium gives that to the compiler as
+    // ordinary CSS, but the editor exposes the typed media field. Promote a
+    // scalar pixel radius so the inspector displays and can edit the value.
+    const cssRadius = cssMediaRadius(style['border-radius']);
+    if (cssRadius) {
+      Object.assign(decoration, cssRadius);
+      delete style['border-radius'];
+    }
+  }
+  if (node.dataset.maskShape === 'circle' || node.dataset.maskShape === 'rect') {
+    decoration.maskShape = node.dataset.maskShape;
     delete style['border-radius'];
   }
-  if (node.dataset.maskShape === 'circle') delete style['border-radius'];
   return decoration;
-}
-
-function isMediaBorderPaint(property: string): boolean {
-  return (property === 'border' || property.startsWith('border-'))
-    && !property.includes('radius');
 }
 
 /**

@@ -25,6 +25,10 @@ export interface AgentChatPanelOptions {
   api: AgentChatApi;
   currentDeckPath: () => string | null;
   onClose?: () => void;
+  title?: string;
+  userRoleLabel?: string;
+  /** Account credentials are server-owner controls in shared demo mode. */
+  canManageAccount?: boolean;
 }
 
 /** A persistent, non-modal chat surface anchored beneath the editor toolbar. */
@@ -75,7 +79,7 @@ export class AgentChatPanel {
     const titleWrap = document.createElement('div');
     const title = document.createElement('h2');
     title.id = 'agent-chat-title';
-    title.textContent = 'Agent';
+    title.textContent = options.title ?? 'Agent';
     this.status = document.createElement('span');
     this.status.className = 'agent-chat-status';
     this.status.textContent = 'Connecting…';
@@ -426,15 +430,24 @@ export class AgentChatPanel {
       ? 'error'
       : state.busy ? 'busy' : state.auth === 'signedIn' ? 'ready' : 'idle';
 
-    this.account.hidden = state.connection !== 'ready' || state.auth !== 'signedOut';
+    this.account.hidden = state.connection !== 'ready';
     if (state.auth === 'signedIn' && state.accountLabel) {
       this.account.hidden = false;
       this.account.replaceChildren();
       const label = document.createElement('span');
       label.textContent = state.accountLabel;
-      this.account.append(label, this.switchAccount);
+      this.account.append(label);
+      if (this.options.canManageAccount !== false) this.account.append(this.switchAccount);
     } else if (state.auth === 'signedOut') {
-      this.account.replaceChildren(this.signIn);
+      if (this.options.canManageAccount !== false) {
+        this.account.replaceChildren(this.signIn);
+      } else {
+        const message = document.createElement('span');
+        message.textContent = 'The server owner needs to sign in on localhost.';
+        this.account.replaceChildren(message);
+      }
+    } else {
+      this.account.hidden = true;
     }
 
     this.renderModels(state);
@@ -577,7 +590,9 @@ export class AgentChatPanel {
         node.className = `agent-chat-message agent-chat-message-${message.role}`;
         node.dataset.messageId = message.id;
         const role = document.createElement('strong');
-        role.textContent = message.role === 'user' ? 'You' : message.role === 'assistant' ? 'Agent' : 'DeckWerk';
+        role.textContent = message.role === 'user'
+          ? this.options.userRoleLabel ?? 'You'
+          : message.role === 'assistant' ? 'Agent' : 'DeckWerk';
         const body = document.createElement('div');
         body.className = 'agent-chat-message-body';
         node.append(role, body);

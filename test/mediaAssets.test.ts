@@ -1,6 +1,9 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from 'vitest';
 import { classifyMedia } from '../src/main/deckStore.js';
+import { emptyDeck } from '../src/shared/deck.js';
+import { Inspector } from '../src/renderer/editor/inspector.js';
+import { EditorStore } from '../src/renderer/editor/store.js';
 import { renderElement, syncMediaFrame } from '../src/renderer/player/render.js';
 
 const base = {
@@ -68,6 +71,79 @@ describe('media assets and borders', () => {
 
     syncMediaFrame(node, { ...element, borderWidth: 0 });
     expect(border.style.border).toBe('');
+  });
+
+  it('lets an explicit zero radius suppress stale CSS-authored rounded corners', () => {
+    const element = {
+      ...base, id: 'video', type: 'video' as const, src: 'assets/video.mp4', fit: 'cover' as const,
+      autoplay: false, loop: false, muted: true, controls: false, start: 0, end: null,
+      poster: null, sourceBox: null, style: { 'border-radius': '24px' },
+    };
+    const node = renderElement(element, { resolveSrc: (src) => src });
+    expect(node.style.borderRadius).toBe('24px');
+
+    syncMediaFrame(node, { ...element, borderRadius: 0 });
+    expect(node.style.borderRadius).toBe('');
+    expect(node.querySelector<HTMLVideoElement>('video')!.style.borderRadius).toBe('');
+  });
+
+  it('lets an explicit rectangular mask suppress a stale CSS circle', () => {
+    const element = {
+      ...base, id: 'image', type: 'image' as const, src: 'assets/image.png', fit: 'cover' as const,
+      alt: '', sourceBox: null, style: { 'border-radius': '50%' },
+    };
+    const node = renderElement(element, { resolveSrc: (src) => src });
+    expect(node.style.borderRadius).toBe('50%');
+
+    syncMediaFrame(node, { ...element, maskShape: 'rect' });
+    expect(node.style.borderRadius).toBe('');
+    expect(node.querySelector<HTMLImageElement>('img')!.style.borderRadius).toBe('');
+  });
+
+  it('lets an explicit empty effect list suppress a stale CSS filter', () => {
+    const node = renderElement({
+      ...base, id: 'image', type: 'image', src: 'assets/image.png', fit: 'cover',
+      alt: '', sourceBox: null, style: { filter: 'blur(18px)' }, effects: [],
+    }, { resolveSrc: (src) => src });
+
+    expect(node.style.filter).toBe('');
+    expect(node.querySelector<HTMLImageElement>('img')!.style.filter).toBe('');
+  });
+
+  it('shows legacy CSS borders and circles in the inspector and can clear them', () => {
+    const deck = emptyDeck('Legacy decoration');
+    deck.slides[0].elements.push({
+      ...base, id: 'image', type: 'image', src: 'assets/image.png', fit: 'cover',
+      alt: '', sourceBox: null,
+      style: { border: '7px solid #ff3366', 'border-radius': '50%' },
+    });
+    const store = new EditorStore(deck, '/tmp/legacy-decoration');
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    new Inspector(host, store);
+    store.select(['image']);
+
+    const sections = [...host.querySelectorAll<HTMLElement>('.insp-option-section')];
+    const masking = sections.find((section) => section.querySelector('h4')?.textContent?.startsWith('Masking'))!;
+    const border = sections.find((section) => section.querySelector('h4')?.textContent === 'Border')!;
+    const circle = masking.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+    const width = border.querySelector<HTMLInputElement>('input[type="number"]')!;
+    expect(circle.checked).toBe(true);
+    expect(width.value).toBe('7');
+
+    circle.checked = false;
+    circle.dispatchEvent(new Event('change', { bubbles: true }));
+    host.querySelector<HTMLElement>('.media-border-options')!
+      .querySelector<HTMLInputElement>('input[type="number"]')!.value = '0';
+    host.querySelector<HTMLElement>('.media-border-options')!
+      .querySelector<HTMLInputElement>('input[type="number"]')!
+      .dispatchEvent(new Event('change', { bubbles: true }));
+
+    const image = store.selectedElements()[0];
+    if (image.type !== 'image') throw new Error('expected image');
+    expect(image.maskShape).toBe('rect');
+    expect(image.borderWidth).toBe(0);
+    expect(image.style).toEqual({});
   });
 
   it('resolves media and CSS assets inside a sandboxed HTML fallback', () => {

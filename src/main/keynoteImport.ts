@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { app } from 'electron';
 import { parseDeck } from '@shared/deck.js';
 import type { ImportReport, KeynoteImportResult } from '@shared/ipc.js';
@@ -44,6 +44,7 @@ function resolveSidecar(): { command: string; args: string[] } | null {
 export async function importKeynote(
   keyPath: string,
   outDir: string,
+  onProgress?: (message: string, ratio: number | null) => void,
 ): Promise<KeynoteImportResult> {
   const sidecar = resolveSidecar();
   if (!sidecar) {
@@ -53,6 +54,7 @@ export async function importKeynote(
     );
   }
 
+  onProgress?.(`Converting ${basename(keyPath)} and extracting its media`, null);
   const { stdout } = await run(sidecar.command, [
     ...sidecar.args,
     keyPath,
@@ -62,6 +64,7 @@ export async function importKeynote(
 
   let payload: { dir: string; report: ImportReport; deck: unknown };
   try {
+    onProgress?.('Validating imported deck.json', null);
     payload = JSON.parse(stdout);
   } catch {
     throw new Error(`Importer returned unreadable output:\n${stdout.slice(0, 500)}`);
@@ -69,11 +72,13 @@ export async function importKeynote(
 
   // Validate here rather than trusting the sidecar: the schema is the contract,
   // and a bad import should fail loudly at the boundary, not later on a slide.
-  return {
+  const result = {
     dir: payload.dir,
     deck: parseDeck(payload.deck),
     report: payload.report,
   };
+  onProgress?.('Keynote conversion complete', 1);
+  return result;
 }
 
 function run(

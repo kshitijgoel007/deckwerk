@@ -4,8 +4,8 @@ import { randomUUID } from 'node:crypto';
 import { userInfo } from 'node:os';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { BrowserWindow, app, clipboard, dialog, ipcMain, screen, shell } from 'electron';
-import type { Display } from 'electron';
-import type { Deck } from '@shared/deck.js';
+import type { Display, IpcMainInvokeEvent } from 'electron';
+import { parseDeck, type Deck } from '@shared/deck.js';
 import type { DeckHistoryDocument } from '@shared/deckHistory.js';
 import {
   CLIPBOARD_FORMAT,
@@ -30,9 +30,11 @@ import type {
   AgentResponse,
   CollabStartRequest,
   DeckSession,
+  DeckSessionSnapshot,
   DeckHistorySession,
   ImportedAsset,
   KeynoteImportResult,
+  OperationProgress,
   PresentationCommand,
   PresentationState,
   PdfExportRequest,
@@ -104,6 +106,8 @@ registerAssetScheme();
 
 /** The one deck the app has open. Present and trim windows share it. */
 let session: DeckSession | null = null;
+/** Latest renderer-owned theme while an Agent collaboration session owns disk writes. */
+let sessionThemeCss: string | null = null;
 let editorWindow: BrowserWindow | null = null;
 let presentWindow: BrowserWindow | null = null;
 let presenterWindow: BrowserWindow | null = null;
@@ -279,6 +283,18 @@ function requireSession(): DeckSession {
   return session;
 }
 
+/** Push a detailed phase back only to the renderer that started the work. */
+function reportOperation(
+  event: IpcMainInvokeEvent,
+  id: unknown,
+  message: string,
+  ratio: number | null = null,
+): void {
+  if (typeof id !== 'string' || id.length === 0 || event.sender.isDestroyed()) return;
+  const progress: OperationProgress = { id, message, ratio };
+  event.sender.send(IPC.operationProgress, progress);
+}
+
 async function readCollabView(win: BrowserWindow): Promise<EditorViewSnapshot | null> {
   try {
     return await win.webContents.executeJavaScript(`(() => {
@@ -389,6 +405,7 @@ const lastWrittenHtml = new Map<string, string>();
 
 function setSession(dir: string, deck: Deck): DeckSession {
   session = { dir, deck };
+  sessionThemeCss = null;
   setDeckDir(dir);
   watchDeck(dir, deck.theme);
   void agentRuntime.open(dir);
@@ -440,6 +457,7 @@ function watchDeck(dir: string, themeFile: string): void {
         themeTimer = setTimeout(async () => {
           if (!session) return;
           const css = await loadTheme(session.dir, session.deck.theme);
+          sessionThemeCss = css;
           for (const win of BrowserWindow.getAllWindows()) {
             if (!win.isDestroyed()) win.webContents.send(IPC.themeCss, css);
           }
@@ -566,7 +584,7 @@ app.on('before-quit', () => {
 });
 
 function registerHandlers(): void {
-  ipcMain.handle(IPC.deckNew, async (): Promise<DeckSession | null> => {
+  ipcMain.handle(IPC.deckNew, async (event, operationId?: string): Promise<DeckSession | null> => {
     const res = await dialog.showSaveDialog({
       title: 'New deck',
       buttonLabel: 'Create',
@@ -575,18 +593,23 @@ function registerHandlers(): void {
       defaultPath: 'Untitled deck',
     });
     if (res.canceled || !res.filePath) return null;
+    reportOperation(event, operationId, `Creating ${basename(res.filePath)}/deck.json`);
     const deck = await createDeck(res.filePath, basename(res.filePath));
+    reportOperation(event, operationId, 'Preparing the new presentation', 1);
     return setSession(res.filePath, deck);
   });
 
-  ipcMain.handle(IPC.deckOpen, async (): Promise<DeckSession | null> => {
+  ipcMain.handle(IPC.deckOpen, async (event, operationId?: string): Promise<DeckSession | null> => {
     const res = await dialog.showOpenDialog({
       title: 'Open deck',
       properties: ['openDirectory'],
     });
     if (res.canceled || res.filePaths.length === 0) return null;
     const dir = res.filePaths[0];
-    return setSession(dir, await loadDeck(dir));
+    reportOperation(event, operationId, `Reading ${basename(dir)}/deck.json`);
+    const deck = await loadDeck(dir);
+    reportOperation(event, operationId, 'Preparing deck files', 0.4);
+    return setSession(dir, deck);
   });
 
   // Pull rather than push: a window that opens mid-session asks for the current
@@ -704,7 +727,21 @@ function registerHandlers(): void {
     broadcastDeck(BrowserWindow.fromWebContents(event.sender));
   });
 
-  ipcMain.handle(IPC.deckSaveAs, async (): Promise<DeckSession | null> => {
+  ipcMain.handle(
+    IPC.deckSyncSnapshot,
+    (event, snapshot: DeckSessionSnapshot): void => {
+      const s = requireSession();
+      // During an embedded Agent session the collaboration server is the only
+      // deck.json writer. Present/PDF/web export still live in the main process,
+      // so mirror the authoritative renderer state in memory without racing the
+      // server's debounced persistence.
+      s.deck = parseDeck(snapshot.deck);
+      sessionThemeCss = snapshot.themeCss;
+      broadcastDeck(BrowserWindow.fromWebContents(event.sender));
+    },
+  );
+
+  ipcMain.handle(IPC.deckSaveAs, async (event, operationId?: string): Promise<DeckSession | null> => {
     const s = requireSession();
     const target = await dialog.showSaveDialog({
       title: 'Save deck as',
@@ -714,19 +751,22 @@ function registerHandlers(): void {
     });
     if (target.canceled || !target.filePath) return null;
 
+    reportOperation(event, operationId, `Copying deck to ${basename(target.filePath)}`);
     const deck = await copyDeck(s.dir, target.filePath);
+    reportOperation(event, operationId, 'Opening the saved copy', 0.8);
     const saved = setSession(target.filePath, deck);
-    broadcastDeck();
+    broadcastDeck(BrowserWindow.fromWebContents(event.sender));
     return saved;
   });
 
   ipcMain.handle(IPC.deckLoadTheme, async (): Promise<string> => {
     const s = requireSession();
-    return loadTheme(s.dir, s.deck.theme);
+    return sessionThemeCss ?? loadTheme(s.dir, s.deck.theme);
   });
 
   ipcMain.handle(IPC.deckSaveTheme, async (_e, css: string): Promise<void> => {
     const s = requireSession();
+    sessionThemeCss = css;
     await saveTheme(s.dir, s.deck.theme, css);
   });
 
@@ -971,7 +1011,7 @@ function registerHandlers(): void {
 
   ipcMain.handle(
     IPC.keynoteImport,
-    async (): Promise<KeynoteImportResult | null> => {
+    async (event, operationId?: string): Promise<KeynoteImportResult | null> => {
       const picked = await dialog.showOpenDialog({
         title: 'Import a Keynote presentation',
         properties: ['openFile'],
@@ -988,14 +1028,17 @@ function registerHandlers(): void {
       });
       if (target.canceled || !target.filePath) return null;
 
-      const result = await importKeynote(keyPath, target.filePath);
+      const result = await importKeynote(keyPath, target.filePath, (message, ratio) => {
+        reportOperation(event, operationId, message, ratio);
+      });
+      reportOperation(event, operationId, 'Opening the imported presentation', 1);
       setSession(result.dir, result.deck);
-      broadcastDeck();
+      broadcastDeck(BrowserWindow.fromWebContents(event.sender));
       return result;
     },
   );
 
-  ipcMain.handle(IPC.exportBundle, async (): Promise<string | null> => {
+  ipcMain.handle(IPC.exportBundle, async (event, operationId?: string): Promise<string | null> => {
     const s = requireSession();
     const target = await dialog.showSaveDialog({
       title: 'Export as a standalone web page',
@@ -1004,11 +1047,17 @@ function registerHandlers(): void {
       properties: ['createDirectory'],
     });
     if (target.canceled || !target.filePath) return null;
-    await exportDeck(s.dir, s.deck, target.filePath);
+    await exportDeck(s.dir, s.deck, target.filePath, (message, ratio) => {
+      reportOperation(event, operationId, message, ratio);
+    });
     return target.filePath;
   });
 
-  ipcMain.handle(IPC.exportPdf, async (_event, request: PdfExportRequest = {}): Promise<string | null> => {
+  ipcMain.handle(IPC.exportPdf, async (
+    event,
+    request: PdfExportRequest = {},
+    operationId?: string,
+  ): Promise<string | null> => {
     const s = requireSession();
     const mode = request.mode ?? 'final';
     const includeHidden = request.includeHidden ?? false;
@@ -1020,6 +1069,7 @@ function registerHandlers(): void {
     });
     if (target.canceled || !target.filePath) return null;
 
+    reportOperation(event, operationId, 'Rendering slide pages', null);
     const jobId = randomUUID();
     const ready = new Promise<void>((resolveReady, reject) => {
       const timer = setTimeout(() => {
@@ -1038,15 +1088,19 @@ function registerHandlers(): void {
     const printWindow = createPdfWindow(query);
     try {
       await ready;
+      reportOperation(event, operationId, 'Checking rendered pages', 0.6);
       const renderError = await printWindow.webContents.executeJavaScript(
         'document.documentElement.dataset.error || ""',
       ) as string;
       if (renderError) throw new Error(renderError);
+      reportOperation(event, operationId, 'Generating PDF data', 0.75);
       const pdf = await printWindow.webContents.printToPDF({
         printBackground: true,
         preferCSSPageSize: true,
       });
+      reportOperation(event, operationId, `Writing ${basename(target.filePath)}`, 0.95);
       await writeFile(target.filePath, pdf);
+      reportOperation(event, operationId, 'PDF export complete', 1);
       return target.filePath;
     } finally {
       if (!printWindow.isDestroyed()) printWindow.destroy();

@@ -170,6 +170,37 @@ describe('stackable media effects', () => {
     expect(image.effects?.map((effect) => effect.type)).toEqual(['posterize', 'grayscale']);
   });
 
+  it('shows and takes ownership of representable legacy CSS effects', () => {
+    const deck = emptyDeck('Legacy effects');
+    deck.slides[0].elements.push({
+      id: 'photo', type: 'image', src: 'photo.png', fit: 'contain', alt: '',
+      x: 0, y: 0, w: 640, h: 480, rot: 0, z: 1, opacity: 1, class: [],
+      style: { filter: 'blur(9px) grayscale(0.25)' }, sourceBox: null,
+    });
+    const store = new EditorStore(deck, '/tmp/legacy-effects');
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    new Inspector(host, store);
+    store.select(['photo']);
+
+    const rows = host.querySelectorAll<HTMLElement>('.media-effect-row');
+    expect(rows).toHaveLength(2);
+    expect(rows[0].textContent).toContain('Blur');
+    expect(rows[1].textContent).toContain('Greyscale');
+
+    const blur = rows[0].querySelector<HTMLInputElement>('input')!;
+    blur.value = '4';
+    blur.dispatchEvent(new Event('change', { bubbles: true }));
+
+    const image = store.selectedElements()[0];
+    if (image.type !== 'image') throw new Error('expected image');
+    expect(image.style.filter).toBeUndefined();
+    expect(image.effects).toEqual([
+      { type: 'blur', radius: 4 },
+      { type: 'grayscale', amount: 0.25 },
+    ]);
+  });
+
   it('offers raster paint for decoded images but not PDF embeds', () => {
     const deck = emptyDeck('Raster paint');
     deck.slides[0].elements.push({

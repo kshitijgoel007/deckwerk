@@ -6,6 +6,13 @@ import { LAYOUT_LABELS, applySlideLayout, type SlideLayout } from './slideLayout
 import { MagicMovePanel } from './magicMovePanel.js';
 import { fontFamilyField } from './fontPicker.js';
 import { colorField, colorForInput } from './colorPicker.js';
+import {
+  cssMediaBorder,
+  cssMediaRadius,
+  cssNoWrap,
+  cssVisualEffects,
+  isMediaBorderPaint,
+} from '@shared/nativeCss.js';
 
 interface TextPaintInfo {
   value: string | null;
@@ -276,20 +283,20 @@ export class Inspector {
     const settings = document.createElement('div');
     settings.className = 'media-mask-settings';
     settings.appendChild(
-      numberField('Corner radius', el.borderRadius ?? 0, (value) =>
+      numberField('Corner radius', editableMediaRadius(el), (value) =>
         this.store.updateSelected((target) => {
           if (target.type === 'image' || target.type === 'video') {
-            target.borderRadius = Math.max(0, value);
+            setMediaRadius(target, value);
           }
         })),
     );
     // Circle clips the element box to its inscribed ellipse. Mask editing then
     // moves and scales the media behind that fixed window.
     settings.appendChild(
-      checkboxField('Circular mask', el.maskShape === 'circle', (on) =>
+      checkboxField('Circular mask', editableCircularMask(el), (on) =>
         this.store.updateSelected((target) => {
           if (target.type === 'image' || target.type === 'video') {
-            target.maskShape = on ? 'circle' : undefined;
+            setMediaMask(target, on);
           }
         }, { label: on ? 'Circular mask' : 'Rectangular mask' })),
     );
@@ -594,12 +601,12 @@ export class Inspector {
     ));
     wrap.appendChild(mixedCheckboxField(
       'Disable automatic line breaks',
-      commonValue(texts.map((text) => Boolean(text.noWrap))),
+      commonValue(texts.map(editableTextNoWrap)),
       (on) => this.store.updateSelected((element) => {
-        if (element.type === 'text') element.noWrap = on;
+        if (element.type === 'text') setTextNoWrap(element, on);
       }),
     ));
-    if (texts.some((text) => text.noWrap)) {
+    if (texts.some(editableTextNoWrap)) {
       wrap.appendChild(mixedSelectField(
         'Compress by', ['shrink', 'condense'],
         commonValue(texts.map((text) => text.noWrapMode ?? 'shrink')),
@@ -710,12 +717,12 @@ export class Inspector {
         clear: paint.clear,
       },
     ));
-    wrap.appendChild(mixedSelectField(
-      'Align', ['left', 'center', 'right', 'justify'],
+    wrap.appendChild(alignButtonsField(
+      'Align',
       commonValue(texts.map((text) => text.align)),
       (value) => this.store.updateSelected((element) => {
-        if (element.type === 'text') element.align = value as 'left';
-      }),
+        if (element.type === 'text') element.align = value;
+      }, { label: 'Change text alignment' }),
     ));
     wrap.appendChild(mixedSelectField(
       'Vertical', ['top', 'middle', 'bottom'],
@@ -738,7 +745,7 @@ export class Inspector {
     );
     if (spacings.mixed) spacingField.querySelector('input')!.placeholder = 'Mixed';
     wrap.appendChild(spacingField);
-    if (commonValue(texts.map((element) => JSON.stringify(element.effects ?? []))) !== null) {
+    if (commonValue(texts.map((element) => JSON.stringify(editableVisualEffects(element)))) !== null) {
       wrap.appendChild(this.mediaEffectsControls());
     } else {
       const effects = optionSection('Effects', 'media-effects-controls');
@@ -790,19 +797,19 @@ export class Inspector {
     maskSettings.append(
       numberField(
         'Corner radius',
-        commonValue(media.map((element) => element.borderRadius ?? 0)),
+        commonValue(media.map(editableMediaRadius)),
         (value) => this.store.updateSelected((element) => {
           if (element.type === 'image' || element.type === 'video') {
-            element.borderRadius = Math.max(0, value);
+            setMediaRadius(element, value);
           }
         }),
       ),
       mixedCheckboxField(
         'Circular mask',
-        commonValue(media.map((element) => element.maskShape === 'circle')),
+        commonValue(media.map(editableCircularMask)),
         (on) => this.store.updateSelected((element) => {
           if (element.type === 'image' || element.type === 'video') {
-            element.maskShape = on ? 'circle' : undefined;
+            setMediaMask(element, on);
           }
         }),
       ),
@@ -810,11 +817,12 @@ export class Inspector {
     masking.content.appendChild(maskSettings);
     wrap.appendChild(masking.section);
 
-    const borderColors = commonValue(media.map((element) => element.borderColor ?? ''));
+    const editableBorders = media.map(editableMediaBorder);
+    const borderColors = commonValue(editableBorders.map((border) => border.color ?? ''));
     const border = optionSection('Border', 'media-border-options');
     border.content.appendChild(colorField(
       borderColors === null ? 'Color (mixed)' : 'Color',
-      borderColors === null ? (media[0].borderColor ?? null) : (borderColors || null),
+      borderColors === null ? editableBorders[0].color : (borderColors || null),
       (value) => this.store.updateSelected((element) => {
         if (element.type === 'image' || element.type === 'video') {
           clearLegacyMediaBorder(element);
@@ -825,7 +833,7 @@ export class Inspector {
       { clear: { kind: 'none', label: 'No border' } },
     ));
     border.content.appendChild(
-      numberField('Width', commonValue(media.map((element) => element.borderWidth ?? 0)), (value) =>
+      numberField('Width', commonValue(editableBorders.map((border) => border.width)), (value) =>
         this.store.updateSelected((element) => {
           if (element.type === 'image' || element.type === 'video') {
             clearLegacyMediaBorder(element);
@@ -834,7 +842,7 @@ export class Inspector {
         })),
     );
     wrap.appendChild(border.section);
-    if (commonValue(media.map((element) => JSON.stringify(element.effects ?? []))) !== null) {
+    if (commonValue(media.map((element) => JSON.stringify(editableVisualEffects(element)))) !== null) {
       wrap.appendChild(this.mediaEffectsControls());
     } else {
       const effects = optionSection('Effects', 'media-effects-controls');
@@ -949,13 +957,13 @@ export class Inspector {
           }, { label: on ? 'Enable text auto-fit' : 'Disable text auto-fit' }),
         ));
 
-        layout.content.appendChild(checkboxField('Disable automatic line breaks', Boolean(el.noWrap), (on) =>
+        layout.content.appendChild(checkboxField('Disable automatic line breaks', editableTextNoWrap(el), (on) =>
           this.store.updateSelected((target) => {
-            if (target.type === 'text') target.noWrap = on;
+            if (target.type === 'text') setTextNoWrap(target, on);
           }, { label: on ? 'Disable automatic line breaks' : 'Enable automatic line breaks' }),
         ));
 
-        if (el.noWrap) {
+        if (editableTextNoWrap(el)) {
           layout.content.appendChild(selectField(
             'Compress by', ['shrink', 'condense'], el.noWrapMode ?? 'shrink',
             (v) => this.store.updateSelected((target) => {
@@ -1093,10 +1101,10 @@ export class Inspector {
         const alignment = document.createElement('div');
         alignment.className = 'compact-field-row';
         alignment.appendChild(
-          selectField('Align', ['left', 'center', 'right', 'justify'], el.align, (v) =>
+          alignButtonsField('Align', el.align, (v) =>
             this.store.updateSelected((e) => {
-              if (e.type === 'text') e.align = v as 'left';
-            }),
+              if (e.type === 'text') e.align = v;
+            }, { label: 'Change text alignment' }),
           ),
         );
         alignment.appendChild(
@@ -1307,7 +1315,8 @@ export class Inspector {
     const el = this.store.selectedElements()[0];
     const border = optionSection('Border', 'media-border-options');
     if (!el || (el.type !== 'image' && el.type !== 'video')) return border.section;
-    border.content.appendChild(colorField('Color', el.borderColor ?? null, (value) =>
+    const editable = editableMediaBorder(el);
+    border.content.appendChild(colorField('Color', editable.color, (value) =>
       this.store.updateSelected((target) => {
         if (target.type === 'image' || target.type === 'video') {
           clearLegacyMediaBorder(target);
@@ -1316,7 +1325,7 @@ export class Inspector {
         }
       }), { clear: { kind: 'none', label: 'No border' } }));
     border.content.appendChild(
-      numberField('Width', el.borderWidth ?? 0, (value) =>
+      numberField('Width', editable.width, (value) =>
         this.store.updateSelected((target) => {
           if (target.type === 'image' || target.type === 'video') {
             clearLegacyMediaBorder(target);
@@ -1333,7 +1342,8 @@ export class Inspector {
     const wrap = effects.content;
     if (!el || !supportsVisualEffects(el)) return effects.section;
 
-    for (const [index, effect] of (el.effects ?? []).entries()) {
+    const editableEffects = editableVisualEffects(el);
+    for (const [index, effect] of editableEffects.entries()) {
       const row = document.createElement('div');
       row.className = effect.type === 'gaussianNoise'
         ? 'media-effect-row media-effect-row-noise'
@@ -1358,7 +1368,7 @@ export class Inspector {
         if (!Number.isFinite(next)) return;
         this.store.updateSelected((target) => {
           if (!supportsVisualEffects(target)) return;
-          const current = target.effects?.[index];
+          const current = takeVisualEffectsOwnership(target)[index];
           if (!current) return;
           if (current.type === 'blur') current.radius = clamp(next, 0, 200);
           else if (current.type === 'posterize') current.levels = Math.round(clamp(next, 2, 32));
@@ -1380,7 +1390,7 @@ export class Inspector {
           if (!Number.isFinite(next)) return;
           this.store.updateSelected((target) => {
             if (!supportsVisualEffects(target)) return;
-            const current = target.effects?.[index];
+            const current = takeVisualEffectsOwnership(target)[index];
             if (current?.type === 'gaussianNoise') {
               current.frequencyCutoff = clamp(next, 0.001, 1);
             }
@@ -1391,11 +1401,12 @@ export class Inspector {
       const up = smallButton('↑', 'Move effect earlier', () => this.moveMediaEffect(index, -1));
       const down = smallButton('↓', 'Move effect later', () => this.moveMediaEffect(index, 1));
       up.disabled = index === 0;
-      down.disabled = index === (el.effects?.length ?? 0) - 1;
+      down.disabled = index === editableEffects.length - 1;
       const remove = smallButton('×', 'Remove effect', () => {
         this.store.updateSelected((target) => {
           if (!supportsVisualEffects(target)) return;
-          target.effects = (target.effects ?? []).filter((_, candidate) => candidate !== index);
+          target.effects = takeVisualEffectsOwnership(target)
+            .filter((_, candidate) => candidate !== index);
         }, { label: `Remove ${effect.type} effect` });
       });
       row.append(name, value);
@@ -1429,7 +1440,7 @@ export class Inspector {
             : { type: 'grayscale', amount: 1 };
       this.store.updateSelected((target) => {
         if (supportsVisualEffects(target)) {
-          target.effects = [...(target.effects ?? []), structuredClone(effect)];
+          target.effects = [...takeVisualEffectsOwnership(target), structuredClone(effect)];
         }
       }, { label: `Add ${effect.type} effect` });
       add.value = '';
@@ -1441,7 +1452,7 @@ export class Inspector {
   private moveMediaEffect(index: number, delta: -1 | 1): void {
     this.store.updateSelected((target) => {
       if (!supportsVisualEffects(target)) return;
-      const effects = [...(target.effects ?? [])];
+      const effects = [...takeVisualEffectsOwnership(target)];
       const destination = index + delta;
       if (!effects[index] || destination < 0 || destination >= effects.length) return;
       [effects[index], effects[destination]] = [effects[destination], effects[index]];
@@ -1541,12 +1552,93 @@ function clearLegacyMediaBorder(
 ): void {
   const style = { ...element.style };
   for (const property of Object.keys(style)) {
-    if (
-      (property === 'border' || property.startsWith('border-'))
-      && !property.includes('radius')
-    ) delete style[property];
+    if (isMediaBorderPaint(property)) delete style[property];
   }
   element.style = style;
+}
+
+function editableTextNoWrap(element: Extract<SlideElement, { type: 'text' }>): boolean {
+  return element.noWrap ?? cssNoWrap(element.style['white-space']);
+}
+
+function setTextNoWrap(
+  element: Extract<SlideElement, { type: 'text' }>,
+  noWrap: boolean,
+): void {
+  const style = { ...element.style };
+  delete style['white-space'];
+  element.style = style;
+  element.noWrap = noWrap;
+}
+
+/** The radius the media visibly has, including pre-typed Agent HTML imports. */
+function editableMediaRadius(
+  element: Extract<SlideElement, { type: 'image' | 'video' }>,
+): number {
+  if (element.borderRadius !== undefined) return element.borderRadius;
+  const radius = cssMediaRadius(element.style['border-radius']);
+  return radius && 'borderRadius' in radius ? radius.borderRadius : 0;
+}
+
+/** Move inspector-owned radius state out of the legacy CSS fallback. */
+function setMediaRadius(
+  element: Extract<SlideElement, { type: 'image' | 'video' }>,
+  value: number,
+): void {
+  const style = { ...element.style };
+  delete style['border-radius'];
+  element.style = style;
+  element.borderRadius = Math.max(0, value);
+}
+
+function editableCircularMask(
+  element: Extract<SlideElement, { type: 'image' | 'video' }>,
+): boolean {
+  if (element.maskShape !== undefined) return element.maskShape === 'circle';
+  const radius = cssMediaRadius(element.style['border-radius']);
+  return Boolean(radius && 'maskShape' in radius && radius.maskShape === 'circle');
+}
+
+function setMediaMask(
+  element: Extract<SlideElement, { type: 'image' | 'video' }>,
+  circular: boolean,
+): void {
+  const style = { ...element.style };
+  delete style['border-radius'];
+  element.style = style;
+  // `rect` is deliberately explicit: it prevents an old CSS 50% radius from
+  // reappearing after the checkbox is turned off.
+  element.maskShape = circular ? 'circle' : 'rect';
+}
+
+function editableMediaBorder(
+  element: Extract<SlideElement, { type: 'image' | 'video' }>,
+): { width: number; color: string | null } {
+  if (element.borderWidth !== undefined) {
+    return { width: element.borderWidth, color: element.borderColor ?? null };
+  }
+  const border = cssMediaBorder(element.style);
+  return border
+    ? { width: border.width, color: element.borderColor ?? border.color }
+    : { width: 0, color: element.borderColor ?? null };
+}
+
+function editableVisualEffects(
+  element: Extract<SlideElement, { type: 'text' | 'image' | 'video' }>,
+): MediaEffect[] {
+  return element.effects ?? cssVisualEffects(element.style.filter) ?? [];
+}
+
+/** Promote or replace legacy filter CSS before an inspector effect mutation. */
+function takeVisualEffectsOwnership(
+  element: Extract<SlideElement, { type: 'text' | 'image' | 'video' }>,
+): MediaEffect[] {
+  const effects = structuredClone(editableVisualEffects(element));
+  const style = { ...element.style };
+  delete style.filter;
+  element.style = style;
+  element.effects = effects;
+  return effects;
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -1778,6 +1870,64 @@ function selectField(
   select.value = value;
   select.addEventListener('change', () => onChange(select.value));
   wrap.append(span, select);
+  return wrap;
+}
+
+/** The four horizontal alignments, drawn as the usual ragged-line glyphs. */
+const TEXT_ALIGN_CHOICES: { value: TextAlign; title: string; lines: number[][] }[] = [
+  { value: 'left', title: 'Align left', lines: [[0, 10], [0, 7], [0, 10], [0, 5]] },
+  { value: 'center', title: 'Align centre', lines: [[0, 10], [1.5, 7], [0, 10], [2.5, 5]] },
+  { value: 'right', title: 'Align right', lines: [[0, 10], [3, 7], [0, 10], [5, 5]] },
+  { value: 'justify', title: 'Justify', lines: [[0, 10], [0, 10], [0, 10], [0, 10]] },
+];
+
+type TextAlign = 'left' | 'center' | 'right' | 'justify';
+
+function alignGlyph(lines: number[][]): SVGElement {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 10 10');
+  svg.setAttribute('aria-hidden', 'true');
+  lines.forEach(([offset, length], index) => {
+    const line = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    line.setAttribute('x', String(offset));
+    line.setAttribute('y', String(1.4 + index * 2.4));
+    line.setAttribute('width', String(length));
+    line.setAttribute('height', '1');
+    line.setAttribute('rx', '0.5');
+    svg.appendChild(line);
+  });
+  return svg;
+}
+
+/**
+ * Horizontal alignment as the four familiar buttons. `null` means the selection
+ * disagrees, so no button is shown as active until one is pressed.
+ */
+function alignButtonsField(
+  label: string,
+  value: TextAlign | null,
+  onChange: (v: TextAlign) => void,
+): HTMLElement {
+  const wrap = document.createElement('div');
+  wrap.className = 'field';
+  const span = document.createElement('span');
+  span.textContent = label;
+  const group = document.createElement('div');
+  group.className = 'align-buttons';
+  group.setAttribute('role', 'group');
+  for (const choice of TEXT_ALIGN_CHOICES) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'align-button';
+    button.title = choice.title;
+    button.setAttribute('aria-label', choice.title);
+    button.setAttribute('aria-pressed', String(value === choice.value));
+    if (value === choice.value) button.classList.add('is-active');
+    button.appendChild(alignGlyph(choice.lines));
+    button.addEventListener('click', () => onChange(choice.value));
+    group.appendChild(button);
+  }
+  wrap.append(span, group);
   return wrap;
 }
 

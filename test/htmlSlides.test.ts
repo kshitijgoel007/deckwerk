@@ -84,6 +84,40 @@ describe('measured nodes become deck objects', () => {
     expect(untrimmed).toMatchObject({ start: 3, end: null });
   });
 
+  it('promotes a CSS-authored media radius into the editable typed field', () => {
+    const video = elementFromNode(node({
+      tag: 'video',
+      attrs: { src: 'assets/clip.mp4' },
+      style: { 'border-radius': '28px' },
+    }), 'clip', 2);
+
+    expect(video).toMatchObject({ type: 'video', borderRadius: 28, style: {} });
+  });
+
+  it('promotes representable CSS media decoration into every editable typed field', () => {
+    const video = elementFromNode(node({
+      tag: 'video',
+      attrs: { src: 'assets/clip.mp4' },
+      style: {
+        border: '5px solid rgba(255, 255, 255, 0.8)',
+        'border-radius': '50%',
+        filter: 'blur(6px) grayscale(40%)',
+      },
+    }), 'clip', 2);
+
+    expect(video).toMatchObject({
+      type: 'video',
+      borderWidth: 5,
+      borderColor: 'rgba(255, 255, 255, 0.8)',
+      maskShape: 'circle',
+      effects: [
+        { type: 'blur', radius: 6 },
+        { type: 'grayscale', amount: 0.4 },
+      ],
+      style: {},
+    });
+  });
+
   it('previews and round-trips round media masks without requiring a border', () => {
     const deck = emptyDeck('Masks');
     deck.slides[0].elements = [{
@@ -129,6 +163,18 @@ describe('measured nodes become deck objects', () => {
     const html = slideToHtml(parseDeck(deck).slides[0], { w: 1920, h: 1080 });
     expect(html.match(/data-effects=/g)).toHaveLength(2);
     expect(html).toContain('gaussianNoise');
+
+    const roundTripped = elementFromNode(node({
+      tag: 'video',
+      dataset: { effects: encoded },
+      attrs: { src: 'assets/demo.mp4' },
+      style: { filter: 'grayscale(0.5)' },
+    }), 'clip', 2);
+    expect(roundTripped).toMatchObject({
+      type: 'video',
+      effects: [{ type: 'gaussianNoise', amount: 0.45, frequencyCutoff: 0.2 }],
+      style: {},
+    });
   });
 
   it('previews media borders as overlays and keeps their typed fields on round trip', () => {
@@ -161,6 +207,34 @@ describe('measured nodes become deck objects', () => {
       type: 'image', borderColor: '#ff3366', borderWidth: 8, borderRadius: 14,
       style: {},
     });
+
+    const explicitlySquare = {
+      ...deck.slides[0].elements[0],
+      style: { 'border-radius': '22px' },
+      borderRadius: 0,
+    } as SlideElement;
+    deck.slides[0].elements = [explicitlySquare];
+    const squareHtml = slideToHtml(parseDeck(deck).slides[0], { w: 1920, h: 1080 });
+    expect(squareHtml).not.toContain('border-radius:22px');
+    expect(squareHtml).toContain('data-border-width="0"');
+    expect(squareHtml).toContain('data-border-radius="0"');
+
+    deck.slides[0].elements[0] = {
+      ...explicitlySquare,
+      maskShape: 'rect',
+      effects: [],
+      style: {
+        border: '7px solid red',
+        'border-radius': '50%',
+        filter: 'blur(12px)',
+      },
+    } as SlideElement;
+    const clearedHtml = slideToHtml(parseDeck(deck).slides[0], { w: 1920, h: 1080 });
+    expect(clearedHtml).toContain('data-mask-shape="rect"');
+    expect(clearedHtml).toContain('data-effects="%5B%5D"');
+    expect(clearedHtml).not.toContain('border:7px solid red');
+    expect(clearedHtml).not.toContain('border-radius:50%');
+    expect(clearedHtml).not.toContain('filter:blur(12px)');
   });
 
   it('reconstructs shapes from their parameters rather than flattening them', () => {
@@ -170,6 +244,11 @@ describe('measured nodes become deck objects', () => {
         element: 'shape', shape: 'arrow', stroke: '#111111', strokeWidth: '6',
         arrowEnd: 'true', control: '950,300',
       },
+      style: {
+        border: '6px solid #111111',
+        'border-radius': '24px',
+        'box-shadow': '0 8px 24px #0008',
+      },
     }), 'arrow-1', 2) as Extract<SlideElement, { type: 'shape' }>;
 
     expect(shape).toMatchObject({
@@ -177,6 +256,7 @@ describe('measured nodes become deck objects', () => {
       arrowEnd: true, arrowStart: false,
     });
     expect(shape.control).toEqual({ x: 950, y: 300 });
+    expect(shape.style).toEqual({ 'box-shadow': '0 8px 24px #0008' });
   });
 
   it('keeps an import gap conspicuous instead of quietly dropping it', () => {
@@ -281,6 +361,27 @@ describe('deck objects become authored HTML', () => {
     expect(html).toContain('data-autofit="true"');
     expect(html).toContain('data-build="afterPrev+250"');
     expect(html).toContain('text-align:center');
+  });
+
+  it('promotes CSS no-wrap into the editable text option and preserves an explicit clear', () => {
+    const imported = elementFromNode(node({
+      tag: 'p',
+      html: 'One line',
+      style: { 'white-space': 'nowrap', color: '#ffffff' },
+    }), 'nowrap', 1);
+    expect(imported).toMatchObject({
+      type: 'text', noWrap: true, style: { color: '#ffffff' },
+    });
+
+    const deck = emptyDeck('Wrap');
+    deck.slides[0].elements = [{
+      ...(imported as Extract<SlideElement, { type: 'text' }>),
+      noWrap: false,
+      style: { 'white-space': 'nowrap' },
+    }];
+    const html = slideToHtml(parseDeck(deck).slides[0], { w: 1920, h: 1080 });
+    expect(html).toContain('data-nowrap="false"');
+    expect(html).not.toContain('white-space:nowrap');
   });
 
   it('mirrors inheritable inline text styles onto the content node', () => {

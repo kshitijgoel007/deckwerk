@@ -56,6 +56,17 @@ describe('text auto-fit', () => {
     expect(node.dataset.fitMode).toBeUndefined();
   });
 
+  it('lets an explicit wrap setting suppress stale CSS no-wrap', () => {
+    const node = renderElement({
+      id: 'wrap', type: 'text', x: 0, y: 0, w: 100, h: 50, rot: 0, z: 1,
+      opacity: 1, class: [], style: { 'white-space': 'nowrap' },
+      html: 'Text can wrap', noWrap: false, align: 'left', valign: 'top',
+    }, { resolveSrc: (src) => src });
+
+    expect(node.style.whiteSpace).toBe('');
+    expect(node.dataset.noWrap).toBeUndefined();
+  });
+
   it('applies advanced text paint to the content without painting the wrapper', () => {
     const node = renderElement({
       id: 'gradient', type: 'text', x: 0, y: 0, w: 800, h: 120, rot: 0, z: 1,
@@ -133,5 +144,27 @@ describe('text auto-fit', () => {
     const restored = store.selectedElements()[0];
     expect(restored.type).toBe('text');
     if (restored.type === 'text') expect(restored.autoFit).toBeUndefined();
+  });
+
+  it('shows and clears CSS-authored no-wrap in the inspector', () => {
+    const deck = emptyDeck('Legacy no-wrap');
+    deck.slides[0].elements.push({
+      id: 'text', type: 'text', x: 0, y: 0, w: 400, h: 100, rot: 0, z: 1,
+      opacity: 1, class: [], style: { 'white-space': 'nowrap' },
+      html: 'Text', align: 'left', valign: 'top',
+    });
+    const store = new EditorStore(deck, '/tmp/legacy-nowrap');
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    new Inspector(host, store);
+    store.select(['text']);
+    const label = [...host.querySelectorAll('label')].find((candidate) =>
+      candidate.textContent?.includes('Disable automatic line breaks'))!;
+    const checkbox = label.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+    expect(checkbox.checked).toBe(true);
+
+    checkbox.click();
+    const text = store.selectedElements()[0];
+    expect(text).toMatchObject({ type: 'text', noWrap: false, style: {} });
   });
 });

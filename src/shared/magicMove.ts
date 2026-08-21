@@ -68,20 +68,49 @@ export function essentialMagicMovePairs(
   return pairs;
 }
 
-/** Runtime matching is deliberately explicit: unpaired objects never animate. */
+/**
+ * Runtime matching is deliberately explicit: unpaired objects never animate.
+ *
+ * A pairing id is meant to be unique per slide — the pairing UI clears the id
+ * from any other object on both slides — but a duplicated one can still arrive
+ * from copied authoring HTML. When it does, the nearest candidate wins: taking
+ * whichever happened to be last would let an object animate from the far side
+ * of the slide, and a fly-in is far worse than a slightly odd short move.
+ */
 export function explicitMagicMovePairs(
   previous: SlideElement[],
   next: SlideElement[],
 ): MagicMovePair[] {
-  const sources = new Map(
-    previous.filter((element) => element.magicMoveId)
-      .map((element) => [element.magicMoveId!, element]),
-  );
+  const sources = new Map<string, SlideElement[]>();
+  for (const element of previous) {
+    if (!element.magicMoveId) continue;
+    const group = sources.get(element.magicMoveId);
+    if (group) group.push(element);
+    else sources.set(element.magicMoveId, [element]);
+  }
+  const claimed = new Set<SlideElement>();
   return next.flatMap((target): MagicMovePair[] => {
     if (!target.magicMoveId) return [];
-    const source = sources.get(target.magicMoveId);
-    return source ? [[source, target]] : [];
+    const candidates = sources.get(target.magicMoveId);
+    if (!candidates) return [];
+    const free = candidates.filter((candidate) => !claimed.has(candidate));
+    const source = nearest(free.length > 0 ? free : candidates, target);
+    if (!source) return [];
+    claimed.add(source);
+    return [[source, target]];
   });
+}
+
+function nearest(candidates: SlideElement[], target: SlideElement): SlideElement | undefined {
+  let best: { element: SlideElement; distance: number } | undefined;
+  for (const candidate of candidates) {
+    const distance = Math.hypot(
+      candidate.x + candidate.w / 2 - (target.x + target.w / 2),
+      candidate.y + candidate.h / 2 - (target.y + target.h / 2),
+    );
+    if (!best || distance < best.distance) best = { element: candidate, distance };
+  }
+  return best?.element;
 }
 
 /**

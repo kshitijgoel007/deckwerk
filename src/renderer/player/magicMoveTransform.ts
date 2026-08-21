@@ -1,0 +1,184 @@
+import type { SlideElement } from '@shared/deck.js';
+
+/**
+ * Where a Magic Move pair starts, and where it ends.
+ *
+ * Split out of the player because it is the one part of a transition that can
+ * be wrong in a way the eye reads as a disaster: if the start state does not
+ * land the target object exactly on top of the source object's *rendered*
+ * appearance, the object flies in from the side instead of moving. So it is
+ * pure, and tested against measured layouts rather than against itself.
+ *
+ * Two rules keep it honest:
+ *
+ * 1. `transform-origin` is always the element centre — the same origin the
+ *    settled render uses. Anchoring the scale somewhere else (a text box's
+ *    alignment corner, say) means the final keyframe no longer describes the
+ *    settled position, so the object snaps when the fill-none animation ends,
+ *    and any rotation swings about the wrong point.
+ * 2. The anchor a pair is aligned on is therefore folded into the translate,
+ *    not expressed as an origin. `foldAnchor` below is exact for any source
+ *    rotation or authored transform.
+ */
+
+export interface Rect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+export interface Point {
+  x: number;
+  y: number;
+}
+
+/**
+ * What the DOM knows about a text pair that the deck model cannot: where the
+ * glyphs actually sit inside each box, and how big they ended up.
+ *
+ * A text box is a layout container, not the text. Its width can change without
+ * the text moving at all, autofit and condense change the rendered size and
+ * position, and an overlong no-wrap line is pinned to the box's left edge no
+ * matter what `align` says. Measured ink boxes are the only description of the
+ * text that survives all of that; `null` means measurement was unavailable
+ * (a non-layout environment), and the box-alignment estimate is used instead.
+ */
+export interface TextLayout {
+  sourceInk: Rect | null;
+  targetInk: Rect | null;
+  /** Rendered source font size over rendered target font size. */
+  fontScale: number;
+  /**
+   * Source horizontal squeeze over target horizontal squeeze, for condensed
+   * no-wrap lines. Condense keeps the font size and squeezes the type
+   * horizontally instead, so two boxes of different widths hold the same line
+   * at the same size and different tracking — a difference only a horizontal
+   * scale can carry. 1 whenever neither side is condensed.
+   */
+  squeeze: number;
+}
+
+const HORIZONTAL: Record<string, number> = { left: 0, center: 0.5, right: 1, justify: 0 };
+const VERTICAL: Record<string, number> = { top: 0, middle: 0.5, bottom: 1 };
+
+export interface MagicMoveTransforms {
+  /** Transform at offset 0: the target drawn as the source was. */
+  start: string;
+  /** Transform at offset 1: exactly what the settled render applies. */
+  final: string;
+  /** Always 'center', for the reason in this module's header. */
+  origin: string;
+}
+
+export function magicMoveTransforms(
+  from: SlideElement,
+  to: SlideElement,
+  text: TextLayout | null = null,
+): MagicMoveTransforms {
+  const isText = from.type === 'text' && to.type === 'text';
+  // Text scales by its rendered font size, never by its box: scaling a text
+  // box that grew wider without the text changing would smear the glyphs.
+  const scaleX = isText && text ? text.fontScale * text.squeeze : ratio(from.w, to.w);
+  const scaleY = isText && text ? text.fontScale : ratio(from.h, to.h);
+  const anchors = isText && text
+    ? textAnchors(from as TextElement, to as TextElement, text)
+    : { source: centerOf(from), target: centerOf(to) };
+  const shift = foldAnchor(anchors, centerOf(to), scaleX, scaleY);
+  // A source-side authored transform stands in for the rotation the renderer
+  // would have skipped (`style.transform` overrides `rot` in the render), and
+  // sits between the translate and the scale so it acts in the source's own
+  // frame — exactly where the source slide applied it.
+  const sourceTransform = from.style.transform ?? (from.rot ? `rotate(${from.rot}deg)` : '');
+  return {
+    start: [
+      `translate(${px(shift.x)}px, ${px(shift.y)}px)`,
+      sourceTransform,
+      `scale(${px(scaleX)}, ${px(scaleY)})`,
+    ].filter(Boolean).join(' '),
+    final: to.style.transform ?? (to.rot ? `rotate(${to.rot}deg)` : 'none'),
+    origin: 'center',
+  };
+}
+
+type TextElement = Extract<SlideElement, { type: 'text' }>;
+
+/**
+ * The point of each side's rendered text that the pair is aligned on.
+ *
+ * Both sides use the *target's* alignment: on measured ink boxes any shared
+ * anchor is equivalent up to the font scale, and the target's is the one that
+ * keeps a growing block growing the way its own box would grow it. Reading each
+ * side's own alignment off its own *box* — the estimate used when nothing can
+ * be measured — is only meaningful when the two agree, because a left anchor is
+ * the glyph box's left edge while a centre anchor is its midpoint.
+ */
+function textAnchors(
+  from: TextElement,
+  to: TextElement,
+  text: TextLayout,
+): { source: Point; target: Point } {
+  const ax = HORIZONTAL[to.align] ?? 0;
+  const ay = VERTICAL[to.valign] ?? 0;
+  if (text.sourceInk && text.targetInk) {
+    return {
+      source: anchorOf(text.sourceInk, ax, ay),
+      target: anchorOf(text.targetInk, ax, ay),
+    };
+  }
+  return {
+    source: anchorOf(boxOf(from), HORIZONTAL[from.align] ?? 0, VERTICAL[from.valign] ?? 0),
+    target: anchorOf(boxOf(to), ax, ay),
+  };
+}
+
+/**
+ * The translate that makes `anchors.target` land on `anchors.source` when the
+ * scale is applied about `center` instead of about the anchor.
+ *
+ * Scaling about the centre and translating by this is identical to scaling
+ * about the anchor: with origin C the transform list maps p to
+ * C + d + R(S(p - C)), and requiring the anchor A to map to A_s gives
+ * d = (A_s - A) + (1 - S)(A - C) — independent of the rotation R, so it holds
+ * for rotated movers and authored transforms too.
+ */
+function foldAnchor(
+  anchors: { source: Point; target: Point },
+  center: Point,
+  scaleX: number,
+  scaleY: number,
+): Point {
+  return {
+    x: anchors.source.x - anchors.target.x + (1 - scaleX) * (anchors.target.x - center.x),
+    y: anchors.source.y - anchors.target.y + (1 - scaleY) * (anchors.target.y - center.y),
+  };
+}
+
+function anchorOf(rect: Rect, ax: number, ay: number): Point {
+  return { x: rect.x + ax * rect.w, y: rect.y + ay * rect.h };
+}
+
+function boxOf(element: SlideElement): Rect {
+  return { x: element.x, y: element.y, w: element.w, h: element.h };
+}
+
+function centerOf(element: SlideElement): Point {
+  return { x: element.x + element.w / 2, y: element.y + element.h / 2 };
+}
+
+/**
+ * A scale factor that is never degenerate. A zero-width line or a
+ * zero-height rule is ordinary deck content, and `from.w / 0` would put
+ * `Infinity` (or `NaN`) in a transform — which browsers drop, leaving the
+ * object at its final position for the whole transition.
+ */
+function ratio(source: number, target: number): number {
+  if (!(target > 0.01)) return 1;
+  const value = source / target;
+  return Number.isFinite(value) && value > 0 ? value : 1;
+}
+
+/** Transforms are compared in tests; keep them short and stable. */
+function px(value: number): number {
+  return Math.round(value * 100000) / 100000;
+}

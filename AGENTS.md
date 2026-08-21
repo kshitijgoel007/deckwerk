@@ -21,6 +21,19 @@ browser-native default or a one-off visual treatment; check the control's
 normal, hover, focus, disabled, and open states against neighboring UI before
 considering the work complete.
 
+## Long-running operation feedback
+
+Any user-initiated operation that can take longer than roughly 500 ms must
+provide visible activity feedback. Keep fast operations quiet by delaying the
+indicator for 500 ms; if work is still running, use the shared status/progress
+chrome rather than inventing a one-off loader. Open, create, import, export,
+Save As, media processing, rendering, and similar filesystem or subprocess
+work all fall under this rule. Prefer specific, changing phase text that names
+the file or resource currently being read, written, copied, rendered, uploaded,
+or converted. Report determinate progress when totals are known, otherwise show
+an indeterminate indicator. Clear the busy state on success, cancellation, and
+failure, and leave a useful completion or error message where appropriate.
+
 An agent never talks to the Electron app directly, and should almost never
 touch `deck.json`. **You edit an HTML file; the editor watches it and syncs
 what you saved into the presentation.**
@@ -40,6 +53,24 @@ undoable change. Keep editing and keep saving.
 **1. `context` — the map.** Every slide in order with its id and its title, the
 text roles this deck actually uses, and whether the editor is live. This is how
 you find "the middle of the talk" without reading the talk.
+
+### Resolve the visual direction before creating slides
+
+Treat the existing deck as the default style brief. When it has a coherent visual
+language, match its typography, palette, spacing, density, composition, imagery,
+diagram treatment, and overall level of ornament unless the user asks for a
+restyle. New slides should feel native to the deck, not like a separate template
+or a sales pitch. "Professional" does not mean elaborate: do not add decorative
+cards, gradients, badges, oversized marketing copy, or other visual flourish just
+to make a slide look designed.
+
+Before creating slides, make sure the intended style is actually constrained by
+either the user's request or clear examples in the existing deck. If it is, proceed
+without asking and follow that direction. If it is not — for example, the deck is
+blank, visually inconsistent, or too sparse to establish a precedent — ask the
+user one brief question about the desired style before authoring. Offer a small
+number of concrete directions when helpful, including a basic or understated
+option. Do not silently choose a more elaborate aesthetic.
 
 **2. `inspect --html` — the export.** A complete web page: **open it in a
 browser and it is the slide**, at its true 1920×1080, with the deck's own

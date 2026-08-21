@@ -24,6 +24,7 @@ export default defineConfig({
       input: {
         index: resolve(__dirname, 'src/renderer/collab/index.html'),
         present: resolve(__dirname, 'src/renderer/collab/present.html'),
+        print: resolve(__dirname, 'src/renderer/collab/print.html'),
       },
     },
   },

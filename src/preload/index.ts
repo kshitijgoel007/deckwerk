@@ -20,10 +20,12 @@ import type {
   AuthoredHtmlFile,
   CollabStartRequest,
   DeckSession,
+  DeckSessionSnapshot,
   DeckHistorySession,
   ImportedAsset,
   KeynoteImportResult,
   MediaInfo,
+  OperationProgress,
   PdfExportRequest,
   PresentationCommand,
   PresentationState,
@@ -44,13 +46,18 @@ import type {
  * nodeIntegration is off, so this surface is deliberately small and explicit.
  */
 const api = {
-  newDeck: (): Promise<DeckSession | null> => ipcRenderer.invoke(IPC.deckNew),
-  openDeck: (): Promise<DeckSession | null> => ipcRenderer.invoke(IPC.deckOpen),
+  newDeck: (operationId?: string): Promise<DeckSession | null> =>
+    ipcRenderer.invoke(IPC.deckNew, operationId),
+  openDeck: (operationId?: string): Promise<DeckSession | null> =>
+    ipcRenderer.invoke(IPC.deckOpen, operationId),
   getDeck: (): Promise<DeckSession | null> => ipcRenderer.invoke(IPC.deckGet),
   openDeckPath: (dir: string): Promise<DeckSession> =>
     ipcRenderer.invoke(IPC.deckOpenPath, dir),
   saveDeck: (deck: Deck): Promise<void> => ipcRenderer.invoke(IPC.deckSave, deck),
-  saveDeckAs: (): Promise<DeckSession | null> => ipcRenderer.invoke(IPC.deckSaveAs),
+  syncDeckSnapshot: (snapshot: DeckSessionSnapshot): Promise<void> =>
+    ipcRenderer.invoke(IPC.deckSyncSnapshot, snapshot),
+  saveDeckAs: (operationId?: string): Promise<DeckSession | null> =>
+    ipcRenderer.invoke(IPC.deckSaveAs, operationId),
   loadDeckHistory: (dir: string): Promise<DeckHistorySession> =>
     ipcRenderer.invoke(IPC.deckHistoryLoad, dir),
   saveDeckHistory: (dir: string, history: DeckHistoryDocument): Promise<void> =>
@@ -96,11 +103,14 @@ const api = {
    */
   pathForFile: (file: File): string => webUtils.getPathForFile(file),
 
-  importKeynote: (): Promise<KeynoteImportResult | null> =>
-    ipcRenderer.invoke(IPC.keynoteImport),
-  exportBundle: (): Promise<string | null> => ipcRenderer.invoke(IPC.exportBundle),
-  exportPdf: (request: PdfExportRequest = {}): Promise<string | null> =>
-    ipcRenderer.invoke(IPC.exportPdf, request),
+  importKeynote: (operationId?: string): Promise<KeynoteImportResult | null> =>
+    ipcRenderer.invoke(IPC.keynoteImport, operationId),
+  exportBundle: (operationId?: string): Promise<string | null> =>
+    ipcRenderer.invoke(IPC.exportBundle, operationId),
+  exportPdf: (request: PdfExportRequest = {}, operationId?: string): Promise<string | null> =>
+    ipcRenderer.invoke(IPC.exportPdf, request, operationId),
+  onOperationProgress: (fn: (p: OperationProgress) => void): (() => void) =>
+    on(IPC.operationProgress, fn),
   pdfReady: (jobId: string): void => ipcRenderer.send(IPC.exportPdfReady, jobId),
   exportHtml: (slideIds: string[]): Promise<string> => ipcRenderer.invoke(IPC.htmlExport, slideIds),
   startWorkflow: (request: WorkflowStartRequest): Promise<WorkflowStartResult> =>

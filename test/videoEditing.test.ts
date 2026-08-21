@@ -134,6 +134,21 @@ const videoEl = (host: HTMLElement) =>
 describe('compact video inspector', () => {
   beforeEach(() => document.body.replaceChildren());
 
+  it('shows native controls on the editor canvas when controls are enabled', () => {
+    const { store, canvasHost } = setup();
+    store.select(['video-1']);
+    const before = videoEl(canvasHost);
+    expect(before.controls).toBe(false);
+
+    store.updateSelected((element) => {
+      if (element.type === 'video') element.controls = true;
+    });
+
+    const after = videoEl(canvasHost);
+    expect(after, 'toggling controls should not reload the video').toBe(before);
+    expect(after.controls).toBe(true);
+  });
+
   it('uses one type heading, compact sections, and a click-to-copy source path', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, 'clipboard', {

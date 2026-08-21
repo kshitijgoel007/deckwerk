@@ -9,7 +9,7 @@ import { basename, dirname, extname, join, normalize, resolve } from 'node:path'
 import { isIP } from 'node:net';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { createDeck, importAsset, loadTheme, resolveAsset } from '../main/deckStore.js';
-import { AGENT_BRIEF } from './agentBrief.js';
+import { AGENT_BRIEF, agentClipboardPrompt } from './agentBrief.js';
 import { capabilities } from '../shared/capabilities.js';
 import { probeMedia } from '../main/ffmpeg.js';
 import { ClientMessageSchema, COLLAB_PROTOCOL_VERSION, type PresenceState, type ServerMessage } from '../shared/collab.js';
@@ -27,6 +27,8 @@ import { deckRevision } from '../main/agentRuntime.js';
 import { applyAgentTransaction, type AgentOperation } from '../shared/agent.js';
 import { NativeEditRequestSchema, applyNativeEdits, nativeEditContract } from '../shared/nativeEdits.js';
 import type { Deck, Slide, SlideElement } from '../shared/deck.js';
+import type { AgentChatState } from '../shared/ipc.js';
+import type { SharedAgentRuntimeLike } from './sharedAgent.js';
 
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -134,7 +136,12 @@ export interface CollabServerOptions {
   /** Publish the newest HTML work-in-progress to the embedded agent chat. */
   onHtmlDraft?: (draft: HtmlDraftPreview) => void;
   /** Attribute Agent HTTP edits to the embedded conversation that made them. */
-  getAgentChatId?: () => string | null;
+  getAgentChatId?: (deckId: string) => string | null;
+  /**
+   * Opt-in test mode: one server-owned Codex account and conversation that
+   * every browser participant can use. Account management remains loopback-only.
+   */
+  sharedAgent?: SharedAgentRuntimeLike;
   /**
    * Called when the host requests the session end (POST /api/end from
    * loopback in a hosted session). The owner tears the server down; the
@@ -155,6 +162,7 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
   const host = options.host ?? '0.0.0.0';
   const hostedDeckId = options.hostedDeckId;
   const agentMode = Boolean(options.agentMode);
+  const sharedAgent = options.sharedAgent;
   const rooms = new Map<string, Room>();
   const htmlDrafts = new Map<string, HttpHtmlDraft>();
   const latestHtmlDrafts = new Map<string, string>();
@@ -165,6 +173,12 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
   }>();
   /** Known once listen() succeeds; /api/config reports the invite URLs. */
   let boundPort: number | null = null;
+  const sharedAgentStreams = new Set<{
+    deckId: string;
+    participantId: string;
+    canManageAccount: boolean;
+    response: ServerResponse;
+  }>();
 
   /** Deck ids are immediate-child directory names; reject anything else. */
   function deckDirOf(deckId: string): string {
@@ -216,7 +230,7 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
         ...(options.agentMode
           ? {
               label: 'The Agent updated the deck through its file-based authoring workspace.',
-              agentChatId: options.getAgentChatId?.() ?? undefined,
+              agentChatId: options.getAgentChatId?.(deckId) ?? undefined,
             }
           : {}),
       }),
@@ -235,10 +249,10 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
     }
   };
   const publishAgentPresence = (room: Room, slideId: string): void => {
-    if (!agentMode) return;
+    if (!agentMode && !sharedAgent) return;
     room.agentPresence = {
       clientId: 'agent-http',
-      name: 'Agent',
+      name: sharedAgent?.name ?? 'Agent',
       color: PALETTE[0],
       activeSlideId: slideId,
       selectedSlideIds: [slideId],
@@ -248,6 +262,34 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
     };
     broadcast(room, { kind: 'presence', state: room.agentPresence });
   };
+
+  const agentChatId = (deckId: string, participantId: string | null): string | null => {
+    if (sharedAgent && participantId) return sharedAgent.chatId(deckDirOf(deckId), participantId);
+    return options.getAgentChatId?.(deckId) ?? null;
+  };
+
+  const publicAgentState = (
+    state: AgentChatState,
+    deckId: string,
+    canManageAccount: boolean,
+  ): AgentChatState => ({
+    ...state,
+    // Never expose the server's absolute deck path or the demo owner's email
+    // to remote participants. The loopback owner retains normal account UI.
+    deckPath: deckId,
+    accountLabel: canManageAccount ? state.accountLabel : sharedAgent?.name ?? 'Shared Agent',
+  });
+
+  const emitSharedAgentState = (state: AgentChatState, participantId: string): void => {
+    for (const stream of sharedAgentStreams) {
+      if (stream.participantId !== participantId) continue;
+      if (resolve(state.deckPath) !== deckDirOf(stream.deckId)) continue;
+      stream.response.write(
+        `data: ${JSON.stringify(publicAgentState(state, stream.deckId, stream.canManageAccount))}\n\n`,
+      );
+    }
+  };
+  const unsubscribeSharedAgent = sharedAgent?.subscribe(emitSharedAgentState);
 
   const httpServer = createServer((request, response) => {
     void handleHttp(request, response).catch((error) => {
@@ -260,6 +302,7 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
     const url = new URL(request.url ?? '/', 'http://localhost');
     const path = decodeURIComponent(url.pathname);
     const deckParam = url.searchParams.get('deck');
+    const agentSessionParam = normalizeSharedParticipantId(url.searchParams.get('agentSession'));
 
     // Agent sessions are observation-only in the browser. All authoring,
     // comments, assets, and apply operations go through the HTTP API. Keep the
@@ -325,8 +368,120 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
         hosted: Boolean(hostedDeckId),
         deckId: hostedDeckId ?? null,
         agentMode: Boolean(options.agentMode),
+        sharedAgent: sharedAgent ? {
+          enabled: true,
+          name: sharedAgent.name,
+          canManageAccount: isLoopbackRequest(request),
+        } : null,
         urls: boundPort === null ? [] : reachableUrls(host, boundPort),
       });
+      return;
+    }
+
+    if (path === '/api/shared-agent/events' && request.method === 'GET') {
+      if (!sharedAgent) return respondJson(response, 404, { error: 'shared agent test mode is disabled' });
+      if (!deckParam) return respondJson(response, 400, { error: 'missing deck' });
+      const participantId = sharedParticipantId(url);
+      if (!participantId) return respondJson(response, 400, { error: 'missing or invalid participant' });
+      await getRoom(deckParam);
+      const stream = {
+        deckId: deckParam,
+        participantId,
+        canManageAccount: isLoopbackRequest(request),
+        response,
+      };
+      response.writeHead(200, {
+        'content-type': 'text/event-stream; charset=utf-8',
+        'cache-control': 'no-store',
+        connection: 'keep-alive',
+      });
+      response.write(': shared agent state\n\n');
+      sharedAgentStreams.add(stream);
+      request.on('close', () => sharedAgentStreams.delete(stream));
+      const state = await sharedAgent.getState(deckDirOf(deckParam), participantId);
+      response.write(`data: ${JSON.stringify(publicAgentState(
+        state,
+        deckParam,
+        stream.canManageAccount,
+      ))}\n\n`);
+      return;
+    }
+
+    if (path === '/api/shared-agent/state' && request.method === 'GET') {
+      if (!sharedAgent) return respondJson(response, 404, { error: 'shared agent test mode is disabled' });
+      if (!deckParam) return respondJson(response, 400, { error: 'missing deck' });
+      const participantId = sharedParticipantId(url);
+      if (!participantId) return respondJson(response, 400, { error: 'missing or invalid participant' });
+      await getRoom(deckParam);
+      const state = await sharedAgent.getState(deckDirOf(deckParam), participantId);
+      respondJson(response, 200, publicAgentState(state, deckParam, isLoopbackRequest(request)));
+      return;
+    }
+
+    if (path.startsWith('/api/shared-agent/') && request.method === 'POST') {
+      if (!sharedAgent) return respondJson(response, 404, { error: 'shared agent test mode is disabled' });
+      if (!deckParam) return respondJson(response, 400, { error: 'missing deck' });
+      const participantId = sharedParticipantId(url);
+      if (!participantId) return respondJson(response, 400, { error: 'missing or invalid participant' });
+      await getRoom(deckParam);
+      const deckDir = deckDirOf(deckParam);
+      const payload = JSON.parse((await readBody(request)).toString('utf8') || '{}') as Record<string, unknown>;
+      const canManageAccount = isLoopbackRequest(request);
+
+      if (path === '/api/shared-agent/login' || path === '/api/shared-agent/switch-account') {
+        if (!canManageAccount) {
+          return respondJson(response, 403, { error: 'only the server owner on loopback can manage the shared account' });
+        }
+        const result = path.endsWith('/login')
+          ? await sharedAgent.login(deckDir, participantId)
+          : await sharedAgent.switchAccount(deckDir, participantId);
+        respondJson(response, 200, {
+          state: publicAgentState(result.state, deckParam, true),
+          authUrl: result.authUrl,
+        });
+        return;
+      }
+
+      let state: AgentChatState;
+      if (path === '/api/shared-agent/send') {
+        const text = typeof payload.text === 'string' ? payload.text.trim() : '';
+        if (!text) return respondJson(response, 400, { error: 'missing text' });
+        const author = typeof payload.author === 'string'
+          ? payload.author.trim().replace(/\s+/g, ' ').slice(0, 80)
+          : '';
+        const attributed = author ? `[Request from ${author}]\n${text}` : text;
+        state = await sharedAgent.send(deckDir, participantId, { text: attributed }, async () => {
+          if (boundPort === null) throw new Error('collaboration server is not listening');
+          const sessionUrl = `http://127.0.0.1:${boundPort}/?deck=${encodeURIComponent(deckParam)}&agent=1&agentSession=${encodeURIComponent(participantId)}`;
+          return `${agentClipboardPrompt(sessionUrl, deckParam)}\n\n`
+            + `Shared demo identity: append \`agentSession=${participantId}\` to every /api request `
+            + 'so edits are attributed to this participant\'s Agent chat.';
+        });
+      } else if (path === '/api/shared-agent/interrupt') {
+        state = await sharedAgent.interrupt(deckDir, participantId);
+      } else if (path === '/api/shared-agent/reset') {
+        state = await sharedAgent.reset(deckDir, participantId);
+      } else if (path === '/api/shared-agent/select') {
+        const chatId = typeof payload.chatId === 'string' ? payload.chatId : '';
+        if (!chatId) return respondJson(response, 400, { error: 'missing chatId' });
+        state = await sharedAgent.select(deckDir, participantId, chatId);
+      } else if (path === '/api/shared-agent/model') {
+        const model = typeof payload.model === 'string' ? payload.model : '';
+        if (!model) return respondJson(response, 400, { error: 'missing model' });
+        state = await sharedAgent.setModel(deckDir, participantId, { model });
+      } else if (path === '/api/shared-agent/reasoning-effort') {
+        const effort = typeof payload.effort === 'string' ? payload.effort : '';
+        if (!effort) return respondJson(response, 400, { error: 'missing effort' });
+        state = await sharedAgent.setReasoningEffort(deckDir, participantId, { effort });
+      } else if (path === '/api/shared-agent/fast-mode') {
+        if (typeof payload.enabled !== 'boolean') {
+          return respondJson(response, 400, { error: 'missing enabled flag' });
+        }
+        state = await sharedAgent.setFastMode(deckDir, participantId, { enabled: payload.enabled });
+      } else {
+        return respondJson(response, 404, { error: 'unknown shared agent action' });
+      }
+      respondJson(response, 200, publicAgentState(state, deckParam, canManageAccount));
       return;
     }
 
@@ -718,7 +873,7 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
       broadcast(room, {
         kind: 'txn', seq: applied.seq, txnId: `agent-http-${randomUUID()}`,
         byClientId: 'agent-http', label, ops: draft.operations,
-        agentChatId: options.getAgentChatId?.() ?? undefined,
+        agentChatId: agentChatId(deckParam, agentSessionParam) ?? undefined,
       });
       const result = {
         digest,
@@ -762,7 +917,7 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
       broadcast(room, {
         kind: 'deck', seq: applied.seq, deck: applied.deck, reason: 'agent-edit',
         label: `The Agent added a comment${body.slideId ? ` to slide ${body.slideId}` : ''}: ${body.text.trim().slice(0, 160)}`,
-        agentChatId: options.getAgentChatId?.() ?? undefined,
+        agentChatId: agentChatId(deckParam, agentSessionParam) ?? undefined,
       });
       respondJson(response, 200, comment);
       return;
@@ -796,7 +951,7 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
       broadcast(room, {
         kind: 'deck', seq: applied.seq, deck: applied.deck, reason: 'agent-edit',
         label: `The Agent marked comment ${body.commentId} ${body.resolved ?? true ? 'resolved' : 'unresolved'}.`,
-        agentChatId: options.getAgentChatId?.() ?? undefined,
+        agentChatId: agentChatId(deckParam, agentSessionParam) ?? undefined,
       });
       respondJson(response, 200, { ok: true, resolved: body.resolved ?? true });
       return;
@@ -907,6 +1062,16 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
           report,
         };
         options.onHtmlDraft?.(preview);
+        if (sharedAgent && agentSessionParam) {
+          sharedAgent.setScratchpad(deckDirOf(deckParam), agentSessionParam, {
+            draftId: preview.draftId,
+            slideCount: preview.slideCount,
+            sourceUrl: preview.sourceUrl,
+            importedUrl: preview.importedUrl,
+            sourceContactSheetUrl: preview.sourceContactSheetUrl,
+            importedContactSheetUrl: preview.importedContactSheetUrl,
+          });
+        }
         respondJson(response, 200, {
           draftId: id,
           revision: draft.revision,
@@ -1033,7 +1198,7 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
         byClientId: 'agent-http',
         label,
         ops: operations,
-        agentChatId: options.getAgentChatId?.() ?? undefined,
+        agentChatId: agentChatId(deckParam, agentSessionParam) ?? undefined,
       });
       const result = { revision: deckRevision(applied.deck), slideIds: appliedIds, label };
       htmlIdempotency.set(payload.idempotencyKey, result);
@@ -1258,13 +1423,33 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
     urls: reachableUrls(host, port),
     close: async () => {
       wss.close();
+      unsubscribeSharedAgent?.();
+      for (const stream of sharedAgentStreams) stream.response.end();
+      sharedAgentStreams.clear();
       for (const room of rooms.values()) {
         for (const peer of room.peers.values()) peer.socket.close();
       }
       await new Promise<void>((resolvePromise) => httpServer.close(() => resolvePromise()));
       for (const room of rooms.values()) await room.session.close();
+      sharedAgent?.close();
     },
   };
+}
+
+function isLoopbackRequest(request: IncomingMessage): boolean {
+  const remote = request.socket.remoteAddress ?? '';
+  return remote === '127.0.0.1'
+    || remote === '::1'
+    || remote === '::ffff:127.0.0.1';
+}
+
+function sharedParticipantId(url: URL): string | null {
+  return normalizeSharedParticipantId(url.searchParams.get('participant'));
+}
+
+function normalizeSharedParticipantId(value: string | null): string | null {
+  if (!value || !/^[a-zA-Z0-9_-]{8,80}$/.test(value)) return null;
+  return value;
 }
 
 function pickColor(peers: Map<string, Peer>): string {

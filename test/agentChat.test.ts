@@ -87,6 +87,36 @@ const request: AgentChatSendRequest = {
 };
 
 describe('embedded agent chat controller', () => {
+  it('partitions shared-server conversations by browser participant', async () => {
+    const { controller, server } = fixture();
+    const prompt = async () => 'Shared agent brief';
+
+    await controller.send('/tmp/talk', { text: 'Alice request' }, prompt, 'participant-alice');
+    server.nextThreadId = 'thread-2';
+    await controller.send('/tmp/talk', { text: 'Bob request' }, prompt, 'participant-bob');
+
+    expect(await controller.getState('/tmp/talk', 'participant-alice')).toMatchObject({
+      chatId: 'thread-1',
+      messages: [{ role: 'user', text: 'Alice request' }],
+      busy: true,
+    });
+    expect(await controller.getState('/tmp/talk', 'participant-bob')).toMatchObject({
+      chatId: 'thread-2',
+      messages: [{ role: 'user', text: 'Bob request' }],
+      busy: true,
+    });
+
+    await controller.reset('/tmp/talk', 'participant-alice');
+    expect(await controller.getState('/tmp/talk', 'participant-alice')).toMatchObject({
+      chatId: null,
+      messages: [],
+    });
+    expect(await controller.getState('/tmp/talk', 'participant-bob')).toMatchObject({
+      chatId: 'thread-2',
+      messages: [{ text: 'Bob request' }],
+    });
+  });
+
   it('creates a deck-scoped sandboxed thread and streams the assistant reply', async () => {
     const { controller, server, notify } = fixture();
     const initial = await controller.getState('/tmp/talk');

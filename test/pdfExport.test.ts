@@ -30,8 +30,10 @@ describe('PDF build-state selection', () => {
   });
 
   it('prints in the Player canvas coordinate system without a Retina-sensitive transform', () => {
-    const source = readFileSync(join(process.cwd(), 'src/renderer/print/main.ts'), 'utf8');
-    expect(source).toContain('size: ${pageWidthPx}px ${pageHeightPx}px');
+    // The page layout is shared by the desktop exporter and the collab client's
+    // print tab, so this belongs to `pages.ts` rather than either entry point.
+    const source = readFileSync(join(process.cwd(), 'src/renderer/print/pages.ts'), 'utf8');
+    expect(source).toContain('size: ${deck.canvas.w}px ${deck.canvas.h}px');
     expect(source).not.toContain('stage.style.transform');
     expect(source).not.toContain('const pageWidthIn');
   });

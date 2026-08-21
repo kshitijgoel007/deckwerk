@@ -161,6 +161,11 @@ into the HTML so it works straight off `file://`.
   should support scoped classes and `@keyframes` that timeline `addClass` and
   `removeClass` actions can trigger, without permitting scripts, external
   network dependencies, or unscoped CSS that can affect editor chrome.
+- Evolve the headless server's per-browser demo conversations into **agents as
+  children of users**: authenticate each participant, give each agent a distinct
+  owner, presence identity, scoped/revocable credential, durable conversation,
+  usage boundary, and history attribution, while retaining the shared-account
+  agent only as an explicit host-enabled fallback for workshops and demos.
 
 ## Testing
 

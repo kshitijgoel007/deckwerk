@@ -796,7 +796,7 @@ export function measureSlides(doc: Document): MeasuredSlide[] {
       // border twice.
       nodes[index].style = Object.fromEntries(Object.entries(nodes[index].style)
         .filter(([property]) => [
-          'box-shadow', 'filter', 'mix-blend-mode', 'border-radius',
+          'box-shadow', 'filter', 'mix-blend-mode',
         ].includes(property)));
       nodes[index].html = '';
     });

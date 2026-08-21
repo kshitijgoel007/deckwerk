@@ -1691,6 +1691,26 @@ input[type="range"] { accent-color: var(--accent); border: 0; background: transp
   font: 10.5px var(--mono);
 }
 
+#status[data-busy="true"]::before {
+  content: '';
+  flex: none;
+  width: 9px;
+  height: 9px;
+  margin-right: 7px;
+  border: 1.5px solid color-mix(in srgb, var(--accent) 28%, transparent);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: status-progress-spin 700ms linear infinite;
+}
+
+@keyframes status-progress-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #status[data-busy="true"]::before { animation-duration: 1400ms; }
+}
+
 /* The element being typed into. */
 .element.editing { outline-color: var(--accent); background: var(--accent-soft); }
 
@@ -2938,4 +2958,49 @@ select.panel-action-select {
   color: var(--text);
   font: 800 14px/1 var(--mono);
   letter-spacing: -0.08em;
+}
+
+/* --- text alignment buttons --- */
+
+.align-buttons {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+}
+
+.align-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 5px 0;
+  border: 0;
+  border-left: 1px solid var(--line);
+  background: var(--panel-2);
+  color: var(--muted);
+}
+
+.align-button:first-child { border-left: 0; }
+.align-button svg { width: 13px; height: 13px; fill: currentcolor; }
+.align-button:hover { color: var(--text); }
+
+.align-button.is-active {
+  background: var(--accent);
+  color: #fff;
+}
+
+/* Stand-in drag image for slide reordering; see SlideRail.makeDragImage. */
+.rail-drag-image {
+  position: fixed;
+  top: -1000px;
+  left: -1000px;
+  padding: 4px 8px;
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  background: var(--panel);
+  color: var(--text);
+  font: 11px var(--mono);
+  white-space: nowrap;
+  pointer-events: none;
 }

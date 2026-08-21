@@ -88,6 +88,8 @@ interface AppServerLike {
 
 interface AgentChatSession {
   deckPath: string;
+  /** Optional in-memory conversation partition used by the shared server demo. */
+  conversationKey: string;
   threadId: string | null;
   threadAttached: boolean;
   threadAccount: string | null;
@@ -114,7 +116,7 @@ export interface AgentChatControllerOptions {
     onDynamicToolCall?: (call: DynamicToolCall) => Promise<DynamicToolResult>;
   }) => AppServerLike;
   openExternal?: (url: string) => Promise<unknown>;
-  onState?: (state: AgentChatState) => void;
+  onState?: (state: AgentChatState, conversationKey: string) => void;
   onDynamicToolCall?: (call: DynamicToolCall) => Promise<DynamicToolResult>;
   /** Keep this embedded agent's login separate from other Codex clients. */
   codexHome?: string;
@@ -160,8 +162,8 @@ export class AgentChatController {
     this.options = options;
   }
 
-  async getState(deckPath: string): Promise<AgentChatState> {
-    const session = this.session(deckPath);
+  async getState(deckPath: string, conversationKey = ''): Promise<AgentChatState> {
+    const session = this.session(deckPath, conversationKey);
     this.emit(session);
     try {
       await this.ensureClient();
@@ -171,8 +173,8 @@ export class AgentChatController {
     return this.snapshot(session);
   }
 
-  async login(deckPath: string): Promise<AgentChatState> {
-    const session = this.session(deckPath);
+  async login(deckPath: string, conversationKey = ''): Promise<AgentChatState> {
+    const session = this.session(deckPath, conversationKey);
     try {
       await this.ensureClient();
       const result = await this.client!.request<LoginResult>('account/login/start', {
@@ -201,8 +203,8 @@ export class AgentChatController {
     return this.snapshot(session);
   }
 
-  async switchAccount(deckPath: string): Promise<AgentChatState> {
-    const session = this.session(deckPath);
+  async switchAccount(deckPath: string, conversationKey = ''): Promise<AgentChatState> {
+    const session = this.session(deckPath, conversationKey);
     try {
       await this.ensureClient();
       if ([...this.sessions.values()].some((candidate) => candidate.busy)) {
@@ -233,7 +235,7 @@ export class AgentChatController {
         candidate.error = null;
       }
       this.emitAll();
-      return this.login(deckPath);
+      return this.login(deckPath, conversationKey);
     } catch (error) {
       session.error = message(error);
       session.activity = null;
@@ -246,8 +248,9 @@ export class AgentChatController {
     deckPath: string,
     request: AgentChatSendRequest,
     prepareAgentPrompt: () => Promise<string>,
+    conversationKey = '',
   ): Promise<AgentChatState> {
-    const session = this.session(deckPath);
+    const session = this.session(deckPath, conversationKey);
     const text = request.text.trim();
     if (!text) return this.snapshot(session);
 
@@ -341,8 +344,8 @@ export class AgentChatController {
     this.emit(session);
   }
 
-  async setModel(deckPath: string, model: string): Promise<AgentChatState> {
-    const session = this.session(deckPath);
+  async setModel(deckPath: string, model: string, conversationKey = ''): Promise<AgentChatState> {
+    const session = this.session(deckPath, conversationKey);
     try {
       await this.ensureClient();
       if (session.busy) throw new Error('Stop the active agent turn before changing models');
@@ -363,8 +366,12 @@ export class AgentChatController {
     return this.snapshot(session);
   }
 
-  async setReasoningEffort(deckPath: string, effort: string): Promise<AgentChatState> {
-    const session = this.session(deckPath);
+  async setReasoningEffort(
+    deckPath: string,
+    effort: string,
+    conversationKey = '',
+  ): Promise<AgentChatState> {
+    const session = this.session(deckPath, conversationKey);
     try {
       await this.ensureClient();
       if (session.busy) throw new Error('Reasoning effort can be changed after the active turn finishes');
@@ -381,8 +388,8 @@ export class AgentChatController {
     return this.snapshot(session);
   }
 
-  async setFastMode(deckPath: string, enabled: boolean): Promise<AgentChatState> {
-    const session = this.session(deckPath);
+  async setFastMode(deckPath: string, enabled: boolean, conversationKey = ''): Promise<AgentChatState> {
+    const session = this.session(deckPath, conversationKey);
     try {
       await this.ensureClient();
       if (session.busy) throw new Error('Fast mode can be changed after the active turn finishes');
@@ -398,20 +405,24 @@ export class AgentChatController {
     return this.snapshot(session);
   }
 
-  setScratchpad(deckPath: string, scratchpad: AgentChatScratchpad | null): AgentChatState {
-    const session = this.session(deckPath);
+  setScratchpad(
+    deckPath: string,
+    scratchpad: AgentChatScratchpad | null,
+    conversationKey = '',
+  ): AgentChatState {
+    const session = this.session(deckPath, conversationKey);
     session.scratchpad = scratchpad;
     this.emit(session);
     return this.snapshot(session);
   }
 
   /** Current conversation id for history attribution; does not start Codex. */
-  chatId(deckPath: string): string | null {
-    return this.session(deckPath).threadId;
+  chatId(deckPath: string, conversationKey = ''): string | null {
+    return this.session(deckPath, conversationKey).threadId;
   }
 
-  getTranscript(deckPath: string, chatId: string): AgentChatTranscript | null {
-    const session = this.session(deckPath);
+  getTranscript(deckPath: string, chatId: string, conversationKey = ''): AgentChatTranscript | null {
+    const session = this.session(deckPath, conversationKey);
     const conversation = session.threadId === chatId
       ? conversationFromSession(session)
       : session.archivedChats.find((candidate) => candidate.threadId === chatId);
@@ -424,8 +435,8 @@ export class AgentChatController {
     };
   }
 
-  async select(deckPath: string, chatId: string): Promise<AgentChatState> {
-    const session = this.session(deckPath);
+  async select(deckPath: string, chatId: string, conversationKey = ''): Promise<AgentChatState> {
+    const session = this.session(deckPath, conversationKey);
     if (session.busy) throw new Error('Stop the active agent turn before switching chats');
     if (session.threadId === chatId) return this.snapshot(session);
     const conversation = session.archivedChats.find((candidate) => candidate.threadId === chatId);
@@ -437,8 +448,8 @@ export class AgentChatController {
     return this.snapshot(session);
   }
 
-  async interrupt(deckPath: string): Promise<AgentChatState> {
-    const session = this.session(deckPath);
+  async interrupt(deckPath: string, conversationKey = ''): Promise<AgentChatState> {
+    const session = this.session(deckPath, conversationKey);
     if (!session.threadId || !session.activeTurnId || !session.busy) return this.snapshot(session);
     try {
       await this.client?.request('turn/interrupt', {
@@ -453,9 +464,9 @@ export class AgentChatController {
     return this.snapshot(session);
   }
 
-  async reset(deckPath: string): Promise<AgentChatState> {
-    const session = this.session(deckPath);
-    if (session.busy) await this.interrupt(deckPath);
+  async reset(deckPath: string, conversationKey = ''): Promise<AgentChatState> {
+    const session = this.session(deckPath, conversationKey);
+    if (session.busy) await this.interrupt(deckPath, conversationKey);
     this.archiveActive(session);
     session.threadId = null;
     session.threadAttached = false;
@@ -475,9 +486,9 @@ export class AgentChatController {
   }
 
   /** Stop live work without erasing the deck's saved conversation. */
-  async suspend(deckPath: string): Promise<AgentChatState> {
-    const session = this.session(deckPath);
-    if (session.busy) await this.interrupt(deckPath);
+  async suspend(deckPath: string, conversationKey = ''): Promise<AgentChatState> {
+    const session = this.session(deckPath, conversationKey);
+    if (session.busy) await this.interrupt(deckPath, conversationKey);
     session.activeTurnId = null;
     session.queuedFollowUps = [];
     session.busy = false;
@@ -731,14 +742,19 @@ export class AgentChatController {
     this.emitAll();
   }
 
-  private session(deckPath: string): AgentChatSession {
-    let session = this.sessions.get(deckPath);
+  private session(deckPath: string, conversationKey = ''): AgentChatSession {
+    const key = conversationKey ? `${deckPath}\u0000${conversationKey}` : deckPath;
+    let session = this.sessions.get(key);
     if (!session) {
       const selected = this.models.find((candidate) => candidate.isDefault) ?? this.models[0];
-      const persisted = this.loadPersisted(deckPath);
+      // Shared demo conversations are partitioned by an ephemeral browser id
+      // and deliberately stay in memory. The ordinary desktop conversation
+      // keeps its existing deck-side persistence unchanged.
+      const persisted = conversationKey ? null : this.loadPersisted(deckPath);
       const active = persisted?.active;
       session = {
         deckPath,
+        conversationKey,
         threadId: active?.threadId ?? null,
         threadAttached: false,
         threadAccount: active?.threadAccount ?? null,
@@ -759,7 +775,7 @@ export class AgentChatController {
         activity: null,
         error: null,
       };
-      this.sessions.set(deckPath, session);
+      this.sessions.set(key, session);
     }
     return session;
   }
@@ -786,7 +802,7 @@ export class AgentChatController {
 
   private emit(session: AgentChatSession): void {
     this.schedulePersist(session);
-    this.options.onState?.(this.snapshot(session));
+    this.options.onState?.(this.snapshot(session), session.conversationKey);
   }
 
   private emitAll(): void {
@@ -883,7 +899,7 @@ export class AgentChatController {
   }
 
   private schedulePersist(session: AgentChatSession): void {
-    if (this.options.persistence === false) return;
+    if (this.options.persistence === false || session.conversationKey) return;
     const current = this.persistTimers.get(session.deckPath);
     if (current) clearTimeout(current);
     this.persistTimers.set(session.deckPath, setTimeout(() => {
@@ -893,7 +909,7 @@ export class AgentChatController {
   }
 
   private persistNow(session: AgentChatSession): void {
-    if (this.options.persistence === false) return;
+    if (this.options.persistence === false || session.conversationKey) return;
     const payload: PersistedAgentChats = {
       version: 2,
       active: conversationFromSession(session),

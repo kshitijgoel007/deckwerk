@@ -26,6 +26,8 @@ export class SlideRail {
   private thumbResizeObserver: ResizeObserver | null = null;
   /** Index of the slide being dragged, while a reorder is in progress. */
   private dragFrom: number | null = null;
+  /** Off-screen node used as the drag image while reordering. */
+  private dragImage: HTMLElement | null = null;
   /** The slides array last drawn, so a selection change can skip the rebuild. */
   private renderedSlides: unknown = null;
   /**
@@ -413,7 +415,12 @@ export class SlideRail {
         });
         item.appendChild(bubble);
       }
-      item.addEventListener('click', (event) => {
+      // Selection runs on pointerdown, not click: the row is draggable for
+      // reorder, and Chromium starts a native drag on a few pixels of drift,
+      // which suppresses the click entirely — every real (slightly wobbly)
+      // click on a thumbnail then did nothing.
+      item.addEventListener('pointerdown', (event) => {
+        if (event.button !== 0) return;
         this.store.selectSlide(i, event.shiftKey);
         // Picking slides makes the rail the active surface, so Backspace is a
         // slide command from here on. Without this the keystroke reaches the
@@ -516,6 +523,26 @@ export class SlideRail {
   }
 
   /**
+   * A compact "Slide N" chip standing in for the dragged row. It has to be in
+   * the document and rendered when setDragImage runs, so it lives off-screen
+   * until dragend.
+   */
+  private makeDragImage(index: number): HTMLElement {
+    this.clearDragImage();
+    const chip = document.createElement('div');
+    chip.className = 'rail-drag-image';
+    chip.textContent = `Slide ${index + 1}`;
+    document.body.appendChild(chip);
+    this.dragImage = chip;
+    return chip;
+  }
+
+  private clearDragImage(): void {
+    this.dragImage?.remove();
+    this.dragImage = null;
+  }
+
+  /**
    * Drag a slide onto another to reorder.
    *
    * Uses native HTML drag-and-drop rather than pointer events: the rail is a
@@ -527,11 +554,17 @@ export class SlideRail {
       this.dragFrom = index;
       e.dataTransfer?.setData('text/plain', String(index));
       if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
+      // Chromium's default drag image for a row whose thumbnail is a
+      // transform-scaled full-size slide surface ends up being a snapshot of
+      // the whole window, so the entire UI appeared to follow the cursor in
+      // the browser client. A small explicit drag image avoids the snapshot.
+      if (e.dataTransfer) e.dataTransfer.setDragImage(this.makeDragImage(index), 12, 10);
       item.classList.add('dragging');
     });
 
     item.addEventListener('dragend', () => {
       this.dragFrom = null;
+      this.clearDragImage();
       this.render();
     });
 

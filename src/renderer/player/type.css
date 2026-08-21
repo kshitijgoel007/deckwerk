@@ -74,10 +74,11 @@
 }
 
 /* Bulleted lists inside text elements. theme.css can restyle the markers. */
+/* No text-align of its own: a list follows the element's alignment like any
+   other block, so centring a bulleted text element actually centres it. */
 .text-body ul {
   margin: 0;
   padding-left: 1.1em;
-  text-align: left;
 }
 
 .text-body li {

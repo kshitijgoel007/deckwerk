@@ -27,6 +27,7 @@ export async function exportDeck(
   deckDir: string,
   deck: Deck,
   outDir: string,
+  onProgress?: (message: string, ratio: number | null) => void,
 ): Promise<void> {
   const bundleDir = playerBundleDir();
   const playerJs = join(bundleDir, 'player.js');
@@ -36,28 +37,69 @@ export async function exportDeck(
     );
   }
 
-  await mkdir(outDir, { recursive: true });
+  const wanted = referencedAssets(deck);
+  const total = 5 + wanted.size;
+  let completed = 0;
+  const progress = (message: string): void => {
+    onProgress?.(message, completed / total);
+  };
 
+  progress(`Creating ${outDir}`);
+  await mkdir(outDir, { recursive: true });
+  completed++;
+
+  progress('Copying player.js');
   await copyFile(playerJs, join(outDir, 'player.js'));
+  completed++;
 
   // The player's structural CSS, then the deck's theme, in that order — the
   // theme must win, exactly as it does in the app.
   const playerCss = join(bundleDir, 'player.css');
+  progress('Writing player.css');
   const structural = existsSync(playerCss) ? await readFile(playerCss, 'utf8') : '';
-  const theme = await loadTheme(deckDir, deck.theme);
   await writeFile(join(outDir, 'player.css'), structural, 'utf8');
-  await writeFile(join(outDir, 'theme.css'), theme, 'utf8');
+  completed++;
 
-  await copyAssets(deckDir, outDir, deck);
+  progress(`Writing ${deck.theme}`);
+  const theme = await loadTheme(deckDir, deck.theme);
+  await writeFile(join(outDir, 'theme.css'), theme, 'utf8');
+  completed++;
+
+  await copyAssets(deckDir, outDir, wanted, (name) => {
+    progress(`Copying assets/${name}`);
+  }, () => completed++);
+  progress('Writing index.html');
   await writeFile(join(outDir, 'index.html'), indexHtml(deck), 'utf8');
+  completed++;
+  onProgress?.('Web export complete', completed / total);
 }
 
 /** Copy only the assets this deck actually references, plus nothing else. */
 async function copyAssets(
   deckDir: string,
   outDir: string,
-  deck: Deck,
+  wanted: Set<string>,
+  beforeCopy?: (name: string) => void,
+  afterCopy?: () => void,
 ): Promise<void> {
+  if (wanted.size === 0) return;
+
+  const srcAssets = join(deckDir, 'assets');
+  const destAssets = join(outDir, 'assets');
+  await mkdir(destAssets, { recursive: true });
+
+  const available = new Set(await readdir(srcAssets).catch(() => []));
+  for (const rel of wanted) {
+    const name = rel.split('/').pop();
+    if (name) beforeCopy?.(name);
+    if (name && available.has(name)) {
+      await copyFile(join(srcAssets, name), join(destAssets, name));
+    }
+    afterCopy?.();
+  }
+}
+
+function referencedAssets(deck: Deck): Set<string> {
   const wanted = new Set<string>();
   for (const slide of deck.slides) {
     if (slide.background.image) wanted.add(slide.background.image);
@@ -70,18 +112,7 @@ async function copyAssets(
       }
     }
   }
-  if (wanted.size === 0) return;
-
-  const srcAssets = join(deckDir, 'assets');
-  const destAssets = join(outDir, 'assets');
-  await mkdir(destAssets, { recursive: true });
-
-  const available = new Set(await readdir(srcAssets).catch(() => []));
-  for (const rel of wanted) {
-    const name = rel.split('/').pop();
-    if (!name || !available.has(name)) continue;
-    await copyFile(join(srcAssets, name), join(destAssets, name));
-  }
+  return wanted;
 }
 
 /** Assets referenced only by an isolated HTML region still belong in exports. */

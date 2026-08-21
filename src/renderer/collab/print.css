@@ -1,0 +1,41 @@
+/*
+ * Screen chrome for the collab print tab. Everything here is screen-only: the
+ * printed document must be exactly the pages the desktop exporter produces.
+ */
+.print-toolbar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  background: #1b1b1f;
+  color: #f5f5f7;
+  font: 14px system-ui, sans-serif;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.12);
+}
+.print-toolbar button {
+  font: inherit;
+  padding: 5px 12px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  background: #2f6feb;
+  color: #fff;
+  cursor: pointer;
+}
+.print-toolbar button[disabled] { opacity: 0.5; cursor: default; }
+#pages { padding-top: 44px; }
+
+/* The pages are laid out at the deck's native pixel canvas so print keeps the
+ * Player's coordinate system. On screen that is far wider than the window, so
+ * scale the preview down with `zoom`, which print media ignores. */
+@media screen {
+  #pages { zoom: var(--preview-zoom, 1); }
+}
+@media print {
+  .print-toolbar { display: none; }
+  #pages { padding-top: 0; }
+}

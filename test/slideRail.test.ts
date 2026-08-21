@@ -6,6 +6,14 @@ import { Inspector } from '../src/renderer/editor/inspector.js';
 import { SlideRail } from '../src/renderer/editor/slideRail.js';
 import { EditorStore } from '../src/renderer/editor/store.js';
 
+/**
+ * Rows select on pointerdown (a click never arrives when the browser turns a
+ * slightly-wobbly press on the draggable row into a native drag).
+ */
+function pickRow(row: HTMLElement, shiftKey = false): void {
+  row.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, shiftKey }));
+}
+
 function setup() {
   (globalThis as unknown as { window: Window }).window.api = {
     assetUrl: (src: string) => src,
@@ -120,8 +128,8 @@ describe('deleting slides from the rail', () => {
     push(store, 'slide-3', 'slide-4', 'slide-5');
 
     const items = () => host.querySelectorAll<HTMLElement>('.rail-item');
-    items()[1].click();
-    items()[3].dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true }));
+    pickRow(items()[1]);
+    pickRow(items()[3], true);
     expect([...store.get().slideSelection]).toEqual(['slide-2', 'slide-3', 'slide-4']);
 
     host.dispatchEvent(new KeyboardEvent('keydown', { key: 'Backspace', bubbles: true }));
@@ -137,7 +145,7 @@ describe('deleting slides from the rail', () => {
 
   it('takes focus when a slide is clicked, so Backspace is a slide command', () => {
     const { store, host } = setup();
-    host.querySelectorAll<HTMLElement>('.rail-item')[1].click();
+    pickRow(host.querySelectorAll<HTMLElement>('.rail-item')[1]);
     expect(document.activeElement).toBe(host);
     expect(store.get().slideIndex).toBe(1);
   });
@@ -145,7 +153,7 @@ describe('deleting slides from the rail', () => {
   it('deletes only the current slide when just one is selected', () => {
     const { store, host } = setup();
     push(store, 'slide-3');
-    host.querySelectorAll<HTMLElement>('.rail-item')[1].click();
+    pickRow(host.querySelectorAll<HTMLElement>('.rail-item')[1]);
     host.dispatchEvent(new KeyboardEvent('keydown', { key: 'Backspace', bubbles: true }));
 
     expect(store.get().deck.slides.map((slide) => slide.id)).toEqual(['slide-1', 'slide-3']);
@@ -155,8 +163,8 @@ describe('deleting slides from the rail', () => {
   it('refuses to empty the deck', () => {
     const { store, host } = setup();
     const items = () => host.querySelectorAll<HTMLElement>('.rail-item');
-    items()[0].click();
-    items()[1].dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true }));
+    pickRow(items()[0]);
+    pickRow(items()[1], true);
 
     host.dispatchEvent(new KeyboardEvent('keydown', { key: 'Backspace', bubbles: true }));
     expect(store.get().deck.slides).toHaveLength(2);
@@ -169,8 +177,8 @@ describe('hiding slides from the rail', () => {
   it('toggles skipped for the whole selection, driven by the current slide', () => {
     const { store, host } = setup();
     const items = () => host.querySelectorAll<HTMLElement>('.rail-item');
-    items()[0].click();
-    items()[1].dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true }));
+    pickRow(items()[0]);
+    pickRow(items()[1], true);
 
     const hide = [...host.querySelectorAll<HTMLElement>('.rail-actions button')]
       .find((b) => b.textContent === 'Hide');
@@ -228,7 +236,7 @@ describe('hiding slides from the rail', () => {
     }, { history: false });
 
     host.querySelector<HTMLButtonElement>('.rail-run-bracket')!.click();
-    host.querySelector<HTMLButtonElement>('.rail-item[data-index="2"]')!.click();
+    pickRow(host.querySelector<HTMLElement>('.rail-item[data-index="2"]')!);
     expect(store.slide?.id).toBe('slide-3');
     expect(host.querySelector('.rail-collapsed')).not.toBeNull();
 
@@ -251,17 +259,15 @@ describe('slide rail keyboard insertion', () => {
       );
     }, { history: false });
 
-    host.querySelectorAll<HTMLButtonElement>('.rail-item')[1].click();
-    host.querySelectorAll<HTMLButtonElement>('.rail-item')[3].dispatchEvent(
-      new MouseEvent('click', { bubbles: true, shiftKey: true }),
-    );
+    pickRow(host.querySelectorAll<HTMLElement>('.rail-item')[1]);
+    pickRow(host.querySelectorAll<HTMLElement>('.rail-item')[3], true);
 
     expect(store.get().slideIndex).toBe(3);
     expect([...store.get().slideSelection]).toEqual(['slide-2', 'slide-3', 'slide-4']);
     expect(host.querySelectorAll('.rail-item.selected')).toHaveLength(3);
     expect(host.querySelectorAll('.rail-item.active')).toHaveLength(1);
 
-    host.querySelectorAll<HTMLButtonElement>('.rail-item')[2].click();
+    pickRow(host.querySelectorAll<HTMLElement>('.rail-item')[2]);
     expect([...store.get().slideSelection]).toEqual(['slide-3']);
     expect(host.querySelectorAll('.rail-item.selected')).toHaveLength(1);
   });

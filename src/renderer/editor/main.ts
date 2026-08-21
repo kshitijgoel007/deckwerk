@@ -29,6 +29,8 @@ import { createShapeInsertPicker, insertText } from './elementCreation.js';
 import { createToolbarPicker, createToolbarSplitButton } from './exportPicker.js';
 import { showPdfExportDialog } from './pdfExportDialog.js';
 import { makePanelResizable } from './panelResize.js';
+import { DelayedOperationProgress, type OperationHandle } from './operationProgress.js';
+import { persistSessionDeck } from './sessionPersistence.js';
 import { createThemePanel } from './themePanel.js';
 import {
   barButton,
@@ -118,6 +120,26 @@ const persistThemeCss = (css: string): Promise<void> | void => {
 };
 const cssEditor = new CssEditor(el('theme'), persistThemeCss);
 cssEditor.onChange = () => canvas.refitAutoText();
+let agentSnapshotSync: Promise<void> = Promise.resolve();
+function syncAgentSessionSnapshot(): Promise<void> {
+  const snapshot = { deck: store.get().deck, themeCss: cssEditor.getValue() };
+  const next = agentSnapshotSync
+    .catch(() => {})
+    .then(() => persistSessionDeck(
+      window.api,
+      snapshot.deck,
+      snapshot.themeCss,
+      true,
+    ));
+  agentSnapshotSync = next;
+  return next;
+}
+
+function queueAgentSessionSnapshot(): void {
+  void syncAgentSessionSnapshot().catch((error) => {
+    console.error('Could not synchronize Agent deck for presentation:', error);
+  });
+}
 const welcome = new WelcomeScreen(el('canvas'), {
   newPresentation,
   openPresentation,
@@ -177,31 +199,39 @@ function applyHtmlEdit(file: AuthoredHtmlFile): Promise<void> {
   htmlEditQueue = htmlEditQueue.then(async () => {
     const name = fileName(file.path);
     try {
-      // Compiling takes a moment, and the user may edit during it. The
-      // operations address slides by id in a deck that has since been replaced,
-      // so compile again rather than apply them to a document that moved.
-      for (let attempt = 0; attempt < 3; attempt++) {
-        const deck = store.get().deck;
-        const { transaction, slides, warnings } = await authoredHtmlSync(deck, file, cssEditor.getValue());
-        if (store.get().deck !== deck) continue;
-        // Inline style the browser's parser dropped would otherwise vanish
-        // silently: the page measured without it, yet the apply reads as clean.
-        const warned = warnings.length === 0 ? ''
-          : ` — ${warnings.length} style warning${warnings.length === 1 ? '' : 's'}: ${warnings[0]}`;
-        if (!transaction) {
-          setStatusMessage(`${name} asks for no change${warned}`);
-          return;
+      const message = await runOperation(`Compiling ${name}…`, async (operation) => {
+        // Compiling takes a moment, and the user may edit during it. The
+        // operations address slides by id in a deck that has since been replaced,
+        // so compile again rather than apply them to a document that moved.
+        for (let attempt = 0; attempt < 3; attempt++) {
+          operation.update(`Laying out slides from ${name}`);
+          const deck = store.get().deck;
+          const { transaction, slides, warnings } = await authoredHtmlSync(
+            deck,
+            file,
+            cssEditor.getValue(),
+          );
+          if (store.get().deck !== deck) continue;
+          // Inline style the browser's parser dropped would otherwise vanish
+          // silently: the page measured without it, yet the apply reads as clean.
+          const warned = warnings.length === 0 ? ''
+            : ` — ${warnings.length} style warning${warnings.length === 1 ? '' : 's'}: ${warnings[0]}`;
+          if (!transaction) return `${name} asks for no change${warned}`;
+          operation.update(`Applying slides from ${name}`);
+          store.replaceWithHistory(applyAgentTransaction(deck, transaction), transaction.label);
+          await save();
+          // Stamp the ids this compile assigned back into the file, so saving it
+          // again replaces these slides rather than inserting them a second time.
+          const adopted = adoptAuthoredIds(file.contents, slides);
+          if (adopted) {
+            operation.update(`Writing assigned slide ids to ${name}`);
+            await window.api.htmlAdopt?.(file.path, adopted, file.contents);
+          }
+          return `Applied ${name}${warned}`;
         }
-        store.replaceWithHistory(applyAgentTransaction(deck, transaction), transaction.label);
-        await save();
-        // Stamp the ids this compile assigned back into the file, so saving it
-        // again replaces these slides rather than inserting them a second time.
-        const adopted = adoptAuthoredIds(file.contents, slides);
-        if (adopted) await window.api.htmlAdopt?.(file.path, adopted, file.contents);
-        setStatusMessage(`Applied ${name}${warned}`);
-        return;
-      }
-      setStatusMessage(`${name}: the deck kept changing while it compiled — save it again`);
+        return `${name}: the deck kept changing while it compiled — save it again`;
+      });
+      setStatusMessage(message);
     } catch (err) {
       setStatusMessage(`${name}: ${err instanceof Error ? err.message : err}`);
     }
@@ -260,22 +290,30 @@ function buildToolbar(): void {
 }
 
 async function startPresentation(speakerView = false): Promise<void> {
-  // Flush before presenting: the projector must not show a stale theme.
-  await cssEditor.flush();
-  await save();
-  const { deck, slideIndex, slideSelection } = store.get();
-  const range = rangeForSlideSelection(deck.slides, slideSelection);
-  await window.api.present(range?.start ?? slideIndex, {
-    speakerView,
-    endSlideIndex: range?.end,
+  await runOperation('Preparing presentation…', async (operation) => {
+    // Flush before presenting: the projector must not show a stale theme.
+    operation.update('Saving deck.json and theme.css');
+    await cssEditor.flush();
+    await save();
+    const { deck, slideIndex, slideSelection } = store.get();
+    const range = rangeForSlideSelection(deck.slides, slideSelection);
+    operation.update('Opening presentation windows');
+    await window.api.present(range?.start ?? slideIndex, {
+      speakerView,
+      endSlideIndex: range?.end,
+    });
   });
 }
 
 async function exportWeb(): Promise<void> {
-  await cssEditor.flush();
-  await save();
   try {
-    const dir = await window.api.exportBundle();
+    const dir = await runOperation('Preparing web export…', async (operation) => {
+      operation.update('Saving deck.json and theme.css');
+      await cssEditor.flush();
+      await save();
+      operation.update('Waiting for an export folder');
+      return window.api.exportBundle(operation.id);
+    });
     if (dir) setStatusMessage(`Exported to ${dir}`);
   } catch (err) {
     setStatusMessage(`Export failed: ${err instanceof Error ? err.message : err}`);
@@ -285,12 +323,15 @@ async function exportWeb(): Promise<void> {
 async function exportPdf(): Promise<void> {
   const choice = await showPdfExportDialog();
   if (!choice) return;
-  setStatusMessage('Preparing PDF export…');
-  await cssEditor.flush();
-  await save();
   try {
-    const result = await window.api.exportPdf({
-      mode: choice.includeEachBuildStage ? 'every' : 'final',
+    const result = await runOperation('Preparing PDF export…', async (operation) => {
+      operation.update('Saving deck.json and theme.css');
+      await cssEditor.flush();
+      await save();
+      operation.update('Waiting for a PDF destination');
+      return window.api.exportPdf({
+        mode: choice.includeEachBuildStage ? 'every' : 'final',
+      }, operation.id);
     });
     if (result) setStatusMessage(`PDF saved to ${result}`);
   } catch (err) {
@@ -385,9 +426,13 @@ function connectAgentSession(connection: AgentSessionConnection): void {
       rail.refreshPresence();
       lastAgentPresenceKey = '';
       publishAgentPresence();
+      queueAgentSessionSnapshot();
       setStatusMessage('Agent chat connected — edits sync live.');
     },
-    onDeckReplaced: (deck, label, options) => store.applyRemote(deck, label, options),
+    onDeckReplaced: (deck, label, options) => {
+      store.applyRemote(deck, label, options);
+      queueAgentSessionSnapshot();
+    },
     onPeerPresence: (state) => {
       agentPresence?.upsert(state);
       rail.refreshPresence();
@@ -399,6 +444,7 @@ function connectAgentSession(connection: AgentSessionConnection): void {
     },
     onThemeCss: (css) => {
       if (!cssEditor.hasFocus() && css !== cssEditor.getValue()) cssEditor.setValue(css);
+      queueAgentSessionSnapshot();
     },
     onStatus: (text) => setStatusMessage(`Agent session: ${text}`),
     onCleanChange: (clean) => {
@@ -430,22 +476,39 @@ function disconnectAgentSession(): void {
 }
 
 async function newPresentation(): Promise<void> {
-  const session = await window.api.newDeck();
-  if (session) await adopt(session.dir, session.deck);
+  try {
+    await runOperation('Creating presentation…', async (operation) => {
+      const session = await window.api.newDeck(operation.id);
+      if (session) await adopt(session.dir, session.deck, operation);
+    });
+  } catch (err) {
+    setStatusMessage(`Could not create presentation: ${err instanceof Error ? err.message : err}`);
+  }
 }
 
 async function openPresentation(): Promise<void> {
-  const session = await window.api.openDeck();
-  if (session) await adopt(session.dir, session.deck);
+  try {
+    await runOperation('Opening presentation…', async (operation) => {
+      const session = await window.api.openDeck(operation.id);
+      if (session) await adopt(session.dir, session.deck, operation);
+    });
+  } catch (err) {
+    setStatusMessage(`Open failed: ${err instanceof Error ? err.message : err}`);
+  }
 }
 
 async function saveAsPresentation(): Promise<void> {
-  await cssEditor.flush();
-  await save();
   try {
-    const session = await window.api.saveDeckAs();
+    const session = await runOperation('Saving a copy…', async (operation) => {
+      operation.update('Saving deck.json and theme.css');
+      await cssEditor.flush();
+      await save();
+      operation.update('Waiting for a destination folder');
+      const saved = await window.api.saveDeckAs(operation.id);
+      if (saved) await adopt(saved.dir, saved.deck, operation);
+      return saved;
+    });
     if (!session) return;
-    await adopt(session.dir, session.deck);
     setStatusMessage(`Saved as ${session.dir}`);
   } catch (err) {
     setStatusMessage(`Save As failed: ${err instanceof Error ? err.message : err}`);
@@ -453,14 +516,15 @@ async function saveAsPresentation(): Promise<void> {
 }
 
 async function importKeynotePresentation(): Promise<void> {
-  setStatusMessage('Importing… this can take a minute for a large deck.');
   try {
-    const result = await window.api.importKeynote();
+    const result = await runOperation('Importing Keynote presentation…', async (operation) => {
+      const imported = await window.api.importKeynote(operation.id);
+      if (imported) await adopt(imported.dir, imported.deck, operation);
+      return imported;
+    });
     if (!result) {
-      setStatusMessage('');
       return;
     }
-    await adopt(result.dir, result.deck);
     const skipped = Object.values(result.report.unsupported).reduce(
       (a, b) => a + b,
       0,
@@ -551,7 +615,16 @@ async function save(): Promise<void> {
     clearTimeout(saveTimer);
     saveTimer = null;
   }
-  if (!agentSessionReady) await window.api.saveDeck(store.get().deck);
+  if (agentSessionReady) {
+    await syncAgentSessionSnapshot();
+  } else {
+    await persistSessionDeck(
+      window.api,
+      store.get().deck,
+      cssEditor.getValue(),
+      false,
+    );
+  }
   try {
     // Await the latest snapshot after the deck write. Save As and window close
     // can now rely on history having reached disk rather than racing a fire-
@@ -574,10 +647,15 @@ function scheduleSave(): void {
 
 let adoptGeneration = 0;
 
-async function adopt(dir: string, deck: Parameters<typeof store.load>[0]): Promise<void> {
+async function adopt(
+  dir: string,
+  deck: Parameters<typeof store.load>[0],
+  operation?: OperationHandle,
+): Promise<void> {
   const generation = ++adoptGeneration;
   let history: NonNullable<Parameters<typeof store.load>[2]>['history'] = [];
   try {
+    operation?.update(`Reading ${dir.split('/').pop() ?? dir}/deck-history.json.gz`, 0.55);
     const loaded = await window.api.loadDeckHistory(dir);
     if (loaded.dir === dir) history = loaded.history.entries;
   } catch (error) {
@@ -586,12 +664,17 @@ async function adopt(dir: string, deck: Parameters<typeof store.load>[0]): Promi
   // Opening two decks in quick succession must not let the slower first read
   // install snapshots belonging to a document that is no longer current.
   if (generation !== adoptGeneration) return;
+  operation?.update('Building slide canvas and thumbnails', 0.7);
+  // A large rail rebuild is synchronous. Give an already-visible progress
+  // indicator a paint opportunity before Chromium starts constructing it.
+  await operation?.waitForPaint();
   store.load(deck, dir, { history });
   if (initialViewPending) {
     restoreEditorView(store, initialView);
     initialViewPending = false;
   }
   welcome.setVisible(false);
+  operation?.update(`Reading ${deck.theme}`, 0.85);
   const loadedCss = await window.api.loadTheme();
   const installedTheme = themeById(deck.themePreset);
   // The marked block belongs to the app. Refresh it when preset definitions
@@ -603,7 +686,16 @@ async function adopt(dir: string, deck: Parameters<typeof store.load>[0]): Promi
     : loadedCss;
   cssEditor.setValue(refreshedCss);
   if (refreshedCss !== loadedCss) void persistThemeCss(refreshedCss);
+  operation?.update('Loading fonts and fitting slide content', 0.95);
   themePanel.noteDeckOpened(deck);
+  // Applying the deck stylesheet can start web-font loads, and auto-fit runs
+  // again once those metrics are available. Keep opening/importing active
+  // through that initial hydration instead of announcing completion while the
+  // canvas and rail are still settling.
+  const fonts = (document as Document & { fonts?: FontFaceSet }).fonts;
+  if (fonts) await fonts.ready;
+  operation?.update('Finishing initial display', 0.99);
+  await operation?.waitForPaint();
 }
 
 /* --- keyboard, clipboard, context menu: shared shell wiring --- */
@@ -631,14 +723,40 @@ const clipboard = createClipboardActions(shellDeps);
 
 /** A transient message (import result, export path, error) shown until the next edit. */
 let statusMessage = '';
+let statusBusy = false;
+
+const operationProgress = new DelayedOperationProgress(({ message, busy }) => {
+  statusMessage = message;
+  statusBusy = busy;
+  renderStatus();
+});
+
+window.api.onOperationProgress?.((progress) => operationProgress.update(progress));
+
+async function runOperation<T>(
+  initialMessage: string,
+  action: (operation: OperationHandle) => Promise<T>,
+): Promise<T> {
+  const operation = operationProgress.begin(initialMessage);
+  try {
+    return await action(operation);
+  } finally {
+    operation.finish();
+  }
+}
 
 function setStatusMessage(text: string): void {
   statusMessage = text;
+  statusBusy = false;
   renderStatus();
 }
 
 function renderStatus(): void {
-  el('status').textContent = statusBarText(store.get(), statusMessage);
+  const status = el('status');
+  status.textContent = statusBarText(store.get(), statusMessage);
+  status.dataset.busy = statusBusy ? 'true' : 'false';
+  status.setAttribute('aria-busy', String(statusBusy));
+  status.setAttribute('aria-live', 'polite');
 }
 
 /* --- boot --- */
@@ -720,8 +838,17 @@ window.api.onDeckState((session) => {
   ) return;
   // A different deck is a genuine open; the same deck rewritten underneath us
   // is an edit, and an edit should be undoable rather than a history wipe.
-  if (session.dir !== state.dir) void adopt(session.dir, session.deck);
-  else store.replaceExternal(session.deck, session.dir);
+  if (session.dir !== state.dir) {
+    void runOperation('Opening presentation…', (operation) =>
+      adopt(session.dir, session.deck, operation)).then(() => {
+      themePanel.refreshSwatches();
+      setStatusMessage('Deck opened.');
+    }).catch((error) => {
+      setStatusMessage(`Open failed: ${error instanceof Error ? error.message : error}`);
+    });
+    return;
+  }
+  store.replaceExternal(session.deck, session.dir);
   welcome.setVisible(false);
   themePanel.refreshSwatches();
   setStatusMessage('Deck reloaded from disk.');
@@ -740,7 +867,9 @@ window.api.onAgentSessionState?.((state) => {
 
 // Reopen the deck the main process already has, if any.
 void (async () => {
-  const session = await window.api.getDeck();
-  if (session) await adopt(session.dir, session.deck);
+  await runOperation('Opening presentation…', async (operation) => {
+    const session = await window.api.getDeck();
+    if (session) await adopt(session.dir, session.deck, operation);
+  });
   themePanel.refreshSwatches();
 })();

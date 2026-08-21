@@ -183,6 +183,42 @@ describe('agent chat panel', () => {
       .toContain('vsitzmann@rhoda.ai');
   });
 
+  it('keeps shared demo account controls owner-only and labels shared prompts', () => {
+    let listener: (state: AgentChatState) => void = () => undefined;
+    const api: AgentChatApi = {
+      getAgentChatState: async () => ready(),
+      sendAgentChatMessage: async () => ready(),
+      loginAgentChat: async () => ready(),
+      switchAgentChatAccount: async () => ready(),
+      setAgentChatModel: async ({ model }) => ready({ selectedModel: model }),
+      setAgentChatReasoningEffort: async ({ effort }) => ready({ selectedReasoningEffort: effort }),
+      setAgentChatFastMode: async ({ enabled }) => ready({ fastMode: enabled }),
+      interruptAgentChat: async () => ready(),
+      resetAgentChat: async () => ready(),
+      onAgentChatState: (fn) => { listener = fn; return () => undefined; },
+    };
+    const panel = new AgentChatPanel({
+      api,
+      currentDeckPath: () => '/tmp/talk',
+      title: 'Workshop Agent · test mode',
+      userRoleLabel: 'Participant',
+      canManageAccount: false,
+    });
+    listener(ready({
+      accountLabel: 'Workshop Agent',
+      messages: [{ id: 'shared-user', role: 'user', text: '[Request from Alice]\nPolish slide 2' }],
+    }));
+    expect(panel.element.querySelector('h2')?.textContent).toBe('Workshop Agent · test mode');
+    expect(panel.element.querySelector('.agent-chat-account')?.textContent).toBe('Workshop Agent');
+    expect(panel.element.querySelector('.agent-chat-switch-account')).toBeNull();
+    expect(panel.element.querySelector('.agent-chat-message strong')?.textContent).toBe('Participant');
+
+    listener(ready({ auth: 'signedOut', accountLabel: null, models: [] }));
+    expect(panel.element.querySelector('.agent-chat-account')?.textContent)
+      .toContain('server owner needs to sign in on localhost');
+    expect(panel.element.querySelector('.agent-chat-sign-in')).toBeNull();
+  });
+
   it('lists saved deck chats and switches to a past conversation', async () => {
     let listener: (state: AgentChatState) => void = () => undefined;
     const selectAgentChat = vi.fn(async ({ chatId }: { chatId: string }) => ready({

@@ -4,6 +4,7 @@ import { fitScale } from '@shared/geometry.js';
 import { fitAutoTextElement } from '@shared/autoFit.js';
 import { isPendingSrc, pendingName, pendingToken } from '@shared/media.js';
 import { quadraticPath, shapeSvg } from '@shared/shapeSvg.js';
+import { isMediaBorderPaint, typedPropertyOwnsCss } from '@shared/nativeCss.js';
 import renderMathInElement from 'katex/contrib/auto-render';
 import 'katex/dist/katex.min.css';
 
@@ -64,7 +65,10 @@ export function renderElement(
   s.height = `${el.h}px`;
   s.opacity = String(el.opacity);
   if (el.rot) s.transform = `rotate(${el.rot}deg)`;
-  for (const [k, v] of Object.entries(el.style)) s.setProperty(k, v);
+  for (const [k, v] of Object.entries(el.style)) {
+    if (typedPropertyOwnsCss(el, k)) continue;
+    s.setProperty(k, v);
+  }
 
   const body = renderBody(el, opts);
   if (
@@ -106,7 +110,13 @@ export function mediaRadius(
   el: Extract<SlideElement, { type: 'image' | 'video' }>,
 ): string {
   if (el.maskShape === 'circle') return '50%';
-  if ((el.borderRadius ?? 0) > 0) return `${el.borderRadius}px`;
+  // Presence matters here. Older Agent HTML imports stored the radius only in
+  // `style`; once the inspector writes a typed value, even an explicit zero
+  // must take ownership and suppress that stale CSS copy.
+  if (el.borderRadius !== undefined) {
+    return el.borderRadius > 0 ? `${el.borderRadius}px` : '';
+  }
+  if (el.maskShape === 'rect') return '';
   return el.style['border-radius'] ?? '';
 }
 
@@ -177,11 +187,6 @@ export function syncMediaFrame(
     if (radius) mediaBody.style.borderRadius = radius;
     else mediaBody.style.removeProperty('border-radius');
   }
-}
-
-function isMediaBorderPaint(property: string): boolean {
-  return (property === 'border' || property.startsWith('border-'))
-    && !property.includes('radius');
 }
 
 function renderVisualEffects(

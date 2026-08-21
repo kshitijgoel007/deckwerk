@@ -13,6 +13,53 @@ import { PlayerPaintReadiness } from './playerReadiness.js';
  * collaborators as a peer so they know a presentation is running.
  */
 
+/**
+ * Browsers only grant fullscreen from a user gesture, and the click that opened
+ * this window does not carry over. So: try immediately (some browsers allow it
+ * for a freshly opened popup), and if that is refused, fall back to a hint and
+ * let the viewer's first click or keypress do it — that first gesture goes to
+ * fullscreen instead of advancing the slide.
+ */
+let awaitingFullscreenGesture = false;
+
+function hint(): HTMLElement {
+  let node = document.getElementById('fullscreen-hint');
+  if (!node) {
+    node = document.createElement('div');
+    node.id = 'fullscreen-hint';
+    node.textContent = 'Click anywhere for fullscreen';
+    node.style.cssText = 'position:fixed;left:50%;bottom:24px;transform:translateX(-50%);'
+      + 'padding:8px 16px;border-radius:999px;background:rgba(0,0,0,.7);color:#fff;'
+      + 'font:14px system-ui,sans-serif;pointer-events:none;z-index:10;';
+    document.body.appendChild(node);
+  }
+  return node;
+}
+
+function goFullscreen(): void {
+  if (document.fullscreenElement) return;
+  document.documentElement.requestFullscreen().then(() => {
+    awaitingFullscreenGesture = false;
+    hint().remove();
+  }, () => {
+    awaitingFullscreenGesture = true;
+    hint();
+  });
+}
+
+/** Returns true when this gesture was spent entering fullscreen. */
+function consumeFullscreenGesture(): boolean {
+  if (!awaitingFullscreenGesture) return false;
+  awaitingFullscreenGesture = false;
+  hint().remove();
+  void document.documentElement.requestFullscreen().catch(() => {});
+  return true;
+}
+
+window.addEventListener('keydown', (event) => {
+  if (event.key === 'f' || event.key === 'F') goFullscreen();
+}, true);
+
 const params = new URLSearchParams(location.search);
 const deckId = params.get('deck');
 if (!deckId) {
@@ -60,11 +107,15 @@ const bridge = new CollabBridge(wsUrl, name ? `${name} (presenting)` : 'Presenti
       if (!agentViewer) {
         bindPresentKeys(window, player, { onExit: () => window.close() });
         // A click advances, like a presenter remote; double-click toggles fullscreen.
-        window.addEventListener('click', () => player?.next());
+        window.addEventListener('click', () => {
+          if (consumeFullscreenGesture()) return;
+          player?.next();
+        });
         window.addEventListener('dblclick', () => {
           if (document.fullscreenElement) void document.exitFullscreen();
           else void document.documentElement.requestFullscreen();
         });
+        goFullscreen();
       }
     } else {
       replaceDeck(welcome.deck);

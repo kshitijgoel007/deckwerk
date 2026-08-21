@@ -2,7 +2,9 @@ const { app, BrowserWindow } = require('electron');
 
 const url = process.argv[2];
 const port = process.argv[3] || '9222';
-if (!url) throw new Error('usage: electron eval-browser.cjs <url> <debug-port>');
+const profileDir = process.argv[4];
+if (!url) throw new Error('usage: electron eval-browser.cjs <url> <debug-port> [profile-dir]');
+if (profileDir) app.setPath('userData', profileDir);
 app.commandLine.appendSwitch('remote-debugging-port', port);
 app.commandLine.appendSwitch('remote-allow-origins', '*');
 
