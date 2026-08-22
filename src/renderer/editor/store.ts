@@ -421,6 +421,31 @@ export class EditorStore {
     this.emit();
   }
 
+  /**
+   * Ctrl/Cmd+A in the slide rail. Selecting every slide is only meaningful
+   * alongside an empty element selection -- the two selections are exclusive
+   * everywhere else in the editor, and the rail's own commands read whichever
+   * one is populated.
+   */
+  selectAllSlides(): void {
+    const slides = this.state.deck.slides;
+    if (slides.length === 0) return;
+    this.slideSelectionAnchor = this.state.slideIndex;
+    this.state = {
+      ...this.state,
+      slideSelection: new Set(slides.map((slide) => slide.id)),
+      selection: new Set(),
+    };
+    this.emit();
+  }
+
+  /** Ctrl/Cmd+A on the canvas: every element of the slide being edited. */
+  selectAllElements(): void {
+    const slide = this.slide;
+    if (!slide) return;
+    this.select(slide.elements.map((el) => el.id));
+  }
+
   select(ids: string[], additive = false): void {
     const selection = additive ? new Set(this.state.selection) : new Set<string>();
     for (const id of ids) {

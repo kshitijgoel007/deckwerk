@@ -84,7 +84,7 @@ describe('workspace-independent agent evaluation harness', () => {
     expect(serverSource).toContain("url.searchParams.get('agent') === '1'");
     expect(serverSource).toContain("new URL('/present.html'");
     expect(presentSource).toContain("const agentViewer = params.get('agent') === '1'");
-    expect(presentSource).toContain('if (!agentViewer)');
+    expect(presentSource).toContain('if (agentViewer) return;');
     expect(presentSource).toContain("new CustomEvent('slide-player-painted'");
     expect(presentSource).toContain('readiness.painting()');
     expect(playerReadinessSource).toContain("dataset.playerStatus = 'connecting'");

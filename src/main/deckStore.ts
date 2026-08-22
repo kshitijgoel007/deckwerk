@@ -22,6 +22,31 @@ export const DECK_FILE = 'deck.json';
 export const ASSETS_DIR = 'assets';
 export const AGENT_GUIDE_FILE = 'AGENTS.md';
 
+/**
+ * Extensions a save dialog can plausibly hand us for a *new deck folder*.
+ *
+ * A deck is a directory with no extension, but the panel returns whatever text
+ * is in its name field — and clicking an existing document in the panel's
+ * browser copies that document's name, extension and all. Left alone, the
+ * result is a folder called `talk.key`, which Launch Services then reports as
+ * `com.apple.iwork.keynote.sffkey`: Finder draws it with a Keynote icon and
+ * double-clicking it opens Keynote, which cannot read it.
+ *
+ * Deliberately a fixed list rather than "strip any dotted suffix", so a deck
+ * legitimately named `Q3 2026 v1.2` keeps its `.2`.
+ */
+const PRESENTATION_EXTENSIONS = new Set(['.key', '.keynote', '.pptx', '.ppt', '.pdf', '.deck']);
+
+/**
+ * Normalise a path chosen in a save dialog into a deck folder path, dropping a
+ * presentation extension the user did not mean to type.
+ */
+export function deckFolderPath(chosen: string): string {
+  const ext = extname(chosen).toLowerCase();
+  if (!PRESENTATION_EXTENSIONS.has(ext)) return chosen;
+  return chosen.slice(0, -ext.length);
+}
+
 
 const DEFAULT_THEME = `/* Fonts, sizes and colours live here. The editor never rewrites this file. */
 

@@ -3,7 +3,9 @@ import '../player/type.css';
 import { Player } from '../player/player.js';
 import { bindPresentKeys } from '../player/keys.js';
 import { CollabBridge } from './collabBridge.js';
+import { createConnectionNotice } from './connectionNotice.js';
 import { PlayerPaintReadiness } from './playerReadiness.js';
+import { trackVideoLoading } from '../player/videoLoadingProgress.js';
 
 /**
  * The collab Present view: the real Player in a fullscreen-able browser tab,
@@ -97,39 +99,91 @@ function replaceDeck(deck: Parameters<Player['setDeck']>[0]): void {
   readiness.painting();
 }
 
+/**
+ * Put the deck on screen and wire the presenter controls.
+ *
+ * Called by whichever source produces a deck first: the parent tab's seed when
+ * embedded, or this view's own WebSocket welcome. Idempotent, so a late arrival
+ * reconciles the deck instead of building a second player.
+ */
+function startPlayer(
+  deck: Parameters<Player['setDeck']>[0],
+  themeCss: string | null,
+  source: 'seed' | 'session',
+): void {
+  if (themeCss !== null) themeTag.textContent = themeCss;
+  if (player) {
+    replaceDeck(deck);
+    return;
+  }
+  // Which source got the deck on screen first. Worth having in the DOM: it is
+  // the difference between painting immediately and waiting out a WebSocket
+  // handshake, and it is otherwise invisible once the slide is up.
+  document.documentElement.dataset.presentSource = source;
+  // Over a remote server video bytes arrive well after the slide paints; show
+  // per-video progress and a page pill instead of unexplained black boxes.
+  trackVideoLoading(document.getElementById('stage')!);
+  player = new Player({
+    deck,
+    container: document.getElementById('stage')!,
+    resolveSrc: (src) =>
+      `/decks/${encodeURIComponent(deckId!)}/${src.replace(/^\/+/, '').split('/').map(encodeURIComponent).join('/')}`,
+  });
+  player.goToSlide(startSlide);
+  readiness.painting();
+  // A deck arriving while the page-owning "disconnected" notice is up (e.g. a
+  // late seed from the editor tab) means the slide is visible now — re-render
+  // the notice so it shrinks to a pill instead of covering the presentation.
+  if (connectionNotice.state() === 'disconnected') connectionNotice.showDisconnected();
+  if (agentViewer) return;
+  bindPresentKeys(window, player, { onExit: exitPresentation });
+  // A click advances, like a presenter remote; double-click toggles fullscreen.
+  window.addEventListener('click', () => {
+    if (consumeFullscreenGesture()) return;
+    player?.next();
+  });
+  window.addEventListener('dblclick', () => {
+    if (embedded) exitPresentation();
+    else if (document.fullscreenElement) void document.exitFullscreen();
+    else void document.documentElement.requestFullscreen();
+  });
+  goFullscreen();
+  window.focus();
+}
+
+/**
+ * When the editor tab mounted this view, it already has the deck and the theme
+ * in memory. Ask for them: opening a second WebSocket and waiting for its
+ * welcome costs about a second, and that second was spent showing black.
+ * The socket still connects, and its welcome remains authoritative.
+ */
+if (embedded) {
+  window.addEventListener('message', (event: MessageEvent) => {
+    if (event.origin !== location.origin) return;
+    const data = event.data as { type?: string; deck?: unknown; themeCss?: string } | null;
+    if (data?.type !== 'present-seed' || !data.deck) return;
+    if (player) return;
+    document.title = 'Presenting';
+    startPlayer(data.deck as Parameters<Player['setDeck']>[0], data.themeCss ?? null, 'seed');
+  });
+  window.parent.postMessage({ type: 'present-hello' }, location.origin);
+}
+
+// A dead server must never mean an unexplained blank page. With a deck on
+// screen (seeded or previously welcomed) a lost socket shows a pill and the
+// presentation keeps working from memory; with no deck yet, the notice owns
+// the page and says the server is unreachable.
+const connectionNotice = createConnectionNotice({
+  mode: 'present',
+  blocking: () => player === null,
+});
+
 const wsUrl = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws?deck=${encodeURIComponent(deckId)}`;
 const name = localStorage.getItem('collab-name');
 const bridge = new CollabBridge(wsUrl, name ? `${name} (presenting)` : 'Presenting', {
   onWelcome: (welcome) => {
-    themeTag.textContent = welcome.themeCss;
     document.title = `${agentViewer ? 'Agent viewer' : 'Presenting'} — ${welcome.deck.title}`;
-    if (!player) {
-      player = new Player({
-        deck: welcome.deck,
-        container: document.getElementById('stage')!,
-        resolveSrc: (src) =>
-          `/decks/${encodeURIComponent(deckId)}/${src.replace(/^\/+/, '').split('/').map(encodeURIComponent).join('/')}`,
-      });
-      player.goToSlide(startSlide);
-      readiness.painting();
-      if (!agentViewer) {
-        bindPresentKeys(window, player, { onExit: exitPresentation });
-        // A click advances, like a presenter remote; double-click toggles fullscreen.
-        window.addEventListener('click', () => {
-          if (consumeFullscreenGesture()) return;
-          player?.next();
-        });
-        window.addEventListener('dblclick', () => {
-          if (embedded) exitPresentation();
-          else if (document.fullscreenElement) void document.exitFullscreen();
-          else void document.documentElement.requestFullscreen();
-        });
-        goFullscreen();
-        window.focus();
-      }
-    } else {
-      replaceDeck(welcome.deck);
-    }
+    startPlayer(welcome.deck, welcome.themeCss, 'session');
   },
   onDeckReplaced: (deck) => replaceDeck(deck),
   onPeerPresence: () => {},
@@ -140,6 +194,11 @@ const bridge = new CollabBridge(wsUrl, name ? `${name} (presenting)` : 'Presenti
   },
   onStatus: () => {},
   onCleanChange: () => {},
+  onConnectionChange: (isConnected) => {
+    if (isConnected) connectionNotice.hide();
+    else connectionNotice.showDisconnected();
+  },
+  onEnded: () => connectionNotice.showEnded('The host ended this presentation.'),
 });
 
 bridge.connect();

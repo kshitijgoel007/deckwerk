@@ -44,6 +44,11 @@ const IGNORED_ATTRIBUTES = new Set([
   'data-editing',
   'data-selected',
   'aria-live',
+  // Load-scheduling state, not model-derived presentation: the media load
+  // gate promotes preview videos 'none' → 'metadata' one at a time, and the
+  // player stamps the owning element id on videos it reuses across slides.
+  'preload',
+  'data-player-element-id',
 ]);
 
 /**
@@ -86,7 +91,7 @@ export function findRenderDivergences(
 ): RenderDivergence[] {
   const live = slideLayer.querySelector<HTMLElement>(':scope > .slide');
   if (!live) return [];
-  const fresh = renderSlide(slide, { resolveSrc });
+  const fresh = renderSlide(slide, { resolveSrc, mediaPreload: 'metadata' });
   const skip = new Set(options.skipElementIds ?? []);
   const divergences: RenderDivergence[] = [];
 

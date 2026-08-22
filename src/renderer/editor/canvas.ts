@@ -98,6 +98,16 @@ export class EditorCanvas {
    * element every time you select it.
    */
   private dragStarted = false;
+
+  /**
+   * Decoded `<video>` elements rescued from slide rebuilds, keyed by resolved
+   * source URL. A freshly created `<video>` paints black until the network
+   * round-trips and a frame is decoded — seconds on a remote collab session —
+   * so when a rebuild (most visibly: switching slides) would recreate a video
+   * whose media this canvas has already decoded, the old element is adopted
+   * into the new DOM instead. See docs/media-loading.md, "DOM churn".
+   */
+  private videoPool = new Map<string, HTMLVideoElement[]>();
   /** The slide object currently drawn, used to skip needless rebuilds. */
   private renderedSlide: Slide | null = null;
   private guides: SnapLine[] = [];
@@ -266,9 +276,11 @@ export class EditorCanvas {
       if (video && !video.paused) playing.add(node.dataset.elementId!);
     }
 
+    this.harvestVideos();
     this.slideLayer.replaceChildren(
-      renderSlide(slide, { resolveSrc: (src) => window.api.assetUrl(src) }),
+      renderSlide(slide, { resolveSrc: (src) => window.api.assetUrl(src), mediaPreload: 'metadata' }),
     );
+    this.adoptVideos(slide);
 
     // Videos hold on their first frame while editing: a wall of looping clips
     // makes the canvas unreadable and burns CPU. Playback is opt-in per video,
@@ -293,6 +305,66 @@ export class EditorCanvas {
 
     this.rescale();
     this.drawOverlay(deck, slide.elements, selection);
+  }
+
+  /**
+   * Move the outgoing slide's decoded videos into the pool before the layer is
+   * torn down, so the next render of the same media paints instantly.
+   */
+  private harvestVideos(): void {
+    for (const video of this.slideLayer.querySelectorAll('video')) {
+      // No decoded frame yet → nothing worth keeping alive.
+      if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) continue;
+      // Keyed by presentation, not by file: an element is only reusable in a
+      // slot that shows the same frame of the same file through the same
+      // geometry. See `videoPresentationKey`.
+      const key = video.dataset.mediaKey;
+      if (!key) continue;
+      const list = this.videoPool.get(key) ?? [];
+      // Cap per key: enough for the densest realistic slide, without
+      // hoarding decoder resources for media the deck has stopped showing.
+      if (list.length >= 8) continue;
+      video.pause();
+      list.push(video);
+      this.videoPool.set(key, list);
+    }
+  }
+
+  /**
+   * Replace freshly created (frameless, still-loading) `<video>` elements in
+   * the new slide DOM with pooled ones that already hold a decoded frame.
+   *
+   * Only an element with the same presentation key is adopted, so the frame it
+   * is already holding is exactly the frame this slot wants, painted through
+   * exactly this slot's geometry: no seek, and nothing for the compositor to
+   * stretch in the meantime.
+   */
+  private adoptVideos(slide: Slide): void {
+    for (const el of slide.elements) {
+      if (el.type !== 'video') continue;
+      const fresh = this.videoNode(el.id);
+      if (!fresh?.dataset.mediaKey) continue;
+      const pooled = this.videoPool.get(fresh.dataset.mediaKey)?.pop();
+      if (!pooled) continue;
+      pooled.style.cssText = fresh.style.cssText;
+      pooled.preload = fresh.preload;
+      pooled.playsInline = true;
+      pooled.removeAttribute('autoplay');
+      applyVideoPlaybackState(pooled, el, { resolveSrc: (src) => window.api.assetUrl(src) });
+      pooled.pause();
+      // Matching keys mean the poster frame already matches too; a looping
+      // clip that drifted still gets nudged back, which is invisible because
+      // the geometry is identical either way.
+      const posterTime = el.start > 0 ? el.start : 0.03;
+      if (pooled.dataset.holdFrame !== 'true' && Math.abs(pooled.currentTime - posterTime) > 0.05) {
+        pooled.currentTime = posterTime;
+      }
+      fresh.replaceWith(pooled);
+      // Abort the fresh element's just-started fetch; the pooled element has
+      // the bytes and the network is the scarce resource here.
+      fresh.removeAttribute('src');
+      fresh.load();
+    }
   }
 
   /**
@@ -1801,8 +1873,37 @@ export class EditorCanvas {
     const ordered = [...slide.elements].sort((a, b) => b.z - a.z);
     for (const el of ordered) {
       if (elementContainsPoint(el, point, LINE_HIT_SCREEN_PX / this.scale)) return el;
+      // Text that outgrew its box is painted outside it, and a box-only hit
+      // test made those visible glyphs unclickable: clicking the words you
+      // can see selected whatever happened to be behind them. Overflowing
+      // text belongs to its box, so it selects its box.
+      if (el.type !== 'text') continue;
+      if (rectContainsPoint(el, textPaintBox(el, this.textPaintMetrics(el)), point)) return el;
     }
     return null;
+  }
+
+  /**
+   * Where a text element's content actually landed, relative to the element's
+   * own origin, in slide units.
+   *
+   * Read from layout (`offset*`) rather than `getBoundingClientRect`, so the
+   * stage's zoom transform and any rotation are already out of the numbers:
+   * the wrapper is the content's offset parent, and both live in slide space.
+   */
+  private textPaintMetrics(el: SlideElement): PaintMetrics | null {
+    if (el.type !== 'text') return null;
+    const node = this.slideLayer.querySelector<HTMLElement>(
+      `[data-element-id="${CSS.escape(el.id)}"]`,
+    );
+    const content = node?.querySelector<HTMLElement>(':scope > .text-body > .text-content');
+    if (!content) return null;
+    return {
+      left: content.offsetLeft,
+      top: content.offsetTop,
+      width: content.offsetWidth,
+      height: content.offsetHeight,
+    };
   }
 
   /**
@@ -2045,6 +2146,59 @@ function rotatedBounds(el: SlideElement): Rect {
 }
 
 /** Geometry-aware hit testing, with a screen-derived tolerance for strokes. */
+/** Layout of a text element's content box, relative to the element's origin. */
+export interface PaintMetrics {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * The rect a text element is actually visible in: its own box, grown to cover
+ * any content that spilled out of it.
+ *
+ * Auto-fit and no-wrap boxes clip their overflow (see type.css), so for those
+ * the box is the whole of what is painted and the element's own bounds stand.
+ */
+export function textPaintBox(
+  el: SlideElement,
+  painted: PaintMetrics | null,
+): { x: number; y: number; w: number; h: number } {
+  const box = { x: el.x, y: el.y, w: el.w, h: el.h };
+  if (el.type !== 'text' || !painted || el.autoFit || el.noWrap) return box;
+  const left = Math.min(0, painted.left);
+  const top = Math.min(0, painted.top);
+  const right = Math.max(el.w, painted.left + painted.width);
+  const bottom = Math.max(el.h, painted.top + painted.height);
+  return { x: el.x + left, y: el.y + top, w: right - left, h: bottom - top };
+}
+
+/**
+ * Whether a canvas point falls inside a rect that rotates with `el`.
+ *
+ * A grown text rect is still drawn under the element's own rotation, about
+ * the element's own centre -- not the grown rect's.
+ */
+export function rectContainsPoint(
+  el: SlideElement,
+  rect: { x: number; y: number; w: number; h: number },
+  point: { x: number; y: number },
+): boolean {
+  if (rect.w <= 0 || rect.h <= 0) return false;
+  let { x, y } = point;
+  if (el.rot) {
+    const cx = el.x + el.w / 2;
+    const cy = el.y + el.h / 2;
+    const rad = (-el.rot * Math.PI) / 180;
+    const dx = x - cx;
+    const dy = y - cy;
+    x = cx + dx * Math.cos(rad) - dy * Math.sin(rad);
+    y = cy + dx * Math.sin(rad) + dy * Math.cos(rad);
+  }
+  return x >= rect.x && x <= rect.x + rect.w && y >= rect.y && y <= rect.y + rect.h;
+}
+
 export function elementContainsPoint(
   el: SlideElement,
   point: { x: number; y: number },

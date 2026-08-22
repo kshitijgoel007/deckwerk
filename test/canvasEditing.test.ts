@@ -8,7 +8,14 @@ import {
   elementContainsPoint,
   lineEndpoints,
   lineFromEndpoints,
+  rectContainsPoint,
+  textPaintBox,
 } from '../src/renderer/editor/canvas.js';
+import {
+  bindEditorKeys,
+  type ClipboardActions,
+  type ShellDeps,
+} from '../src/renderer/editor/shellWiring.js';
 import {
   createShapeInsertPicker,
   insertLine,
@@ -141,6 +148,26 @@ function setup() {
   const canvas = new EditorCanvas(host, store);
   return { store, canvas, host };
 }
+
+/**
+ * `bindEditorKeys` only reaches for `rail` on the `n` shortcut and `save` on
+ * Cmd+S, so the keyboard tests can stub both and still drive the real handler.
+ */
+function shellDeps(store: EditorStore) {
+  return {
+    store,
+    canvas: new EditorCanvas(document.createElement('div'), store),
+    rail: { addSlide: () => {} } as unknown as ShellDeps['rail'],
+    save: async () => {},
+    setStatusMessage: () => {},
+  } satisfies ShellDeps;
+}
+
+const noopClipboard = () => ({
+  copyToClipboard: async () => null,
+  cutToClipboard: async () => {},
+  pasteClipboard: async () => {},
+} satisfies ClipboardActions);
 
 const bodyOf = (host: HTMLElement, id: string): HTMLElement =>
   host.querySelector(`[data-element-id="${id}"] .text-content`)! as HTMLElement;
@@ -1588,6 +1615,126 @@ describe('object creation and manipulation', () => {
     expect(text.html).toBe('New text');
     expect(text.class).toContain('placeholder');
     expect([...store.get().selection]).toEqual([text.id]);
+    // A new box fits its text rather than spilling out of itself.
+    expect(text.autoFit).toBe(true);
+  });
+
+  it('gives layout placeholders the same auto-fit default', () => {
+    const { store } = setup();
+    store.commit((deck) => applySlideLayout(deck.slides[0], 'standard'));
+    const placeholders = store.slide!.elements.filter(
+      (el) => el.type === 'text' && el.class.some((name) => name.startsWith('role-')),
+    );
+    expect(placeholders.length).toBeGreaterThan(0);
+    for (const el of placeholders) {
+      expect(el.type === 'text' && el.autoFit).toBe(true);
+    }
+  });
+
+  /**
+   * Overflowing text is painted outside its element box, but the hit test only
+   * knew about the box: clicking the words on screen selected whatever was
+   * behind them, or nothing. `textPaintBox` is the geometry that fixes it.
+   */
+  describe('hit-testing text that overflowed its box', () => {
+    const box = {
+      id: 'text-overflow', type: 'text' as const, x: 100, y: 100, w: 200, h: 50,
+      rot: 0, z: 1, opacity: 1, class: [], style: {}, html: 'lots of words',
+      align: 'left' as const, valign: 'top' as const,
+    };
+    // Content taller than the box: 180px of text in a 50px-high element.
+    const spilling = { left: 0, top: 0, width: 200, height: 180 };
+
+    it('grows the hit rect to cover the spilled text', () => {
+      const rect = textPaintBox(box, spilling);
+      expect(rect).toEqual({ x: 100, y: 100, w: 200, h: 180 });
+      // A point on the visible overflow, below the box, now hits the box.
+      expect(elementContainsPoint(box, { x: 150, y: 220 })).toBe(false);
+      expect(rectContainsPoint(box, rect, { x: 150, y: 220 })).toBe(true);
+      // Well past the painted text still misses.
+      expect(rectContainsPoint(box, rect, { x: 150, y: 320 })).toBe(false);
+    });
+
+    it('covers text that spills upwards or sideways too', () => {
+      const rect = textPaintBox(box, { left: -30, top: -40, width: 260, height: 90 });
+      expect(rect).toEqual({ x: 70, y: 60, w: 260, h: 90 });
+    });
+
+    it('leaves the box alone when nothing overflowed', () => {
+      expect(textPaintBox(box, { left: 0, top: 0, width: 200, height: 30 }))
+        .toEqual({ x: 100, y: 100, w: 200, h: 50 });
+    });
+
+    it('leaves clipping boxes alone: auto-fit and no-wrap paint nothing outside', () => {
+      expect(textPaintBox({ ...box, autoFit: true }, spilling))
+        .toEqual({ x: 100, y: 100, w: 200, h: 50 });
+      expect(textPaintBox({ ...box, noWrap: true }, spilling))
+        .toEqual({ x: 100, y: 100, w: 200, h: 50 });
+    });
+
+    it('rotates the grown rect about the element, not about itself', () => {
+      const rotated = { ...box, rot: 90 };
+      const rect = textPaintBox(rotated, spilling);
+      // The overflow now extends to the element's left in screen space.
+      expect(rectContainsPoint(rotated, rect, { x: 60, y: 125 })).toBe(true);
+      // Straight down from the centre is outside once the rect turns with it.
+      expect(rectContainsPoint(rotated, rect, { x: 200, y: 300 })).toBe(false);
+    });
+  });
+
+  /**
+   * Ctrl/Cmd+A used to fall through to Chromium, which selected every string
+   * of chrome text on the page. It should select deck objects instead, and
+   * which objects depends on what has focus.
+   */
+  describe('select all', () => {
+    const pressSelectAll = (target: EventTarget) => target.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'a', ctrlKey: true, bubbles: true, cancelable: true }),
+    );
+
+    it('selects every element of the current slide from the canvas', () => {
+      const { store, host } = setup();
+      bindEditorKeys(shellDeps(store), noopClipboard());
+      const ids = store.slide!.elements.map((el) => el.id);
+      expect(ids.length).toBeGreaterThan(1);
+
+      pressSelectAll(host);
+      expect([...store.get().selection].sort()).toEqual([...ids].sort());
+      expect([...store.get().slideSelection]).toEqual([store.slide!.id]);
+    });
+
+    it('selects every slide when the rail has focus', () => {
+      const { store } = setup();
+      const rail = document.createElement('aside');
+      rail.id = 'rail';
+      const row = document.createElement('button');
+      rail.appendChild(row);
+      document.body.appendChild(rail);
+      bindEditorKeys(shellDeps(store), noopClipboard());
+      store.commit((deck) => deck.slides.push({ ...deck.slides[0], id: 's2', elements: [] }));
+
+      pressSelectAll(row);
+      expect([...store.get().slideSelection].sort())
+        .toEqual(store.get().deck.slides.map((s) => s.id).sort());
+      // Slide selection and element selection are exclusive.
+      expect(store.get().selection.size).toBe(0);
+      rail.remove();
+    });
+
+    it('leaves select-all alone while typing into a field', () => {
+      const { store } = setup();
+      bindEditorKeys(shellDeps(store), noopClipboard());
+      const input = document.createElement('input');
+      document.body.appendChild(input);
+
+      const event = new KeyboardEvent(
+        'keydown', { key: 'a', ctrlKey: true, bubbles: true, cancelable: true },
+      );
+      input.dispatchEvent(event);
+      expect(event.defaultPrevented).toBe(false);
+      expect(store.get().selection.size).toBe(0);
+      input.remove();
+    });
   });
 
   it('updates the rendered layout class when switching presets on the fast path', () => {

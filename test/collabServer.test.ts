@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import WebSocket from 'ws';
+import { connect as connect_ } from 'node:net';
 import { emptyDeck, parseDeck, type Deck } from '../src/shared/deck.js';
 import { saveDeck } from '../src/main/deckStore.js';
 import { COLLAB_PROTOCOL_VERSION, ServerMessageSchema, type ClientMessage, type ServerMessage } from '../src/shared/collab.js';
@@ -436,6 +437,23 @@ describe('collab server', () => {
     const invalid = await fetch(`${base}/assets/clip.mp4`, { headers: { range: 'bytes=99-' } });
     expect(invalid.status).toBe(416);
 
+    // Assets must be cacheable: `no-store` here once made every <video>
+    // element refetch its whole file on each mount, and a deck reusing one
+    // clip across many elements starved the origin's connection pool.
+    const etag = full.headers.get('etag');
+    expect(etag).toBeTruthy();
+    expect(full.headers.get('cache-control')).toBe('public, no-cache');
+    const revalidated = await fetch(`${base}/assets/clip.mp4`, {
+      headers: { 'if-none-match': etag! },
+    });
+    expect(revalidated.status).toBe(304);
+
+    // A content-hashed name (what importAsset writes) is immutable.
+    await writeFile(join(deckDir, 'assets', 'clip.05a38d7a.h264.mp4'), bytes);
+    const hashed = await fetch(`${base}/assets/clip.05a38d7a.h264.mp4`);
+    expect(hashed.status).toBe(200);
+    expect(hashed.headers.get('cache-control')).toBe('public, max-age=31536000, immutable');
+
     for (const url of [
       `${base}/assets/../deck.json`,
       `${base}/assets/..%2Fdeck.json`,
@@ -444,6 +462,35 @@ describe('collab server', () => {
       const escape = await fetch(url);
       expect([403, 404]).toContain(escape.status);
     }
+  });
+
+  it('serves the client bundle cacheably: hashed files immutable, shells revalidated', async () => {
+    // `no-store` on the bundle once made every click on Present re-download
+    // present.html and its ~1 MB of JS over the network — behind the deck's
+    // own video fetches, that was a blank screen on every single attempt.
+    await server.close();
+    const clientDir = join(rootDir, 'client');
+    await mkdir(join(clientDir, 'app'), { recursive: true });
+    await writeFile(join(clientDir, 'present.html'), '<!doctype html>present', 'utf8');
+    await writeFile(join(clientDir, 'app', 'present-Ckpnpoe9.js'), '// bundle', 'utf8');
+    server = await startCollabServer({ rootDir, port: 0, host: '127.0.0.1', clientDir });
+    const base = `http://127.0.0.1:${server.port}`;
+
+    // Vite output carries a content hash in the name: cache it forever.
+    const bundle = await fetch(`${base}/app/present-Ckpnpoe9.js`);
+    expect(bundle.status).toBe(200);
+    expect(bundle.headers.get('cache-control')).toBe('public, max-age=31536000, immutable');
+
+    // The HTML shells are not hashed: revalidate with an ETag, 304 on repeat.
+    const shell = await fetch(`${base}/present.html`);
+    expect(shell.status).toBe(200);
+    expect(shell.headers.get('cache-control')).toBe('public, no-cache');
+    const etag = shell.headers.get('etag');
+    expect(etag).toBeTruthy();
+    const revalidated = await fetch(`${base}/present.html`, {
+      headers: { 'if-none-match': etag! },
+    });
+    expect(revalidated.status).toBe(304);
   });
 
   it('uploads media through the content-hash importer', async () => {
@@ -829,6 +876,59 @@ describe('collab server', () => {
     });
     expect(conflict.status).toBe(409);
     expect(await conflict.json()).toMatchObject({ error: 'revision conflict', expected: draft.revision });
+  }, 20_000);
+
+  /**
+   * "End collaboration" is `POST /api/end` -> `onSessionEnd` -> `close()`.
+   * Every browser in the session leaves connections behind that never go
+   * idle on their own: a <video> that has buffered enough simply stops
+   * reading its range response, and that response stays open. `close()`
+   * waits for exactly those, so the host clicked the button and nothing
+   * happened. Ending the session means disconnecting everyone, so the
+   * teardown has to be able to finish while a stalled reader is attached.
+   */
+  it('ends the session even while a client is holding a stalled response open', async () => {
+    await server.close();
+    let ended = 0;
+    server = await startCollabServer({
+      rootDir,
+      port: 0,
+      host: '127.0.0.1',
+      hostedDeckId: DECK_ID,
+      onSessionEnd: () => { ended += 1; },
+    });
+
+    // Big enough that the read stream blocks on socket backpressure rather
+    // than flushing the whole body into the kernel buffer and completing.
+    await mkdir(join(deckDir, 'assets'), { recursive: true });
+    await writeFile(join(deckDir, 'assets', 'big.mp4'), Buffer.alloc(16 * 1024 * 1024, 7));
+
+    const stalled = connect_({ port: server.port, host: '127.0.0.1' });
+    await new Promise<void>((resolve, reject) => {
+      stalled.once('connect', resolve);
+      stalled.once('error', reject);
+    });
+    // Ask for the file and then never read a byte of the answer.
+    stalled.write(
+      `GET /assets/big.mp4?deck=${DECK_ID} HTTP/1.1\r\n`
+      + 'Host: 127.0.0.1\r\nConnection: keep-alive\r\nRange: bytes=0-\r\n\r\n',
+    );
+    stalled.pause();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    const end = await fetch(`http://127.0.0.1:${server.port}/api/end`, { method: 'POST' });
+    expect(end.status).toBe(200);
+    expect(ended).toBe(1);
+
+    const closed = server.close().then(() => 'closed' as const);
+    const outcome = await Promise.race([
+      closed,
+      new Promise((resolve) => setTimeout(() => resolve('hung'), 5_000)),
+    ]);
+    expect(outcome).toBe('closed');
+    stalled.destroy();
+    // afterEach closes again; a second close must stay harmless.
+    server = await startCollabServer({ rootDir, port: 0, host: '127.0.0.1' });
   }, 20_000);
 
   it('saves and relays theme edits', async () => {

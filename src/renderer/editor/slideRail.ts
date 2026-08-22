@@ -1,4 +1,5 @@
 import { makeId } from '@shared/geometry.js';
+import { recoverPreviewFrames } from '../player/previewFrameRecovery.js';
 import { renderSlide } from '../player/render.js';
 import { applySlideLayout } from './slideLayouts.js';
 import { newComment, openCommentsPopover, openCount } from './comments.js';
@@ -255,6 +256,13 @@ export class SlideRail {
     slide: ReturnType<EditorStore['get']>['deck']['slides'][number],
   ): HTMLElement {
     let thumb = this.thumbCache.get(slide);
+    if (thumb) {
+      // A cached thumbnail spends time detached while the rail rebuilds, and
+      // the load gate aborts the fetch of a detached element. Re-queue
+      // anything that came back without a frame rather than re-appending a
+      // black box. See previewFrameRecovery.ts.
+      recoverPreviewFrames(thumb);
+    }
     if (!thumb) {
       thumb = document.createElement('div');
       thumb.className = 'rail-thumb';
@@ -266,12 +274,12 @@ export class SlideRail {
       inner.style.height = `${deck.canvas.h}px`;
       if (slide.background.color) inner.style.background = slide.background.color;
       inner.appendChild(
-        renderSlide(slide, { resolveSrc: (src) => window.api.assetUrl(src) }),
+        renderSlide(slide, { resolveSrc: (src) => window.api.assetUrl(src), mediaPreload: 'metadata' }),
       );
       for (const video of inner.querySelectorAll('video')) {
         video.removeAttribute('autoplay');
-        // Decode one frame so the thumbnail shows a picture, then hold.
-        video.preload = 'auto';
+        // renderSlide's 'metadata' preload decodes exactly one poster frame,
+        // so the thumbnail shows a picture without buffering the clip.
         video.pause();
       }
       thumb.appendChild(inner);

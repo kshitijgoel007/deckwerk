@@ -148,6 +148,91 @@ describe('Magic Move matching', () => {
     ]);
   });
 
+  /**
+   * A `<video>` paints nothing until a frame is decoded, so a preview surface
+   * that is rebuilt goes black until its poster-frame seek lands again --
+   * seconds, on a remote session. Every pairing click re-renders this panel,
+   * which is why the Magic Move previews used to flash (and, behind the load
+   * gate, sometimes stay) black. The surfaces must be reconciled, not rebuilt.
+   */
+  describe('preview surfaces keep their decoded videos', () => {
+    beforeEach(() => {
+      // jsdom has no media stack; the panel only needs these to not throw.
+      HTMLMediaElement.prototype.pause = function () {};
+      HTMLMediaElement.prototype.load = function () {};
+    });
+
+    function videoDeck() {
+      const deck = twoSlideDeck();
+      const clip = (id: string, x: number): SlideElement => ({
+        id, type: 'video', x, y: 200, w: 400, h: 225, rot: 0, z: 2, opacity: 1,
+        class: [], style: {}, src: 'assets/clip.05a38d7a.mp4', fit: 'contain',
+        start: 0, end: null, autoplay: false, loop: false, muted: true,
+        controls: false, poster: null, sourceBox: null,
+      } as unknown as SlideElement);
+      deck.slides[0].elements.push(clip('vid-a', 100));
+      deck.slides[1].elements.push(clip('vid-b', 700));
+      return deck;
+    }
+
+    /** Pretend every mounted video has decoded its poster frame. */
+    function markDecoded(root: ParentNode): HTMLVideoElement[] {
+      const videos = [...root.querySelectorAll('video')];
+      for (const video of videos) {
+        Object.defineProperty(video, 'readyState', {
+          configurable: true,
+          get: () => HTMLMediaElement.HAVE_CURRENT_DATA,
+        });
+      }
+      return videos;
+    }
+
+    it('reuses the same elements when only the selection changed', () => {
+      const store = new EditorStore(videoDeck(), '/tmp/magic');
+      const host = document.createElement('div');
+      document.body.appendChild(host);
+      new MagicMovePanel(host, store);
+      host.querySelector<HTMLButtonElement>('.magic-open')!.click();
+      const modal = document.querySelector('.magic-modal')!;
+      const before = markDecoded(modal);
+      expect(before).toHaveLength(2);
+
+      // Selecting a source object re-renders the panel and the modal.
+      modal.querySelector<HTMLButtonElement>('.magic-list-pick[data-side="source"][data-element-id="vid-a"]')!.click();
+
+      // Identity, not structure: a rebuilt element looks identical in the DOM
+      // and is exactly the black-preview bug.
+      const after = [...document.querySelectorAll('.magic-modal video')];
+      expect(after.length).toBe(before.length);
+      expect(after.every((video, i) => video === before[i])).toBe(true);
+      document.querySelector<HTMLButtonElement>('.magic-modal-close')!.click();
+      host.remove();
+    });
+
+    it('adopts the decoded elements when an edit rebuilds the surface', () => {
+      const store = new EditorStore(videoDeck(), '/tmp/magic');
+      const host = document.createElement('div');
+      document.body.appendChild(host);
+      new MagicMovePanel(host, store);
+      const before = markDecoded(host);
+      expect(before).toHaveLength(2);
+
+      // A commit clones the deck, so the surfaces are rebuilt around new
+      // slide objects -- the decoded elements must come along.
+      store.commit((deck) => {
+        deck.slides[1].magicMoveFromPrevious = true;
+      }, { label: 'Enable Magic Move' });
+
+      const after = [...host.querySelectorAll('video')];
+      expect(after).toHaveLength(2);
+      expect(after.every((video) => before.includes(video))).toBe(true);
+      // The freshly rendered elements that they replaced must not keep
+      // fetching; the network is the scarce resource on a remote session.
+      for (const video of after) expect(video.getAttribute('src')).toBeTruthy();
+      host.remove();
+    });
+  });
+
   it('enables Magic Move from the panel button even with no matches to pair', () => {
     const store = new EditorStore(twoSlideDeck(), '/tmp/magic');
     const host = document.createElement('div');

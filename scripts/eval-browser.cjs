@@ -12,6 +12,12 @@ app.commandLine.appendSwitch('remote-allow-origins', '*');
 // suspended "to save power". Without this, no test could ever observe a clip
 // actually playing.
 app.commandLine.appendSwitch('disable-background-media-suspend');
+// These windows are hidden, and Chromium throttles timers and backgrounds
+// renderers it cannot see. Any timing a test measures would be quantised to
+// the throttle interval rather than reflecting the code under test.
+app.commandLine.appendSwitch('disable-background-timer-throttling');
+app.commandLine.appendSwitch('disable-renderer-backgrounding');
+app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 
 let mainWindow;

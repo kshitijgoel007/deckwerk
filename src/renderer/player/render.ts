@@ -3,6 +3,7 @@ import type { Deck, MediaEffect, Slide, SlideElement } from '@shared/deck.js';
 import { fitScale } from '@shared/geometry.js';
 import { fitAutoTextElement } from '@shared/autoFit.js';
 import { isPendingSrc, pendingName, pendingToken } from '@shared/media.js';
+import { gateVideoLoad } from './mediaLoadGate.js';
 import { quadraticPath, shapeSvg } from '@shared/shapeSvg.js';
 import { isMediaBorderPaint, typedPropertyOwnsCss } from '@shared/nativeCss.js';
 import renderMathInElement from 'katex/contrib/auto-render';
@@ -21,6 +22,20 @@ import 'katex/dist/katex.min.css';
  */
 export interface RenderOptions {
   resolveSrc: (src: string) => string;
+  /**
+   * How much of each video to fetch when the slide mounts.
+   *
+   * 'auto' — the player, where playback is imminent and buffering ahead is the
+   * point. 'metadata' — every preview surface (editor canvas, slide rail,
+   * Magic Move panel, PDF pages): fetch the container header, then seek one
+   * frame so the element shows a picture. The distinction is not a tuning
+   * detail. A deck that reuses one clip across N elements otherwise issues N
+   * full downloads of the same file the moment it opens; those transfers
+   * monopolise the six connections a browser gives an origin, and everything
+   * behind them — other assets, the present view's bundle, its WebSocket —
+   * queues for seconds while videos sit black. See docs/media-loading.md.
+   */
+  mediaPreload?: 'auto' | 'metadata';
 }
 
 export { quadraticPath };
@@ -110,6 +125,16 @@ export function applyMediaFitStyles(
     ? (body as HTMLElement)
     : body.querySelector<HTMLElement>('img, video, embed');
   if (!tag) return;
+
+  // A patched element keeps its DOM node, so its pooling identity has to be
+  // rewritten in place: leaving a stale key here would let the video be
+  // reused later for the crop, fit or in-point it no longer has — the very
+  // mismatch `videoPresentationKey` exists to prevent. This runs on every
+  // media patch (the editor's in-place path calls it unconditionally), so it
+  // covers a changed box and in-point as well as a changed fit or crop.
+  if (el.type === 'video' && tag.tagName.toLowerCase() === 'video') {
+    tag.dataset.mediaKey = videoPresentationKey(el, tag.getAttribute('src') ?? '');
+  }
 
   if (el.sourceBox) {
     // Cropped: the element box is a window onto a larger frame, so the media is
@@ -389,6 +414,14 @@ export function syncMediaFrame(
     'pointer-events:none',
     'z-index:1',
   ].join(';');
+  // Confine that z-index to this element. Element wrappers are positioned but
+  // have no z-index of their own, so they paint in document order and do not
+  // form stacking contexts -- which let the overlay's `z-index:1` be resolved
+  // against the *slide*, painting one element's border on top of every later
+  // element. Dragging a front video over a bordered one put the bordered
+  // one's frame across it. `isolation` makes the wrapper a stacking context
+  // without changing where the wrapper itself sits among its siblings.
+  node.style.isolation = 'isolate';
 
   // A border authored directly in element.style has the same media semantics
   // as the inspector's typed border. Move its paint to the overlay too.
@@ -749,27 +782,95 @@ function renderPendingPlaceholder(src: string): HTMLElement {
   return box;
 }
 
+/**
+ * How a video element will be presented: the file, the frame it should show,
+ * and the geometry the frame is painted through.
+ *
+ * This is the identity a pooled `<video>` must match to be reusable. Pooling
+ * by source alone is not enough, and the failure is visible: a deck showing
+ * one clip through several different crops (Keynote imports do this
+ * constantly) would hand a cropped slot's element — its last frame decoded
+ * stretched into an 886x1268 box under `object-fit: fill` — to a square
+ * `contain` slot, and vice versa. Each then needs a seek to the other's
+ * in-point, and while that seek is pending the compositor keeps painting the
+ * old texture scaled into the new box: a tall frame squeezed into a square
+ * box reads as a vertically squished video that "pops" straight when the seek
+ * lands, which on a remote server takes about half a second.
+ *
+ * Elements that share a key are interchangeable: same bytes, same frame, same
+ * shape, so a swap is invisible and needs no seek at all.
+ */
+export function videoPresentationKey(
+  el: Extract<SlideElement, { type: 'video' }>,
+  resolvedSrc: string,
+): string {
+  const crop = el.sourceBox
+    ? `${el.sourceBox.x},${el.sourceBox.y},${el.sourceBox.w},${el.sourceBox.h}`
+    : 'none';
+  // The box size matters even under `width: 100%`: the percentage resolves
+  // against the wrapper, so two slots of different sizes composite the same
+  // frame at different scales.
+  return [resolvedSrc, el.start, crop, el.fit, el.w, el.h].join('|');
+}
+
+/**
+ * Seek to the element's poster frame as soon as metadata arrives.
+ *
+ * Idempotent and safe to call again after a reload: the listener is `once`, so
+ * a video whose buffer was dropped (a hidden page's media can be reclaimed)
+ * needs it re-armed or it comes back frameless — black — however long it
+ * stays on screen.
+ */
+export function armPosterFrameSeek(video: HTMLVideoElement): void {
+  const posterTime = Number(video.dataset.posterTime);
+  if (!Number.isFinite(posterTime)) return;
+  video.addEventListener(
+    'loadedmetadata',
+    () => {
+      // A capture path (PDF export) may have claimed the frame already.
+      if (video.dataset.holdFrame === 'true') return;
+      video.currentTime = posterTime;
+    },
+    { once: true },
+  );
+}
+
 function renderVideo(
   el: Extract<SlideElement, { type: 'video' }>,
   opts: RenderOptions,
 ): HTMLElement {
   if (isPendingSrc(el.src)) return renderPendingPlaceholder(el.src);
   const video = document.createElement('video');
-  video.src = opts.resolveSrc(el.src);
   video.playsInline = true;
-  video.preload = 'auto';
+  video.dataset.mediaKey = videoPresentationKey(el, opts.resolveSrc(el.src));
+  const preload = opts.mediaPreload ?? 'auto';
+  // The preload hint must be in place before src: assigning src is what
+  // starts resource selection, and it reads the hint of that moment.
+  video.preload = preload === 'metadata' ? 'none' : preload;
+  video.src = opts.resolveSrc(el.src);
   applyVideoPlaybackState(video, el, opts);
+  if (preload === 'metadata') {
+    // Preview surfaces mount many videos at once (one per rail thumbnail);
+    // letting them all fetch together monopolises the origin's connections.
+    // They start as 'none' — src set, nothing fetched — and the gate promotes
+    // a few at a time to 'metadata' (docs/media-loading.md).
+    gateVideoLoad(video);
+  }
 
   // Autoplay is driven by the timeline runtime, not the `autoplay` attribute,
   // so that reveal-then-play ordering stays under our control.
-  if (el.start > 0) {
-    video.addEventListener(
-      'loadedmetadata',
-      () => {
-        video.currentTime = el.start;
-      },
-      { once: true },
-    );
+  //
+  // The seek doubles as the poster frame: a <video> paints nothing until a
+  // frame is decoded, so a paused preview that never seeks is a black box.
+  // Under preload 'metadata' nothing else will decode a frame, so seek even
+  // when the in-point is zero — a hair after zero, because seeking to the
+  // current position completes without decoding.
+  const posterTime = el.start > 0 ? el.start : preload === 'metadata' ? 0.03 : null;
+  if (posterTime !== null) {
+    // Stamped so a later recovery pass can re-arm the same seek without the
+    // deck element in hand (see previewFrameRecovery.ts).
+    video.dataset.posterTime = String(posterTime);
+    armPosterFrameSeek(video);
   }
 
   if (el.sourceBox) {

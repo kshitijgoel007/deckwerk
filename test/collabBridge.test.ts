@@ -112,3 +112,104 @@ describe('collaboration history attribution', () => {
     }]);
   });
 });
+
+/**
+ * The connection-lifecycle hooks drive the "Session disconnected." notices in
+ * the editor and Present views. The contract they encode: a socket close means
+ * disconnected (retry loop running), every welcome means connected again, and
+ * a reconnect discards unconfirmed local transactions — with the count
+ * reported so the shell can tell the user that offline work did not survive.
+ */
+describe('connection lifecycle', () => {
+  function lifecycleBridge() {
+    const events: Array<boolean | string> = [];
+    const bridge = new CollabBridge('ws://unused', 'Host', {
+      onDeckReplaced: vi.fn(),
+      onWelcome: vi.fn(),
+      onPeerPresence: vi.fn(),
+      onPeerCursor: vi.fn(),
+      onPeerLeft: vi.fn(),
+      onThemeCss: vi.fn(),
+      onStatus: (text) => events.push(text),
+      onCleanChange: vi.fn(),
+      onConnectionChange: (connected) => events.push(connected),
+      onEditsDiscarded: (count) => events.push(`discarded:${count}`),
+    });
+    const handle = (message: unknown) => (
+      bridge as unknown as { handle(message: unknown): void }
+    ).handle(message);
+    const welcome = (seq: number) => handle({
+      kind: 'welcome',
+      version: 1,
+      clientId: 'client-self',
+      self: { name: 'Host', color: '#fff' },
+      seq,
+      deck: emptyDeck('Original'),
+      themeCss: '',
+      peers: [],
+    });
+    return { bridge, events, welcome };
+  }
+
+  it('reports connected on every welcome, and what a reconnect discarded', () => {
+    const { bridge, events, welcome } = lifecycleBridge();
+    welcome(0);
+    expect(events).toEqual([true]);
+
+    // Edits made while the socket is down pile up as pending transactions;
+    // the reconnect welcome makes the server's deck the new base and drops
+    // them — the hook is the user's only signal that this happened.
+    const deck = emptyDeck('Original');
+    const edited = structuredClone(deck);
+    edited.title = 'Typed while offline';
+    bridge.localEdit(deck, edited, 'Rename deck');
+    welcome(1);
+    expect(events).toEqual([true, 'discarded:1', true]);
+  });
+
+  it('reports a socket close as disconnected and keeps retrying', () => {
+    vi.useFakeTimers();
+    class FakeWebSocket {
+      static readonly OPEN = 1;
+      static instances: FakeWebSocket[] = [];
+      readyState = 0;
+      private listeners = new Map<string, Array<(event: unknown) => void>>();
+      constructor(public url: string) {
+        FakeWebSocket.instances.push(this);
+      }
+      addEventListener(type: string, listener: (event: unknown) => void): void {
+        const list = this.listeners.get(type) ?? [];
+        list.push(listener);
+        this.listeners.set(type, list);
+      }
+      dispatch(type: string): void {
+        for (const listener of this.listeners.get(type) ?? []) listener({});
+      }
+      close(): void {}
+      send(): void {}
+    }
+    vi.stubGlobal('WebSocket', FakeWebSocket);
+    try {
+      const { bridge, events } = lifecycleBridge();
+      bridge.connect();
+      expect(FakeWebSocket.instances).toHaveLength(1);
+
+      FakeWebSocket.instances[0].dispatch('close');
+      expect(events).toEqual([false, 'Disconnected — retrying in 1s']);
+
+      // The retry loop must survive the notice: a new socket per backoff step.
+      vi.advanceTimersByTime(500);
+      expect(FakeWebSocket.instances).toHaveLength(2);
+      FakeWebSocket.instances[1].dispatch('close');
+      expect(events.filter((event) => event === false)).toHaveLength(2);
+
+      // A deliberate close stops the loop without a disconnected report.
+      bridge.close();
+      vi.advanceTimersByTime(60_000);
+      expect(FakeWebSocket.instances).toHaveLength(2);
+    } finally {
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    }
+  });
+});

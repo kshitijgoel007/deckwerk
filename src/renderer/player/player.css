@@ -136,6 +136,84 @@
   opacity: 1;
 }
 
+/* --- video loading feedback (videoLoadingProgress.ts) ---------------------- */
+/* Shown over a mounted <video> until it has decoded a paintable frame; over a
+   remote server that can take seconds, during which the element is otherwise
+   an anonymous black box. Passive: never intercepts pointer events. */
+
+.video-loading-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: #fff;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.6);
+  background: rgba(0, 0, 0, 0.35);
+  font-family: system-ui, sans-serif;
+  pointer-events: none;
+  z-index: 3;
+  /* Fast (local) loads finish within this delay, so no spinner ever flashes. */
+  opacity: 0;
+  animation: video-loading-appear 0.2s ease 0.25s forwards;
+}
+
+@keyframes video-loading-appear {
+  to {
+    opacity: 1;
+  }
+}
+
+.video-loading-ring {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  /* Determinate: a conic sweep driven by --video-loading-ratio (0..1). */
+  background: conic-gradient(
+    #fff calc(var(--video-loading-ratio, 0) * 360deg),
+    rgba(255, 255, 255, 0.25) 0
+  );
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 5px), #000 calc(100% - 4px));
+  mask: radial-gradient(farthest-side, transparent calc(100% - 5px), #000 calc(100% - 4px));
+}
+
+.video-loading-ring.indeterminate {
+  background: conic-gradient(#fff 90deg, rgba(255, 255, 255, 0.25) 0);
+  animation: pending-ring-spin 1s linear infinite;
+}
+
+.video-loading-status {
+  font-size: 14px;
+  opacity: 0.9;
+}
+
+.video-loading-overlay.failed {
+  background: rgba(0, 0, 0, 0.5);
+}
+
+.video-loading-overlay.failed .video-loading-status {
+  color: #ffb4ab;
+  opacity: 1;
+}
+
+/* One page-level roll-up so "some videos are still transferring" is visible
+   even when the affected slide is off screen. */
+.video-loading-pill {
+  position: fixed;
+  left: 50%;
+  bottom: 16px;
+  transform: translateX(-50%);
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.7);
+  color: #fff;
+  font: 13px system-ui, sans-serif;
+  pointer-events: none;
+  z-index: 40;
+}
+
 
 
 

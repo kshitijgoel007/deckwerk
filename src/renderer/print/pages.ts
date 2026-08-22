@@ -59,6 +59,10 @@ export function buildPrintPages(
       stage.className = 'pdf-stage';
       stage.style.width = `${deck.canvas.w}px`;
       stage.style.height = `${deck.canvas.h}px`;
+      // Full preload, deliberately: this is a one-shot capture, and readiness
+      // pins every video to an exact frame under a timeout. 'metadata' would
+      // leave the pinned seek racing the network inside that timeout, which
+      // showed up as nondeterministic frames in the PDF-vs-player pixel test.
       stage.appendChild(renderSlide(slide, { resolveSrc }));
       const state = resolveState(slide, step);
       applyStaticSlideState(stage, slide, state);

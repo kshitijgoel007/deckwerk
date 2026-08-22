@@ -28,6 +28,7 @@ import { EditorStore } from '../editor/store.js';
 import { createThemePanel } from '../editor/themePanel.js';
 import { TimelinePanel } from '../editor/timelinePanel.js';
 import { CollabBridge } from './collabBridge.js';
+import { createConnectionNotice } from './connectionNotice.js';
 import { createDeckOnServer, importKeynoteToServer, showDeckPicker } from './deckPicker.js';
 import { installNetApi } from './netApi.js';
 import { PresenceOverlay } from './presenceOverlay.js';
@@ -38,6 +39,8 @@ import { decodeEditorView, restoreEditorView } from '@shared/editorView.js';
 import { AgentChatPanel } from '../editor/agentChatPanel.js';
 import { startPresenting } from './presentOverlay.js';
 import { setRenderInvariantChecks } from '../editor/renderInvariants.js';
+import { trackPreviewFrameRecovery } from '../player/previewFrameRecovery.js';
+import { trackVideoLoading } from '../player/videoLoadingProgress.js';
 
 /**
  * Browser collaboration shell: the same canvas, rail, inspector, theme
@@ -108,6 +111,7 @@ const deckId = new URLSearchParams(location.search).get('deck');
 const initialView = decodeEditorView(new URLSearchParams(location.search).get('view'));
 let initialViewPending = initialView !== null;
 
+const PRESENT_NEEDS_SERVER = 'Presenting needs the server — waiting to reconnect.';
 let statusMessage = '';
 let participantName = '';
 let sharedAgentPanel: AgentChatPanel | null = null;
@@ -143,6 +147,13 @@ const store = new EditorStore(emptyDeck('Connecting…'));
 // paths disagree about. See renderInvariants.ts.
 setRenderInvariantChecks(import.meta.env.DEV);
 const canvas = new EditorCanvas(el('canvas'), store);
+// Remote sessions fetch video bytes over the wire; until a frame decodes each
+// video is a black box, so overlay loading progress on the editing canvas.
+trackVideoLoading(el('canvas'));
+// Presenting hides this page, and a hidden page's media buffers are Chromium's
+// to reclaim: come back from Present and canvas, rail and Magic Move previews
+// can all be black with nothing in flight. Re-queue them on the way back.
+trackPreviewFrameRecovery(el('canvas'), document.body);
 // Peers should watch each other type, not just see the result on blur.
 canvas.liveTextSync = true;
 const inspector = new Inspector(el('inspector'), store);
@@ -179,6 +190,24 @@ el('themePanel').classList.add('theme-panel');
 let connectionState = 'connecting…';
 /** Whether a welcome has already been handled, i.e. later ones are reconnects. */
 let welcomed = false;
+/** Live connection state; gates the actions that need the server (Present, export). */
+let connected = false;
+
+// When the server dies mid-session the status-bar text is easy to miss, and
+// what the user most needs to know — synced edits are safe, new ones will be
+// discarded — is not obvious. The banner says it, and offers a client-side
+// backup of the in-memory deck, the only save that works without the server.
+const connectionNotice = createConnectionNotice({
+  mode: 'editor',
+  backup: () => ({
+    fileName: `${deckId}-backup.json`,
+    text: JSON.stringify(
+      { deck: store.get().deck, themeCss: cssEditor.getValue() },
+      null,
+      2,
+    ),
+  }),
+});
 
 const wsUrl = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws?deck=${encodeURIComponent(deckId)}`;
 const bridge = new CollabBridge(wsUrl, userName() || undefined, {
@@ -225,9 +254,26 @@ const bridge = new CollabBridge(wsUrl, userName() || undefined, {
   onCleanChange: (clean) => {
     if (clean) store.markClean();
   },
+  onConnectionChange: (isConnected) => {
+    connected = isConnected;
+    if (isConnected) {
+      connectionNotice.hide();
+      // The refusal is moot once the server is back; don't leave it lingering.
+      if (statusMessage === PRESENT_NEEDS_SERVER) setStatusMessage('');
+    } else {
+      connectionNotice.showDisconnected();
+    }
+  },
+  onEditsDiscarded: (count) => {
+    setStatusMessage(count === 1
+      ? 'Reconnected — 1 change made while disconnected could not be saved and was discarded.'
+      : `Reconnected — ${count} changes made while disconnected could not be saved and were discarded.`);
+  },
   onEnded: () => {
+    connected = false;
     connectionState = 'session ended by the host';
     setStatusMessage('The host ended this collaboration.');
+    connectionNotice.showEnded('The host ended this collaboration. All synced edits are saved on the host.');
   },
 });
 
@@ -435,7 +481,18 @@ function buildToolbar(): void {
   }
   right.append(
     barButton('Present', () => {
-      startPresenting(deckId!, store.get().slideIndex);
+      // present.html and its bundle are served by the collab server; with the
+      // server gone the iframe would load nothing — a white overlay with no
+      // explanation. Refuse with the reason instead.
+      if (!connected) {
+        setStatusMessage(PRESENT_NEEDS_SERVER);
+        connectionNotice.showDisconnected();
+        return;
+      }
+      startPresenting(deckId!, store.get().slideIndex, () => ({
+        deck: store.get().deck,
+        themeCss: cssEditor.getValue(),
+      }));
     }, 'primary'),
   );
 

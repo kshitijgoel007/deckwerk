@@ -1,17 +1,37 @@
 import type { Slide } from '@shared/deck.js';
 import { makeId } from '@shared/geometry.js';
 import { explicitMagicMovePairs, suggestMagicMovePairs } from '@shared/magicMove.js';
+import { recoverPreviewFrames } from '../player/previewFrameRecovery.js';
 import { renderSlide } from '../player/render.js';
 import { describeElement as describe, renderElementLabel } from './elementLabel.js';
 import type { EditorStore } from './store.js';
 
 const PREVIEW_WIDTH_FALLBACK = 560;
 
+/**
+ * A rendered preview surface, kept across re-renders.
+ *
+ * A `<video>` paints nothing until a frame is decoded, so a rebuilt preview is
+ * black until its poster-frame seek lands again — and every pairing click
+ * re-renders this panel. Caching the surface (and adopting decoded elements
+ * when the slide itself changed) is the same "reconcile, don't rebuild" rule
+ * the slide rail and editor canvas follow. See docs/media-loading.md.
+ */
+interface PreviewSurface {
+  slide: Slide;
+  canvasW: number;
+  canvasH: number;
+  frame: HTMLElement;
+  surface: HTMLElement;
+  observer: ResizeObserver | null;
+}
+
 /** Explicit Magic Move authoring between the selected slide and the next one. */
 export class MagicMovePanel {
   private selectedSourceId: string | null = null;
   private message = '';
-  private previewObservers: ResizeObserver[] = [];
+  /** Cached preview surfaces, keyed by side and compact/modal presentation. */
+  private previews = new Map<string, PreviewSurface>();
   private modal: HTMLElement | null = null;
   private modalContent: HTMLElement | null = null;
   private onModalKeyDown = (event: KeyboardEvent) => {
@@ -54,8 +74,6 @@ export class MagicMovePanel {
     }
     const current = deck.slides[slideIndex];
     const next = deck.slides[slideIndex + 1];
-    for (const observer of this.previewObservers) observer.disconnect();
-    this.previewObservers = [];
     this.host.replaceChildren();
 
     const header = document.createElement('div');
@@ -116,6 +134,7 @@ export class MagicMovePanel {
     this.host.appendChild(easing);
 
     if (!current || !next) {
+      this.dropPreviews('compact');
       const hint = document.createElement('p');
       hint.className = 'insp-hint';
       hint.textContent = 'Select a slide that has another slide after it to create Magic Move pairs.';
@@ -184,8 +203,7 @@ export class MagicMovePanel {
    * one action that makes sense across the whole run instead.
    */
   private renderBulk(slides: Slide[]): void {
-    for (const observer of this.previewObservers) observer.disconnect();
-    this.previewObservers = [];
+    this.dropPreviews('compact');
     this.host.replaceChildren();
 
     const header = document.createElement('div');
@@ -268,8 +286,7 @@ export class MagicMovePanel {
   }
 
   private closeModal(): void {
-    for (const observer of this.previewObservers) observer.disconnect();
-    this.previewObservers = [];
+    this.dropPreviews('modal');
     this.modal?.remove();
     this.modal = null;
     this.modalContent = null;
@@ -284,10 +301,9 @@ export class MagicMovePanel {
     const { deck, slideIndex } = this.store.get();
     const current = deck.slides[slideIndex];
     const next = deck.slides[slideIndex + 1];
-    for (const observer of this.previewObservers) observer.disconnect();
-    this.previewObservers = [];
     content.replaceChildren();
     if (!current || !next) {
+      this.dropPreviews('modal');
       const unavailable = document.createElement('p');
       unavailable.className = 'insp-hint';
       unavailable.textContent = 'This slide has no following slide to pair with.';
@@ -419,41 +435,16 @@ export class MagicMovePanel {
     const label = document.createElement('div');
     label.className = 'magic-preview-label';
     label.textContent = labelText;
-    const frame = document.createElement('div');
-    frame.className = 'magic-preview';
-    if (!interactive) {
-      frame.classList.add('magic-compact-preview');
-      frame.tabIndex = 0;
-      frame.setAttribute('role', 'button');
-      frame.setAttribute('aria-label', `Open Magic Move editor from ${labelText}`);
-      frame.addEventListener('click', () => this.openModal());
-      frame.addEventListener('keydown', (event) => {
-        if (event.key === 'Enter' || event.key === ' ') {
-          event.preventDefault();
-          this.openModal();
-        }
-      });
-    }
     const canvas = this.store.get().deck.canvas;
-    frame.style.aspectRatio = `${canvas.w} / ${canvas.h}`;
-    const surface = document.createElement('div');
-    surface.className = 'magic-preview-surface';
-    surface.style.width = `${canvas.w}px`;
-    surface.style.height = `${canvas.h}px`;
-    const updateScale = () => {
-      const width = frame.clientWidth || PREVIEW_WIDTH_FALLBACK;
-      surface.style.transform = `scale(${width / canvas.w})`;
-    };
-    updateScale();
-    if (typeof ResizeObserver !== 'undefined') {
-      const observer = new ResizeObserver(updateScale);
-      observer.observe(frame);
-      this.previewObservers.push(observer);
-    }
-    surface.appendChild(renderSlide(slide, { resolveSrc: (src) => window.api.assetUrl(src) }));
-    for (const video of surface.querySelectorAll('video')) video.pause();
-    frame.appendChild(surface);
+    const frame = this.previewFrame(slide, side, interactive, canvas);
+    // The label carries the slide number, which a reorder can change under a
+    // surface that is otherwise still valid.
+    if (!interactive) frame.setAttribute('aria-label', `Open Magic Move editor from ${labelText}`);
 
+    // Hit boxes carry pair badges and the current selection, so they are
+    // rebuilt every render -- unlike the surface behind them, which holds
+    // decoded video frames worth keeping.
+    for (const stale of [...frame.querySelectorAll('.magic-object-hit')]) stale.remove();
     for (const element of slide.elements) {
       const hit = document.createElement(interactive ? 'button' : 'div');
       hit.className = 'magic-object-hit';
@@ -479,6 +470,87 @@ export class MagicMovePanel {
     }
     wrap.append(label, frame);
     return wrap;
+  }
+
+  /**
+   * The cached slide surface for one side of the pairing UI.
+   *
+   * Reused verbatim while the slide object is unchanged (the store hands out a
+   * fresh clone only when the deck is edited, so every pairing click and
+   * selection reuses it). When the slide *has* changed the surface is rebuilt,
+   * but decoded `<video>` elements are carried over into slots that show the
+   * same presentation, so an edit never blacks out a picture that was already
+   * on screen.
+   */
+  private previewFrame(
+    slide: Slide,
+    side: 'source' | 'target',
+    interactive: boolean,
+    canvas: { w: number; h: number },
+  ): HTMLElement {
+    const key = `${side}:${interactive ? 'modal' : 'compact'}`;
+    const cached = this.previews.get(key);
+    if (cached && cached.slide === slide && cached.canvasW === canvas.w && cached.canvasH === canvas.h) {
+      // The surface spends time detached between renders, and the load gate
+      // aborts the fetch of a detached element -- re-queue anything that came
+      // back frameless instead of re-showing a black box.
+      recoverPreviewFrames(cached.frame);
+      return cached.frame;
+    }
+
+    const frame = document.createElement('div');
+    frame.className = 'magic-preview';
+    if (!interactive) {
+      frame.classList.add('magic-compact-preview');
+      frame.tabIndex = 0;
+      frame.setAttribute('role', 'button');
+      frame.addEventListener('click', () => this.openModal());
+      frame.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          this.openModal();
+        }
+      });
+    }
+    frame.style.aspectRatio = `${canvas.w} / ${canvas.h}`;
+    const surface = document.createElement('div');
+    surface.className = 'magic-preview-surface';
+    surface.style.width = `${canvas.w}px`;
+    surface.style.height = `${canvas.h}px`;
+    const updateScale = () => {
+      const width = frame.clientWidth || PREVIEW_WIDTH_FALLBACK;
+      surface.style.transform = `scale(${width / canvas.w})`;
+    };
+    updateScale();
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(updateScale);
+    observer?.observe(frame);
+    surface.appendChild(renderSlide(slide, { resolveSrc: (src) => window.api.assetUrl(src), mediaPreload: 'metadata' }));
+    for (const video of surface.querySelectorAll('video')) {
+      video.removeAttribute('autoplay');
+      video.pause();
+    }
+    if (cached) adoptDecodedVideos(cached.surface, surface);
+    frame.appendChild(surface);
+
+    cached?.observer?.disconnect();
+    this.previews.set(key, {
+      slide,
+      canvasW: canvas.w,
+      canvasH: canvas.h,
+      frame,
+      surface,
+      observer,
+    });
+    return frame;
+  }
+
+  /** Forget cached surfaces of one presentation, releasing their observers. */
+  private dropPreviews(kind: 'compact' | 'modal'): void {
+    for (const [key, entry] of [...this.previews]) {
+      if (!key.endsWith(`:${kind}`)) continue;
+      entry.observer?.disconnect();
+      this.previews.delete(key);
+    }
   }
 
   private pair(sourceId: string, targetId: string): void {
@@ -574,4 +646,49 @@ export function pairMagicMoveObjects(
   target.magicMoveId = matchId;
   next.magicMoveFromPrevious = true;
   return true;
+}
+
+/**
+ * Move decoded `<video>` elements from a torn-down preview surface into the
+ * matching slots of its replacement.
+ *
+ * Keyed by presentation (`data-media-key`: file, in-point, crop, fit, box), so
+ * an adopted element is already holding exactly the frame this slot wants, at
+ * exactly this slot's geometry -- no seek, and nothing for the compositor to
+ * stretch in the meantime. See `videoPresentationKey` in player/render.ts.
+ */
+function adoptDecodedVideos(from: HTMLElement, to: HTMLElement): void {
+  const pool = new Map<string, HTMLVideoElement[]>();
+  for (const video of from.querySelectorAll('video')) {
+    const key = video.dataset.mediaKey;
+    if (!key) continue;
+    if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) continue;
+    video.pause();
+    const list = pool.get(key) ?? [];
+    list.push(video);
+    pool.set(key, list);
+  }
+  if (pool.size === 0) return;
+  for (const fresh of to.querySelectorAll('video')) {
+    const key = fresh.dataset.mediaKey;
+    const decoded = key ? pool.get(key)?.pop() : undefined;
+    if (!decoded) continue;
+    decoded.style.cssText = fresh.style.cssText;
+    decoded.className = fresh.className;
+    decoded.preload = fresh.preload;
+    decoded.playsInline = true;
+    decoded.removeAttribute('autoplay');
+    decoded.muted = fresh.muted;
+    decoded.controls = fresh.controls;
+    decoded.loop = fresh.loop;
+    fresh.replaceWith(decoded);
+    // The fresh element's fetch is now pointless; the network is the scarce
+    // resource on a remote session.
+    fresh.removeAttribute('src');
+    try {
+      fresh.load();
+    } catch {
+      // jsdom stub
+    }
+  }
 }

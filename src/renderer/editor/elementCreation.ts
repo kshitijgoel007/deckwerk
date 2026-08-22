@@ -14,6 +14,10 @@ export function insertText(store: EditorStore): TextEl {
     x: Math.round(deck.canvas.w * 0.1), y: Math.round(deck.canvas.h * 0.4),
     w: Math.round(deck.canvas.w * 0.8), h: 160, rot: 0, z: nextZ(store),
     opacity: 1, class: ['placeholder'], style: {}, html: 'New text', align: 'left', valign: 'middle',
+    // On by default: a box that silently spills its text past its own edges is
+    // never what someone typing into it wants. Auto-fit only ever shrinks, so
+    // the authored size still holds for text that already fits.
+    autoFit: true,
   };
   store.commit((d) => d.slides[store.get().slideIndex].elements.push(created));
   store.select([created.id]);

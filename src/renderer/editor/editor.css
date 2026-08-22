@@ -2155,10 +2155,18 @@ button.magic-object-hit.selected-source:hover:not(:disabled) {
 }
 
 /* The stage must not clip editor chrome: an element at the slide edge needs
-   its handles (and the mask ghost) drawn OUTSIDE the slide. The slide layer
-   still clips its own content. */
+   its handles (and the mask ghost) drawn OUTSIDE the slide. */
 .canvas-host .stage { overflow: visible; background: transparent; }
 .canvas-host .overlay-layer { overflow: visible; }
+
+/* Neither may the slide layer clip while editing. Presenting and exporting
+   crop to the slide, but an editor that does the same makes anything dragged
+   or pasted past the edge vanish with no way to find it again -- the object
+   is still in the deck, still selectable by a marquee you cannot aim, and
+   invisible. Off-slide content stays on screen; the slide's own white ground
+   against the dark pasteboard is what marks where the slide ends. */
+.canvas-host .slide-layer,
+.canvas-host .slide-layer > .slide { overflow: visible; }
 
 /* --- embedded agent chat --- */
 

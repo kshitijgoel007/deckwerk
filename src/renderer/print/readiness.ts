@@ -52,6 +52,9 @@ async function freezeAnimatedImage(image: HTMLImageElement): Promise<void> {
 }
 
 async function settleVideo(video: HTMLVideoElement, at: number): Promise<void> {
+  // Claim the frame before pausing: the Player restarts playback it believes
+  // was interrupted, which would drift the frame this pins.
+  video.dataset.holdFrame = 'true';
   video.autoplay = false;
   video.pause();
   if (video.readyState < HTMLMediaElement.HAVE_METADATA) {

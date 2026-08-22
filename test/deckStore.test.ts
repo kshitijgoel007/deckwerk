@@ -1,8 +1,8 @@
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { copyDeck, createDeck } from '../src/main/deckStore.js';
+import { copyDeck, createDeck, deckFolderPath } from '../src/main/deckStore.js';
 
 describe('deck folder persistence', () => {
   const cleanup: string[] = [];
@@ -37,5 +37,46 @@ describe('deck folder persistence', () => {
     await createDeck(target);
 
     await expect(copyDeck(source, target)).rejects.toThrow('already exists');
+  });
+});
+
+/**
+ * A deck folder called `talk.key` is not a cosmetic wart: Launch Services reads
+ * the extension, reports the folder as com.apple.iwork.keynote.sffkey, and
+ * Finder then opens it in Keynote, which cannot read a deck.json. The save
+ * panel hands back whatever sits in its name field, so the extension has to be
+ * dropped on our side.
+ */
+describe('deck folder naming', () => {
+  const cleanup: string[] = [];
+
+  afterEach(async () => {
+    await Promise.all(cleanup.splice(0).map((path) => rm(path, { recursive: true, force: true })));
+  });
+
+  it('drops a presentation extension the save panel handed back', () => {
+    expect(deckFolderPath('/talks/rhoda_intro.key')).toBe('/talks/rhoda_intro');
+    expect(deckFolderPath('/talks/rhoda_intro.KEY')).toBe('/talks/rhoda_intro');
+    expect(deckFolderPath('/talks/deck.keynote')).toBe('/talks/deck');
+    expect(deckFolderPath('/talks/deck.pptx')).toBe('/talks/deck');
+    expect(deckFolderPath('/talks/deck.pdf')).toBe('/talks/deck');
+  });
+
+  it('leaves a deliberate name alone, dots and all', () => {
+    expect(deckFolderPath('/talks/Untitled deck')).toBe('/talks/Untitled deck');
+    // A version number is not an extension, so a fixed list beats a regex.
+    expect(deckFolderPath('/talks/Q3 2026 v1.2')).toBe('/talks/Q3 2026 v1.2');
+    expect(deckFolderPath('/talks/rhoda.intro')).toBe('/talks/rhoda.intro');
+  });
+
+  it('names the deck folder and its title from the same stripped path', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'deck-ext-'));
+    cleanup.push(root);
+    const dir = deckFolderPath(join(root, 'rhoda_intro.key'));
+    const deck = await createDeck(dir, basename(dir));
+
+    expect(basename(dir)).toBe('rhoda_intro');
+    expect(deck.title).toBe('rhoda_intro');
+    expect(JSON.parse(await readFile(join(dir, 'deck.json'), 'utf8')).title).toBe('rhoda_intro');
   });
 });

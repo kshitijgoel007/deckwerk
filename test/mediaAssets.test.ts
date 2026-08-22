@@ -46,6 +46,26 @@ describe('media assets and borders', () => {
     expect(node.style.borderRadius).toBe('14px');
   });
 
+  /**
+   * Element wrappers are absolutely positioned with no z-index, so the slide
+   * paints them in document order. That makes any z-index *inside* a wrapper
+   * resolve against the slide unless the wrapper is a stacking context -- so
+   * the border overlay's `z-index:1` floated above every element rendered
+   * after it, and moving a front video over a bordered one drew the bordered
+   * one's frame across it.
+   */
+  it('keeps a media border from painting over the elements in front of it', () => {
+    const node = renderElement({
+      ...base, id: 'image', type: 'image', src: 'assets/image.png', fit: 'cover',
+      alt: '', sourceBox: null, borderColor: '#ff3366', borderWidth: 8,
+    }, { resolveSrc: (src) => src });
+    const border = node.querySelector<HTMLElement>(':scope > .media-border-overlay')!;
+    // The overlay still sits above its own media...
+    expect(border.style.zIndex).toBe('1');
+    // ...but that stacking is scoped to this element, not to the slide.
+    expect(node.style.isolation).toBe('isolate');
+  });
+
   it('overlays a CSS-authored media border too', () => {
     const node = renderElement({
       ...base, id: 'video', type: 'video', src: 'assets/video.mp4', fit: 'cover',

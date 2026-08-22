@@ -18,6 +18,7 @@ import {
   type MagicMovePair,
 } from '@shared/magicMove.js';
 import { magicMoveTransforms, type Rect, type TextLayout } from './magicMoveTransform.js';
+import { isPendingSrc } from '@shared/media.js';
 
 /**
  * The runtime that owns navigation and turns timeline entries into DOM and
@@ -46,6 +47,9 @@ export interface PlayerOptions {
 const PLAY_RETRY_LIMIT = 12;
 const PLAY_RETRY_DELAY_MS = 400;
 
+/** How many slides ahead of the cursor get their video files cache-warmed. */
+const WARM_AHEAD_SLIDES = 2;
+
 export class Player {
   private deck: Deck;
   private container: HTMLElement;
@@ -69,6 +73,20 @@ export class Player {
   private playAttempts = new Map<string, number>();
   private playWatched = new WeakSet<HTMLVideoElement>();
   private resizeObserver: ResizeObserver;
+  /**
+   * Decoded-but-idle <video> nodes rescued from slides that left the screen,
+   * keyed by presentation (`videoPresentationKey`) rather than by file, so a
+   * node is only ever reused where it shows the same frame of the same file
+   * through the same geometry. Re-entering a slide adopts these instead of
+   * creating fresh elements, so the picture is back instantly and no bytes are
+   * re-fetched. Same pattern as the editor canvas's pool (docs/media-loading.md,
+   * "DOM churn").
+   */
+  private videoPool = new Map<string, HTMLVideoElement[]>();
+  /** Resolved file URLs already warmed into the HTTP cache (warmUpcomingVideos). */
+  private warmedSrcs = new Set<string>();
+  private warmQueue: string[] = [];
+  private warmInFlight = false;
 
   constructor(opts: PlayerOptions) {
     this.deck = opts.deck;
@@ -89,11 +107,55 @@ export class Player {
     // export on one would show a slide the author had explicitly hidden.
     const first = opts.deck.slides.findIndex((slide) => !slide.skipped);
     this.goTo({ slide: first < 0 ? 0 : first, step: 0 });
+
+    // Chromium pauses muted video in a hidden or occluded page, and
+    // retryPlayback deliberately declines to fight that while hidden. Becoming
+    // visible again is therefore a required re-kick, not an optimisation:
+    // without it, a presenter who switches Spaces or is briefly occluded comes
+    // back to every clip frozen on its last frame, intent still recorded but
+    // nothing left to act on it.
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', this.onVisibilityChange);
+    }
+  }
+
+  private onVisibilityChange = (): void => {
+    if (document.visibilityState !== 'visible' || this.blanked) return;
+    for (const [id, video] of this.intendedVideos()) {
+      // A fresh budget: the pauses that exhausted it were the hidden page's.
+      this.playAttempts.delete(id);
+      void video.play().catch(() => this.retryPlayback(id, video));
+    }
+  };
+
+  /** The <video> nodes the build state currently wants running. */
+  private *intendedVideos(): Iterable<[string, HTMLVideoElement]> {
+    for (const id of this.intendedPlaying) {
+      const video = this.stage.querySelector<HTMLVideoElement>(
+        `[data-element-id="${CSS.escape(id)}"] video`,
+      );
+      if (video && video.isConnected) yield [id, video];
+    }
   }
 
   destroy(): void {
     this.clearPending();
     this.resizeObserver.disconnect();
+    if (typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', this.onVisibilityChange);
+    }
+    // Detached media elements keep playing and keep downloading; a destroyed
+    // player must leave neither a voice nor an open connection behind.
+    const abandoned = [
+      ...this.stage.querySelectorAll('video'),
+      ...[...this.videoPool.values()].flat(),
+    ];
+    for (const video of abandoned) {
+      video.pause();
+      video.removeAttribute('src');
+      video.load();
+    }
+    this.videoPool.clear();
     this.container.replaceChildren();
   }
 
@@ -174,13 +236,25 @@ export class Player {
     // playing set -- was then paused. Matching on element id keeps continuity
     // with the object it belongs to, and the file is the fallback for the case
     // the feature exists for: the same clip re-placed under a new id.
-    const carried: Array<{ video: HTMLVideoElement; id: string | null; src: string }> = [];
+    // Paused videos are carried too: a revisited slide's clip already holds a
+    // decoded frame and (usually) the file's bytes, and recreating the element
+    // meant a black box plus a full re-fetch — on a slow link, a slide whose
+    // videos never came back. Playing ones continue in place; parked ones are
+    // adopted as instant pictures and reset to their in-point below.
+    const carried: Array<{
+      video: HTMLVideoElement;
+      id: string | null;
+      src: string;
+      key: string;
+      playing: boolean;
+    }> = [];
     for (const video of this.stage.querySelectorAll('video')) {
-      if (video.paused || video.currentTime <= 0) continue;
       carried.push({
         video,
         id: video.closest<HTMLElement>('[data-element-id]')?.dataset.elementId ?? null,
         src: video.getAttribute('src') ?? '',
+        key: video.dataset.mediaKey ?? '',
+        playing: !video.paused && video.currentTime > 0,
       });
     }
     const previousNodes = new Map<string, HTMLElement>();
@@ -202,7 +276,12 @@ export class Player {
     // single pass let an earlier-painting element claim the live video by file
     // before the element it actually belongs to was even considered.
     const adopted = new Set<HTMLVideoElement>();
-    const adopt = (rendered: HTMLVideoElement, live: HTMLVideoElement): void => {
+    const inPointOf = (video: HTMLVideoElement): number => {
+      const id = video.closest<HTMLElement>('[data-element-id]')?.dataset.elementId;
+      const el = slide.elements.find((e) => e.id === id);
+      return el && el.type === 'video' ? el.start : 0;
+    };
+    const adopt = (rendered: HTMLVideoElement, live: HTMLVideoElement, playing: boolean): void => {
       adopted.add(live);
       // The rendered element carries the new slide's presentation (crop
       // offsets, fit, trim-aware loop flag); move all of it onto the live
@@ -211,38 +290,155 @@ export class Player {
       live.loop = rendered.loop;
       live.muted = rendered.muted;
       live.controls = rendered.controls;
+      // The adopted element now presents this slot, so it carries this slot's
+      // identity: the pool must file it under where it ends up, not where it
+      // came from.
+      if (rendered.dataset.mediaKey) live.dataset.mediaKey = rendered.dataset.mediaKey;
       rendered.replaceWith(live);
+      // The rendered element is off the document, but its preload fetch is
+      // not: a detached media element keeps downloading. Every adoption used
+      // to leak one full-file fetch this way, and a few slide changes were
+      // enough to occupy all six of the origin's connections with downloads
+      // nobody would ever watch — which is why a revisited slide's videos
+      // could sit on a spinner forever.
+      rendered.removeAttribute('src');
+      rendered.load();
+      // A parked video continues nothing: it is adopted purely as an instant
+      // picture, so it restarts from its in-point like a fresh element would.
+      if (!playing && live.dataset.holdFrame !== 'true') {
+        const inPoint = inPointOf(live);
+        if (Math.abs(live.currentTime - inPoint) > 0.05) live.currentTime = inPoint;
+      }
     };
     const idOf = (video: HTMLVideoElement): string | null =>
       video.closest<HTMLElement>('[data-element-id]')?.dataset.elementId ?? null;
 
+    // Playing clips claim their slots first, by identity then by file: a video
+    // that "plays across slides" must continue in the object it belongs to,
+    // and a continuously decoding element re-paints every frame, so moving one
+    // into a differently shaped slot is safe.
     for (const pass of ['id', 'src'] as const) {
       for (const video of [...this.stage.querySelectorAll('video')]) {
         if (adopted.has(video)) continue;
         const id = idOf(video);
         const src = video.getAttribute('src') ?? '';
         const match = pass === 'id'
-          ? carried.find((c) => !adopted.has(c.video) && c.id !== null && c.id === id)
-          : carried.find((c) => !adopted.has(c.video) && c.src === src);
+          ? carried.find((c) =>
+            !adopted.has(c.video) && c.playing && c.id !== null && c.id === id)
+          : carried.find((c) => !adopted.has(c.video) && c.playing && c.src === src);
         if (!match || match.video === video) continue;
-        adopt(video, match.video);
+        adopt(video, match.video, true);
       }
     }
 
-    // Anything left over is detached but still playing: in Chromium a media
-    // element removed from the document keeps going, and `applyState` only ever
-    // pauses videos it can still find under the stage. That is how a clip's
-    // audio used to carry on over the rest of the deck.
-    for (const { video } of carried) {
+    // Parked elements are adopted purely as an instant picture, and only into a
+    // slot with the same presentation key — same file, same frame, same
+    // geometry. Reusing across shapes needs a seek, and until that seek lands
+    // the compositor keeps painting the old frame stretched into the new box:
+    // a video that is visibly squished for half a second (docs/media-loading.md).
+    for (const source of [carried, null] as const) {
+      for (const video of [...this.stage.querySelectorAll('video')]) {
+        if (adopted.has(video)) continue;
+        const key = video.dataset.mediaKey ?? '';
+        if (!key) continue;
+        // An element with no decoded frame is worth nothing: adopting it would
+        // just move the black box, so leave the fresh element to load. The
+        // pool is checked before taking from it, so an unusable entry is not
+        // silently dropped on the floor still holding an open fetch.
+        const usable = (candidate: HTMLVideoElement | undefined): boolean =>
+          candidate !== undefined
+          && candidate !== video
+          && candidate.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA;
+        let match: HTMLVideoElement | undefined;
+        if (source) {
+          match = source.find((c) => !adopted.has(c.video) && !c.playing && c.key === key)?.video;
+          if (!usable(match)) continue;
+        } else {
+          const pool = this.videoPool.get(key);
+          if (!usable(pool?.[pool.length - 1])) continue;
+          match = pool!.pop();
+        }
+        adopt(video, match!, false);
+      }
+    }
+
+    // Anything left over is detached but still active: in Chromium a media
+    // element removed from the document keeps playing *and keeps downloading*,
+    // and `applyState` only ever pauses videos it can still find under the
+    // stage. Decoded elements go to the pool for the next visit; the rest are
+    // aborted outright so they stop occupying a connection.
+    for (const { video, key } of carried) {
       if (adopted.has(video) || video.isConnected) continue;
       video.pause();
+      const list = this.videoPool.get(key) ?? [];
+      if (key && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && list.length < 8) {
+        list.push(video);
+        this.videoPool.set(key, list);
+      } else {
+        video.removeAttribute('src');
+        video.load();
+      }
     }
 
     this.rescale();
 
     this.applyState(slide, resolveState(slide, this.cursor.step));
     if (magicMove && previousSlide) this.runMagicMove(previousSlide, slide, previousNodes);
+    this.warmUpcomingVideos();
     this.onCursor?.(this.getCursor(), steps);
+  }
+
+  /**
+   * Pull the video files of the next couple of slides into the HTTP cache,
+   * one file at a time, while the current slide is on screen.
+   *
+   * A slide's own `<video>` elements only start fetching when the slide
+   * renders, so over a remote server every transition used to open on clips
+   * that pop in only once their bytes arrive. Assets are content-hashed and
+   * served immutable (docs/media-loading.md), so a file warmed here is served
+   * from cache the moment a slide's element asks for it. Strictly one transfer
+   * in flight, and never a file the current slide is already fetching itself:
+   * flooding the origin's six connections is the bug class this file is
+   * defending against.
+   */
+  private warmUpcomingVideos(): void {
+    if (typeof fetch !== 'function') return;
+    const onCurrentSlide = new Set<string>();
+    for (const el of this.deck.slides[this.cursor.slide]?.elements ?? []) {
+      if (el.type === 'video' && !isPendingSrc(el.src)) onCurrentSlide.add(this.resolveSrc(el.src));
+    }
+    this.warmQueue = [];
+    const horizon = Math.min(this.deck.slides.length, this.cursor.slide + 1 + WARM_AHEAD_SLIDES);
+    for (let i = this.cursor.slide + 1; i < horizon; i += 1) {
+      for (const el of this.deck.slides[i].elements) {
+        if (el.type !== 'video' || isPendingSrc(el.src)) continue;
+        const src = this.resolveSrc(el.src);
+        if (onCurrentSlide.has(src) || this.warmedSrcs.has(src)) continue;
+        if (!this.warmQueue.includes(src)) this.warmQueue.push(src);
+      }
+    }
+    this.pumpWarmQueue();
+  }
+
+  private pumpWarmQueue(): void {
+    if (this.warmInFlight) return;
+    const src = this.warmQueue.shift();
+    if (src === undefined) return;
+    this.warmInFlight = true;
+    // Marked warmed up front: a failed warm just means the element fetches for
+    // itself like before, and retrying a failing URL on every slide change
+    // would be its own connection leak.
+    this.warmedSrcs.add(src);
+    let transfer: Promise<unknown>;
+    try {
+      transfer = fetch(src).then((response) => (response.ok ? response.blob() : null));
+    } catch {
+      transfer = Promise.resolve(null);
+    }
+    void transfer.catch(() => null).then(() => {
+      this.warmInFlight = false;
+      this.pumpWarmQueue();
+    });
   }
 
   private runMagicMove(
@@ -500,6 +696,14 @@ export class Player {
 
       this.enforceTrim(el, video);
 
+      // A capture path -- the PDF renderer, the export comparison -- pins each
+      // video to an exact frame and owns it from then on. Reconciling playback
+      // underneath that would drift the frame it just pinned.
+      if (video.dataset.holdFrame === 'true') {
+        this.intendedPlaying.delete(el.id);
+        continue;
+      }
+
       if (state.playing.has(el.id) && state.visible.has(el.id) && !this.blanked) {
         this.keepPlaying(el.id, video);
       } else {
@@ -527,14 +731,19 @@ export class Player {
    */
   private keepPlaying(id: string, video: HTMLVideoElement): void {
     this.intendedPlaying.add(id);
+    // The element outlives the slide that created it (navigation adopts and
+    // pools videos), so the watchers must always act for the element id the
+    // video currently belongs to, not the one it had when first watched.
+    video.dataset.playerElementId = id;
     if (!this.playWatched.has(video)) {
       this.playWatched.add(video);
+      const currentId = () => video.dataset.playerElementId ?? id;
       // Resetting on a real start is what stops a long presentation from
       // exhausting the retry budget on its first hiccup.
-      video.addEventListener('playing', () => this.playAttempts.delete(id));
+      video.addEventListener('playing', () => this.playAttempts.delete(currentId()));
       video.addEventListener('pause', () => {
-        if (!this.intendedPlaying.has(id) || this.blanked) return;
-        this.retryPlayback(id, video);
+        if (!this.intendedPlaying.has(currentId()) || this.blanked) return;
+        this.retryPlayback(currentId(), video);
       });
     }
     void video.play().catch(() => {

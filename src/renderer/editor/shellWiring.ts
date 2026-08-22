@@ -121,7 +121,9 @@ export function hasNativeCopySelection(selection = window.getSelection()): boole
 export function bindEditorKeys(deps: ShellDeps, clipboard: ClipboardActions): void {
   const { store, canvas, rail, save } = deps;
   window.addEventListener('keydown', (e) => {
-    const t = e.target as HTMLElement | null;
+    // `window` and `document` are event targets too, and neither answers the
+    // element questions below.
+    const t = e.target instanceof HTMLElement ? e.target : null;
     const typing =
       t &&
       (t.isContentEditable ||
@@ -147,6 +149,20 @@ export function bindEditorKeys(deps: ShellDeps, clipboard: ClipboardActions): vo
     if (mod && e.key.toLowerCase() === 'd') {
       e.preventDefault();
       duplicateSelection(store);
+      return;
+    }
+    if (mod && e.key.toLowerCase() === 'a') {
+      // Chromium's own select-all reaches for the whole document: it lit up
+      // toolbar labels, panel headings and rail captions as a text selection,
+      // which is never what "select all" means in a slide editor. Which
+      // selection is meant depends on what has focus -- the rail selects
+      // slides, everything else selects the current slide's objects.
+      e.preventDefault();
+      const focus = document.activeElement;
+      const inRail = t?.closest('#rail')
+        ?? (focus instanceof Element ? focus.closest('#rail') : null);
+      if (inRail) store.selectAllSlides();
+      else store.selectAllElements();
       return;
     }
     if (mod && e.key.toLowerCase() === 'c') {

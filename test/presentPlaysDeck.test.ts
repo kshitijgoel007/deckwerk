@@ -193,6 +193,19 @@ describe.skipIf(!electronBinary || !ffmpeg)('presenting the deck', () => {
       (value) => value !== null && value.elements === 3);
     expect(painted).toEqual({ elements: 3, title: true, videos: 2 });
 
+    /* --- it painted from the editor's deck, not from a fresh session ------ */
+
+    // The editor tab already holds the deck and the theme, so the presentation
+    // is seeded with them over postMessage. Waiting for its own WebSocket
+    // welcome instead meant a second of black screen before the first slide --
+    // longer on a remote server, where that handshake crosses the network.
+    const source = await editor.evaluate<string | null>(`(() => {
+      const frame = ${PRESENT_DOC};
+      return frame?.contentDocument?.documentElement?.dataset?.presentSource ?? null;
+    })()`);
+    expect(source, 'the presentation waited for its own session instead of being seeded')
+      .toBe('seed');
+
     /* --- and the videos are running, not frozen on a black frame --------- */
 
     const playback = await eventually(async () => editor!.evaluate<Array<{

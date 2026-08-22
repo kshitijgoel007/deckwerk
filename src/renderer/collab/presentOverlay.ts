@@ -8,19 +8,44 @@
  * the click handler, so the first click goes straight to fullscreen.
  */
 
+import type { Deck } from '@shared/deck.js';
+
+/** What the editor tab already knows, so the presentation need not re-fetch it. */
+export interface PresentSeed {
+  deck: Deck;
+  themeCss: string;
+}
+
 let overlay: HTMLIFrameElement | null = null;
+let seedProvider: (() => PresentSeed) | null = null;
 
 function teardown(): void {
   if (!overlay) return;
   overlay.remove();
   overlay = null;
+  seedProvider = null;
   window.removeEventListener('message', onMessage);
   document.removeEventListener('fullscreenchange', onFullscreenChange);
 }
 
 function onMessage(event: MessageEvent): void {
   if (event.origin !== location.origin) return;
-  if ((event.data as { type?: string } | null)?.type !== 'present-exit') return;
+  const type = (event.data as { type?: string } | null)?.type;
+  // The presentation asks for the deck as soon as its script runs. Answering
+  // from what this tab already holds is what makes it paint immediately: its
+  // own WebSocket takes about a second to hand over a welcome, and until this
+  // existed that second was a black screen.
+  if (type === 'present-hello') {
+    const seed = seedProvider?.();
+    if (seed && overlay?.contentWindow) {
+      overlay.contentWindow.postMessage(
+        { type: 'present-seed', deck: seed.deck, themeCss: seed.themeCss },
+        location.origin,
+      );
+    }
+    return;
+  }
+  if (type !== 'present-exit') return;
   if (document.fullscreenElement) void document.exitFullscreen();
   teardown();
 }
@@ -31,8 +56,13 @@ function onFullscreenChange(): void {
   if (!document.fullscreenElement) teardown();
 }
 
-export function startPresenting(deckId: string, slideIndex: number): void {
+export function startPresenting(
+  deckId: string,
+  slideIndex: number,
+  seed?: () => PresentSeed,
+): void {
   teardown();
+  seedProvider = seed ?? null;
   const frame = document.createElement('iframe');
   frame.src = `present.html?deck=${encodeURIComponent(deckId)}&slide=${slideIndex + 1}&embed=1`;
   frame.allow = 'fullscreen';

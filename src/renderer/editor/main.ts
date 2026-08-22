@@ -20,6 +20,7 @@ import { AgentBridge } from './agentBridge.js';
 import { AgentChatPanel } from './agentChatPanel.js';
 import { AgentChatHistoryModal } from './agentChatHistoryModal.js';
 import { createDeckWerkButton } from './aboutDialog.js';
+import { trackPreviewFrameRecovery } from '../player/previewFrameRecovery.js';
 import { EditorCanvas } from './canvas.js';
 import { CssEditor } from './cssEditor.js';
 import { Inspector } from './inspector.js';
@@ -77,6 +78,10 @@ let initialViewPending = initialView !== null;
 // paths disagree about. See renderInvariants.ts.
 setRenderInvariantChecks(import.meta.env.DEV);
 const canvas = new EditorCanvas(el('canvas'), store);
+// A presentation window occludes this one, and a hidden page's media buffers
+// are Chromium's to reclaim -- closing Present used to leave canvas, rail and
+// Magic Move previews black until something happened to touch them.
+trackPreviewFrameRecovery(el('canvas'), document.body);
 const inspector = new Inspector(el('inspector'), store);
 new TimelinePanel(el('timeline'), store);
 const agentChatHistoryModal = new AgentChatHistoryModal(window.api);

@@ -1264,17 +1264,11 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
     }
     const relative = normalize(path).replace(/^([/\\]|\.\.)+/, '');
     const file = join(clientDir, relative === '' || relative === '.' ? 'index.html' : relative);
-    try {
-      const body = await readFile(file);
-      response.writeHead(200, {
-        'content-type': MIME[extname(file).toLowerCase()] ?? 'application/octet-stream',
-        'cache-control': 'no-store',
-      });
-      response.end(body);
-    } catch {
-      response.writeHead(404, { 'content-type': 'text/plain' });
-      response.end('not found');
-    }
+    // Served like assets: vite's hashed output is immutable, the HTML shells
+    // revalidate with an ETag. `no-store` here made every click on Present
+    // re-download the whole bundle — over a slow link, behind the deck's own
+    // video fetches, that was seconds of black screen every single time.
+    await serveFileWithRanges(request, response, file, [CONTENT_HASHED_NAME, VITE_HASHED_NAME]);
   }
 
   const wss = new WebSocketServer({ noServer: true });
@@ -1429,7 +1423,16 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
       for (const room of rooms.values()) {
         for (const peer of room.peers.values()) peer.socket.close();
       }
-      await new Promise<void>((resolvePromise) => httpServer.close(() => resolvePromise()));
+      // `close()` alone only stops new connections: it waits for every open
+      // one to go idle first. A browser leaves plenty that never will — a
+      // <video> that buffered enough and stopped reading its range response
+      // keeps that response open indefinitely — so the await never returned
+      // and "End collaboration" hung with the shell still on screen. Ending
+      // the session means disconnecting everyone, so tear the sockets down.
+      await new Promise<void>((resolvePromise) => {
+        httpServer.close(() => resolvePromise());
+        httpServer.closeAllConnections();
+      });
       for (const room of rooms.values()) await room.session.close();
       sharedAgent?.close();
     },
@@ -1946,11 +1949,21 @@ async function collectDeckFiles(deckDir: string): Promise<ZipFile[]> {
   return files;
 }
 
+/** Filenames written by importAsset: `<stem>.<8-hex content hash>.<ext>`. */
+// Two spellings of "the name contains a content hash": imported deck assets
+// (`stem.8hexdigits.ext`, possibly with a transcode infix) and vite bundle
+// output (`entry-B64charsx8.ext`).
+const CONTENT_HASHED_NAME = /\.[0-9a-f]{8}\.(?:[a-z0-9]+\.)?[a-z0-9]+$/i;
+const VITE_HASHED_NAME = /-[a-z0-9_-]{8}\.[a-z0-9]+$/i;
+
 /** Stream a file honouring HTTP Range requests, so <video> can seek. */
 async function serveFileWithRanges(
   request: IncomingMessage,
   response: ServerResponse,
   absolute: string,
+  // The vite hash spelling is only trusted for the built client bundle; a
+  // user-named deck asset can end in "-something8.ext" without being hashed.
+  hashedNames: RegExp[] = [CONTENT_HASHED_NAME],
 ): Promise<void> {
   let info;
   try {
@@ -1964,7 +1977,29 @@ async function serveFileWithRanges(
 
   const type = MIME[extname(absolute).toLowerCase()] ?? 'application/octet-stream';
   const range = request.headers.range;
-  const common = { 'content-type': type, 'accept-ranges': 'bytes', 'cache-control': 'no-store' };
+  // Assets must be cacheable. `no-store` here once made every <video> element
+  // refetch its whole file on every mount: a deck reusing one 27 MB clip
+  // across N elements issued N full downloads at open, which saturated the
+  // browser's six connections per origin and starved the present view's HTML,
+  // bundle and WebSocket behind them — seconds of blank screen. Imported
+  // assets carry a content hash in the filename, so those are immutable; for
+  // anything else the validator makes revalidation a 304, not a re-download.
+  const etag = `"${info.size}-${Math.round(info.mtimeMs)}"`;
+  const name = basename(absolute);
+  const cacheControl = hashedNames.some((pattern) => pattern.test(name))
+    ? 'public, max-age=31536000, immutable'
+    : 'public, no-cache';
+  if (request.headers['if-none-match'] === etag) {
+    response.writeHead(304, { etag, 'cache-control': cacheControl });
+    response.end();
+    return;
+  }
+  const common = {
+    'content-type': type,
+    'accept-ranges': 'bytes',
+    'cache-control': cacheControl,
+    etag,
+  };
 
   if (!range) {
     response.writeHead(200, { ...common, 'content-length': info.size });

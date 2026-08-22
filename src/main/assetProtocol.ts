@@ -80,9 +80,27 @@ export function installAssetProtocol(): void {
       const relative = decodeURIComponent(url.pathname).replace(/^\/+/, '');
       if (!relative) return new Response('Not found', { status: 404 });
       const absolute = resolveAsset(currentDeckDir, relative);
-      const size = statSync(absolute).size;
+      const info = statSync(absolute);
+      const size = info.size;
       const ext = absolute.slice(absolute.lastIndexOf('.')).toLowerCase();
       const type = MIME[ext] ?? 'application/octet-stream';
+
+      // Same caching contract as the collab server: imported assets carry a
+      // content hash in the name and are immutable; everything else
+      // revalidates with the ETag. Without this, every element mounting the
+      // same clip streamed its own full copy — a deck reusing one clip across
+      // N elements did N large reads at every open, and previews sat black
+      // until their turn came.
+      const etag = `"${size}-${Math.round(info.mtimeMs)}"`;
+      const cacheControl = /\.[0-9a-f]{8}\.(?:[a-z0-9]+\.)?[a-z0-9]+$/i.test(absolute)
+        ? 'public, max-age=31536000, immutable'
+        : 'public, no-cache';
+      if (request.headers.get('If-None-Match') === etag) {
+        return new Response(null, {
+          status: 304,
+          headers: { ETag: etag, 'Cache-Control': cacheControl },
+        });
+      }
 
       // Range support is not an optimisation here — it is what makes seeking
       // work at all. Without 206 responses, setting `currentTime` on a video
@@ -91,6 +109,8 @@ export function installAssetProtocol(): void {
       const headers: Record<string, string> = {
         'Content-Type': type,
         'Accept-Ranges': 'bytes',
+        ETag: etag,
+        'Cache-Control': cacheControl,
         // The editor renderer is http(s) in development and file: when
         // packaged, while assets live at deck:. Opting this private scheme
         // into CORS lets canvas tools read pixels without tainting the bitmap.

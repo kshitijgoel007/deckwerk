@@ -176,6 +176,9 @@ function pinVideos(starts) {
     const videos = [...document.querySelectorAll('video')];
     return Promise.all(videos.map((video, index) => new Promise((done) => {
       const at = ${JSON.stringify(starts)}[index] ?? 0;
+      // Tell the Player this frame is ours now, so it does not resume playback
+      // to recover from what looks to it like an unwanted pause.
+      video.dataset.holdFrame = 'true';
       video.pause();
       video.autoplay = false;
       const seek = () => {

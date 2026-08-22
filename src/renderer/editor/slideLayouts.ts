@@ -19,6 +19,8 @@ function placeholder(slide: Slide, role: 'title' | 'body'): TextEl {
     id: makeId('text'), type: 'text', x: 0, y: 0, w: 100, h: 100, rot: 0, z,
     opacity: 1, class: [`role-${role}`, 'placeholder'], style: {},
     html: role === 'title' ? 'Slide title' : 'Body text', align: 'left', valign: 'top',
+    // Layout placeholders fit their box for the same reason new text boxes do.
+    autoFit: true,
   };
 }
 

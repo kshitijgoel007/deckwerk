@@ -57,6 +57,18 @@ export interface CollabBridgeHooks {
   onCleanChange: (clean: boolean) => void;
   /** The host ended the session; the bridge stops reconnecting. */
   onEnded?: () => void;
+  /**
+   * False the moment the socket drops (a retry loop begins), true again on
+   * every welcome. Distinct from onStatus so callers can drive UI state
+   * without parsing status strings.
+   */
+  onConnectionChange?: (connected: boolean) => void;
+  /**
+   * A reconnect abandons unconfirmed transactions (the server's state wins);
+   * fired with their count just before they are dropped, so the shell can
+   * tell the user that work done while disconnected did not survive.
+   */
+  onEditsDiscarded?: (count: number) => void;
 }
 
 export class CollabBridge {
@@ -94,6 +106,7 @@ export class CollabBridge {
     });
     socket.addEventListener('close', () => {
       if (this.closed) return;
+      this.hooks.onConnectionChange?.(false);
       this.hooks.onStatus(`Disconnected — retrying in ${Math.round(this.reconnectDelay / 1000)}s`);
       this.reconnectTimer = setTimeout(() => {
         this.reconnectTimer = null;
@@ -217,10 +230,12 @@ export class CollabBridge {
         // new base, so the inverses queued against the discarded optimistic one
         // must go with it -- replaying them would apply edits the server never
         // saw, exactly as the `deck` resync below guards against.
+        if (this.pending.length > 0) this.hooks.onEditsDiscarded?.(this.pending.length);
         this.pending = [];
         this.undoStack = [];
         this.redoStack = [];
         this.hooks.onCleanChange(true);
+        this.hooks.onConnectionChange?.(true);
         this.hooks.onWelcome(message);
         return;
       }

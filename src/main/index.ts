@@ -56,6 +56,7 @@ import type { DynamicToolCall, DynamicToolResult } from './codexAppServer.js';
 import { installAssetProtocol, registerAssetScheme, setDeckDir } from './assetProtocol.js';
 import {
   createDeck,
+  deckFolderPath,
   copyDeck,
   derivedAssetPath,
   ensureAgentGuide,
@@ -593,10 +594,13 @@ function registerHandlers(): void {
       defaultPath: 'Untitled deck',
     });
     if (res.canceled || !res.filePath) return null;
-    reportOperation(event, operationId, `Creating ${basename(res.filePath)}/deck.json`);
-    const deck = await createDeck(res.filePath, basename(res.filePath));
+    // The panel hands back whatever is in its name field, so a stray `.key`
+    // from the surrounding folder must not become the folder name or title.
+    const dir = deckFolderPath(res.filePath);
+    reportOperation(event, operationId, `Creating ${basename(dir)}/deck.json`);
+    const deck = await createDeck(dir, basename(dir));
     reportOperation(event, operationId, 'Preparing the new presentation', 1);
-    return setSession(res.filePath, deck);
+    return setSession(dir, deck);
   });
 
   ipcMain.handle(IPC.deckOpen, async (event, operationId?: string): Promise<DeckSession | null> => {
@@ -750,11 +754,12 @@ function registerHandlers(): void {
       properties: ['createDirectory'],
     });
     if (target.canceled || !target.filePath) return null;
+    const dir = deckFolderPath(target.filePath);
 
-    reportOperation(event, operationId, `Copying deck to ${basename(target.filePath)}`);
-    const deck = await copyDeck(s.dir, target.filePath);
+    reportOperation(event, operationId, `Copying deck to ${basename(dir)}`);
+    const deck = await copyDeck(s.dir, dir);
     reportOperation(event, operationId, 'Opening the saved copy', 0.8);
-    const saved = setSession(target.filePath, deck);
+    const saved = setSession(dir, deck);
     broadcastDeck(BrowserWindow.fromWebContents(event.sender));
     return saved;
   });
@@ -1028,7 +1033,7 @@ function registerHandlers(): void {
       });
       if (target.canceled || !target.filePath) return null;
 
-      const result = await importKeynote(keyPath, target.filePath, (message, ratio) => {
+      const result = await importKeynote(keyPath, deckFolderPath(target.filePath), (message, ratio) => {
         reportOperation(event, operationId, message, ratio);
       });
       reportOperation(event, operationId, 'Opening the imported presentation', 1);
@@ -1047,10 +1052,11 @@ function registerHandlers(): void {
       properties: ['createDirectory'],
     });
     if (target.canceled || !target.filePath) return null;
-    await exportDeck(s.dir, s.deck, target.filePath, (message, ratio) => {
+    const dir = deckFolderPath(target.filePath);
+    await exportDeck(s.dir, s.deck, dir, (message, ratio) => {
       reportOperation(event, operationId, message, ratio);
     });
-    return target.filePath;
+    return dir;
   });
 
   ipcMain.handle(IPC.exportPdf, async (
