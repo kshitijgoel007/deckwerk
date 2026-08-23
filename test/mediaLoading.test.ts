@@ -42,6 +42,33 @@ function renderVideoEl(deck: Deck, mediaPreload?: 'auto' | 'metadata'): HTMLVide
   return video!;
 }
 
+describe('preview frames must be readable', () => {
+  /**
+   * A preview's frame is captured into a canvas and shown as a still. Drawing
+   * a cross-origin frame taints the canvas, so the pixels cannot be read back
+   * and the surface falls back to a live video -- the element that goes black.
+   * The desktop app is that case: renderer on http(s)/file:, assets on deck:.
+   */
+  it('asks for CORS on cross-origin preview media, and not on same-origin', () => {
+    const deck = videoDeck();
+    const remote = renderSlide(deck.slides[0], {
+      resolveSrc: (src) => `deck://asset/${src}`,
+      mediaPreload: 'metadata',
+    }).querySelector('video')!;
+    expect(remote.crossOrigin).toBe('anonymous');
+
+    const local = renderVideoEl(deck, 'metadata');
+    expect(local.getAttribute('crossorigin')).toBeNull();
+  });
+
+  it('serves deck: assets with a CORS header on every path', () => {
+    const source = readFileSync(join('src', 'main', 'assetProtocol.ts'), 'utf8');
+    // 200/206 share one header map; the 304 branch builds its own.
+    expect(source.match(/Access-Control-Allow-Origin/g)?.length ?? 0)
+      .toBeGreaterThanOrEqual(2);
+  });
+});
+
 describe('video preload intent', () => {
   it('defaults to auto for the player, where playback is imminent', () => {
     expect(renderVideoEl(videoDeck()).preload).toBe('auto');

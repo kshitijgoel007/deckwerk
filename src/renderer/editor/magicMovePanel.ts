@@ -2,6 +2,7 @@ import type { Slide } from '@shared/deck.js';
 import { makeId } from '@shared/geometry.js';
 import { explicitMagicMovePairs, suggestMagicMovePairs } from '@shared/magicMove.js';
 import { recoverPreviewFrames } from '../player/previewFrameRecovery.js';
+import { freezePreviewVideos } from '../player/previewPoster.js';
 import { renderSlide } from '../player/render.js';
 import { describeElement as describe, renderElementLabel } from './elementLabel.js';
 import type { EditorStore } from './store.js';
@@ -530,6 +531,10 @@ export class MagicMovePanel {
       video.pause();
     }
     if (cached) adoptDecodedVideos(cached.surface, surface);
+    // Pairing previews never play either, so they show captured stills. Once
+    // a frame is cached this is synchronous -- a rebuilt surface is a picture
+    // immediately instead of a black box waiting on the network.
+    freezePreviewVideos(surface);
     frame.appendChild(surface);
 
     cached?.observer?.disconnect();

@@ -134,6 +134,13 @@ export function applyMediaFitStyles(
   // covers a changed box and in-point as well as a changed fit or crop.
   if (el.type === 'video' && tag.tagName.toLowerCase() === 'video') {
     tag.dataset.mediaKey = videoPresentationKey(el, tag.getAttribute('src') ?? '');
+    // The poster-frame stamp is part of that same identity: a recovery pass
+    // reads it to re-seek an element whose frame was dropped, and a stale
+    // in-point here would restore the frame the clip no longer starts at.
+    const video = tag as HTMLVideoElement;
+    const posterTime = posterFrameTime(el, video.preload === 'auto');
+    if (posterTime === null) delete video.dataset.posterTime;
+    else video.dataset.posterTime = String(posterTime);
   }
 
   if (el.sourceBox) {
@@ -813,6 +820,34 @@ export function videoPresentationKey(
   return [resolvedSrc, el.start, crop, el.fit, el.w, el.h].join('|');
 }
 
+/** Whether a resolved media URL will be read as cross-origin by the canvas. */
+function isCrossOrigin(url: string): boolean {
+  if (typeof location === 'undefined') return false;
+  try {
+    return new URL(url, location.href).origin !== location.origin;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The frame a paused element should show: its in-point, or a hair past zero on
+ * a preview surface.
+ *
+ * A `<video>` paints nothing until a frame is decoded, so a preview that never
+ * seeks is a black box; under `preload="metadata"` nothing else will decode
+ * one. The hair past zero matters — seeking to the current position completes
+ * without decoding anything. A live surface with no in-point needs no seek at
+ * all, because playback is about to decode frames anyway.
+ */
+export function posterFrameTime(
+  el: Extract<SlideElement, { type: 'video' }>,
+  live: boolean,
+): number | null {
+  if (el.start > 0) return el.start;
+  return live ? null : 0.03;
+}
+
 /**
  * Seek to the element's poster frame as soon as metadata arrives.
  *
@@ -847,7 +882,16 @@ function renderVideo(
   // The preload hint must be in place before src: assigning src is what
   // starts resource selection, and it reads the hint of that moment.
   video.preload = preload === 'metadata' ? 'none' : preload;
-  video.src = opts.resolveSrc(el.src);
+  const src = opts.resolveSrc(el.src);
+  // A preview's frame is captured into a canvas (previewPoster.ts), and
+  // drawing a cross-origin frame taints the canvas so the pixels cannot be
+  // read back. The desktop app is exactly that case -- the renderer is
+  // http(s) or file: while assets are served from deck: -- so ask for CORS.
+  // Both asset servers answer `Access-Control-Allow-Origin: *`. Same-origin
+  // media (the collab client) is left alone: the attribute would only add a
+  // preflight-shaped failure mode for no gain.
+  if (preload === 'metadata' && isCrossOrigin(src)) video.crossOrigin = 'anonymous';
+  video.src = src;
   applyVideoPlaybackState(video, el, opts);
   if (preload === 'metadata') {
     // Preview surfaces mount many videos at once (one per rail thumbnail);
@@ -858,14 +902,9 @@ function renderVideo(
   }
 
   // Autoplay is driven by the timeline runtime, not the `autoplay` attribute,
-  // so that reveal-then-play ordering stays under our control.
-  //
-  // The seek doubles as the poster frame: a <video> paints nothing until a
-  // frame is decoded, so a paused preview that never seeks is a black box.
-  // Under preload 'metadata' nothing else will decode a frame, so seek even
-  // when the in-point is zero — a hair after zero, because seeking to the
-  // current position completes without decoding.
-  const posterTime = el.start > 0 ? el.start : preload === 'metadata' ? 0.03 : null;
+  // so that reveal-then-play ordering stays under our control. The seek below
+  // doubles as the poster frame (see posterFrameTime).
+  const posterTime = posterFrameTime(el, preload !== 'metadata');
   if (posterTime !== null) {
     // Stamped so a later recovery pass can re-arm the same seek without the
     // deck element in hand (see previewFrameRecovery.ts).

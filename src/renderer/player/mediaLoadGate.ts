@@ -64,6 +64,24 @@ export function gateVideoLoad(video: HTMLVideoElement): void {
   ensureWatchdog();
 }
 
+/**
+ * Forget an element the gate is carrying, without touching the element.
+ *
+ * Used when something else takes responsibility for the picture — a preview
+ * that is being replaced by a captured still no longer needs a load, and its
+ * queue slot belongs to a surface that does.
+ */
+export function ungateVideoLoad(video: HTMLVideoElement): void {
+  for (let i = queue.length - 1; i >= 0; i -= 1) {
+    if (queue[i].video === video) queue.splice(i, 1);
+  }
+  for (const entry of [...active]) {
+    if (entry.video !== video) continue;
+    active.delete(entry);
+  }
+  pump();
+}
+
 /** Whether the gate is already carrying this element's load. */
 export function isGated(video: HTMLVideoElement): boolean {
   if (queue.some((entry) => entry.video === video)) return true;

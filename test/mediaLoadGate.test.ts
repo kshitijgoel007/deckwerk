@@ -2,11 +2,20 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { parseDeck, type Deck } from '../src/shared/deck.js';
 import { renderSlide } from '../src/renderer/player/render.js';
-import { gatedLoadsPending, resetMediaLoadGateForTests } from '../src/renderer/player/mediaLoadGate.js';
+import {
+  gateVideoLoad,
+  gatedLoadsPending,
+  isGated,
+  resetMediaLoadGateForTests,
+} from '../src/renderer/player/mediaLoadGate.js';
 import {
   recoverPreviewFrames,
   trackPreviewFrameRecovery,
 } from '../src/renderer/player/previewFrameRecovery.js';
+import {
+  freezePreviewVideos,
+  resetPreviewPostersForTests,
+} from '../src/renderer/player/previewPoster.js';
 
 /**
  * Preview surfaces must never monopolise the origin's six connections.
@@ -38,6 +47,7 @@ function slideWithVideos(count: number): Deck['slides'][number] {
 beforeEach(() => {
   document.body.replaceChildren();
   resetMediaLoadGateForTests();
+  resetPreviewPostersForTests();
   HTMLMediaElement.prototype.load = function () {
     this.dispatchEvent(new Event('emptied'));
   };
@@ -226,3 +236,46 @@ describe('aborted preview loads come back', () => {
     host.remove();
   });
 });
+
+/**
+ * One clip shown through sixteen elements is one picture, not sixteen loads.
+ *
+ * Preview surfaces show a still (previewPoster.ts), and a still can be copied.
+ * So exactly one element per distinct frame — source file plus in-point — is
+ * allowed to fetch; the rest wait for the capture and are dropped from the
+ * gate, freeing its slots for surfaces that still need bytes. jsdom cannot
+ * decode a frame, so what is asserted here is the fetch bookkeeping; the
+ * pictures themselves are checked in test/previewStillsBrowser.test.ts.
+ */
+describe('preview stills', () => {
+  it('lets one element per frame fetch, and releases the others', () => {
+    const root = renderSlide(slideWithVideos(1), {
+      resolveSrc: () => '/x/one-clip.05a38d7a.mp4',
+      mediaPreload: 'metadata',
+    });
+    // Four elements, one file, one in-point: the rhoda_intro_2 shape.
+    const one = root.querySelector('video')!;
+    for (let i = 0; i < 3; i += 1) {
+      const clone = one.cloneNode(true) as HTMLVideoElement;
+      root.appendChild(clone);
+      gateVideoLoadForTest(clone);
+    }
+    document.body.appendChild(root);
+    const videos = [...root.querySelectorAll('video')];
+    expect(videos).toHaveLength(4);
+
+    freezePreviewVideos(root);
+
+    // The gate is down to the single element that will produce the frame.
+    expect(videos.filter((v) => isGated(v))).toHaveLength(1);
+    // And nothing was thrown away: every element still points at the file, so
+    // the capture — or a fallback load — can still happen.
+    for (const video of videos) expect(video.getAttribute('src')).toBeTruthy();
+  });
+});
+
+/** Queue a clone the way renderVideo would have. */
+function gateVideoLoadForTest(video: HTMLVideoElement): void {
+  video.preload = 'none';
+  gateVideoLoad(video);
+}

@@ -98,7 +98,13 @@ export function installAssetProtocol(): void {
       if (request.headers.get('If-None-Match') === etag) {
         return new Response(null, {
           status: 304,
-          headers: { ETag: etag, 'Cache-Control': cacheControl },
+          headers: {
+            ETag: etag,
+            'Cache-Control': cacheControl,
+            // Also on the revalidation path: a CORS media load that 304s must
+            // still see the header, or the cached bytes taint the canvas.
+            'Access-Control-Allow-Origin': '*',
+          },
         });
       }
 

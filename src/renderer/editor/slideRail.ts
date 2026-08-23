@@ -1,5 +1,6 @@
 import { makeId } from '@shared/geometry.js';
 import { recoverPreviewFrames } from '../player/previewFrameRecovery.js';
+import { freezePreviewVideos } from '../player/previewPoster.js';
 import { renderSlide } from '../player/render.js';
 import { applySlideLayout } from './slideLayouts.js';
 import { newComment, openCommentsPopover, openCount } from './comments.js';
@@ -282,6 +283,10 @@ export class SlideRail {
         // so the thumbnail shows a picture without buffering the clip.
         video.pause();
       }
+      // A thumbnail needs one frame, never playback, and a live <video> is
+      // what makes it go black when the page is hidden, occluded or holding
+      // more players than Chromium wants resident. Freeze it into a still.
+      freezePreviewVideos(inner);
       thumb.appendChild(inner);
       this.scaleThumb(thumb);
       this.thumbResizeObserver?.observe(thumb);

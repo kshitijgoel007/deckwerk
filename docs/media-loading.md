@@ -39,7 +39,9 @@ white screen, then black, then eventually the first slide.
 - **`'auto'`** is for the one surface where playback is imminent: the live
   Player. Buffering ahead is the point there.
 - **`'metadata'`** is for every preview surface — editor canvas, slide rail
-  thumbnails, Magic Move panel, agent measurement. It fetches the
+  thumbnails, Magic Move panel, agent measurement. The rail and Magic Move
+  panel then freeze their videos into stills (see below); the canvas keeps
+  live elements because it plays them on demand. It fetches the
   container header only, then seeks one frame (the element's in-point, or a
   hair past zero) so the element shows a picture instead of black. Cost per
   element: a few hundred KB, not the whole file.
@@ -62,6 +64,31 @@ otherwise: pass `'metadata'`. The exceptions are the live Player and one-shot
 capture paths (the PDF renderer): a capture pins exact frames under a
 readiness timeout, and 'metadata' would leave those pinned seeks racing the
 network inside that timeout — nondeterministic frames in the output.
+
+### Preview surfaces show a still, not a video
+
+A rail thumbnail or a Magic Move preview never plays. Giving it a live
+`<video>` buys nothing and costs the one property that matters: a `<video>`
+paints nothing until a frame is decoded, and the decoded frames of a page that
+is hidden, occluded, or simply holding many media players are Chromium's to
+reclaim. A fullscreen presentation overlay with its own playing clips is
+exactly that pressure, and so is scrolling a long rail. Nothing re-decodes
+afterwards, because the poster-frame seek is a `once` listener that already
+fired. That is the "thumbnails are black after I close the presentation" bug,
+reported three times over one five-slide deck.
+
+So preview surfaces freeze (`previewPoster.ts`): after rendering, every video
+under the surface is replaced by an `<img>` carrying its class, inline styles
+and media data attributes — same box, same fit, same crop, same picture.
+Exactly one element per distinct *frame* (source file plus in-point) loads; its
+frame is captured to a data URL and cached for the session, so the other
+fifteen elements of a one-clip deck never fetch at all and a re-rendered
+surface is a picture *synchronously*. Released elements are ungated
+(`ungateVideoLoad`), which frees both the connection and the decoder.
+
+The editor canvas and the Player keep real `<video>` elements: they play. A
+capture path (`holdFrame`) is skipped, and if a frame cannot be read (a tainted
+canvas) the element is simply left alone — the old behaviour.
 
 ### Servers: hashed assets are immutable, and nothing is `no-store`
 
@@ -180,7 +207,11 @@ arrive.
   route.
 - `test/magicMove.test.ts` — the Magic Move panel's preview surfaces survive a
   re-render, and adopt their decoded elements when an edit rebuilds them.
-- `test/mediaLoadGate.test.ts` — the three-at-a-time budget, plus recovery:
+- `test/previewStillsBrowser.test.ts` — the real editor over a throttled link:
+  every preview ends up a painted still, no preview keeps a video, and
+  presenting and closing the presentation changes neither.
+- `test/mediaLoadGate.test.ts` — the three-at-a-time budget, one load per
+  distinct frame, plus recovery:
   frameless previews are re-queued (and only those) when the page becomes
   visible, the poster seek is re-armed, and a gate-aborted source is restored.
 - `test/playerVideoReuse.test.ts` — element reuse across navigation: pooling,
