@@ -49,6 +49,7 @@ describe('paragraph segmentation', () => {
     expect(countParagraphs(THREE_PARAS)).toBe(3);
     expect(countParagraphs('first line<div>second</div>')).toBe(2);
     expect(countParagraphs('<ul><li>a</li><li>b</li></ul><p>after</p>')).toBe(3);
+    expect(countParagraphs('<ol><li>one</li><li>two</li><li>three</li></ol>')).toBe(3);
     expect(countParagraphs('just inline text')).toBe(1);
   });
 
@@ -112,6 +113,12 @@ describe('paragraph normalisation', () => {
     expect(normalizeParagraphHtml('<ul><ul><li>a</li></ul></ul>')).toBe(
       '<ul><li><ul><li>a</li></ul></li></ul>',
     );
+  });
+
+  it('joins adjacent ordered lists created by editing back into one sequence', () => {
+    expect(normalizeParagraphHtml(
+      '<p>Heading</p><ol><li>one</li></ol><ol><li>two</li><li>three</li></ol>',
+    )).toBe('<p>Heading</p><ol><li>one</li><li>two</li><li>three</li></ol>');
   });
 
   it('passes authored structure through untouched', () => {

@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { copyDeck, createDeck, deckFolderPath } from '../src/main/deckStore.js';
+import { copyDeck, createDeck, deckFolderPath, importImageBuffer } from '../src/main/deckStore.js';
 
 describe('deck folder persistence', () => {
   const cleanup: string[] = [];
@@ -37,6 +37,32 @@ describe('deck folder persistence', () => {
     await createDeck(target);
 
     await expect(copyDeck(source, target)).rejects.toThrow('already exists');
+  });
+
+  it('imports clipboard image bytes as a content-addressed asset', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'deck-clipboard-image-'));
+    cleanup.push(root);
+    const deckDir = join(root, 'Deck');
+    await createDeck(deckDir);
+    const png = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+
+    const first = await importImageBuffer(
+      deckDir,
+      png,
+      'Screenshot.png',
+      { width: 1440, height: 900 },
+    );
+    const second = await importImageBuffer(
+      deckDir,
+      png,
+      'Screenshot.png',
+      { width: 1440, height: 900 },
+    );
+
+    expect(first).toEqual(second);
+    expect(first).toMatchObject({ kind: 'image', width: 1440, height: 900, duration: null });
+    expect(first.src).toMatch(/^assets\/Screenshot\.[a-f0-9]{8}\.png$/);
+    expect(new Uint8Array(await readFile(join(deckDir, first.src)))).toEqual(png);
   });
 });
 

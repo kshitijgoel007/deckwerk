@@ -150,6 +150,37 @@ export class Cdp {
     await this.mouse('mouseReleased', x, y, 1);
   }
 
+  /** Click near the leading edge of a rendered character at a text offset. */
+  async clickTextAtOffset(
+    selector: string,
+    offset: number,
+    label = selector,
+  ): Promise<void> {
+    const point = await this.evaluate<{ x: number; y: number } | { error: string }>(`(() => {
+      const root = document.querySelector(${JSON.stringify(selector)});
+      if (!root) return { error: 'no element matches' };
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      let remaining = ${JSON.stringify(offset)};
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        if (remaining >= node.data.length) {
+          remaining -= node.data.length;
+          continue;
+        }
+        const range = document.createRange();
+        range.setStart(node, remaining);
+        range.setEnd(node, Math.min(node.data.length, remaining + 1));
+        const rect = range.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) return { error: 'character has no rendered box' };
+        return { x: rect.left + rect.width * 0.2, y: rect.top + rect.height / 2 };
+      }
+      return { error: 'offset is outside rendered text' };
+    })()`);
+    if ('error' in point) throw new Error(`cannot click ${label}: ${point.error}`);
+    await this.mouse('mouseMoved', point.x, point.y, 0);
+    await this.mouse('mousePressed', point.x, point.y, 1);
+    await this.mouse('mouseReleased', point.x, point.y, 1);
+  }
+
   private mouse(type: string, x: number, y: number, clickCount: number): Promise<void> {
     return this.call('Input.dispatchMouseEvent', {
       type, x, y, clickCount, button: clickCount ? 'left' : 'none', buttons: 0,
@@ -199,6 +230,151 @@ export class Cdp {
         nativeVirtualKeyCode: windowsVirtualKeyCode,
       });
     }
+  }
+
+  /** Dispatch a real modified key chord (Ctrl/Meta/Shift/Alt bitmask from CDP). */
+  async chord(
+    key: string,
+    code: string,
+    windowsVirtualKeyCode: number,
+    modifiers: number,
+  ): Promise<void> {
+    for (const type of ['keyDown', 'keyUp']) {
+      await this.call('Input.dispatchKeyEvent', {
+        type,
+        key,
+        code,
+        modifiers,
+        windowsVirtualKeyCode,
+        nativeVirtualKeyCode: windowsVirtualKeyCode,
+      });
+    }
+  }
+
+  /** A real double-click at the centre of a visible node. */
+  async doubleClick(selector: string, label = selector): Promise<void> {
+    const box = await this.boxOf(selector, label);
+    await this.mouse('mouseMoved', box.x, box.y, 0);
+    await this.mouse('mousePressed', box.x, box.y, 1);
+    await this.mouse('mouseReleased', box.x, box.y, 1);
+    await this.mouse('mousePressed', box.x, box.y, 2);
+    await this.mouse('mouseReleased', box.x, box.y, 2);
+  }
+
+  /** Double-click the first rendered word in a node, using its glyph box. */
+  async doubleClickText(selector: string, label = selector): Promise<void> {
+    const point = await this.evaluate<{ x: number; y: number } | { error: string }>(`(() => {
+      const root = document.querySelector(${JSON.stringify(selector)});
+      if (!root) return { error: 'no element matches' };
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        const offset = node.data.search(/\\S/);
+        if (offset < 0) continue;
+        const range = document.createRange();
+        range.setStart(node, offset);
+        range.setEnd(node, Math.min(node.data.length, offset + 1));
+        const rect = range.getBoundingClientRect();
+        return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+      }
+      return { error: 'node has no rendered text' };
+    })()`);
+    if ('error' in point) throw new Error(`cannot double-click ${label}: ${point.error}`);
+    await this.mouse('mouseMoved', point.x, point.y, 0);
+    await this.mouse('mousePressed', point.x, point.y, 1);
+    await this.mouse('mouseReleased', point.x, point.y, 1);
+    await this.mouse('mousePressed', point.x, point.y, 2);
+    await this.mouse('mouseReleased', point.x, point.y, 2);
+  }
+
+  /** Select all rendered text in a node by dragging from its first to last glyph. */
+  async dragSelectText(selector: string, label = selector): Promise<void> {
+    const points = await this.evaluate<{
+      start: { x: number; y: number };
+      end: { x: number; y: number };
+    } | { error: string }>(`(() => {
+      const root = document.querySelector(${JSON.stringify(selector)});
+      if (!root) return { error: 'no element matches' };
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      const texts = [];
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        if (node.data.length) texts.push(node);
+      }
+      if (!texts.length) return { error: 'node has no text' };
+      const first = document.createRange();
+      first.setStart(texts[0], 0);
+      first.setEnd(texts[0], Math.min(1, texts[0].data.length));
+      const lastText = texts[texts.length - 1];
+      const last = document.createRange();
+      last.setStart(lastText, Math.max(0, lastText.data.length - 1));
+      last.setEnd(lastText, lastText.data.length);
+      const a = first.getBoundingClientRect();
+      const b = last.getBoundingClientRect();
+      return {
+        start: { x: a.left + 1, y: a.top + a.height / 2 },
+        end: { x: b.right - 1, y: b.top + b.height / 2 }
+      };
+    })()`);
+    if ('error' in points) throw new Error(`cannot select ${label}: ${points.error}`);
+    await this.call('Input.dispatchMouseEvent', {
+      type: 'mouseMoved', x: points.start.x, y: points.start.y, button: 'none', buttons: 0,
+    });
+    await this.call('Input.dispatchMouseEvent', {
+      type: 'mousePressed', x: points.start.x, y: points.start.y,
+      button: 'left', buttons: 1, clickCount: 1,
+    });
+    await this.call('Input.dispatchMouseEvent', {
+      type: 'mouseMoved', x: points.end.x, y: points.end.y,
+      button: 'left', buttons: 1,
+    });
+    await this.call('Input.dispatchMouseEvent', {
+      type: 'mouseReleased', x: points.end.x, y: points.end.y,
+      button: 'left', buttons: 0, clickCount: 1,
+    });
+  }
+
+  /** Select the first rendered word with a real pointer drag. */
+  async dragSelectFirstWord(selector: string, label = selector): Promise<void> {
+    const points = await this.evaluate<{
+      start: { x: number; y: number };
+      end: { x: number; y: number };
+    } | { error: string }>(`(() => {
+      const root = document.querySelector(${JSON.stringify(selector)});
+      if (!root) return { error: 'no element matches' };
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        const match = /\\S+/.exec(node.data);
+        if (!match) continue;
+        const first = document.createRange();
+        first.setStart(node, match.index);
+        first.setEnd(node, match.index + 1);
+        const last = document.createRange();
+        last.setStart(node, match.index + match[0].length - 1);
+        last.setEnd(node, match.index + match[0].length);
+        const a = first.getBoundingClientRect();
+        const b = last.getBoundingClientRect();
+        return {
+          start: { x: a.left + 1, y: a.top + a.height / 2 },
+          end: { x: b.right - 1, y: b.top + b.height / 2 }
+        };
+      }
+      return { error: 'node has no rendered word' };
+    })()`);
+    if ('error' in points) throw new Error(`cannot select ${label}: ${points.error}`);
+    await this.call('Input.dispatchMouseEvent', {
+      type: 'mouseMoved', x: points.start.x, y: points.start.y, button: 'none', buttons: 0,
+    });
+    await this.call('Input.dispatchMouseEvent', {
+      type: 'mousePressed', x: points.start.x, y: points.start.y,
+      button: 'left', buttons: 1, clickCount: 1,
+    });
+    await this.call('Input.dispatchMouseEvent', {
+      type: 'mouseMoved', x: points.end.x, y: points.end.y,
+      button: 'left', buttons: 1,
+    });
+    await this.call('Input.dispatchMouseEvent', {
+      type: 'mouseReleased', x: points.end.x, y: points.end.y,
+      button: 'left', buttons: 0, clickCount: 1,
+    });
   }
 
   /**

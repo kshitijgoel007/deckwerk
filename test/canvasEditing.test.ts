@@ -266,6 +266,23 @@ describe('canvas zoom viewport', () => {
     expect(Number.parseFloat(stage.style.left)).toBeCloseTo(32);
     expect(Number.parseFloat(stage.style.top)).toBeCloseTo(58);
   });
+
+  it('pans at fitted size and uses Command-wheel as macOS zoom', () => {
+    const { canvas, host, stage } = setupViewport();
+    const left = Number.parseFloat(stage.style.left);
+    const top = Number.parseFloat(stage.style.top);
+    host.dispatchEvent(new WheelEvent('wheel', {
+      deltaY: 35, bubbles: true, cancelable: true,
+    }));
+    expect(Number.parseFloat(stage.style.left)).toBeCloseTo(left);
+    expect(Number.parseFloat(stage.style.top)).toBeCloseTo(top - 35);
+
+    host.dispatchEvent(new WheelEvent('wheel', {
+      clientX: 400, clientY: 300, deltaY: -8, metaKey: true,
+      bubbles: true, cancelable: true,
+    }));
+    expect(canvas.zoomPercent()).toBeGreaterThan(100);
+  });
 });
 
 describe('inline text editing', () => {
@@ -308,6 +325,199 @@ describe('inline text editing', () => {
     expect(el.type).toBe('text');
     expect((el as { html: string }).html).toBe('Edited text');
     expect(canvas.isEditing()).toBe(false);
+  });
+
+  it('turns typed bullet and numbered markers into continuing lists on Return', () => {
+    const { store, canvas, host } = setup();
+    const run = (html: string) => {
+      store.select(['text-1']);
+      store.updateSelected((element) => {
+        if (element.type === 'text') element.html = html;
+      });
+      canvas.beginTextEdit('text-1');
+      const body = bodyOf(host, 'text-1');
+      const range = document.createRange();
+      range.selectNodeContents(body);
+      range.collapse(false);
+      window.getSelection()!.removeAllRanges();
+      window.getSelection()!.addRange(range);
+      body.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Enter', bubbles: true, cancelable: true,
+      }));
+      return body;
+    };
+
+    let body = run('* First bullet');
+    expect(body.innerHTML).toBe('<ul><li>First bullet</li><li><br></li></ul>');
+    body.dispatchEvent(new FocusEvent('blur'));
+
+    body = run('3) Third item');
+    expect(body.innerHTML).toBe('<ol start="3"><li>Third item</li><li><br></li></ol>');
+  });
+
+  it('applies a font family to only the selected word', () => {
+    const { canvas, host } = setup();
+    canvas.beginTextEdit('text-1');
+    const body = bodyOf(host, 'text-1');
+    const text = body.firstChild!;
+    const range = document.createRange();
+    range.setStart(text, 0);
+    range.setEnd(text, 8);
+    window.getSelection()!.removeAllRanges();
+    window.getSelection()!.addRange(range);
+
+    expect(canvas.applyTextSelectionFontFamily('Avenir, sans-serif')).toBe(true);
+    const span = body.querySelector<HTMLSpanElement>('span')!;
+    expect(span.textContent).toBe('Original');
+    expect(span.style.fontFamily).toBe('Avenir, sans-serif');
+    expect(body.textContent).toBe('Original text');
+  });
+
+  it('routes undo through app history after formatting one selected word', () => {
+    const { store, canvas, host } = setup();
+    const undo = vi.fn(() => store.undo());
+    bindEditorKeys({
+      ...shellDeps(store),
+      canvas,
+      undo,
+    }, noopClipboard());
+    canvas.beginTextEdit('text-1');
+    const body = bodyOf(host, 'text-1');
+    const range = document.createRange();
+    range.setStart(body.firstChild!, 0);
+    range.setEnd(body.firstChild!, 8);
+    window.getSelection()!.removeAllRanges();
+    window.getSelection()!.addRange(range);
+    canvas.applyTextSelectionFontFamily('Avenir, sans-serif');
+
+    const event = new KeyboardEvent('keydown', {
+      key: 'z', ctrlKey: true, bubbles: true, cancelable: true,
+    });
+    body.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(undo).toHaveBeenCalledOnce();
+    expect(canvas.isEditing()).toBe(true);
+    expect(window.getSelection()?.toString()).toBe('Original');
+    expect(window.getSelection()?.isCollapsed).toBe(false);
+    expect(bodyOf(host, 'text-1').contentEditable).toBe('true');
+    const text = store.slide!.elements.find((element) => element.id === 'text-1')!;
+    expect(text.type === 'text' && text.html).toBe('Original text');
+  });
+
+  it('converts only the selected paragraphs into a numbered list', () => {
+    const { store, canvas, host } = setup();
+    store.select(['text-1']);
+    store.updateSelected((element) => {
+      if (element.type === 'text') {
+        element.html = '<p>Intro</p><p>1. First</p><p>2) Second</p><p>Outro</p>';
+      }
+    });
+    canvas.beginTextEdit('text-1');
+    const body = bodyOf(host, 'text-1');
+    const paragraphs = body.querySelectorAll('p');
+    const range = document.createRange();
+    range.setStartBefore(paragraphs[1]);
+    range.setEndAfter(paragraphs[2]);
+    window.getSelection()!.removeAllRanges();
+    window.getSelection()!.addRange(range);
+
+    expect(canvas.applyTextSelectionListStyle('Numbered')).toBe(true);
+    expect(body.innerHTML).toBe(
+      '<p>Intro</p><ol><li>First</li><li>Second</li></ol><p>Outro</p>',
+    );
+    const saved = store.slide!.elements.find((element) => element.id === 'text-1')!;
+    expect((saved as { html: string }).html).toBe(body.innerHTML);
+  });
+
+  it('selects table rows and columns, colours cells, and edits columns', () => {
+    const { store, canvas, host } = setup();
+    store.select(['text-1']);
+    store.updateSelected((element) => {
+      if (element.type === 'text') {
+        element.html = '<table><tbody><tr><td>A</td><td>B</td></tr><tr><td>C</td><td>D</td></tr></tbody></table>';
+      }
+    });
+    canvas.beginTextEdit('text-1');
+    const cell = bodyOf(host, 'text-1').querySelectorAll<HTMLTableCellElement>('td')[1];
+    cell.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+    expect(canvas.tableSelectionInfo()).toMatchObject({ row: 0, column: 1, rows: 2, columns: 2 });
+
+    canvas.setTableSelectionMode('column');
+    canvas.applyTableCellColor('backgroundColor', '#ff0000');
+    let html = (store.slide!.elements.find((element) => element.id === 'text-1') as { html: string }).html;
+    expect((html.match(/background-color: rgb\(255, 0, 0\)/g) ?? [])).toHaveLength(2);
+
+    canvas.insertTableColumn(true);
+    expect(canvas.tableSelectionInfo()?.columns).toBe(3);
+    canvas.deleteTableColumn();
+    expect(canvas.tableSelectionInfo()?.columns).toBe(2);
+  });
+
+  it('never stores the editor-only table selection highlight', () => {
+    const { store, canvas, host } = setup();
+    store.select(['text-1']);
+    store.updateSelected((element) => {
+      if (element.type === 'text') {
+        element.html = '<table><tbody><tr><td>A</td><td>B</td></tr></tbody></table>';
+      }
+    });
+    canvas.beginTextEdit('text-1');
+    const body = bodyOf(host, 'text-1');
+    body.querySelectorAll<HTMLTableCellElement>('td')[1]
+      .dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+    expect(body.querySelector('.editor-table-selected')).not.toBeNull();
+
+    body.dispatchEvent(new FocusEvent('blur'));
+    const html = (store.slide!.elements.find((element) => element.id === 'text-1') as { html: string }).html;
+    expect(html).not.toContain('editor-table-selected');
+    expect(html).not.toContain('class=""');
+  });
+
+  it('pastes an external HTML table as editable, safe table markup', () => {
+    const { store, canvas, host } = setup();
+    canvas.beginTextEdit('text-1');
+    const body = bodyOf(host, 'text-1');
+    const range = document.createRange();
+    range.selectNodeContents(body);
+    window.getSelection()!.removeAllRanges();
+    window.getSelection()!.addRange(range);
+    const paste = new Event('paste', { bubbles: true, cancelable: true }) as ClipboardEvent;
+    Object.defineProperty(paste, 'clipboardData', {
+      value: {
+        getData: (type: string) => type === 'text/html'
+          ? '<div>ignored<table><tr><td onclick="alert(1)">Excel</td><td>42</td></tr></table><script>bad()</script></div>'
+          : '',
+      },
+    });
+    body.dispatchEvent(paste);
+
+    expect(paste.defaultPrevented).toBe(true);
+    expect(body.querySelectorAll('table td')).toHaveLength(2);
+    expect(body.querySelector('td')?.hasAttribute('onclick')).toBe(false);
+    const html = (store.slide!.elements.find((element) => element.id === 'text-1') as { html: string }).html;
+    expect(html).toContain('<table>');
+    expect(html).not.toContain('onclick');
+    expect(html).not.toContain('<script');
+  });
+
+  it('pastes Google Sheets tab-separated clipboard data while editing text', () => {
+    const { canvas, host } = setup();
+    canvas.beginTextEdit('text-1');
+    const body = bodyOf(host, 'text-1');
+    const paste = new Event('paste', { bubbles: true, cancelable: true }) as ClipboardEvent;
+    Object.defineProperty(paste, 'clipboardData', {
+      value: {
+        getData: (type: string) => type === 'text/plain'
+          ? 'time\texperiment id\n2026-08-18\tego'
+          : '',
+      },
+    });
+    body.dispatchEvent(paste);
+
+    expect(paste.defaultPrevented).toBe(true);
+    expect(body.querySelectorAll('table tr')).toHaveLength(2);
+    expect(body.querySelectorAll('table td')).toHaveLength(4);
   });
 
   it('does not show the redundant raw Style box in the inspector', () => {
@@ -973,15 +1183,79 @@ describe('pointer handling keeps the DOM stable', () => {
   });
 
   it('selects on click without moving the element', () => {
-    const { store, host } = setup();
+    const { store, canvas, host } = setup();
     const originalX = store.slide!.elements[0].x;
 
     press(host, 200, 150);
 
     expect([...store.get().selection]).toEqual(['text-1']);
     expect(store.slide!.elements[0].x).toBe(originalX);
+    expect(canvas.isEditing()).toBe(false);
     // A click is not an edit, so it must not consume an undo slot.
     expect(store.canUndo()).toBe(false);
+  });
+
+  it('enters text editing on one click when the text box is already selected', () => {
+    const { store, canvas, host } = setup();
+
+    press(host, 200, 150);
+    expect([...store.get().selection]).toEqual(['text-1']);
+    expect(canvas.isEditing()).toBe(false);
+
+    press(host, 200, 150);
+    expect(canvas.isEditing()).toBe(true);
+    expect(bodyOf(host, 'text-1').contentEditable).toBe('true');
+  });
+
+  it('places the caret at the click that opens an already-selected text box', () => {
+    const { store, canvas, host } = setup();
+    press(host, 200, 150);
+    expect([...store.get().selection]).toEqual(['text-1']);
+
+    const caretRangeFromPoint = vi.fn((clientX: number, clientY: number) => {
+      expect({ clientX, clientY }).toEqual({ clientX: 360, clientY: 150 });
+      const text = bodyOf(host, 'text-1').firstChild!;
+      const range = document.createRange();
+      range.setStart(text, 9);
+      range.collapse(true);
+      return range;
+    });
+    Object.defineProperty(document, 'caretRangeFromPoint', {
+      configurable: true,
+      value: caretRangeFromPoint,
+    });
+
+    try {
+      press(host, 360, 150);
+      const selection = window.getSelection()!;
+      expect(canvas.isEditing()).toBe(true);
+      expect(caretRangeFromPoint).toHaveBeenCalledOnce();
+      expect(selection.isCollapsed).toBe(true);
+      expect(selection.anchorNode?.textContent).toBe('Original text');
+      expect(selection.anchorOffset).toBe(9);
+    } finally {
+      Reflect.deleteProperty(document, 'caretRangeFromPoint');
+    }
+  });
+
+  it('moves an already-selected text box without entering editing when the pointer drags', () => {
+    const { store, canvas, host } = setup();
+    press(host, 200, 150);
+    const stage = host.querySelector<HTMLElement>('.stage')!;
+    stage.getBoundingClientRect = () =>
+      ({ left: 0, top: 0, width: 1920, height: 1080 }) as DOMRect;
+    host.dispatchEvent(new PointerEvent('pointerdown', {
+      clientX: 200, clientY: 150, pointerId: 1, button: 0, bubbles: true,
+    }));
+    host.dispatchEvent(new PointerEvent('pointermove', {
+      clientX: 240, clientY: 180, pointerId: 1, button: 0, bubbles: true,
+    }));
+    host.dispatchEvent(new PointerEvent('pointerup', {
+      clientX: 240, clientY: 180, pointerId: 1, button: 0, bubbles: true,
+    }));
+
+    expect(canvas.isEditing()).toBe(false);
+    expect(store.slide!.elements[0].x).not.toBe(100);
   });
 
   it('clicks through the empty interior of a decorative frame', () => {

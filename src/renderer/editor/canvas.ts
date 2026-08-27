@@ -15,7 +15,13 @@ import {
 } from '../player/render.js';
 import { expandTimeline } from '@shared/timeline.js';
 import { classifyMediaName, makePendingSrc, pendingToken } from '@shared/media.js';
-import { normalizeParagraphHtml, paragraphUnits } from '@shared/paragraphs.js';
+import {
+  normalizeParagraphHtml,
+  paragraphUnits,
+  paragraphsToList,
+  paragraphsToOrderedList,
+  pastedTableHtml,
+} from '@shared/paragraphs.js';
 import {
   applyPendingHud,
   clearPending,
@@ -28,6 +34,15 @@ import { newComment, openCommentsPopover, openCount } from './comments.js';
 import { reportRenderDivergences } from './renderInvariants.js';
 import { HANDLES, type SnapLine, snapMove, snapResize } from './snapping.js';
 import type { EditorStore } from './store.js';
+
+export type TableSelection = {
+  elementId: string;
+  mode: 'cell' | 'row' | 'column';
+  row: number;
+  column: number;
+  rows: number;
+  columns: number;
+};
 
 /**
  * The editing surface: the slide rendered by the player, with an interaction
@@ -43,6 +58,54 @@ const SNAP_SCREEN_PX = 6;
 const LINE_HIT_SCREEN_PX = 8;
 /** Screen-pixel movement before a press becomes a drag rather than a click. */
 const DRAG_THRESHOLD_PX = 3;
+
+/** Turn a Keynote-style marker paragraph into a real continuing HTML list. */
+function convertTypedListMarker(body: HTMLElement, selection: Selection | null): boolean {
+  if (!selection?.isCollapsed || selection.rangeCount === 0) return false;
+  const range = selection.getRangeAt(0);
+  if (!body.contains(range.startContainer)) return false;
+  const parent = range.startContainer instanceof Element
+    ? range.startContainer
+    : range.startContainer.parentElement;
+  if (parent?.closest('li')) return false; // the browser already continues real lists
+  const block = parent?.closest('p, div') as HTMLElement | null;
+  const source = block && body.contains(block) ? block : body;
+  const text = (source.textContent ?? '').replace(/\u00a0/g, ' ');
+  const beforeCaret = range.cloneRange();
+  beforeCaret.selectNodeContents(source);
+  beforeCaret.setEnd(range.startContainer, range.startOffset);
+  if (beforeCaret.toString().replace(/\u00a0/g, ' ').length !== text.length) return false;
+  const bullet = /^\s*[*-]\s+(.+)$/.exec(text);
+  const numbered = /^\s*(\d+)[.)]\s+(.+)$/.exec(text);
+  if (!bullet && !numbered) return false;
+
+  const list = document.createElement(numbered ? 'ol' : 'ul');
+  if (numbered && numbered[1] !== '1') list.setAttribute('start', numbered[1]);
+  const first = document.createElement('li');
+  first.textContent = (bullet?.[1] ?? numbered?.[2] ?? '').trim();
+  const next = document.createElement('li');
+  next.appendChild(document.createElement('br'));
+  list.append(first, next);
+  if (source === body) body.replaceChildren(list);
+  else source.replaceWith(list);
+
+  const caret = document.createRange();
+  caret.selectNodeContents(next);
+  caret.collapse(true);
+  selection.removeAllRanges();
+  selection.addRange(caret);
+  return true;
+}
+
+/** Serialize authored text without editor-only table selection chrome. */
+function authoredTextHtml(body: HTMLElement): string {
+  const clone = body.cloneNode(true) as HTMLElement;
+  clone.querySelectorAll('.editor-table-selected').forEach((cell) => {
+    cell.classList.remove('editor-table-selected');
+    if (cell.getAttribute('class') === '') cell.removeAttribute('class');
+  });
+  return normalizeParagraphHtml(clone.innerHTML);
+}
 const MIN_ZOOM = 0.25;
 const MAX_ZOOM = 8;
 const ZOOM_STEP = 0.25;
@@ -133,6 +196,14 @@ export class EditorCanvas {
   private textEditOriginalHtml: string | null = null;
   /** Last non-collapsed browser selection inside the active text element. */
   private textSelectionRange: Range | null = null;
+  /** Cell/row/column currently targeted by the simple table inspector. */
+  private tableSelection: TableSelection | null = null;
+  /** A click (not a drag) on an already-selected text box enters editing here. */
+  private pendingTextEdit: {
+    elementId: string;
+    clientX: number;
+    clientY: number;
+  } | null = null;
 
   /**
    * Id of the element whose crop is being edited, if any.
@@ -151,6 +222,10 @@ export class EditorCanvas {
   onMaskModeChange?: (elementId: string | null) => void;
   /** Notified when inline text editing starts or ends. */
   onTextEditModeChange?: (elementId: string | null) => void;
+  /** Notified when a pasted table or its active cell changes. */
+  onTableSelectionChange?: () => void;
+  /** Routes undo/redo through the active shell while editing text in place. */
+  onUndoRequest?: (redo: boolean) => void;
   /** Pointer position in slide space on every move, null on leave. For presence. */
   onPointerSample?: (point: { x: number; y: number } | null) => void;
   /** Fired after the stage scale/placement recomputes. For presence overlays. */
@@ -638,7 +713,7 @@ export class EditorCanvas {
       // Chromium represents a macOS trackpad pinch as a wheel event with the
       // control modifier set. Anchoring it at the pointer makes the gesture
       // feel native and keeps the detail the user is inspecting under hand.
-      if (event.ctrlKey) {
+      if (event.ctrlKey || event.metaKey) {
         event.preventDefault();
         const unit = event.deltaMode === WheelEvent.DOM_DELTA_LINE ? 16
           : event.deltaMode === WheelEvent.DOM_DELTA_PAGE ? this.host.clientHeight
@@ -652,14 +727,15 @@ export class EditorCanvas {
         return;
       }
 
-      // At an enlarged view, ordinary two-finger scrolling moves the viewport
-      // so every part of the slide remains reachable.
-      if (this.zoom > 1) {
-        event.preventDefault();
-        this.pan.x -= event.deltaX;
-        this.pan.y -= event.deltaY;
-        this.rescale();
-      }
+      // Ordinary wheel and two-finger scrolling pan the pasteboard at every
+      // zoom level. Re-center is the explicit, predictable way home.
+      event.preventDefault();
+      const unit = event.deltaMode === WheelEvent.DOM_DELTA_LINE ? 16
+        : event.deltaMode === WheelEvent.DOM_DELTA_PAGE ? this.host.clientHeight
+          : 1;
+      this.pan.x -= event.deltaX * unit;
+      this.pan.y -= event.deltaY * unit;
+      this.rescale();
     }, { passive: false });
   }
 
@@ -1059,6 +1135,11 @@ export class EditorCanvas {
     const hit = this.hitTest(point);
     if (hit) {
       const selection = this.store.get().selection;
+      this.pendingTextEdit = !ev.shiftKey
+        && selection.has(hit.id)
+        && (hit.type === 'text' || hit.type === 'html')
+        ? { elementId: hit.id, clientX: ev.clientX, clientY: ev.clientY }
+        : null;
       if (!selection.has(hit.id)) {
         this.store.select([hit.id], ev.shiftKey);
       } else if (ev.shiftKey) {
@@ -1367,6 +1448,7 @@ export class EditorCanvas {
   }
 
   private onPointerUp(ev: PointerEvent): void {
+    const textEdit = !this.dragStarted ? this.pendingTextEdit : null;
     if (this.drag.kind === 'marquee' && this.marquee) {
       const slide = this.store.slide;
       if (slide) {
@@ -1379,6 +1461,7 @@ export class EditorCanvas {
     }
     this.host.releasePointerCapture?.(ev.pointerId);
     this.endDrag();
+    if (textEdit) this.beginTextEdit(textEdit.elementId, textEdit);
   }
 
   private endDrag(): void {
@@ -1389,6 +1472,7 @@ export class EditorCanvas {
     this.maskOrigin = null;
     this.guides = [];
     this.marquee = null;
+    this.pendingTextEdit = null;
 
     // Deliberately *not* a full render. Redrawing the slide layer here would
     // replace the node the pointer went down on, and a browser cannot
@@ -1509,7 +1593,10 @@ export class EditorCanvas {
    * so the text is styled by theme.css while you type and what you see is what
    * the slide will show.
    */
-  beginTextEdit(elementId: string): void {
+  beginTextEdit(
+    elementId: string,
+    caretPoint?: { clientX: number; clientY: number },
+  ): void {
     const slide = this.store.slide;
     const el = slide?.elements.find((e) => e.id === elementId);
     if (!el || (el.type !== 'text' && el.type !== 'html')) return;
@@ -1521,6 +1608,7 @@ export class EditorCanvas {
     if (!body) return;
 
     this.editingId = elementId;
+    this.tableSelection = null;
     node!.classList.add('editing');
     // The player replaces TeX delimiters with KaTeX DOM. Editing must expose
     // the authored source, otherwise a save would persist generated markup.
@@ -1551,6 +1639,8 @@ export class EditorCanvas {
       selection?.removeAllRanges();
       selection?.addRange(range);
       this.textSelectionRange = range.cloneRange();
+    } else if (caretPoint) {
+      this.textSelectionRange = this.placeCaretAtPoint(body, caretPoint);
     } else {
       this.textSelectionRange = null;
     }
@@ -1567,7 +1657,7 @@ export class EditorCanvas {
     const pushLive = () => {
       liveTimer = 0;
       if (this.editingId !== elementId) return;
-      const html = normalizeParagraphHtml(body.innerHTML);
+      const html = authoredTextHtml(body);
       const current = this.store.slide?.elements.find((e) => e.id === elementId);
       if (!current || (current.type !== 'text' && current.type !== 'html')) return;
       if (current.html === html) return;
@@ -1580,10 +1670,56 @@ export class EditorCanvas {
       }, { label: 'Edit text', transient: true, coalesceKey });
     };
 
+    const onPaste = (event: ClipboardEvent) => {
+      const pasted = event.clipboardData?.getData('text/html') ?? '';
+      const plainText = event.clipboardData?.getData('text/plain') ?? '';
+      const safeTable = pastedTableHtml(pasted, plainText);
+      if (!safeTable) return;
+      const template = document.createElement('template');
+      template.innerHTML = safeTable;
+      const table = template.content.querySelector('table')!;
+      event.preventDefault();
+      const selection = window.getSelection();
+      const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
+      if (range && body.contains(range.commonAncestorContainer)) {
+        range.deleteContents();
+        range.insertNode(table);
+        range.setStartAfter(table);
+        range.collapse(true);
+        selection!.removeAllRanges();
+        selection!.addRange(range);
+      } else {
+        body.appendChild(table);
+      }
+      onInput();
+      pushLive();
+      this.onTableSelectionChange?.();
+    };
+
+    const onTablePointer = (event: PointerEvent) => {
+      const cell = (event.target as Element | null)?.closest('td, th') as HTMLTableCellElement | null;
+      if (!cell || !body.contains(cell)) return;
+      const row = cell.parentElement as HTMLTableRowElement | null;
+      const table = cell.closest('table');
+      if (!row || !table) return;
+      this.tableSelection = {
+        elementId,
+        mode: 'cell',
+        row: row.rowIndex,
+        column: cell.cellIndex,
+        rows: table.rows.length,
+        columns: Math.max(0, ...[...table.rows].map((item) => item.cells.length)),
+      };
+      this.syncTableSelectionHighlight();
+      this.onTableSelectionChange?.();
+    };
+
     const finish = (commit: boolean) => {
       body.removeEventListener('blur', onBlur);
       body.removeEventListener('keydown', onKey);
       body.removeEventListener('input', onInput);
+      body.removeEventListener('paste', onPaste);
+      body.removeEventListener('pointerdown', onTablePointer);
       if (liveTimer) {
         clearTimeout(liveTimer);
         liveTimer = 0;
@@ -1591,6 +1727,7 @@ export class EditorCanvas {
       if (commit) this.commitTextEdit();
       else {
         this.editingId = null;
+        this.tableSelection = null;
         this.textSelectionRange = null;
         window.getSelection()?.removeAllRanges();
         this.onTextEditModeChange?.(null);
@@ -1617,7 +1754,20 @@ export class EditorCanvas {
       }
     };
 
-    const onBlur = () => finish(true);
+    const onBlur = (event: FocusEvent) => {
+      // Native selects need focus in order to open. Keep the live Range while
+      // the font picker is used; its change handler restores focus afterward.
+      if (event.relatedTarget instanceof Element
+        && event.relatedTarget.closest(
+          '.font-family-field, .text-table-options, .text-list-toggle, .color-picker-popover',
+        )) return;
+      // A table row/column selection is a formatting target in its own right.
+      // Let typography fields take focus without ending the edit and clearing
+      // that target before their change handlers run.
+      if (event.relatedTarget instanceof Element
+        && event.relatedTarget.closest('.editor-inspector')) return;
+      finish(true);
+    };
     const onInput = () => {
       if (el.type === 'text' && (el.autoFit || el.noWrap)) scheduleAutoFit(node!);
       if (this.liveTextSync && !liveTimer) liveTimer = window.setTimeout(pushLive, 250);
@@ -1626,7 +1776,46 @@ export class EditorCanvas {
       // Editing keys must not reach the canvas shortcuts (Delete would remove
       // the element you are typing into).
       e.stopPropagation();
-      if (e.key === 'Escape') {
+      if ((e.metaKey || e.ctrlKey) && ['b', 'i', 'u'].includes(e.key.toLowerCase())) {
+        e.preventDefault();
+        const format = e.key.toLowerCase() === 'b'
+          ? 'bold'
+          : e.key.toLowerCase() === 'i' ? 'italic' : 'underline';
+        this.toggleTextSelectionFormat(format);
+      } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') {
+        // Programmatic inline formatting (for example, changing one word's
+        // font) is not reliably represented in Chromium's contenteditable
+        // undo stack. Use app history, then immediately reopen the same text
+        // element and reconstruct its Range from text offsets. Formatting and
+        // list-style changes preserve text, so the same characters remain
+        // selected instead of Ctrl/Cmd+Z unexpectedly dropping edit mode.
+        e.preventDefault();
+        const elementId = this.editingId;
+        const active = window.getSelection();
+        const selectedRange = active && active.rangeCount > 0 && !active.getRangeAt(0).collapsed
+          ? active.getRangeAt(0)
+          : this.textSelectionRange;
+        const offsets = !this.tableSelection && selectedRange && !selectedRange.collapsed
+          ? this.textOffsetsForRange(body, selectedRange)
+          : null;
+        const tableSelection = this.tableSelection ? { ...this.tableSelection } : null;
+        finish(true);
+        if (this.onUndoRequest) this.onUndoRequest(e.shiftKey);
+        else if (e.shiftKey) this.store.redo();
+        else this.store.undo();
+        if (elementId && this.store.slide?.elements.some((element) => element.id === elementId)) {
+          this.beginTextEdit(elementId);
+          const restoredBody = this.slideLayer.querySelector<HTMLElement>(
+            `[data-element-id="${CSS.escape(elementId)}"] .text-content`,
+          );
+          if (restoredBody && offsets) this.restoreTextRange(restoredBody, offsets);
+          if (tableSelection && restoredBody?.querySelector('table')) {
+            this.tableSelection = tableSelection;
+            this.syncTableSelectionHighlight();
+            this.onTableSelectionChange?.();
+          }
+        }
+      } else if (e.key === 'Escape') {
         // Escape leaves edit mode but keeps what was typed — it is "done
         // editing", not "undo my edit". Undo is still one keystroke away.
         e.preventDefault();
@@ -1635,6 +1824,14 @@ export class EditorCanvas {
       } else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
         e.preventDefault();
         finish(true);
+      } else if (e.key === 'Enter' && !e.shiftKey && !e.altKey) {
+        if (convertTypedListMarker(body, window.getSelection())) {
+          e.preventDefault();
+          onInput();
+          // The Props checkboxes should reflect the conversion immediately,
+          // even in the desktop shell where ordinary typing syncs on blur.
+          pushLive();
+        }
       } else if (e.key === 'Tab' && !e.metaKey && !e.ctrlKey && !e.altKey) {
         // Tab indents a bullet one level (nested lists render a "-" marker,
         // see type.css); shift-tab unindents. Outside a list, tab keeps its
@@ -1653,6 +1850,80 @@ export class EditorCanvas {
     body.addEventListener('blur', onBlur);
     body.addEventListener('keydown', onKey);
     body.addEventListener('input', onInput);
+    body.addEventListener('paste', onPaste);
+    body.addEventListener('pointerdown', onTablePointer);
+  }
+
+  /** Put the editing caret at the glyph nearest the click that opened the box. */
+  private placeCaretAtPoint(
+    body: HTMLElement,
+    point: { clientX: number; clientY: number },
+  ): Range | null {
+    const doc = body.ownerDocument;
+    let range: Range | null = null;
+    const position = doc.caretPositionFromPoint?.(point.clientX, point.clientY);
+    if (position && body.contains(position.offsetNode)) {
+      range = doc.createRange();
+      range.setStart(position.offsetNode, position.offset);
+      range.collapse(true);
+    } else {
+      const legacyRange = doc.caretRangeFromPoint?.(point.clientX, point.clientY) ?? null;
+      if (legacyRange && body.contains(legacyRange.startContainer)) range = legacyRange;
+    }
+    if (!range) return null;
+    const selection = doc.defaultView?.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    return range.cloneRange();
+  }
+
+  private textOffsetsForRange(root: HTMLElement, range: Range): { start: number; end: number } | null {
+    if (!root.contains(range.commonAncestorContainer)) return null;
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    let cursor = 0;
+    let start: number | null = null;
+    let end: number | null = null;
+    for (let current = walker.nextNode(); current; current = walker.nextNode()) {
+      const text = current as Text;
+      let intersects = false;
+      try { intersects = range.intersectsNode(text); } catch { /* detached boundary */ }
+      if (intersects) {
+        const selectedStart = range.startContainer === text ? range.startOffset : 0;
+        const selectedEnd = range.endContainer === text ? range.endOffset : text.data.length;
+        if (start === null) start = cursor + selectedStart;
+        end = cursor + selectedEnd;
+      }
+      cursor += text.data.length;
+    }
+    return start === null || end === null ? null : { start, end };
+  }
+
+  private restoreTextRange(root: HTMLElement, offsets: { start: number; end: number }): void {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    const texts: Text[] = [];
+    for (let current = walker.nextNode(); current; current = walker.nextNode()) {
+      texts.push(current as Text);
+    }
+    if (texts.length === 0) return;
+    const locate = (offset: number): { node: Text; offset: number } => {
+      let remaining = Math.max(0, offset);
+      for (const text of texts) {
+        if (remaining <= text.data.length) return { node: text, offset: remaining };
+        remaining -= text.data.length;
+      }
+      const last = texts[texts.length - 1];
+      return { node: last, offset: last.data.length };
+    };
+    const start = locate(offsets.start);
+    const end = locate(Math.max(offsets.start, offsets.end));
+    const range = document.createRange();
+    range.setStart(start.node, start.offset);
+    range.setEnd(end.node, end.offset);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    this.textSelectionRange = range.cloneRange();
+    root.focus();
   }
 
   /** Write the edited markup back to the deck as a single undoable change. */
@@ -1660,6 +1931,7 @@ export class EditorCanvas {
     const elementId = this.editingId;
     if (!elementId) return;
     this.editingId = null;
+    this.tableSelection = null;
     this.textSelectionRange = null;
     this.onTextEditModeChange?.(null);
 
@@ -1671,7 +1943,7 @@ export class EditorCanvas {
 
     // Without `splitBreaks`: a shift-return the author typed is a soft break
     // inside its paragraph, not a new one.
-    const html = normalizeParagraphHtml(body.innerHTML);
+    const html = authoredTextHtml(body);
     body.contentEditable = 'false';
     node!.classList.remove('editing');
     // contenteditable selections survive blur in Chromium. Clear that native
@@ -1689,13 +1961,18 @@ export class EditorCanvas {
     // Live sync may have already streamed the final html; the session still
     // counts as an edit (and strips the placeholder class) if the text ends
     // up different from where it started.
-    if (current.html === html && html === (originalHtml ?? html)) {
-      // Nothing changed, so there is no commit and therefore no re-render --
-      // but the node still holds what `beginTextEdit` swapped in: the authored
-      // source. For anything the renderer transforms, that is the wrong DOM to
-      // leave behind; TeX is the visible case, where the box keeps showing a
-      // literal `$E=mc^2$` where KaTeX output belongs until an unrelated redraw.
-      this.restoreRenderedForm(current, body);
+    if (current.html === html && !current.class.includes('placeholder')) {
+      if (html === (originalHtml ?? html)) {
+        // Nothing changed, so there is no commit and therefore no re-render --
+        // but the node still holds what `beginTextEdit` swapped in: the authored
+        // source. For anything the renderer transforms, that is the wrong DOM to
+        // leave behind; TeX is the visible case, where the box keeps showing a
+        // literal `$E=mc^2$` where KaTeX output belongs until an unrelated redraw.
+        this.restoreRenderedForm(current, body);
+      }
+      // Live formatting/table commits already recorded the authored change.
+      // Do not add a second no-op history entry when edit mode finishes; one
+      // real Ctrl/Cmd+Z must undo one real formatting click.
       return;
     }
 
@@ -1743,6 +2020,157 @@ export class EditorCanvas {
 
   /** Apply weight to the selected characters without styling the whole box. */
   applyTextSelectionWeight(weight: number): boolean {
+    return this.applyTextSelectionStyle('fontWeight', String(Math.max(1, Math.min(1000, weight))));
+  }
+
+  /** Apply a font family to the selected characters without styling the box. */
+  applyTextSelectionFontFamily(value: string): boolean {
+    return this.applyTextSelectionStyle('fontFamily', value || 'inherit');
+  }
+
+  applyTextSelectionFontSize(value: number): boolean {
+    const size = Math.round(Math.max(6, Math.min(400, value)) * 10) / 10;
+    return this.applyTextSelectionStyle('fontSize', `${size}px`);
+  }
+
+  applyTextSelectionColor(value: string | null): boolean {
+    return this.applyTextSelectionStyle('color', value || 'inherit');
+  }
+
+  /** Toggle a standard inline format on the active selection. */
+  toggleTextSelectionFormat(format: 'bold' | 'italic' | 'underline'): boolean {
+    if (!this.editingId || this.tableSelection) return false;
+    const content = this.slideLayer.querySelector<HTMLElement>(
+      `[data-element-id="${CSS.escape(this.editingId)}"] .text-content`,
+    );
+    const live = window.getSelection();
+    const range = live && live.rangeCount > 0 && !live.getRangeAt(0).collapsed
+      ? live.getRangeAt(0)
+      : this.textSelectionRange;
+    if (!content || !range || range.collapsed || !content.contains(range.commonAncestorContainer)) {
+      return false;
+    }
+
+    content.focus();
+    live?.removeAllRanges();
+    live?.addRange(range);
+    const command = format === 'bold' ? 'bold' : format === 'italic' ? 'italic' : 'underline';
+    if (typeof document.execCommand === 'function' && document.execCommand(command, false)) {
+      const next = live && live.rangeCount > 0 ? live.getRangeAt(0) : range;
+      this.textSelectionRange = next.cloneRange();
+      const node = content.closest<HTMLElement>('.element');
+      if (node) scheduleAutoFit(node);
+      this.commitLiveTextDom(`Toggle selected text ${format}`);
+      return true;
+    }
+
+    const active = this.textSelectionFormatState(format);
+    if (format === 'bold') return this.applyTextSelectionStyle('fontWeight', active ? '400' : '700');
+    if (format === 'italic') return this.applyTextSelectionStyle('fontStyle', active ? 'normal' : 'italic');
+    return this.applyTextSelectionStyle('textDecorationLine', active ? 'none' : 'underline');
+  }
+
+  textSelectionFormatState(format: 'bold' | 'italic' | 'underline'): boolean {
+    if (!this.editingId || this.tableSelection) return false;
+    try {
+      const command = format === 'bold' ? 'bold' : format === 'italic' ? 'italic' : 'underline';
+      if (typeof document.queryCommandState === 'function' && document.queryCommandState(command)) {
+        return true;
+      }
+    } catch {
+      // Fall back to authored ancestors below.
+    }
+    const selection = window.getSelection();
+    const range = selection && selection.rangeCount > 0 && !selection.getRangeAt(0).collapsed
+      ? selection.getRangeAt(0)
+      : this.textSelectionRange;
+    if (!range) return false;
+    const content = this.slideLayer.querySelector<HTMLElement>(
+      `[data-element-id="${CSS.escape(this.editingId)}"] .text-content`,
+    );
+    const walker = content && document.createTreeWalker(content, NodeFilter.SHOW_TEXT);
+    let selectedText: Node | null = null;
+    for (let current = walker?.nextNode() ?? null; current; current = walker?.nextNode() ?? null) {
+      if (range.intersectsNode(current)) {
+        selectedText = current;
+        break;
+      }
+    }
+    const anchor = selectedText ?? range.startContainer;
+    const node = anchor.nodeType === Node.ELEMENT_NODE
+      ? anchor as Element
+      : anchor.parentElement;
+    if (!node) return false;
+    if (format === 'bold') {
+      const weight = node.closest<HTMLElement>('[style*="font-weight"]')?.style.fontWeight ?? '';
+      return Boolean(node.closest('b, strong')) || Number.parseInt(weight, 10) >= 600;
+    }
+    if (format === 'italic') {
+      return Boolean(node.closest('i, em'))
+        || node.closest<HTMLElement>('[style*="font-style"]')?.style.fontStyle === 'italic';
+    }
+    return Boolean(node.closest('u'))
+      || node.closest<HTMLElement>('[style*="text-decoration"]')?.style.textDecorationLine.includes('underline') === true;
+  }
+
+  applyTextSelectionAlignment(value: 'left' | 'center' | 'right' | 'justify'): boolean {
+    if (!this.editingId || this.tableSelection) return false;
+    const content = this.slideLayer.querySelector<HTMLElement>(
+      `[data-element-id="${CSS.escape(this.editingId)}"] .text-content`,
+    );
+    const live = window.getSelection();
+    const range = live && live.rangeCount > 0 && !live.getRangeAt(0).collapsed
+      ? live.getRangeAt(0)
+      : this.textSelectionRange;
+    if (!content || !range || range.collapsed || !content.contains(range.commonAncestorContainer)) {
+      return false;
+    }
+    const blocks = [...content.querySelectorAll<HTMLElement>('p, li, div')]
+      .filter((block) => {
+        try { return range.intersectsNode(block); } catch { return false; }
+      })
+      .filter((block) => !block.querySelector('p, li, div'));
+    if (blocks.length === 0) return false;
+    blocks.forEach((block) => { block.style.textAlign = value; });
+    const next = document.createRange();
+    next.setStartBefore(blocks[0]);
+    next.setEndAfter(blocks[blocks.length - 1]);
+    live?.removeAllRanges();
+    live?.addRange(next);
+    this.textSelectionRange = next.cloneRange();
+    content.focus();
+    this.commitLiveTextDom('Align selected paragraphs');
+    return true;
+  }
+
+  /** The list style containing the live selection, if it has one. */
+  textSelectionListStyle(): 'None' | 'Bulleted' | 'Numbered' | null {
+    if (!this.editingId) return null;
+    const content = this.slideLayer.querySelector<HTMLElement>(
+      `[data-element-id="${CSS.escape(this.editingId)}"] .text-content`,
+    );
+    const live = window.getSelection();
+    const range = live && live.rangeCount > 0 && !live.getRangeAt(0).collapsed
+      ? live.getRangeAt(0)
+      : this.textSelectionRange;
+    if (!content || !range || range.collapsed || !content.contains(range.commonAncestorContainer)) {
+      return null;
+    }
+    const styles = [...content.children].flatMap((child) => {
+      try {
+        if (!range.intersectsNode(child)) return [];
+      } catch {
+        return [];
+      }
+      if (child.tagName === 'OL') return ['Numbered' as const];
+      if (child.tagName === 'UL') return ['Bulleted' as const];
+      return ['None' as const];
+    });
+    return new Set(styles).size === 1 ? styles[0] ?? null : null;
+  }
+
+  /** Change whole touched lists, even when only part of one item is selected. */
+  applyTextSelectionListStyle(style: 'None' | 'Bulleted' | 'Numbered'): boolean {
     if (!this.editingId) return false;
     const content = this.slideLayer.querySelector<HTMLElement>(
       `[data-element-id="${CSS.escape(this.editingId)}"] .text-content`,
@@ -1755,16 +2183,390 @@ export class EditorCanvas {
       return false;
     }
 
-    const span = document.createElement('span');
-    span.style.fontWeight = String(Math.max(100, Math.min(900, weight)));
-    span.appendChild(range.extractContents());
-    range.insertNode(span);
+    const selectedBlocks = [...content.children].filter((child) => {
+      try { return range.intersectsNode(child); } catch { return false; }
+    }) as HTMLElement[];
+    if (selectedBlocks.length === 0) return false;
+
+    // If any selected text belongs to a list, that whole top-level list is the
+    // formatting target. Unrelated paragraphs crossed by the Range are left
+    // alone; this is the familiar Keynote/word-processor list behaviour.
+    const selectedLists = selectedBlocks.filter((block) => /^(OL|UL)$/.test(block.tagName));
+    const targets = selectedLists.length > 0 ? selectedLists : selectedBlocks;
+    const inserted: Node[] = [];
+    let changed = false;
+
+    if (style === 'None') {
+      for (const block of targets) {
+        if (!/^(OL|UL)$/.test(block.tagName)) {
+          inserted.push(block);
+          continue;
+        }
+        const fragment = document.createDocumentFragment();
+        const paragraphs: HTMLElement[] = [];
+        for (const item of [...block.children] as HTMLElement[]) {
+          if (item.tagName !== 'LI') continue;
+          const paragraph = document.createElement('p');
+          for (const attr of [...item.attributes]) paragraph.setAttribute(attr.name, attr.value);
+          while (item.firstChild) paragraph.appendChild(item.firstChild);
+          paragraphs.push(paragraph);
+          fragment.appendChild(paragraph);
+        }
+        block.replaceWith(fragment);
+        inserted.push(...paragraphs);
+        changed = true;
+      }
+    } else {
+      const targetTag = style === 'Numbered' ? 'OL' : 'UL';
+      if (selectedLists.length === 0) {
+        // Keep the typed-marker inference used by automatic list conversion
+        // (`1.`, `2)`, `*`, `-`) while limiting it to the selected blocks.
+        const source = document.createElement('div');
+        targets.forEach((block) => source.appendChild(block.cloneNode(true)));
+        const converted = style === 'Numbered'
+          ? paragraphsToOrderedList(source.innerHTML)
+          : paragraphsToList(source.innerHTML);
+        const template = document.createElement('template');
+        template.innerHTML = converted;
+        const replacements = [...template.content.childNodes];
+        const parent = targets[0].parentNode;
+        if (!parent || replacements.length === 0) return false;
+        replacements.forEach((replacement) => parent.insertBefore(replacement, targets[0]));
+        targets.forEach((block) => block.remove());
+        inserted.push(...replacements);
+        changed = true;
+      }
+      for (const block of selectedLists) {
+        if (/^(OL|UL)$/.test(block.tagName)) {
+          if (block.tagName === targetTag) {
+            inserted.push(block);
+            continue;
+          }
+          const replacement = document.createElement(targetTag.toLowerCase());
+          for (const attr of [...block.attributes]) {
+            if (targetTag === 'UL' && attr.name === 'start') continue;
+            replacement.setAttribute(attr.name, attr.value);
+          }
+          while (block.firstChild) replacement.appendChild(block.firstChild);
+          block.replaceWith(replacement);
+          inserted.push(replacement);
+          changed = true;
+          continue;
+        }
+      }
+      // Merge adjacent lists created from a multi-paragraph selection.
+      for (let index = 1; index < inserted.length; index++) {
+        const previous = inserted[index - 1] as HTMLElement;
+        const current = inserted[index] as HTMLElement;
+        if (previous.tagName !== targetTag || current.tagName !== targetTag
+          || previous.nextSibling !== current) continue;
+        while (current.firstChild) previous.appendChild(current.firstChild);
+        current.remove();
+        inserted.splice(index, 1);
+        index -= 1;
+      }
+    }
+    if (!changed) return true;
+    if (inserted.length === 0) return false;
+
     const next = document.createRange();
-    next.selectNodeContents(span);
+    next.setStartBefore(inserted[0]);
+    next.setEndAfter(inserted[inserted.length - 1]);
     live?.removeAllRanges();
     live?.addRange(next);
     this.textSelectionRange = next.cloneRange();
+    content.focus();
+    const node = content.closest<HTMLElement>('.element');
+    if (node) scheduleAutoFit(node);
+    this.commitLiveTextDom(`Change selected list style to ${style.toLowerCase()}`);
     return true;
+  }
+
+  private commitLiveTextDom(label: string): void {
+    const elementId = this.editingId;
+    if (!elementId) return;
+    const body = this.slideLayer.querySelector<HTMLElement>(
+      `[data-element-id="${CSS.escape(elementId)}"] .text-content`,
+    );
+    if (!body) return;
+    const html = authoredTextHtml(body);
+    const coalesceKey = this.textEditCoalesceKey ?? undefined;
+    this.store.commit((deck) => {
+      const target = deck.slides[this.store.get().slideIndex]?.elements.find(
+        (element) => element.id === elementId,
+      );
+      if (target && target.type === 'text') target.html = html;
+    }, { label, coalesceKey });
+  }
+
+  private applyTextSelectionStyle(
+    property: 'fontWeight' | 'fontFamily' | 'fontSize' | 'fontStyle' | 'textDecorationLine' | 'color',
+    value: string,
+  ): boolean {
+    if (!this.editingId || this.tableSelection) return false;
+    const content = this.slideLayer.querySelector<HTMLElement>(
+      `[data-element-id="${CSS.escape(this.editingId)}"] .text-content`,
+    );
+    const live = window.getSelection();
+    const range = live && live.rangeCount > 0 && !live.getRangeAt(0).collapsed
+      ? live.getRangeAt(0)
+      : this.textSelectionRange;
+    if (!content || !range || range.collapsed || !content.contains(range.commonAncestorContainer)) {
+      return false;
+    }
+
+    // Never wrap a cross-block Range in one span. A selection containing
+    // paragraphs or list items would put those blocks inside an inline span;
+    // Chromium repairs that invalid shape by inserting/splitting lines. Style
+    // each selected text run in place so the authored block structure is
+    // exactly preserved.
+    const walker = document.createTreeWalker(content, NodeFilter.SHOW_TEXT);
+    const textNodes: Text[] = [];
+    for (let current = walker.nextNode(); current; current = walker.nextNode()) {
+      const text = current as Text;
+      if (!text.data || !range.intersectsNode(text)) continue;
+      textNodes.push(text);
+    }
+    if (textNodes.length === 0) return false;
+
+    const spans: HTMLSpanElement[] = [];
+    for (const text of textNodes) {
+      const start = range.startContainer === text ? range.startOffset : 0;
+      const end = range.endContainer === text ? range.endOffset : text.data.length;
+      if (end <= start) continue;
+      if (end < text.data.length) text.splitText(end);
+      const selected = start > 0 ? text.splitText(start) : text;
+      const span = document.createElement('span');
+      span.style[property] = value;
+      selected.replaceWith(span);
+      span.appendChild(selected);
+      spans.push(span);
+    }
+    if (spans.length === 0) return false;
+
+    const next = document.createRange();
+    next.setStartBefore(spans[0]);
+    next.setEndAfter(spans[spans.length - 1]);
+    live?.removeAllRanges();
+    live?.addRange(next);
+    this.textSelectionRange = next.cloneRange();
+    content.focus();
+    const label = property === 'fontFamily' ? 'Change selected text font'
+      : property === 'fontSize' ? 'Change selected text size'
+        : property === 'color' ? 'Change selected text colour'
+      : property === 'fontWeight' ? 'Change selected text weight'
+        : property === 'fontStyle' ? 'Change selected text italic'
+          : 'Change selected text underline';
+    this.commitLiveTextDom(label);
+    return true;
+  }
+
+  tableSelectionInfo(): TableSelection | null {
+    return this.tableSelection ? { ...this.tableSelection } : null;
+  }
+
+  setTableSelectionMode(mode: TableSelection['mode']): void {
+    if (!this.tableSelection) return;
+    this.tableSelection.mode = mode;
+    this.syncTableSelectionHighlight();
+    this.onTableSelectionChange?.();
+  }
+
+  private activeTable(): HTMLTableElement | null {
+    const selected = this.tableSelection;
+    if (!selected || selected.elementId !== this.editingId) return null;
+    return this.slideLayer.querySelector<HTMLTableElement>(
+      `[data-element-id="${CSS.escape(selected.elementId)}"] .text-content table`,
+    );
+  }
+
+  private selectedTableCells(): HTMLTableCellElement[] {
+    const table = this.activeTable();
+    const selected = this.tableSelection;
+    if (!table || !selected) return [];
+    if (selected.mode === 'row') return [...(table.rows[selected.row]?.cells ?? [])];
+    if (selected.mode === 'column') {
+      return [...table.rows].flatMap((row) => row.cells[selected.column] ? [row.cells[selected.column]] : []);
+    }
+    const cell = table.rows[selected.row]?.cells[selected.column];
+    return cell ? [cell] : [];
+  }
+
+  private syncTableSelectionHighlight(): void {
+    const table = this.activeTable();
+    if (!table) return;
+    table.querySelectorAll('.editor-table-selected').forEach((cell) => {
+      cell.classList.remove('editor-table-selected');
+    });
+    this.selectedTableCells().forEach((cell) => cell.classList.add('editor-table-selected'));
+  }
+
+  private commitTableDom(label: string): void {
+    const selected = this.tableSelection;
+    if (!selected) return;
+    const body = this.slideLayer.querySelector<HTMLElement>(
+      `[data-element-id="${CSS.escape(selected.elementId)}"] .text-content`,
+    );
+    if (!body) return;
+    const html = authoredTextHtml(body);
+    const coalesceKey = this.textEditCoalesceKey ?? undefined;
+    this.store.commit((deck) => {
+      const target = deck.slides[this.store.get().slideIndex]?.elements.find(
+        (element) => element.id === selected.elementId,
+      );
+      if (target && target.type === 'text') target.html = html;
+    }, { label, coalesceKey });
+    this.syncTableSelectionHighlight();
+  }
+
+  applyTableCellColor(property: 'backgroundColor' | 'color', value: string | null): void {
+    const cells = this.selectedTableCells();
+    if (cells.length === 0) return;
+    for (const cell of cells) {
+      cell.style[property] = value ?? '';
+      if (!cell.getAttribute('style')?.trim()) cell.removeAttribute('style');
+    }
+    this.commitTableDom(property === 'color' ? 'Change table text colour' : 'Change table cell colour');
+  }
+
+  applyTableCellTextStyle(
+    property: 'fontFamily' | 'fontSize' | 'fontWeight' | 'fontStyle'
+      | 'textDecorationLine' | 'textAlign' | 'verticalAlign',
+    value: string | null,
+  ): boolean {
+    const cells = this.selectedTableCells();
+    if (cells.length === 0) return false;
+    for (const cell of cells) {
+      cell.style[property] = value ?? '';
+      if (!cell.getAttribute('style')?.trim()) cell.removeAttribute('style');
+    }
+    this.commitTableDom('Change table cell typography');
+    return true;
+  }
+
+  toggleTableCellTextFormat(format: 'bold' | 'italic' | 'underline'): boolean {
+    const cells = this.selectedTableCells();
+    if (cells.length === 0) return false;
+    const property = format === 'bold' ? 'fontWeight'
+      : format === 'italic' ? 'fontStyle' : 'textDecorationLine';
+    const active = cells.every((cell) => format === 'bold'
+      ? Number.parseInt(cell.style.fontWeight, 10) >= 600
+      : format === 'italic'
+        ? cell.style.fontStyle === 'italic'
+        : cell.style.textDecorationLine.includes('underline'));
+    const value = format === 'bold' ? (active ? '400' : '700')
+      : format === 'italic' ? (active ? 'normal' : 'italic')
+        : active ? 'none' : 'underline';
+    return this.applyTableCellTextStyle(property, value);
+  }
+
+  tableCellTextFormatState(format: 'bold' | 'italic' | 'underline'): boolean {
+    const cells = this.selectedTableCells();
+    if (cells.length === 0) return false;
+    return cells.every((cell) => format === 'bold'
+      ? Number.parseInt(cell.style.fontWeight, 10) >= 600
+      : format === 'italic'
+        ? cell.style.fontStyle === 'italic'
+        : cell.style.textDecorationLine.includes('underline'));
+  }
+
+  textComputedTypography(elementId: string): {
+    fontSize: number | null;
+    fontWeight: number | null;
+    fontSizeExplicit: boolean;
+    fontWeightExplicit: boolean;
+    fittedFontSize: number | null;
+  } {
+    const element = this.slideLayer.querySelector<HTMLElement>(
+      `[data-element-id="${CSS.escape(elementId)}"]`,
+    );
+    const node = element?.querySelector<HTMLElement>(
+      '.text-content',
+    ) ?? null;
+    let target: HTMLElement | null = this.tableSelection?.elementId === elementId
+      ? this.selectedTableCells()[0] ?? node
+      : node;
+    if (node && this.editingId === elementId && this.tableSelection?.elementId !== elementId) {
+      const range = this.textSelectionRange;
+      const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+      for (let current = walker.nextNode(); current; current = walker.nextNode()) {
+        if (!range?.intersectsNode(current)) continue;
+        target = current.parentElement ?? node;
+        break;
+      }
+    }
+    if (!target || !node) {
+      return {
+        fontSize: null,
+        fontWeight: null,
+        fontSizeExplicit: false,
+        fontWeightExplicit: false,
+        fittedFontSize: null,
+      };
+    }
+    const style = getComputedStyle(target);
+    const fontWeight = Number.parseFloat(style.fontWeight);
+    const explicit = (property: 'fontSize' | 'fontWeight'): boolean => {
+      for (let current: HTMLElement | null = target; current && node.contains(current); current = current.parentElement) {
+        // Auto-fit writes its result directly on `.text-content`. It is a
+        // rendered measurement, not an authored character-level override.
+        if (!(property === 'fontSize' && current === node && node.dataset.fittedFontSize)
+          && current.style[property]) return true;
+        if (current === node) break;
+      }
+      return false;
+    };
+    const fontSizeExplicit = explicit('fontSize');
+    const measuredFontSize = Number.parseFloat(style.fontSize);
+    const fittedFontSize = Number.parseFloat(node.dataset.fittedFontSize ?? '');
+    let unfittedFontSize = measuredFontSize;
+    if (!fontSizeExplicit && Number.isFinite(fittedFontSize) && node.style.fontSize) {
+      // Reveal the authored/theme declaration hidden by AutoFit's temporary
+      // inline result. This is only a read: restore the fitted value before
+      // returning so the canvas never flashes at its ceiling size.
+      const fittedDeclaration = node.style.getPropertyValue('font-size');
+      const fittedPriority = node.style.getPropertyPriority('font-size');
+      node.style.removeProperty('font-size');
+      unfittedFontSize = Number.parseFloat(getComputedStyle(node).fontSize);
+      node.style.setProperty('font-size', fittedDeclaration, fittedPriority);
+    }
+    if (!Number.isFinite(unfittedFontSize) && element) {
+      unfittedFontSize = Number.parseFloat(getComputedStyle(element).fontSize);
+    }
+    const fontSize = fontSizeExplicit ? measuredFontSize : unfittedFontSize;
+    return {
+      fontSize: Number.isFinite(fontSize) ? fontSize : null,
+      fontWeight: Number.isFinite(fontWeight) ? fontWeight : null,
+      fontSizeExplicit,
+      fontWeightExplicit: explicit('fontWeight'),
+      fittedFontSize: Number.isFinite(fittedFontSize) ? fittedFontSize : null,
+    };
+  }
+
+  insertTableColumn(after: boolean): void {
+    const table = this.activeTable();
+    const selected = this.tableSelection;
+    if (!table || !selected) return;
+    const index = selected.column + (after ? 1 : 0);
+    for (const row of [...table.rows]) {
+      const reference = row.cells[index] ?? null;
+      const cell = document.createElement(row.parentElement?.tagName === 'THEAD' ? 'th' : 'td');
+      cell.appendChild(document.createElement('br'));
+      row.insertBefore(cell, reference);
+    }
+    selected.column = index;
+    selected.columns += 1;
+    this.commitTableDom('Insert table column');
+  }
+
+  deleteTableColumn(): void {
+    const table = this.activeTable();
+    const selected = this.tableSelection;
+    if (!table || !selected || selected.columns <= 1) return;
+    for (const row of [...table.rows]) row.cells[selected.column]?.remove();
+    selected.columns -= 1;
+    selected.column = Math.min(selected.column, selected.columns - 1);
+    this.commitTableDom('Delete table column');
   }
 
   private captureTextSelection(): void {

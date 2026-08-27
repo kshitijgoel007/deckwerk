@@ -1,7 +1,7 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type { Deck } from '@shared/deck.js';
 import type { DeckHistoryDocument } from '@shared/deckHistory.js';
-import type { ClipboardPayload, ClipboardWriteRequest } from '@shared/clipboard.js';
+import type { ClipboardReadResult, ClipboardWriteRequest } from '@shared/clipboard.js';
 import { IPC } from '@shared/ipc.js';
 import type {
   AgentContextDraft,
@@ -73,7 +73,7 @@ const api = {
    */
   writeClipboard: (request: ClipboardWriteRequest): Promise<void> =>
     ipcRenderer.invoke(IPC.clipboardWrite, request),
-  readClipboard: (): Promise<ClipboardPayload | null> =>
+  readClipboard: (): Promise<ClipboardReadResult | null> =>
     ipcRenderer.invoke(IPC.clipboardRead),
 
   importAssets: (paths: string[], progressToken?: string): Promise<ImportedAsset[]> =>

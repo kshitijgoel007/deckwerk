@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { parseDeck, type Deck } from '../src/shared/deck.js';
 import {
   CLIPBOARD_FORMAT,
+  type ClipboardReadResult,
   type ClipboardPayload,
   type ClipboardWriteRequest,
   collectAssetSrcs,
@@ -57,7 +58,7 @@ function sampleDeck(): Deck {
 }
 
 /** In-memory stand-in for the OS pasteboard, shared by every "instance". */
-let pasteboard: ClipboardPayload | null = null;
+let pasteboard: ClipboardReadResult | null = null;
 
 beforeEach(() => {
   pasteboard = null;
@@ -173,5 +174,87 @@ describe('cross-instance copy/paste', () => {
     const [second] = [...store.get().selection];
     expect(first).not.toBe(second);
     expect(store.slide!.elements).toHaveLength(5);
+  });
+
+  it('pastes an Excel or web table onto the slide as one editable object', async () => {
+    pasteboard = {
+      kind: 'external-html',
+      html: '<div><table onclick="bad()"><tr><th>Name</th><th>Value</th></tr><tr><td contenteditable="false">A</td><td>42</td></tr></table></div>',
+    };
+    const store = new EditorStore(sampleDeck(), '/dest-deck');
+    const result = await pasteFromClipboard(store);
+    expect(result).toEqual({ kind: 'elements', count: 1 });
+    const [selected] = store.selectedElements();
+    expect(selected.type).toBe('text');
+    expect((selected as { html: string }).html).toContain('<table>');
+    expect((selected as { html: string }).html).not.toContain('onclick');
+    expect((selected as { html: string }).html).not.toContain('contenteditable');
+  });
+
+  it('pastes a macOS clipboard screenshot as a centered image', async () => {
+    pasteboard = {
+      kind: 'external-image',
+      asset: {
+        src: 'assets/Screenshot.abc12345.png',
+        kind: 'image',
+        width: 3024,
+        height: 1964,
+        duration: null,
+      },
+    };
+    const store = new EditorStore(sampleDeck(), '/dest-deck');
+    expect(await pasteFromClipboard(store)).toEqual({ kind: 'elements', count: 1 });
+    const [selected] = store.selectedElements();
+    expect(selected).toMatchObject({
+      type: 'image',
+      src: 'assets/Screenshot.abc12345.png',
+      fit: 'contain',
+      alt: 'Pasted screenshot',
+    });
+    expect(selected.w).toBeLessThanOrEqual(store.get().deck.canvas.w * 0.8);
+    expect(selected.h).toBeLessThanOrEqual(store.get().deck.canvas.h * 0.8);
+    expect(selected.x).toBe(Math.round((store.get().deck.canvas.w - selected.w) / 2));
+    expect(selected.y).toBe(Math.round((store.get().deck.canvas.h - selected.h) / 2));
+  });
+
+  it('pastes the tab-separated fallback supplied by Google Sheets', async () => {
+    pasteboard = {
+      kind: 'external-html',
+      html: '',
+      text: 'time\texperiment id\n2026-08-18\tego\n2026-08-24\t"ego\nmix"',
+    };
+    const store = new EditorStore(sampleDeck(), '/dest-deck');
+    expect(await pasteFromClipboard(store)).toEqual({ kind: 'elements', count: 1 });
+    const [selected] = store.selectedElements();
+    const html = (selected as { html: string }).html;
+    expect(html).toContain('<table>');
+    expect(html).toContain('<td>experiment id</td>');
+    expect(html).toContain('<td>ego<br>mix</td>');
+  });
+
+  it('reads Google Sheets HTML from the browser collaboration clipboard', async () => {
+    window.api = {} as Window['api'];
+    const prior = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        read: async () => [{
+          types: ['text/html', 'text/plain'],
+          getType: async (type: string) => ({
+            text: async () => type === 'text/html'
+              ? '<google-sheets-html-origin><table><tr><td>time</td><td>experiment id</td></tr></table></google-sheets-html-origin>'
+              : 'time\texperiment id',
+          }),
+        }],
+      },
+    });
+    try {
+      const store = new EditorStore(sampleDeck(), '/dest-deck');
+      expect(await pasteFromClipboard(store)).toEqual({ kind: 'elements', count: 1 });
+      expect((store.selectedElements()[0] as { html: string }).html).toContain('<td>experiment id</td>');
+    } finally {
+      if (prior) Object.defineProperty(navigator, 'clipboard', prior);
+      else delete (navigator as unknown as Record<string, unknown>).clipboard;
+    }
   });
 });

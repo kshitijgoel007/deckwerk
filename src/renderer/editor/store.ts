@@ -1,11 +1,13 @@
 import type { Deck, Slide, SlideElement } from '@shared/deck.js';
 import { parseDeck } from '@shared/deck.js';
 import {
+  type ClipboardReadResult,
   type ClipboardWriteRequest,
   remapElementIds,
   remapSlideIds,
 } from '@shared/clipboard.js';
 import { makeId } from '@shared/geometry.js';
+import { pastedTableHtml } from '@shared/paragraphs.js';
 import type {
   DeckHistoryDocument,
   PersistedDeckHistoryEntry,
@@ -637,12 +639,32 @@ async function writeSystemClipboard(request: ClipboardWriteRequest): Promise<voi
   }
 }
 
-async function readSystemClipboard(): Promise<ClipboardWriteRequest | null> {
-  try {
-    const payload = await window.api?.readClipboard?.();
-    if (payload) return payload;
-  } catch (err) {
-    console.error('Could not read the system clipboard:', err);
+async function readSystemClipboard(): Promise<ClipboardReadResult | ClipboardWriteRequest | null> {
+  if (window.api?.readClipboard) {
+    try {
+      const payload = await window.api.readClipboard();
+      if (payload) return payload;
+    } catch (err) {
+      console.error('Could not read the system clipboard:', err);
+    }
+  } else if (navigator.clipboard?.read) {
+    try {
+      let html = '';
+      let text = '';
+      for (const item of await navigator.clipboard.read()) {
+        if (!html && item.types.includes('text/html')) {
+          html = await (await item.getType('text/html')).text();
+        }
+        if (!text && item.types.includes('text/plain')) {
+          text = await (await item.getType('text/plain')).text();
+        }
+      }
+      if (/<table\b/i.test(html) || text.includes('\t')) {
+        return { kind: 'external-html', html, text };
+      }
+    } catch (err) {
+      console.error('Could not read the browser clipboard:', err);
+    }
   }
   return fallbackClipboard;
 }
@@ -687,6 +709,74 @@ export async function pasteFromClipboard(
 ): Promise<{ kind: 'elements' | 'slides'; count: number } | null> {
   const payload = await readSystemClipboard();
   if (!payload) return null;
+
+  if (payload.kind === 'external-image') {
+    const { asset } = payload;
+    const id = makeId('image');
+    store.commit((deck) => {
+      const slide = deck.slides[store.get().slideIndex];
+      if (!slide) return;
+      const naturalW = asset.width ?? 1600;
+      const naturalH = asset.height ?? 900;
+      const scale = Math.min(
+        1,
+        (deck.canvas.w * 0.8) / naturalW,
+        (deck.canvas.h * 0.8) / naturalH,
+      );
+      const w = Math.round(naturalW * scale);
+      const h = Math.round(naturalH * scale);
+      slide.elements.push({
+        id,
+        type: 'image',
+        x: Math.round((deck.canvas.w - w) / 2),
+        y: Math.round((deck.canvas.h - h) / 2),
+        w,
+        h,
+        rot: 0,
+        z: slide.elements.reduce((max, element) => Math.max(max, element.z), 0) + 1,
+        opacity: 1,
+        class: [],
+        style: {},
+        src: asset.src,
+        fit: 'contain',
+        alt: 'Pasted screenshot',
+        sourceBox: null,
+      });
+    }, { label: 'Paste screenshot' });
+    store.select([id]);
+    return { kind: 'elements', count: 1 };
+  }
+
+  if (payload.kind === 'external-html') {
+    const html = pastedTableHtml(payload.html, payload.text);
+    if (!html) return null;
+    const id = makeId('table');
+    store.commit((deck) => {
+      const slide = deck.slides[store.get().slideIndex];
+      if (!slide) return;
+      const w = Math.min(1400, deck.canvas.w - 160);
+      const h = Math.min(620, deck.canvas.h - 160);
+      slide.elements.push({
+        id,
+        type: 'text',
+        x: (deck.canvas.w - w) / 2,
+        y: (deck.canvas.h - h) / 2,
+        w,
+        h,
+        rot: 0,
+        z: slide.elements.reduce((max, element) => Math.max(max, element.z), 0) + 1,
+        opacity: 1,
+        class: ['role-body'],
+        style: {},
+        html,
+        align: 'left',
+        valign: 'top',
+        autoFit: true,
+      });
+    }, { label: 'Paste table' });
+    store.select([id]);
+    return { kind: 'elements', count: 1 };
+  }
 
   if (payload.kind === 'slides') {
     const slides = structuredClone(payload.slides);

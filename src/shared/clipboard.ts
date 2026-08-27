@@ -8,6 +8,7 @@ import {
   type TimelineEntry,
 } from './deck.js';
 import { makeId } from './geometry.js';
+import type { ImportedAsset } from './ipc.js';
 
 /**
  * Cross-instance clipboard payloads.
@@ -56,6 +57,13 @@ export const ClipboardPayloadSchema = z.discriminatedUnion('kind', [
 ]);
 
 export type ClipboardPayload = z.infer<typeof ClipboardPayloadSchema>;
+/** Standard clipboard data supplied by another app. Spreadsheet copies
+ *  normally include HTML, with tab-separated text as a portable fallback. */
+export type ExternalHtmlClipboard = { kind: 'external-html'; html: string; text?: string };
+/** A bitmap supplied by another app (notably a macOS screenshot). The main
+ *  process imports it into the open deck before handing it to the renderer. */
+export type ExternalImageClipboard = { kind: 'external-image'; asset: ImportedAsset };
+export type ClipboardReadResult = ClipboardPayload | ExternalHtmlClipboard | ExternalImageClipboard;
 export type AssetRef = z.infer<typeof AssetRefSchema>;
 
 /** What the renderer hands to the main process; assets are attached there. */

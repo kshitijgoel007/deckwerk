@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { emptyDeck, type Deck, type SlideElement } from '../src/shared/deck.js';
 import { EditorCanvas } from '../src/renderer/editor/canvas.js';
 import { Inspector } from '../src/renderer/editor/inspector.js';
+import { wireCanvasInspector } from '../src/renderer/editor/shellWiring.js';
 import { EditorStore } from '../src/renderer/editor/store.js';
 import { closePopover } from '../src/renderer/editor/ui.js';
 
@@ -92,6 +93,8 @@ function installThemePalette(colors: string[]): void {
 
 interface Harness {
   store: EditorStore;
+  canvas: EditorCanvas;
+  inspector: Inspector;
   canvasHost: HTMLElement;
   inspectorHost: HTMLElement;
 }
@@ -108,10 +111,11 @@ function setup(elements: SlideElement[], deckPatch: (deck: Deck) => void = () =>
   installThemePalette(['#112233', '#ff8800']);
 
   const store = new EditorStore(deck, '/tmp/deck');
-  new EditorCanvas(canvasHost, store);
-  new Inspector(inspectorHost, store);
+  const canvas = new EditorCanvas(canvasHost, store);
+  const inspector = new Inspector(inspectorHost, store);
+  wireCanvasInspector(canvas, inspector);
   store.select(elements.map((element) => element.id));
-  return { store, canvasHost, inspectorHost };
+  return { store, canvas, inspector, canvasHost, inspectorHost };
 }
 
 /* --- click helpers: query fresh, because the inspector rebuilds on commit --- */
@@ -131,13 +135,8 @@ function field(host: HTMLElement, label: string): HTMLElement {
   return match;
 }
 
-/** A checkbox is labelled by a trailing `<span>`, so match on the whole label. */
-function checkbox(host: HTMLElement, label: string): HTMLInputElement {
-  const match = [...host.querySelectorAll<HTMLElement>('.field-check')]
-    .find((node) => node.textContent?.trim() === label);
-  if (!match) throw new Error(`no inspector checkbox labelled "${label}"`);
-  return match.querySelector('input')!;
-}
+const listSelect = (host: HTMLElement): HTMLSelectElement =>
+  field(host, 'List').querySelector<HTMLSelectElement>('select')!;
 
 const textOf = (store: EditorStore, id: string): Extract<SlideElement, { type: 'text' }> => {
   const element = store.slide!.elements.find((candidate) => candidate.id === id)!;
@@ -147,6 +146,9 @@ const textOf = (store: EditorStore, id: string): Extract<SlideElement, { type: '
 
 const bodyOf = (host: HTMLElement, id: string): HTMLElement =>
   host.querySelector<HTMLElement>(`[data-element-id="${id}"] .text-body`)!;
+
+const contentOf = (host: HTMLElement, id: string): HTMLElement =>
+  host.querySelector<HTMLElement>(`[data-element-id="${id}"] .text-content`)!;
 
 const nodeOf = (host: HTMLElement, id: string): HTMLElement =>
   host.querySelector<HTMLElement>(`[data-element-id="${id}"]`)!;
@@ -166,6 +168,42 @@ describe('text formatting from the inspector controls', () => {
   beforeEach(() => {
     closePopover();
     document.body.replaceChildren();
+  });
+
+  it('keeps the exhaustive formatting matrix synchronized with the shipped text and table controls', () => {
+    const normal = setup([textElement('text-1', { html: '<p>First</p><p>Second</p>' })]);
+    normal.canvas.beginTextEdit('text-1');
+    const labels = (selector: string) => [...normal.inspectorHost.querySelectorAll<HTMLElement>(selector)]
+      .map((node) => node.textContent?.trim());
+
+    expect(labels('.text-typography-options .field > span')).toEqual([
+      'Font family', 'Font size', 'Font weight', 'Role', 'Colour',
+    ]);
+    expect(labels('.text-layout-options .field > span')).toEqual([
+      'Auto-fit text to box', 'Disable automatic line breaks', 'List',
+      'Align', 'Vertical', 'Paragraph spacing',
+    ]);
+    expect(labels('.text-format-buttons button')).toEqual(['B', 'I', 'U']);
+    expect(labels('.text-weight-buttons button')).toEqual([
+      '100', '200', '300', '400', '500', '600', '700', '800', '900',
+    ]);
+    expect(labels('.number-step-buttons button')).toEqual(['▲', '▼', '▲', '▼', '▲', '▼']);
+
+    const table = setup([textElement('table-1', {
+      html: '<table><tbody><tr><td>A</td><td>B</td></tr>'
+        + '<tr><td>C</td><td>D</td></tr></tbody></table>',
+    })]);
+    table.canvas.beginTextEdit('table-1');
+    contentOf(table.canvasHost, 'table-1').querySelector('td')!.dispatchEvent(
+      new PointerEvent('pointerdown', { bubbles: true }),
+    );
+    const tableLabels = (selector: string) => [...table.inspectorHost.querySelectorAll<HTMLElement>(selector)]
+      .map((node) => node.textContent?.trim());
+    expect(tableLabels('.table-scope-buttons button')).toEqual(['Cell', 'Row', 'Column']);
+    expect(tableLabels('.text-table-options .field > span')).toEqual(['Cell fill', 'Cell text']);
+    expect(tableLabels('.table-column-buttons button')).toEqual([
+      'Insert before', 'Insert after', 'Delete column',
+    ]);
   });
 
   it('sets every horizontal alignment, repaints the canvas, and shows the pressed state', () => {
@@ -245,23 +283,524 @@ describe('text formatting from the inspector controls', () => {
     expect(textOf(store, 'text-1').style.color).toBe('rgba(51, 102, 204, 0.5)');
   });
 
-  it('turns paragraphs into a bulleted list and back from the checkbox', () => {
+  it('turns paragraphs into a bulleted list and back from the list dropdown', () => {
     const { store, canvasHost, inspectorHost } = setup([
       textElement('text-1', { html: '<p>First</p><p>Second</p>' }),
     ]);
-    const listBox = () => checkbox(inspectorHost, 'Bulleted list');
-    expect(listBox().checked).toBe(false);
+    expect(listSelect(inspectorHost).value).toBe('None');
 
-    listBox().click();
+    pick(listSelect(inspectorHost), 'Bulleted');
     expect(textOf(store, 'text-1').html).toBe('<ul><li>First</li><li>Second</li></ul>');
     expect([...bodyOf(canvasHost, 'text-1').querySelectorAll('li')].map((li) => li.textContent))
       .toEqual(['First', 'Second']);
-    expect(listBox().checked).toBe(true);
+    expect(listSelect(inspectorHost).value).toBe('Bulleted');
 
-    listBox().click();
+    pick(listSelect(inspectorHost), 'None');
     expect(textOf(store, 'text-1').html).toBe('<p>First</p><p>Second</p>');
     expect(bodyOf(canvasHost, 'text-1').querySelectorAll('li')).toHaveLength(0);
-    expect(listBox().checked).toBe(false);
+    expect(listSelect(inspectorHost).value).toBe('None');
+  });
+
+  it('turns paragraphs into a numbered list and keeps it distinct from bullets', () => {
+    const { store, canvasHost, inspectorHost } = setup([
+      textElement('text-1', { html: '<p>First</p><p>Second</p>' }),
+    ]);
+    expect(listSelect(inspectorHost).value).toBe('None');
+
+    pick(listSelect(inspectorHost), 'Numbered');
+    expect(textOf(store, 'text-1').html).toBe('<ol><li>First</li><li>Second</li></ol>');
+    expect(bodyOf(canvasHost, 'text-1').querySelectorAll('ol > li')).toHaveLength(2);
+    expect(listSelect(inspectorHost).value).toBe('Numbered');
+
+    pick(listSelect(inspectorHost), 'Bulleted');
+    expect(textOf(store, 'text-1').html).toBe('<ul><li>First</li><li>Second</li></ul>');
+    expect(listSelect(inspectorHost).value).toBe('Bulleted');
+  });
+
+  it.each([
+    ['Bulleted', 'ul'],
+    ['Numbered', 'ol'],
+  ] as const)('keeps a multi-paragraph text selection alive while choosing %s', (style, tag) => {
+    const { store, canvas, canvasHost, inspectorHost } = setup([
+      textElement('text-1', { html: '<p>First</p><p>Second</p><p>Third</p>' }),
+    ]);
+    canvas.beginTextEdit('text-1');
+    const body = bodyOf(canvasHost, 'text-1');
+    const paragraphs = body.querySelectorAll('p');
+    const range = document.createRange();
+    range.setStartBefore(paragraphs[0]);
+    range.setEndAfter(paragraphs[2]);
+    window.getSelection()!.removeAllRanges();
+    window.getSelection()!.addRange(range);
+
+    pick(listSelect(inspectorHost), style);
+
+    expect(textOf(store, 'text-1').html).toBe(
+      `<${tag}><li>First</li><li>Second</li><li>Third</li></${tag}>`,
+    );
+    expect(body.querySelectorAll(`${tag} > li`)).toHaveLength(3);
+    expect(listSelect(inspectorHost).value).toBe(style);
+    expect(canvas.isEditing()).toBe(true);
+    expect(inspectorHost.querySelector('.text-selection-style')).not.toBeNull();
+  });
+
+  it.each([
+    ['Bulleted', 'ul'],
+    ['None', null],
+  ] as const)('changes a whole numbered list to %s when only one word is selected', (style, tag) => {
+    const original = '<p>Heading</p><ol start="3" class="steps">'
+      + '<li><strong>First</strong> item</li><li><em>Second</em> item</li></ol><p>Footer</p>';
+    const { store, canvas, canvasHost, inspectorHost } = setup([
+      textElement('text-1', { html: original }),
+    ]);
+    canvas.beginTextEdit('text-1');
+    const content = contentOf(canvasHost, 'text-1');
+    const word = style === 'Bulleted'
+      ? content.querySelector('strong')!.firstChild!
+      : content.querySelector('em')!.firstChild!;
+    const range = document.createRange();
+    range.setStart(word, 0);
+    range.setEnd(word, 5);
+    window.getSelection()!.removeAllRanges();
+    window.getSelection()!.addRange(range);
+    document.dispatchEvent(new Event('selectionchange'));
+
+    expect(listSelect(inspectorHost).value).toBe('Numbered');
+    pick(listSelect(inspectorHost), style);
+
+    const saved = document.createElement('div');
+    saved.innerHTML = textOf(store, 'text-1').html;
+    expect(saved.children[0].outerHTML).toBe('<p>Heading</p>');
+    expect(saved.children[saved.children.length - 1].outerHTML).toBe('<p>Footer</p>');
+    expect(saved.textContent).toBe('HeadingFirst itemSecond itemFooter');
+    expect(saved.querySelectorAll('strong, em')).toHaveLength(2);
+    if (tag) {
+      expect(saved.querySelectorAll(`${tag}.steps > li`)).toHaveLength(2);
+      expect(saved.querySelector(tag)?.hasAttribute('start')).toBe(false);
+    } else {
+      expect(saved.querySelectorAll('ol, ul')).toHaveLength(0);
+      expect(saved.querySelectorAll(':scope > p')).toHaveLength(4);
+    }
+
+    contentOf(canvasHost, 'text-1').dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'z', ctrlKey: true, bubbles: true, cancelable: true,
+    }));
+    expect(textOf(store, 'text-1').html).toBe(original);
+  });
+
+  it('keeps a selected word alive while clicking a font-weight button', () => {
+    const { store, canvas, canvasHost, inspectorHost } = setup([
+      textElement('text-1', { html: '<p>First paragraph</p><p>Second paragraph</p>' }),
+    ]);
+    canvas.beginTextEdit('text-1');
+    const body = bodyOf(canvasHost, 'text-1');
+    const content = contentOf(canvasHost, 'text-1');
+    const text = content.querySelector('p')!.firstChild!;
+    const range = document.createRange();
+    range.setStart(text, 0);
+    range.setEnd(text, 5);
+    window.getSelection()!.removeAllRanges();
+    window.getSelection()!.addRange(range);
+
+    const weight = [...inspectorHost.querySelectorAll<HTMLButtonElement>(
+      '.text-selection-style button',
+    )].find((button) => button.textContent === '700')!;
+    const pointerDown = new PointerEvent('pointerdown', { bubbles: true, cancelable: true });
+    expect(weight.dispatchEvent(pointerDown)).toBe(false);
+    expect(pointerDown.defaultPrevented).toBe(true);
+    weight.click();
+
+    const span = body.querySelector<HTMLSpanElement>('span')!;
+    expect(span.textContent).toBe('First');
+    expect(span.style.fontWeight).toBe('700');
+    expect(window.getSelection()!.toString()).toBe('First');
+    expect(canvas.isEditing()).toBe(true);
+
+    content.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'Enter', ctrlKey: true, bubbles: true, cancelable: true,
+    }));
+    expect(textOf(store, 'text-1').html).toContain('font-weight: 700');
+  });
+
+  it.each([
+    ['Bold (Cmd/Ctrl+B)', 'fontWeight', '700'],
+    ['Italic (Cmd/Ctrl+I)', 'fontStyle', 'italic'],
+    ['Underline (Cmd/Ctrl+U)', 'textDecorationLine', 'underline'],
+  ] as const)('formats one selected word with the %s button and undoes it', (
+    label, property, expected,
+  ) => {
+    const original = '<ol><li>First item</li><li>Second item</li></ol>';
+    const { store, canvas, canvasHost, inspectorHost } = setup([
+      textElement('text-1', { html: original }),
+    ]);
+    canvas.beginTextEdit('text-1');
+    const content = contentOf(canvasHost, 'text-1');
+    const text = content.querySelector('li')!.firstChild!;
+    const range = document.createRange();
+    range.setStart(text, 0);
+    range.setEnd(text, 5);
+    window.getSelection()!.removeAllRanges();
+    window.getSelection()!.addRange(range);
+
+    const choice = inspectorHost.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!;
+    const pointerDown = new PointerEvent('pointerdown', { bubbles: true, cancelable: true });
+    expect(choice.dispatchEvent(pointerDown)).toBe(false);
+    choice.click();
+
+    const span = content.querySelector<HTMLSpanElement>('li span')!;
+    expect(span.textContent).toBe('First');
+    expect(span.style[property]).toBe(expected);
+    expect(content.querySelectorAll('ol')).toHaveLength(1);
+    expect(content.querySelectorAll('li')).toHaveLength(2);
+    expect(inspectorHost.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!
+      .getAttribute('aria-pressed')).toBe('true');
+
+    content.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'z', ctrlKey: true, bubbles: true, cancelable: true,
+    }));
+    expect(textOf(store, 'text-1').html).toBe(original);
+    expect(canvas.isEditing()).toBe(true);
+    expect(window.getSelection()!.toString()).toBe('First');
+    expect(window.getSelection()!.isCollapsed).toBe(false);
+    expect(inspectorHost.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!
+      .getAttribute('aria-pressed')).toBe('false');
+  });
+
+  it('shows computed theme font size and weight until an override is authored', () => {
+    const style = document.createElement('style');
+    style.textContent = '.role-body .text-content { font-size: 42px; font-weight: 500; }';
+    document.head.appendChild(style);
+    const { inspectorHost } = setup([
+      textElement('text-1', { class: ['role-body'], style: {} }),
+    ]);
+    const size = field(inspectorHost, 'Font size');
+    const weight = field(inspectorHost, 'Font weight');
+    expect(size.querySelector<HTMLInputElement>('input')!.value).toBe('42');
+    expect(weight.querySelector<HTMLInputElement>('input')!.value).toBe('500');
+    expect(size.querySelector('.theme-value-indicator')?.textContent).toBe('(theme)');
+    expect(weight.querySelector('.theme-value-indicator')?.textContent).toBe('(theme)');
+    style.remove();
+  });
+
+  it('shows font sizes with at most one decimal and normalizes edited sizes', () => {
+    const { store, inspectorHost } = setup([
+      textElement('text-1', { style: { 'font-size': '42.267px' } }),
+    ]);
+    const input = field(inspectorHost, 'Font size').querySelector<HTMLInputElement>('input')!;
+    expect(input.value).toBe('42.3');
+
+    type(input, '38.76');
+    expect(textOf(store, 'text-1').style['font-size']).toBe('38.8px');
+    expect(field(inspectorHost, 'Font size').querySelector<HTMLInputElement>('input')!.value)
+      .toBe('38.8');
+  });
+
+  it('keeps the authored font-size ceiling in the field and identifies a reduced AutoFit size', () => {
+    const { inspector, canvasHost, inspectorHost } = setup([
+      textElement('text-1', { autoFit: true, style: { 'font-size': '44px' } }),
+    ]);
+    const content = contentOf(canvasHost, 'text-1');
+    content.style.fontSize = '19.94px';
+    content.dataset.fittedFontSize = '19.94';
+    inspector.render();
+
+    expect(field(inspectorHost, 'Font size').querySelector<HTMLInputElement>('input')!.value).toBe('44');
+    const status = field(inspectorHost, 'Font size').querySelector<HTMLElement>('.auto-fit-value')!;
+    expect(status.textContent).toBe('Fitted to 19.9 px');
+    expect(status.title).toBe(
+      'Auto-fit reduced the displayed text from 44 px to 19.9 px to fit this box.',
+    );
+  });
+
+  it.each([
+    ['Font size', '44', 'fontSize', '44px'],
+    ['Font weight', '650', 'fontWeight', '650'],
+  ] as const)('keeps a selected word while changing %s through its number input', (
+    label, value, property, expected,
+  ) => {
+    const original = '<p>First paragraph</p><p>Second paragraph</p>';
+    const { store, canvas, canvasHost, inspectorHost } = setup([
+      textElement('text-1', { html: original }),
+    ]);
+    canvas.beginTextEdit('text-1');
+    const content = contentOf(canvasHost, 'text-1');
+    const text = content.querySelector('p')!.firstChild!;
+    const range = document.createRange();
+    range.setStart(text, 0);
+    range.setEnd(text, 5);
+    window.getSelection()!.removeAllRanges();
+    window.getSelection()!.addRange(range);
+    document.dispatchEvent(new Event('selectionchange'));
+
+    const input = field(inspectorHost, label).querySelector<HTMLInputElement>('input')!;
+    content.dispatchEvent(new FocusEvent('blur', { relatedTarget: input }));
+    input.value = value;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+
+    const span = content.querySelector<HTMLSpanElement>('span')!;
+    expect(span.textContent).toBe('First');
+    expect(span.style[property]).toBe(expected);
+    expect(canvas.isEditing()).toBe(true);
+    content.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'z', ctrlKey: true, bubbles: true, cancelable: true,
+    }));
+    expect(textOf(store, 'text-1').html).toBe(original);
+  });
+
+  it('changes every cell font size when the whole table object is selected and undoes exactly', () => {
+    const original = '<table><tbody><tr><td style="font-size: 18px">A</td><td>B</td></tr>'
+      + '<tr><td>C</td><td style="font-size: 20px">D</td></tr></tbody></table>';
+    const { store, canvasHost, inspectorHost } = setup([
+      textElement('text-1', { html: original }),
+    ]);
+
+    type(field(inspectorHost, 'Font size').querySelector<HTMLInputElement>('input')!, '48');
+    const element = textOf(store, 'text-1');
+    expect(element.style['font-size']).toBe('48px');
+    const saved = document.createElement('div');
+    saved.innerHTML = element.html;
+    expect([...saved.querySelectorAll<HTMLElement>('td')].map((cell) => cell.style.fontSize))
+      .toEqual(['48px', '48px', '48px', '48px']);
+    expect([...contentOf(canvasHost, 'text-1').querySelectorAll<HTMLElement>('td')]
+      .map((cell) => getComputedStyle(cell).fontSize)).toEqual(['48px', '48px', '48px', '48px']);
+
+    store.undo();
+    expect(textOf(store, 'text-1').html).toBe(original);
+    expect(textOf(store, 'text-1').style['font-size']).toBeUndefined();
+  });
+
+  it.each([
+    ['b', 'font-weight: 700'],
+    ['i', 'font-style: italic'],
+    ['u', 'text-decoration-line: underline'],
+  ] as const)('applies Cmd/Ctrl+%s to a selected word and undoes it once', (key, marker) => {
+    const original = '<p>First paragraph</p><p>Second paragraph</p>';
+    const { store, canvas, canvasHost } = setup([textElement('text-1', { html: original })]);
+    canvas.beginTextEdit('text-1');
+    const content = contentOf(canvasHost, 'text-1');
+    const text = content.querySelector('p')!.firstChild!;
+    const range = document.createRange();
+    range.setStart(text, 0);
+    range.setEnd(text, 5);
+    window.getSelection()!.removeAllRanges();
+    window.getSelection()!.addRange(range);
+
+    const shortcut = new KeyboardEvent('keydown', {
+      key, metaKey: true, bubbles: true, cancelable: true,
+    });
+    content.dispatchEvent(shortcut);
+    expect(shortcut.defaultPrevented).toBe(true);
+    expect(textOf(store, 'text-1').html).toContain(marker);
+    expect(content.querySelectorAll('p')).toHaveLength(2);
+
+    content.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'z', metaKey: true, bubbles: true, cancelable: true,
+    }));
+    expect(textOf(store, 'text-1').html).toBe(original);
+  });
+
+  it.each([
+    {
+      name: 'one word', html: '<p>First paragraph</p>',
+      select: (content: HTMLElement, range: Range) => {
+        const text = content.querySelector('p')!.firstChild!;
+        range.setStart(text, 0);
+        range.setEnd(text, 5);
+      },
+    },
+    {
+      name: 'one paragraph', html: '<p>First paragraph</p><p>Second paragraph</p>',
+      select: (content: HTMLElement, range: Range) =>
+        range.selectNodeContents(content.querySelector('p')!),
+    },
+    {
+      name: 'multiple paragraphs', html: '<p>First paragraph</p><p>Second paragraph</p>',
+      select: (content: HTMLElement, range: Range) => {
+        const paragraphs = content.querySelectorAll('p');
+        range.setStartBefore(paragraphs[0]);
+        range.setEndAfter(paragraphs[1]);
+      },
+    },
+    {
+      name: 'one numbered-list item', html: '<ol><li>First item</li><li>Second item</li></ol>',
+      select: (content: HTMLElement, range: Range) =>
+        range.selectNodeContents(content.querySelectorAll('li')[1]),
+    },
+    {
+      name: 'a whole numbered list', html: '<ol><li>First item</li><li>Second item</li></ol>',
+      select: (content: HTMLElement, range: Range) => range.selectNodeContents(content),
+    },
+    {
+      name: 'a whole bulleted list', html: '<ul><li>First item</li><li>Second item</li></ul>',
+      select: (content: HTMLElement, range: Range) => range.selectNodeContents(content),
+    },
+    {
+      name: 'a heading and numbered list',
+      html: '<p>Results</p><ol><li>First item</li><li>Second item</li></ol>',
+      select: (content: HTMLElement, range: Range) => range.selectNodeContents(content),
+    },
+  ])('keeps $name structurally unchanged while choosing a font family', ({ html, select: selectRange }) => {
+    const { store, canvas, canvasHost, inspectorHost } = setup([
+      textElement('text-1', { html }),
+    ]);
+    canvas.beginTextEdit('text-1');
+    const content = contentOf(canvasHost, 'text-1');
+    const range = document.createRange();
+    selectRange(content, range);
+    window.getSelection()!.removeAllRanges();
+    window.getSelection()!.addRange(range);
+    const selectedText = window.getSelection()!.toString();
+    const structure = [...content.querySelectorAll('p,ol,ul,li,br')]
+      .map((node) => node.tagName);
+    document.dispatchEvent(new Event('selectionchange'));
+
+    const select = field(inspectorHost, 'Font family').querySelector<HTMLSelectElement>('select')!;
+    // A native select must take focus to open. The canvas keeps a cloned Range
+    // across that blur and restores it after the family has been chosen.
+    content.dispatchEvent(new FocusEvent('blur', { relatedTarget: select }));
+    window.getSelection()!.removeAllRanges();
+    const avenir = document.createElement('option');
+    avenir.value = 'Avenir';
+    avenir.textContent = 'Avenir';
+    select.appendChild(avenir);
+    pick(select, 'Avenir');
+
+    const styled = [...content.querySelectorAll<HTMLSpanElement>('span')]
+      .filter((span) => span.style.fontFamily.includes('Avenir'));
+    expect(styled.length).toBeGreaterThan(0);
+    expect([...content.querySelectorAll('p,ol,ul,li,br')].map((node) => node.tagName))
+      .toEqual(structure);
+    expect(content.querySelectorAll('li:empty, p:empty, br')).toHaveLength(0);
+    expect(window.getSelection()!.toString()).toBe(selectedText);
+    expect(canvas.isEditing()).toBe(true);
+
+    content.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'Enter', ctrlKey: true, bubbles: true, cancelable: true,
+    }));
+    const saved = document.createElement('div');
+    saved.innerHTML = textOf(store, 'text-1').html;
+    expect([...saved.querySelectorAll('p,ol,ul,li,br')].map((node) => node.tagName))
+      .toEqual(structure);
+    expect(saved.querySelectorAll('li:empty, p:empty, br')).toHaveLength(0);
+    expect(saved.innerHTML).toContain('font-family: Avenir');
+  });
+
+  it.each([
+    ['Cell', [1]],
+    ['Row', [0, 1]],
+    ['Column', [1, 3]],
+  ] as const)('formats only the selected table %s through the inspector', (scope, expected) => {
+    const { store, canvas, canvasHost, inspectorHost } = setup([
+      textElement('text-1', {
+        html: '<table><tbody><tr><td>A</td><td>B</td></tr>'
+          + '<tr><td>C</td><td>D</td></tr></tbody></table>',
+      }),
+    ]);
+    canvas.beginTextEdit('text-1');
+    const content = contentOf(canvasHost, 'text-1');
+    content.querySelectorAll('td')[1].dispatchEvent(
+      new PointerEvent('pointerdown', { bubbles: true }),
+    );
+
+    const scopeButton = [...inspectorHost.querySelectorAll<HTMLButtonElement>(
+      '.table-scope-buttons button',
+    )].find((button) => button.textContent === scope)!;
+    const pointerDown = new PointerEvent('pointerdown', { bubbles: true, cancelable: true });
+    expect(scopeButton.dispatchEvent(pointerDown)).toBe(false);
+    expect(pointerDown.defaultPrevented).toBe(true);
+    scopeButton.click();
+    expect([...inspectorHost.querySelectorAll<HTMLButtonElement>('.table-scope-buttons button')]
+      .find((button) => button.textContent === scope)?.getAttribute('aria-pressed')).toBe('true');
+
+    field(inspectorHost, 'Cell fill')
+      .querySelector<HTMLButtonElement>('.color-picker-trigger')!.click();
+    document.querySelector<HTMLButtonElement>('.color-picker-palette-button')!.click();
+
+    const saved = document.createElement('div');
+    saved.innerHTML = textOf(store, 'text-1').html;
+    const coloured = [...saved.querySelectorAll<HTMLTableCellElement>('td')]
+      .flatMap((cell, index) => cell.style.backgroundColor ? [index] : []);
+    expect(coloured).toEqual([...expected]);
+    expect(canvas.isEditing()).toBe(true);
+    expect(canvas.tableSelectionInfo()?.mode.toLowerCase()).toBe(scope.toLowerCase());
+
+    field(inspectorHost, 'Cell fill')
+      .querySelector<HTMLButtonElement>('.color-picker-trigger')!.click();
+    document.querySelector<HTMLButtonElement>('.color-picker-clear')!.click();
+    const cleared = document.createElement('div');
+    cleared.innerHTML = textOf(store, 'text-1').html;
+    expect([...cleared.querySelectorAll('td')].every((cell) => !cell.hasAttribute('style'))).toBe(true);
+  });
+
+  it('inserts and deletes the selected table column through the inspector', () => {
+    const { store, canvas, canvasHost, inspectorHost } = setup([
+      textElement('text-1', {
+        html: '<table><tbody><tr><td>A</td><td>B</td></tr>'
+          + '<tr><td>C</td><td>D</td></tr></tbody></table>',
+      }),
+    ]);
+    canvas.beginTextEdit('text-1');
+    contentOf(canvasHost, 'text-1').querySelectorAll('td')[1].dispatchEvent(
+      new PointerEvent('pointerdown', { bubbles: true }),
+    );
+    [...inspectorHost.querySelectorAll<HTMLButtonElement>('.table-scope-buttons button')]
+      .find((button) => button.textContent === 'Column')!.click();
+
+    const columnButton = (label: string) => [...inspectorHost.querySelectorAll<HTMLButtonElement>(
+      '.table-column-buttons button',
+    )].find((button) => button.textContent === label)!;
+    columnButton('Insert before').click();
+    let saved = document.createElement('div');
+    saved.innerHTML = textOf(store, 'text-1').html;
+    expect([...saved.querySelectorAll('tr')].map((row) => row.cells.length)).toEqual([3, 3]);
+    expect(canvas.tableSelectionInfo()).toMatchObject({ mode: 'column', columns: 3 });
+
+    columnButton('Delete column').click();
+    saved = document.createElement('div');
+    saved.innerHTML = textOf(store, 'text-1').html;
+    expect([...saved.querySelectorAll('tr')].map((row) => row.cells.length)).toEqual([2, 2]);
+    expect(canvas.tableSelectionInfo()).toMatchObject({ mode: 'column', columns: 2 });
+    expect(canvas.isEditing()).toBe(true);
+  });
+
+  it('keeps a heading outside a typed numbered list and removes typed markers', () => {
+    const { store, inspectorHost } = setup([
+      textElement('text-1', {
+        html: '<p><code>Results and analysis:</code></p>'
+          + '<p><code><span>1. </span>ego</code></p>'
+          + '<p>2. Second result</p>'
+          + '<p>3) <strong>Third result</strong></p>',
+      }),
+    ]);
+
+    pick(listSelect(inspectorHost), 'Numbered');
+    expect(textOf(store, 'text-1').html).toBe(
+      '<p><code>Results and analysis:</code></p>'
+      + '<ol><li><code>ego</code></li><li>Second result</li>'
+      + '<li><strong>Third result</strong></li></ol>',
+    );
+    expect(listSelect(inspectorHost).value).toBe('Numbered');
+
+    pick(listSelect(inspectorHost), 'None');
+    expect(textOf(store, 'text-1').html).toBe(
+      '<p><code>Results and analysis:</code></p>'
+      + '<p><code>ego</code></p><p>Second result</p>'
+      + '<p><strong>Third result</strong></p>',
+    );
+  });
+
+  it('infers a selected first item when the remaining paragraphs begin at 2', () => {
+    const { store, inspectorHost } = setup([
+      textElement('text-1', {
+        html: '<p>First item with its marker already removed</p>'
+          + '<p>2. Second item</p><p>3. Third item</p>',
+      }),
+    ]);
+    pick(listSelect(inspectorHost), 'Numbered');
+    expect(textOf(store, 'text-1').html).toBe(
+      '<ol><li>First item with its marker already removed</li>'
+      + '<li>Second item</li><li>Third item</li></ol>',
+    );
   });
 
   it('sets and clears paragraph spacing, driving the canvas custom property', () => {
@@ -356,18 +895,18 @@ describe('text formatting across a multi-selection', () => {
       .toEqual([24, 24]);
   });
 
-  it('bullets a whole multi-selection from the shared typography checkbox', () => {
+  it('bullets a whole multi-selection from the shared list dropdown', () => {
     const { store, canvasHost, inspectorHost } = setup([
       textElement('text-1', { html: '<p>Alpha</p><p>Beta</p>' }),
       textElement('text-2', { y: 400, html: 'Gamma' }),
     ]);
 
-    checkbox(inspectorHost, 'Bulleted list').click();
+    pick(listSelect(inspectorHost), 'Bulleted');
     expect(textOf(store, 'text-1').html).toBe('<ul><li>Alpha</li><li>Beta</li></ul>');
     expect(textOf(store, 'text-2').html).toBe('<ul><li>Gamma</li></ul>');
     expect(bodyOf(canvasHost, 'text-2').querySelectorAll('li')).toHaveLength(1);
 
-    checkbox(inspectorHost, 'Bulleted list').click();
+    pick(listSelect(inspectorHost), 'None');
     expect(textOf(store, 'text-1').html).toBe('<p>Alpha</p><p>Beta</p>');
     // A single line comes back as one paragraph rather than the bare markup it
     // started as; both render identically, so the round trip is lossless.
@@ -411,7 +950,7 @@ describe('inline run formatting while editing text', () => {
     store.select(['text-1']);
 
     const weights = [...inspectorHost.querySelectorAll<HTMLButtonElement>(
-      '.text-selection-style .button-row button',
+      '.text-selection-style .text-weight-buttons button',
     )];
     expect(weights.map((button) => button.textContent))
       .toEqual(['100', '200', '300', '400', '500', '600', '700', '800', '900']);

@@ -76,14 +76,34 @@
 /* Bulleted lists inside text elements. theme.css can restyle the markers. */
 /* No text-align of its own: a list follows the element's alignment like any
    other block, so centring a bulleted text element actually centres it. */
-.text-body ul {
+.text-body :is(ul, ol) {
   margin: 0;
-  padding-left: 1.1em;
+  /* `ol` cannot use the browser's fixed 40px inset: at presentation-sized
+     type it clips the digit and leaves only the period visible as a "bullet". */
+  padding-left: 1.4em;
 }
 
 .text-body li {
   margin: 0.15em 0;
 }
+
+/* Tables pasted from spreadsheets and web pages remain ordinary editable
+   HTML. These restrained defaults make unstyled tables readable while inline
+   cell colours from the source (or the Props panel) continue to win. */
+.text-body table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.text-body :is(th, td) {
+  min-width: 1.5em;
+  padding: 0.2em 0.35em;
+  border: 1px solid currentColor;
+  vertical-align: top;
+}
+
+.text-body th { font-weight: 700; }
 
 /* Indented bullets (tab while editing a list) switch to a dash marker. */
 .text-body ul ul {

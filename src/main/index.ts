@@ -9,6 +9,7 @@ import { parseDeck, type Deck } from '@shared/deck.js';
 import type { DeckHistoryDocument } from '@shared/deckHistory.js';
 import {
   CLIPBOARD_FORMAT,
+  type ClipboardReadResult,
   type ClipboardPayload,
   type ClipboardWriteRequest,
   collectAssetSrcs,
@@ -61,6 +62,7 @@ import {
   derivedAssetPath,
   ensureAgentGuide,
   importAsset,
+  importImageBuffer,
   loadDeck,
   loadTheme,
   resolveAsset,
@@ -856,9 +858,29 @@ function registerHandlers(): void {
   // Paste: validate whatever is on the pasteboard, then re-import each
   // referenced asset into *this* deck. Import names files by content hash, so
   // pasting back into the source deck (or pasting twice) copies nothing.
-  ipcMain.handle(IPC.clipboardRead, async (): Promise<ClipboardPayload | null> => {
+  ipcMain.handle(IPC.clipboardRead, async (): Promise<ClipboardReadResult | null> => {
     const buf = clipboard.readBuffer(CLIPBOARD_FORMAT);
-    if (!buf || buf.length === 0) return null;
+    if (!buf || buf.length === 0) {
+      const html = clipboard.readHTML();
+      const text = clipboard.readText();
+      if (/<table\b/i.test(html) || text.includes('\t')) {
+        return { kind: 'external-html', html, text };
+      }
+      const image = clipboard.readImage();
+      if (!image.isEmpty()) {
+        // Preserve the sharpest representation on Retina displays. NativeImage
+        // otherwise defaults PNG encoding to the 1x representation.
+        const scaleFactor = Math.max(1, ...image.getScaleFactors());
+        const asset = await importImageBuffer(
+          requireSession().dir,
+          image.toPNG({ scaleFactor }),
+          'Screenshot.png',
+          image.getSize(scaleFactor),
+        );
+        return { kind: 'external-image', asset };
+      }
+      return null;
+    }
     let payload: ClipboardPayload | null = null;
     try {
       payload = parseClipboardPayload(JSON.parse(buf.toString('utf8')));

@@ -181,16 +181,16 @@ describe.skipIf(!electronBinary)('text formatting in the collaboration browser',
       `document.querySelector('#canvas [data-element-id="${BODY_ID}"] .text-body').style.justifyContent`,
     ), 'vertical alignment did not repaint', (value) => value === 'flex-end')).toBe('flex-end');
 
-    /* --- bulleted list ---------------------------------------------------- */
+    /* --- list style ------------------------------------------------------- */
 
-    const listCheckbox = await editor.evaluate<string>(`(() => {
-      const field = [...document.querySelectorAll('${PANEL} .field-check')]
-        .find((node) => node.textContent.trim() === 'Bulleted list');
-      if (!field) throw new Error('no Bulleted list checkbox in the panel');
-      field.querySelector('input').id = 'test-bullet-toggle';
-      return '#test-bullet-toggle';
+    const listSelect = await editor.evaluate<string>(`(() => {
+      const field = [...document.querySelectorAll('${PANEL} label.field')]
+        .find((node) => node.querySelector(':scope > span')?.textContent === 'List');
+      if (!field) throw new Error('no List dropdown in the panel');
+      field.querySelector('select').id = 'test-list-style';
+      return '#test-list-style';
     })()`);
-    await editor.click(listCheckbox, 'Bulleted list checkbox');
+    await editor.choose(listSelect, 'Bulleted', 'List style dropdown');
     const bulleted = await eventually(async () => editor!.evaluate<{
       html: string; items: string[];
     }>(`(() => ({
@@ -198,7 +198,7 @@ describe.skipIf(!electronBinary)('text formatting in the collaboration browser',
         .find((candidate) => candidate.id === '${BODY_ID}').html,
       items: [...document.querySelectorAll('#canvas [data-element-id="${BODY_ID}"] .text-body li')]
         .map((item) => item.textContent)
-    }))()`), 'the bullet checkbox did not convert the paragraphs',
+    }))()`), 'the list dropdown did not convert the paragraphs',
       (value) => value.items.length === 2);
     expect(bulleted.html).toBe('<ul><li>First point</li><li>Second point</li></ul>');
     // Markers must actually paint; a list that renders `list-style: none` looks

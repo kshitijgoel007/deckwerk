@@ -1,5 +1,12 @@
 import type { MediaEffect, SlideElement } from '@shared/deck.js';
-import { paragraphsToList, listToParagraphs } from '@shared/paragraphs.js';
+import {
+  paragraphsToList,
+  paragraphsToOrderedList,
+  changeListType,
+  hasList,
+  listToParagraphs,
+} from '@shared/paragraphs.js';
+import type { TableSelection } from './canvas.js';
 import { type AlignMode, alignElements } from './align.js';
 import type { EditorStore } from './store.js';
 import { LAYOUT_LABELS, applySlideLayout, type SlideLayout } from './slideLayouts.js';
@@ -19,6 +26,37 @@ interface TextPaintInfo {
   inheritedValue: string | null;
   source?: { kind: 'theme' | 'css'; preview?: string | null; label?: string };
   clear: { kind: 'theme' | 'css'; label: string };
+}
+
+type ListStyle = 'None' | 'Bulleted' | 'Numbered';
+
+function listStyleOfHtml(html: string): ListStyle {
+  if (hasList(html, true)) return 'Numbered';
+  if (hasList(html, false)) return 'Bulleted';
+  return 'None';
+}
+
+function applyListStyleToHtml(html: string, style: ListStyle): string {
+  if (style === 'None') return listToParagraphs(html);
+  if (style === 'Numbered') {
+    return hasList(html, false) ? changeListType(html, true) : paragraphsToOrderedList(html);
+  }
+  return hasList(html, true) ? changeListType(html, false) : paragraphsToList(html);
+}
+
+function setWholeTableCellStyle(html: string, property: string, value: string | null): string {
+  const template = document.createElement('template');
+  template.innerHTML = html;
+  const cells = template.content.querySelectorAll<HTMLElement>('table th, table td');
+  if (cells.length === 0) return html;
+  cells.forEach((cell) => {
+    if (value === null) cell.style.removeProperty(property);
+    else cell.style.setProperty(property, value);
+    if (!cell.getAttribute('style')?.trim()) cell.removeAttribute('style');
+  });
+  const out = document.createElement('div');
+  out.append(template.content.cloneNode(true));
+  return out.innerHTML;
 }
 
 function setTextPaint(element: Extract<SlideElement, { type: 'text' }>, value: string | null): void {
@@ -76,6 +114,33 @@ export class Inspector {
   editingText?: () => boolean;
   /** Apply weight to only the selected characters in the live text edit. */
   onApplyTextSelectionWeight?: (weight: number) => boolean;
+  onToggleTextSelectionFormat?: (format: 'bold' | 'italic' | 'underline') => boolean;
+  textSelectionFormatState?: (format: 'bold' | 'italic' | 'underline') => boolean;
+  /** Apply a family to only the selected characters in the live text edit. */
+  onApplyTextSelectionFontFamily?: (value: string) => boolean;
+  onApplyTextSelectionFontSize?: (value: number) => boolean;
+  onApplyTextSelectionColor?: (value: string | null) => boolean;
+  onApplyTextSelectionAlignment?: (value: 'left' | 'center' | 'right' | 'justify') => boolean;
+  /** Convert only the paragraphs covered by the live text selection. */
+  onApplyTextSelectionListStyle?: (style: ListStyle) => boolean;
+  textSelectionListStyle?: () => ListStyle | null;
+  tableSelection?: () => TableSelection | null;
+  onSetTableSelectionMode?: (mode: TableSelection['mode']) => void;
+  onApplyTableCellColor?: (property: 'backgroundColor' | 'color', value: string | null) => void;
+  onApplyTableCellTextStyle?: (
+    property: 'fontFamily' | 'fontSize' | 'fontWeight' | 'fontStyle'
+      | 'textDecorationLine' | 'textAlign' | 'verticalAlign',
+    value: string | null,
+  ) => boolean;
+  textComputedTypography?: (elementId: string) => {
+    fontSize: number | null;
+    fontWeight: number | null;
+    fontSizeExplicit: boolean;
+    fontWeightExplicit: boolean;
+    fittedFontSize: number | null;
+  };
+  onInsertTableColumn?: (after: boolean) => void;
+  onDeleteTableColumn?: () => void;
   /** Toggle crop-editing mode on the canvas for an image or video. */
   onToggleMask?: (elementId: string) => void;
   /** Which element is currently in mask mode, so the button can reflect it. */
@@ -98,6 +163,7 @@ export class Inspector {
 
   constructor(host: HTMLElement, store: EditorStore) {
     this.host = host;
+    this.host.classList.add('editor-inspector');
     this.store = store;
     this.magicMoveHost.className = 'magic-move-section';
     this.magicMovePanel = new MagicMovePanel(this.magicMoveHost, store, false);
@@ -637,7 +703,7 @@ export class Inspector {
       'Font size', sizes.mixed ? null : sizes.value,
       (value) => this.store.updateSelected((element) => {
         if (element.type === 'text') element.style = {
-          ...element.style, 'font-size': `${Math.max(6, Math.min(400, value))}px`,
+          ...element.style, 'font-size': `${fontSizeValue(value)}px`,
         };
       }),
       () => this.store.updateSelected((element) => {
@@ -647,7 +713,7 @@ export class Inspector {
         element.style = style;
       }),
       'px',
-      { min: 6, max: 400 },
+      { min: 6, max: 400, maxFractionDigits: 1 },
     );
     if (sizes.mixed) sizeField.querySelector('input')!.placeholder = 'Mixed';
     wrap.appendChild(sizeField);
@@ -689,16 +755,11 @@ export class Inspector {
       }),
     ));
 
-    wrap.appendChild(mixedCheckboxField(
-      'Bulleted list',
-      commonValue(texts.map((text) => text.html.trimStart().startsWith('<ul'))),
-      (on) => this.store.updateSelected((element) => {
-        if (element.type !== 'text') return;
-        if (on && !element.html.trimStart().startsWith('<ul')) {
-          element.html = paragraphsToList(element.html);
-        } else if (!on && element.html.trimStart().startsWith('<ul')) {
-          element.html = listToParagraphs(element.html);
-        }
+    wrap.appendChild(mixedSelectField(
+      'List', ['None', 'Bulleted', 'Numbered'],
+      commonValue(texts.map((text) => listStyleOfHtml(text.html))),
+      (style) => this.store.updateSelected((element) => {
+        if (element.type === 'text') element.html = applyListStyleToHtml(element.html, style as ListStyle);
       }),
     ));
 
@@ -974,57 +1035,124 @@ export class Inspector {
 
         typography.content.appendChild(fontFamilyField(
           'Font family', el.style['font-family'] ?? '',
-          (value) => this.store.updateSelected((target) => {
-            if (target.type !== 'text') return;
-            const style = { ...target.style };
-            if (value) style['font-family'] = value;
-            else delete style['font-family'];
-            target.style = style;
-          }, { label: 'Change font family' }),
+          (value) => {
+            if (this.onApplyTextSelectionFontFamily?.(value)) return;
+            this.store.updateSelected((target) => {
+              if (target.type !== 'text') return;
+              const style = { ...target.style };
+              if (value) style['font-family'] = value;
+              else delete style['font-family'];
+              target.style = style;
+            }, { label: 'Change font family' });
+          },
         ));
 
+        const computedTypography = this.textComputedTypography?.(el.id);
+        const authoredSize = Number.parseFloat(el.style['font-size'] ?? '') || null;
+        const displayedSize = authoredSize
+          ?? (computedTypography?.fontSizeExplicit ? computedTypography.fontSize : null);
+        const authoredWeight = Number.parseFloat(el.style['font-weight'] ?? '') || null;
+        const displayedWeight = authoredWeight
+          ?? (computedTypography?.fontWeightExplicit ? computedTypography.fontWeight : null);
         const fontMetrics = document.createElement('div');
         fontMetrics.className = 'compact-field-row';
-        fontMetrics.appendChild(optionalNumberField(
+        const fontSizeField = optionalNumberField(
           'Font size',
-          Number.parseFloat(el.style['font-size'] ?? '') || null,
-          (value) => this.store.updateSelected((target) => {
-            target.style = { ...target.style, 'font-size': `${Math.max(6, Math.min(400, value))}px` };
-          }, { label: 'Change font size' }),
-          () => this.store.updateSelected((target) => {
-            const style = { ...target.style };
-            delete style['font-size'];
-            target.style = style;
-          }, { label: 'Use theme font size' }),
+          displayedSize,
+          (value) => {
+            const normalized = fontSizeValue(value);
+            const size = `${normalized}px`;
+            if (this.onApplyTextSelectionFontSize?.(normalized)) return;
+            this.store.updateSelected((target) => {
+              target.style = { ...target.style, 'font-size': size };
+              if (target.type === 'text' && /<table\b/i.test(target.html)) {
+                target.html = setWholeTableCellStyle(target.html, 'font-size', size);
+              }
+            }, { label: 'Change font size' });
+          },
+          () => {
+            if (this.onApplyTableCellTextStyle?.('fontSize', null)) return;
+            this.store.updateSelected((target) => {
+              const style = { ...target.style };
+              delete style['font-size'];
+              target.style = style;
+              if (target.type === 'text' && /<table\b/i.test(target.html)) {
+                target.html = setWholeTableCellStyle(target.html, 'font-size', null);
+              }
+            }, { label: 'Use theme font size' });
+          },
           'px',
-          { min: 6, max: 400 },
-        ));
+          {
+            min: 6,
+            max: 400,
+            themeValue: displayedSize === null ? computedTypography?.fontSize ?? null : null,
+            maxFractionDigits: 1,
+          },
+        );
+        const ceilingSize = displayedSize ?? computedTypography?.fontSize ?? null;
+        const fittedSize = computedTypography?.fittedFontSize ?? null;
+        if (
+          ceilingSize !== null && fittedSize !== null
+          && !computedTypography?.fontSizeExplicit
+          && fittedSize < ceilingSize - 0.05
+        ) {
+          const status = document.createElement('span');
+          status.className = 'auto-fit-value';
+          status.textContent = `Fitted to ${formatNumber(fittedSize, 1)} px`;
+          status.title = `Auto-fit reduced the displayed text from ${formatNumber(ceilingSize, 1)} px to ${formatNumber(fittedSize, 1)} px to fit this box.`;
+          fontSizeField.appendChild(status);
+        }
+        fontMetrics.appendChild(fontSizeField);
         fontMetrics.appendChild(optionalNumberField(
           'Font weight',
-          Number.parseFloat(el.style['font-weight'] ?? '') || null,
-          (value) => this.store.updateSelected((target) => {
-            target.style = {
-              ...target.style,
-              'font-weight': String(Math.max(1, Math.min(1000, value))),
-            };
-          }, { label: 'Change font weight' }),
-          () => this.store.updateSelected((target) => {
-            const style = { ...target.style };
-            delete style['font-weight'];
-            target.style = style;
-          }, { label: 'Use theme font weight' }),
+          displayedWeight,
+          (value) => {
+            const weight = String(Math.max(1, Math.min(1000, value)));
+            if (this.onApplyTextSelectionWeight?.(Number(weight))) return;
+            this.store.updateSelected((target) => {
+              target.style = { ...target.style, 'font-weight': weight };
+            }, { label: 'Change font weight' });
+          },
+          () => {
+            if (this.onApplyTableCellTextStyle?.('fontWeight', null)) return;
+            this.store.updateSelected((target) => {
+              const style = { ...target.style };
+              delete style['font-weight'];
+              target.style = style;
+            }, { label: 'Use theme font weight' });
+          },
           '',
-          { min: 1, max: 1000, step: 25 },
+          {
+            min: 1,
+            max: 1000,
+            step: 25,
+            themeValue: displayedWeight === null ? computedTypography?.fontWeight ?? null : null,
+          },
         ));
         typography.content.appendChild(fontMetrics);
 
         if (this.editingText?.()) {
           const selectionStyle = document.createElement('div');
           selectionStyle.className = 'text-selection-style';
+          const formatButtons = document.createElement('div');
+          formatButtons.className = 'button-row text-format-buttons';
+          for (const [format, label, title] of [
+            ['bold', 'B', 'Bold (Cmd/Ctrl+B)'],
+            ['italic', 'I', 'Italic (Cmd/Ctrl+I)'],
+            ['underline', 'U', 'Underline (Cmd/Ctrl+U)'],
+          ] as const) {
+            const choice = button(label, () => this.onToggleTextSelectionFormat?.(format));
+            choice.classList.add(`text-format-${format}`);
+            choice.title = title;
+            choice.setAttribute('aria-label', title);
+            choice.setAttribute('aria-pressed', String(this.textSelectionFormatState?.(format) ?? false));
+            choice.addEventListener('pointerdown', (event) => event.preventDefault());
+            formatButtons.appendChild(choice);
+          }
           const selectionLabel = document.createElement('span');
           selectionLabel.textContent = 'Selected text weight';
           const buttons = document.createElement('div');
-          buttons.className = 'button-row';
+          buttons.className = 'button-row text-weight-buttons';
           for (const weight of [100, 200, 300, 400, 500, 600, 700, 800, 900]) {
             const choice = button(String(weight), () => this.onApplyTextSelectionWeight?.(weight));
             // Keep the contenteditable selection alive while the button is
@@ -1032,7 +1160,7 @@ export class Inspector {
             choice.addEventListener('pointerdown', (event) => event.preventDefault());
             buttons.appendChild(choice);
           }
-          selectionStyle.append(selectionLabel, buttons);
+          selectionStyle.append(formatButtons, selectionLabel, buttons);
           typography.content.appendChild(selectionStyle);
         }
 
@@ -1067,30 +1195,93 @@ export class Inspector {
         roleSelect.append(roleSpan, roleDrop);
         typography.content.appendChild(roleSelect);
 
-        // Bulleted list: stored as real markup so the player needs no special
-        // case and theme.css can style markers.
-        const isList = el.html.trimStart().startsWith('<ul');
-        layout.content.appendChild(
-          checkboxField('Bulleted list', isList, (on) =>
+        // One mutually-exclusive list style control. When a live selection is
+        // inside a list, the canvas transforms that entire list in place.
+        const selectedListStyle = this.textSelectionListStyle?.();
+        const listStyle = selectField(
+          'List', ['None', 'Bulleted', 'Numbered'],
+          selectedListStyle ?? listStyleOfHtml(el.html),
+          (style) => {
+            if (this.onApplyTextSelectionListStyle?.(style as ListStyle)) return;
             this.store.updateSelected((e) => {
-              if (e.type !== 'text') return;
-              if (on && !e.html.trimStart().startsWith('<ul')) {
-                e.html = paragraphsToList(e.html);
-              } else if (!on && e.html.trimStart().startsWith('<ul')) {
-                e.html = listToParagraphs(e.html);
-              }
-            }),
-          ),
+              if (e.type === 'text') e.html = applyListStyleToHtml(e.html, style as ListStyle);
+            }, { label: `Change list style to ${style.toLowerCase()}` });
+          },
         );
+        listStyle.classList.add('text-list-style');
+        if (/<table\b/i.test(el.html)) {
+          const select = listStyle.querySelector('select');
+          if (select) {
+            select.disabled = true;
+            select.title = 'List styles do not apply to tables';
+          }
+        }
+        layout.content.appendChild(listStyle);
+
+        if (/<table\b/i.test(el.html)) {
+          const table = optionSection('Table', 'text-table-options');
+          const selected = this.tableSelection?.();
+          if (!selected || selected.elementId !== el.id) {
+            table.content.appendChild(hint('Double-click the text, then click a table cell to edit it.'));
+          } else {
+            table.content.appendChild(hint(
+              `Row ${selected.row + 1}, column ${selected.column + 1} · ${selected.rows} × ${selected.columns}`,
+            ));
+            const scope = document.createElement('div');
+            scope.className = 'button-row table-scope-buttons';
+            for (const [mode, label] of [
+              ['cell', 'Cell'], ['row', 'Row'], ['column', 'Column'],
+            ] as const) {
+              const choice = button(label, () => this.onSetTableSelectionMode?.(mode));
+              choice.setAttribute('aria-pressed', String(selected.mode === mode));
+              scope.appendChild(choice);
+            }
+            table.content.appendChild(scope);
+            table.content.appendChild(colorField(
+              'Cell fill', null,
+              (value) => this.onApplyTableCellColor?.('backgroundColor', value),
+              { clear: { kind: 'none', label: 'No fill' } },
+            ));
+            table.content.appendChild(colorField(
+              'Cell text', null,
+              (value) => this.onApplyTableCellColor?.('color', value),
+              { clear: { kind: 'none', label: 'Inherited text colour' } },
+            ));
+            const columns = document.createElement('div');
+            columns.className = 'button-row table-column-buttons';
+            columns.append(
+              button('Insert before', () => this.onInsertTableColumn?.(false)),
+              button('Insert after', () => this.onInsertTableColumn?.(true)),
+            );
+            const remove = button('Delete column', () => this.onDeleteTableColumn?.());
+            remove.classList.add('danger');
+            (remove as HTMLButtonElement).disabled = selected.columns <= 1;
+            columns.appendChild(remove);
+            table.content.appendChild(columns);
+          }
+          // Table actions operate on the cell selection owned by the live
+          // contenteditable. None of these buttons needs focus; keeping the
+          // pointer-down on the canvas prevents a null-relatedTarget blur from
+          // ending the edit and clearing that selection before click.
+          table.content.addEventListener('pointerdown', (event) => {
+            if (event.target instanceof Element && event.target.closest('button')) {
+              event.preventDefault();
+            }
+          });
+          layout.content.appendChild(table.section);
+        }
 
         const paint = this.textPaintInfo(el);
         typography.content.appendChild(
           colorField(
             'Colour',
             paint.value,
-            (v) => this.store.updateSelected((e) => {
+            (v) => {
+              if (this.onApplyTextSelectionColor?.(v)) return;
+              this.store.updateSelected((e) => {
                 if (e.type === 'text') setTextPaint(e, v);
-              }),
+              });
+            },
             {
               inheritedValue: paint.inheritedValue,
               source: paint.source,
@@ -1102,14 +1293,14 @@ export class Inspector {
         alignment.className = 'compact-field-row';
         alignment.appendChild(
           alignButtonsField('Align', el.align, (v) =>
-            this.store.updateSelected((e) => {
+            this.onApplyTextSelectionAlignment?.(v) || this.store.updateSelected((e) => {
               if (e.type === 'text') e.align = v;
             }, { label: 'Change text alignment' }),
           ),
         );
         alignment.appendChild(
           selectField('Vertical', ['top', 'middle', 'bottom'], el.valign, (v) =>
-            this.store.updateSelected((e) => {
+            this.onApplyTableCellTextStyle?.('verticalAlign', v) || this.store.updateSelected((e) => {
               if (e.type === 'text') e.valign = v as 'top';
             }),
           ),
@@ -1742,7 +1933,13 @@ function optionalNumberField(
   onChange: (value: number) => void,
   onClear: () => void,
   suffix = '',
-  opts: { min?: number; max?: number; step?: number } = {},
+  opts: {
+    min?: number;
+    max?: number;
+    step?: number;
+    themeValue?: number | null;
+    maxFractionDigits?: number;
+  } = {},
 ): HTMLElement {
   const wrap = document.createElement('label');
   wrap.className = 'field field-number';
@@ -1753,16 +1950,56 @@ function optionalNumberField(
   input.min = String(opts.min ?? 1);
   if (opts.max !== undefined) input.max = String(opts.max);
   input.step = String(opts.step ?? 1);
-  input.value = value === null ? '' : String(value);
-  input.placeholder = 'theme';
+  const inherited = value === null && Number.isFinite(opts.themeValue)
+    ? opts.themeValue as number
+    : null;
+  const display = (number: number): string => opts.maxFractionDigits === undefined
+    ? String(round(number))
+    : formatNumber(number, opts.maxFractionDigits);
+  input.value = value === null ? (inherited === null ? '' : display(inherited)) : display(value);
+  input.placeholder = inherited === null ? 'theme' : '';
   input.title = suffix ? `Value in ${suffix}` : label;
-  input.addEventListener('change', () => {
+  let lastAppliedValue = input.value;
+  const applyValue = () => {
+    if (input.value === lastAppliedValue) return;
+    lastAppliedValue = input.value;
     if (!input.value.trim()) onClear();
     else {
       const parsed = Number(input.value);
       if (Number.isFinite(parsed)) onChange(parsed);
     }
-  });
+  };
+  input.addEventListener('change', applyValue);
+  // Chromium's native number steppers update the value before pointerup but
+  // may defer `change` until blur. Commit on pointerup as well so the inspector
+  // can preserve and format the live canvas selection immediately. The value
+  // guard above keeps this to one history entry when `change` also fires.
+  input.addEventListener('pointerup', applyValue);
+  const steppers = document.createElement('span');
+  steppers.className = 'number-step-buttons';
+  for (const [direction, glyph] of [['up', '▲'], ['down', '▼']] as const) {
+    const step = document.createElement('button');
+    step.type = 'button';
+    step.className = `number-step-${direction}`;
+    step.textContent = glyph;
+    step.setAttribute('aria-label', `${label} ${direction}`);
+    step.addEventListener('pointerdown', (event) => event.preventDefault());
+    step.addEventListener('click', (event) => {
+      event.preventDefault();
+      const increment = Number(input.step) || 1;
+      const fallback = Number(input.min) || 0;
+      const current = Number.isFinite(input.valueAsNumber) ? input.valueAsNumber : fallback;
+      const next = current + (direction === 'up' ? increment : -increment);
+      const minimum = Number(input.min);
+      const maximum = Number(input.max);
+      input.valueAsNumber = Math.min(
+        Number.isFinite(maximum) ? maximum : Number.POSITIVE_INFINITY,
+        Math.max(Number.isFinite(minimum) ? minimum : Number.NEGATIVE_INFINITY, next),
+      );
+      applyValue();
+    });
+    steppers.appendChild(step);
+  }
   const clear = document.createElement('button');
   clear.type = 'button';
   clear.className = 'icon-button';
@@ -1774,7 +2011,16 @@ function optionalNumberField(
   });
   const controls = document.createElement('div');
   controls.className = 'optional-number-controls';
-  controls.append(input, clear);
+  controls.appendChild(input);
+  if (inherited !== null) {
+    const indicator = document.createElement('span');
+    indicator.className = 'theme-value-indicator';
+    indicator.textContent = '(theme)';
+    controls.appendChild(indicator);
+    controls.classList.add('has-theme-value');
+  }
+  controls.appendChild(steppers);
+  controls.appendChild(clear);
   wrap.append(span, controls);
   return wrap;
 }
@@ -2052,6 +2298,15 @@ function button(label: string, onClick: () => void, variant = ''): HTMLElement {
 
 function round(v: number): number {
   return Math.round(v * 1000) / 1000;
+}
+
+function formatNumber(value: number, maxFractionDigits: number): string {
+  const scale = 10 ** maxFractionDigits;
+  return String(Math.round(value * scale) / scale);
+}
+
+function fontSizeValue(value: number): number {
+  return Math.round(Math.max(6, Math.min(400, value)) * 10) / 10;
 }
 
 function commonValue<T>(values: T[]): T | null {

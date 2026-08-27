@@ -242,6 +242,34 @@ export async function importAsset(
   };
 }
 
+/** Import image bytes that have no filesystem source, such as a screenshot on
+ * the OS clipboard. Content-addressing gives repeated pastes the same asset. */
+export async function importImageBuffer(
+  deckDir: string,
+  data: Uint8Array,
+  sourceName: string,
+  dimensions: { width: number; height: number },
+): Promise<ImportedAsset> {
+  const ext = extname(sourceName).toLowerCase();
+  if (classifyMediaName(sourceName) !== 'image') {
+    throw new Error(`Unsupported image type: ${basename(sourceName)}`);
+  }
+  const assetsDir = join(deckDir, ASSETS_DIR);
+  await mkdir(assetsDir, { recursive: true });
+  const hash = createHash('sha256').update(data).digest('hex').slice(0, 8);
+  const stem = sanitize(basename(sourceName, extname(sourceName)));
+  const name = `${stem}.${hash}${ext}`;
+  const dest = join(assetsDir, name);
+  if (!existsSync(dest)) await writeFile(dest, data);
+  return {
+    src: `${ASSETS_DIR}/${name}`,
+    kind: 'image',
+    width: dimensions.width,
+    height: dimensions.height,
+    duration: null,
+  };
+}
+
 /** Name for a derived (trimmed/cropped) file that won't clash with the original. */
 export async function derivedAssetPath(
   deckDir: string,

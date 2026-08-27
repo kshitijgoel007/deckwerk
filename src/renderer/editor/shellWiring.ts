@@ -54,13 +54,48 @@ export function wireCanvasInspector(
   inspector.onTogglePlay = (id) => canvas.toggleVideo(id);
   inspector.onEditText = (id) => canvas.beginTextEdit(id);
   inspector.editingText = () => canvas.isEditing();
-  inspector.onApplyTextSelectionWeight = (weight) => canvas.applyTextSelectionWeight(weight);
+  inspector.onApplyTextSelectionWeight = (weight) =>
+    canvas.applyTextSelectionWeight(weight)
+      || canvas.applyTableCellTextStyle('fontWeight', String(weight));
+  inspector.onToggleTextSelectionFormat = (format) =>
+    canvas.toggleTextSelectionFormat(format) || canvas.toggleTableCellTextFormat(format);
+  inspector.textSelectionFormatState = (format) =>
+    canvas.textSelectionFormatState(format) || canvas.tableCellTextFormatState(format);
+  inspector.onApplyTextSelectionFontFamily = (value) =>
+    canvas.applyTextSelectionFontFamily(value)
+      || canvas.applyTableCellTextStyle('fontFamily', value || null);
+  inspector.onApplyTextSelectionFontSize = (value) =>
+    canvas.applyTextSelectionFontSize(value)
+      || canvas.applyTableCellTextStyle(
+        'fontSize', `${Math.round(Math.max(6, Math.min(400, value)) * 10) / 10}px`,
+      );
+  inspector.onApplyTextSelectionColor = (value) => {
+    if (canvas.applyTextSelectionColor(value)) return true;
+    if (!canvas.tableSelectionInfo()) return false;
+    canvas.applyTableCellColor('color', value);
+    return true;
+  };
+  inspector.onApplyTextSelectionAlignment = (value) =>
+    canvas.applyTextSelectionAlignment(value)
+      || canvas.applyTableCellTextStyle('textAlign', value);
+  inspector.onApplyTextSelectionListStyle = (style) =>
+    canvas.applyTextSelectionListStyle(style);
+  inspector.textSelectionListStyle = () => canvas.textSelectionListStyle();
+  inspector.tableSelection = () => canvas.tableSelectionInfo();
+  inspector.onSetTableSelectionMode = (mode) => canvas.setTableSelectionMode(mode);
+  inspector.onApplyTableCellColor = (property, value) => canvas.applyTableCellColor(property, value);
+  inspector.onApplyTableCellTextStyle = (property, value) =>
+    canvas.applyTableCellTextStyle(property, value);
+  inspector.onInsertTableColumn = (after) => canvas.insertTableColumn(after);
+  inspector.onDeleteTableColumn = () => canvas.deleteTableColumn();
+  inspector.textComputedTypography = (elementId) => canvas.textComputedTypography(elementId);
   inspector.onToggleMask = (id) => canvas.toggleMaskMode(id);
   inspector.maskingElement = () => canvas.maskingElement();
   inspector.onSeekPreview = (id, t) => canvas.seekVideo(id, t);
   inspector.videoDuration = (id) => canvas.videoDuration(id);
   canvas.onMaskModeChange = () => inspector.render();
   canvas.onTextEditModeChange = () => inspector.render();
+  canvas.onTableSelectionChange = () => inspector.render();
 }
 
 export interface ClipboardActions {
@@ -120,6 +155,13 @@ export function hasNativeCopySelection(selection = window.getSelection()): boole
 
 export function bindEditorKeys(deps: ShellDeps, clipboard: ClipboardActions): void {
   const { store, canvas, rail, save } = deps;
+  // The contenteditable text surface stops keyboard events before they reach
+  // the window. Give it the same shell-aware undo path used below (including
+  // collaboration's selective undo implementation).
+  canvas.onUndoRequest = (redo) => {
+    if (redo) (deps.redo ?? (() => store.redo()))();
+    else (deps.undo ?? (() => store.undo()))();
+  };
   window.addEventListener('keydown', (e) => {
     // `window` and `document` are event targets too, and neither answers the
     // element questions below.

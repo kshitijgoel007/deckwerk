@@ -132,13 +132,182 @@ export function applyParagraphVisibility(stage: ParentNode, state: SlideState): 
  * Legacy `<br>`-separated text is split the same way the editor would
  * (normalisation promotes each line to a block first).
  */
-export function paragraphsToList(html: string): string {
+export function paragraphsToList(html: string, ordered = false): string {
   const template = document.createElement('template');
   template.innerHTML = normalizeParagraphHtml(html, true);
+  const marker = ordered ? /^\s*(\d+)[.)]\s+/ : /^\s*[*-]\s+/;
+  const children = [...template.content.children] as HTMLElement[];
+  let start = children.findIndex((child) => marker.test(child.textContent ?? ''));
+  if (start >= 0) {
+    // A partially converted/imported numbered list sometimes has its first
+    // typed marker stripped while the following paragraphs still say 2., 3.,
+    // ... . When the selection begins with that paragraph, infer item 1.
+    let inferredFirst = false;
+    if (ordered && start === 1) {
+      const firstMarked = marker.exec(children[start].textContent ?? '');
+      if (firstMarked?.[1] === '2') {
+        start = 0;
+        inferredFirst = true;
+      }
+    }
+    const run: HTMLElement[] = [];
+    for (let i = start; i < children.length; i++) {
+      if (!(inferredFirst && i === start) && !marker.test(children[i].textContent ?? '')) break;
+      run.push(children[i]);
+    }
+    const list = document.createElement(ordered ? 'ol' : 'ul');
+    if (ordered) {
+      const first = marker.exec(run[inferredFirst ? 1 : 0].textContent ?? '');
+      if (!inferredFirst && first?.[1] && first[1] !== '1') list.setAttribute('start', first[1]);
+    }
+    run[0].parentNode?.insertBefore(list, run[0]);
+    for (const block of run) {
+      const match = marker.exec(block.textContent ?? '');
+      if (match) removeLeadingText(block, match[0].length);
+      const li = document.createElement('li');
+      for (const attr of [...block.attributes]) li.setAttribute(attr.name, attr.value);
+      while (block.firstChild) li.appendChild(block.firstChild);
+      list.appendChild(li);
+      block.remove();
+    }
+    const out = document.createElement('div');
+    out.append(template.content.cloneNode(true));
+    return out.innerHTML;
+  }
   const items = paragraphUnits(template.content)
     .map((unit) => `<li>${unit.innerHTML}</li>`)
     .join('');
-  return `<ul>${items || '<li>Item</li>'}</ul>`;
+  const tag = ordered ? 'ol' : 'ul';
+  return `<${tag}>${items || '<li>Item</li>'}</${tag}>`;
+}
+
+/** Convert paragraph markup to an ordered list. */
+export function paragraphsToOrderedList(html: string): string {
+  return paragraphsToList(html, true);
+}
+
+/** Whether the authored text contains a top-level bullet/numbered list. */
+export function hasList(html: string, ordered: boolean): boolean {
+  const template = document.createElement('template');
+  template.innerHTML = html;
+  const tag = ordered ? 'OL' : 'UL';
+  return [...template.content.children].some((child) => child.tagName === tag);
+}
+
+/** Switch an existing top-level list between bullets and numbers in place. */
+export function changeListType(html: string, ordered: boolean): string {
+  const template = document.createElement('template');
+  template.innerHTML = html;
+  const from = ordered ? 'UL' : 'OL';
+  const to = ordered ? 'ol' : 'ul';
+  let changed = false;
+  for (const list of [...template.content.children]) {
+    if (list.tagName !== from) continue;
+    const replacement = document.createElement(to);
+    for (const attr of [...list.attributes]) {
+      if (!ordered && attr.name === 'start') continue;
+      replacement.setAttribute(attr.name, attr.value);
+    }
+    while (list.firstChild) replacement.appendChild(list.firstChild);
+    list.replaceWith(replacement);
+    changed = true;
+  }
+  if (!changed) return ordered ? paragraphsToOrderedList(html) : paragraphsToList(html);
+  const out = document.createElement('div');
+  out.append(template.content.cloneNode(true));
+  return out.innerHTML;
+}
+
+/** Delete a text prefix while retaining the inline formatting after it. */
+function removeLeadingText(root: Element, count: number): void {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const nodes: Text[] = [];
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) nodes.push(node as Text);
+  let remaining = count;
+  for (const node of nodes) {
+    if (remaining <= 0) break;
+    const take = Math.min(remaining, node.data.length);
+    node.data = node.data.slice(take);
+    remaining -= take;
+  }
+  root.querySelectorAll('span, font').forEach((node) => {
+    if (!node.textContent && node.children.length === 0) node.remove();
+  });
+}
+
+/** Build an editable table from the plain TSV flavour spreadsheet apps place
+ *  beside their richer HTML clipboard data. Quoted cells may contain tabs or
+ *  line breaks, and doubled quotes decode to one literal quote. */
+function pastedTsvTable(text: string): HTMLTableElement | null {
+  if (!text.includes('\t')) return null;
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let cell = '';
+  let quoted = false;
+  const source = text.replace(/\r\n?/g, '\n');
+  const finishCell = () => {
+    row.push(cell);
+    cell = '';
+  };
+  const finishRow = () => {
+    finishCell();
+    rows.push(row);
+    row = [];
+  };
+  for (let i = 0; i < source.length; i++) {
+    const char = source[i];
+    if (char === '"') {
+      if (quoted && source[i + 1] === '"') {
+        cell += '"';
+        i++;
+      } else {
+        quoted = !quoted;
+      }
+    } else if (char === '\t' && !quoted) {
+      finishCell();
+    } else if (char === '\n' && !quoted) {
+      finishRow();
+    } else {
+      cell += char;
+    }
+  }
+  if (cell || row.length > 0 || !source.endsWith('\n')) finishRow();
+  if (rows.length === 0 || Math.max(...rows.map((item) => item.length)) < 2) return null;
+
+  const table = document.createElement('table');
+  const tbody = document.createElement('tbody');
+  for (const values of rows) {
+    const tr = document.createElement('tr');
+    for (const value of values) {
+      const td = document.createElement('td');
+      value.split('\n').forEach((line, index) => {
+        if (index > 0) td.appendChild(document.createElement('br'));
+        td.appendChild(document.createTextNode(line));
+      });
+      tr.appendChild(td);
+    }
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+  return table;
+}
+
+/** Extract one safe, editable table from a browser/spreadsheet paste. */
+export function pastedTableHtml(html: string, plainText = ''): string | null {
+  const template = document.createElement('template');
+  template.innerHTML = html;
+  const table = template.content.querySelector('table') ?? pastedTsvTable(plainText);
+  if (!table) return null;
+  table.querySelectorAll('script, iframe, object, embed, link, style').forEach((node) => node.remove());
+  [table, ...table.querySelectorAll<HTMLElement>('*')].forEach((node) => {
+    for (const attr of [...node.attributes]) {
+      if (/^on/i.test(attr.name)) node.removeAttribute(attr.name);
+      if (/^(?:contenteditable|draggable)$/i.test(attr.name)) node.removeAttribute(attr.name);
+      if (/^(?:src|href|xlink:href)$/i.test(attr.name)
+        && /^\s*(?:javascript|data):/i.test(attr.value)) node.removeAttribute(attr.name);
+    }
+  });
+  return table.outerHTML;
 }
 
 /**
@@ -148,10 +317,24 @@ export function paragraphsToList(html: string): string {
 export function listToParagraphs(html: string): string {
   const template = document.createElement('template');
   template.innerHTML = html;
-  const items = [...template.content.querySelectorAll('li')]
-    .map((li) => `<p>${li.innerHTML}</p>`)
-    .join('');
-  return normalizeParagraphHtml(items);
+  let changed = false;
+  for (const list of [...template.content.children]) {
+    if (!LIST_TAGS.has(list.tagName)) continue;
+    const fragment = document.createDocumentFragment();
+    for (const item of [...list.children]) {
+      if (item.tagName !== 'LI') continue;
+      const p = document.createElement('p');
+      for (const attr of [...item.attributes]) p.setAttribute(attr.name, attr.value);
+      p.innerHTML = item.innerHTML;
+      fragment.appendChild(p);
+    }
+    list.replaceWith(fragment);
+    changed = true;
+  }
+  if (!changed) return html;
+  const out = document.createElement('div');
+  out.append(template.content.cloneNode(true));
+  return out.innerHTML;
 }
 
 /**
@@ -242,6 +425,20 @@ function nestStrayLists(root: ParentNode & Node): void {
   }
 }
 
+/** Contenteditable can split one list into adjacent sibling lists on Return. */
+function mergeAdjacentLists(root: ParentNode & Node): void {
+  let current = root.firstElementChild;
+  while (current) {
+    const next = current.nextElementSibling;
+    if (next && LIST_TAGS.has(current.tagName) && next.tagName === current.tagName) {
+      while (next.firstChild) current.appendChild(next.firstChild);
+      next.remove();
+      continue;
+    }
+    current = next;
+  }
+}
+
 /**
  * Rewrite text markup so that every paragraph is a top-level block of
  * `.text-content`.
@@ -254,6 +451,7 @@ export function normalizeParagraphHtml(html: string, splitBreaks = false): strin
   const template = document.createElement('template');
   template.innerHTML = html;
   nestStrayLists(template.content);
+  mergeAdjacentLists(template.content);
   const paragraphs: HTMLElement[] = [];
   const generated = new Set<HTMLElement>();
   collectParagraphs(template.content, paragraphs, generated, splitBreaks);
