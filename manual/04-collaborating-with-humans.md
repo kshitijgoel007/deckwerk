@@ -13,3 +13,6 @@ Anyone in the session can **Download** the current presentation or **Present** i
 Click **End collaboration** to save the work, close the session for everyone, and return to the desktop editor.
 
 Only share collaboration links over a network you trust.
+
+To keep a collection of presentations available without leaving the desktop
+editor open, see [Running a headless collaboration server](06-headless-server.md).
