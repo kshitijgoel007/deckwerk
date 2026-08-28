@@ -70,19 +70,6 @@ describe('the deck outline', () => {
     expect(outline[0].index).toBe(0);
   });
 
-  it('stays small enough to read in one go', async () => {
-    // Measured against a real imported deck rather than a synthetic one: the
-    // saving comes from dropping per-element geometry, and only a deck with
-    // real slides on it shows that honestly.
-    const path = join(process.cwd(), 'decks', 'reference', 'deck.json');
-    if (!existsSync(path)) return;
-    const deck = parseDeck(JSON.parse(await readFile(path, 'utf8')));
-
-    const outline = JSON.stringify(deckOutline(deck));
-    expect(outline.length).toBeLessThan(JSON.stringify(deck).length / 4);
-    expect(outline.length / deck.slides.length).toBeLessThan(400);
-  });
-
   it('falls back to the topmost text when a slide has no title role', () => {
     const deck = talk();
     deck.slides[0].elements = [

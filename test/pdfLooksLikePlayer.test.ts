@@ -32,12 +32,8 @@ const pythonHasPdf = existsSync(PYTHON)
 const runnable = Boolean(electron) && pythonHasPdf && existsSync(PRINT_PAGE) && existsSync(PLAYER);
 const TOLERANCE = 0.002;
 const PDF_FIXTURE_DECKS = [
-  '0827_Reasoning_meeting',
   'agent-reference',
-  'animation-reference',
   'demo-deck',
-  'reference',
-  'test-presentation',
 ] as const;
 const PDF_SMOKE_DECKS = ['demo-deck'] as const;
 
@@ -45,7 +41,7 @@ const PDF_SMOKE_DECKS = ['demo-deck'] as const;
  * This is a visual test of the file users receive, not a comparison of two
  * deck data structures. The ordinary suite covers representative states
  * from the compact, media-bearing demo fixture. `PDF_PIXEL_EXHAUSTIVE=1`
- * retains the original every-deck/every-slide/every-build release sweep.
+ * expands that to the explicitly anonymized/generated fixture allowlist.
  */
 describe.skipIf(!runnable)('PDF pages, against the real Player', () => {
   let work = '';
@@ -60,9 +56,8 @@ describe.skipIf(!runnable)('PDF pages, against the real Player', () => {
     const requestedSlide = process.env.PDF_PIXEL_SLIDE;
     const exhaustive = process.env.PDF_PIXEL_EXHAUSTIVE === '1'
       || Boolean(requested || requestedSlide);
-    // Keep local/untracked decks out of this regression. The previous directory
-    // scan silently pulled an 819 MB working deck into the suite and changed a
-    // stable fixture test into a multi-minute workload.
+    // Keep personal and local working decks out of this regression. Only
+    // generated or deliberately minimal fixtures belong in this allowlist.
     const names = requested
       ? [requested]
       : exhaustive ? [...PDF_FIXTURE_DECKS] : [...PDF_SMOKE_DECKS];
@@ -154,7 +149,9 @@ describe.skipIf(!runnable)('PDF pages, against the real Player', () => {
 
   it('covers a real media fixture with representative pages', () => {
     expect(deckCount).toBeGreaterThanOrEqual(
-      process.env.PDF_PIXEL_DECK ? 1 : process.env.PDF_PIXEL_EXHAUSTIVE === '1' ? 6 : 1,
+      process.env.PDF_PIXEL_DECK
+        ? 1
+        : process.env.PDF_PIXEL_EXHAUSTIVE === '1' ? PDF_FIXTURE_DECKS.length : 1,
     );
     expect(results).toHaveLength(expectedPages);
     expect(results.every((result) => result.total > 1_000_000)).toBe(true);
