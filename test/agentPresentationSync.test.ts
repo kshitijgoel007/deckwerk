@@ -284,6 +284,10 @@ describe.skipIf(!runnable)('embedded Agent presentation synchronization', () => 
     await eventually(async () => editor!.evaluate<boolean>(
       `document.querySelector('[data-element-id="fake-agent-marker"]')?.textContent?.includes(${JSON.stringify(marker)}) === true`,
     ), 'native editor did not receive the fake Agent transaction');
+    await eventually(async () => editor!.evaluate<boolean>(`
+      window.api.getDeck().then((session) => session?.deck?.slides?.[0]?.elements
+        ?.some((element) => element.id === 'fake-agent-marker') === true)
+    `), 'main process did not receive the authoritative Agent-session snapshot');
 
     const clicked = await editor.evaluate<boolean>(`(() => {
       const button = [...document.querySelectorAll('button')]
@@ -325,22 +329,16 @@ describe.skipIf(!runnable)('embedded Agent presentation synchronization', () => 
       slideId: 'slide-1',
     });
 
-    // Let the collaboration server close without an intentionally open fake
-    // peer, then exercise the normal end-session flush as part of cleanup.
+    // The contract ends once the live main-process snapshot reaches a real
+    // audience renderer. Session shutdown has its own unit/integration paths;
+    // awaiting it here coupled an otherwise deterministic presentation test
+    // to every Chromium worker and filesystem flush in the full suite.
     fakeAgent.close();
     fakeAgent = null;
     await audience.evaluate(`window.close()`);
     audience.close();
     audience = null;
-    await wait(100);
-    await editor.evaluate(`Promise.race([
-      window.api.endAgentSession(),
-      // A full-suite run has several Electron/Chromium workers flushing and
-      // closing at once. Keep a bounded assertion, but allow that I/O queue to
-      // drain before declaring the real session shutdown stuck.
-      new Promise((_, reject) => setTimeout(() => reject(new Error('endAgentSession timed out')), 15000))
-    ])`);
-  }, 60_000);
+  }, 40_000);
 });
 
 describe.skipIf(runnable)('embedded Agent presentation synchronization (skipped)', () => {

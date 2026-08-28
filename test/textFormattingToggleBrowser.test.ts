@@ -113,6 +113,14 @@ describe.skipIf(!electronBinary)('stateful inline formatting in Chromium', () =>
     await eventually(async () => editor!.evaluate<string>(
       `window.store.get().deck.slides[0].elements.find((element) => element.id === '${TEXT_ID}').html`,
     ), 'typed text did not reach the live deck', (html) => html.replace(/<[^>]+>/g, '') === authoredText);
+    const typedState = await readState(editor, 'bold');
+    const typedHtml = await editor.evaluate<string>(
+      `document.querySelector('${CONTENT}').innerHTML`,
+    );
+    expect(
+      typedState.map.slice(TEXT.length),
+      `collapsed-caret bold run was not retained: ${typedHtml}`,
+    ).toEqual([true, false]);
 
     const word = (value: string) => ({ start: TEXT.indexOf(value), end: TEXT.indexOf(value) + value.length });
     const ipsum = word('ipsum');
@@ -263,10 +271,11 @@ async function readState(cdp: Cdp, format: Format): Promise<{
       const active = ${JSON.stringify(format)} === 'italic'
         ? style.fontStyle === 'italic'
         : (style.fontWeight === 'bold' || Number.parseInt(style.fontWeight, 10) >= 600);
-      for (let index = 0; index < node.data.length; index += 1) map.push(active);
+      const authored = node.data.replaceAll('\u2060', '');
+      for (let index = 0; index < authored.length; index += 1) map.push(active);
     }
     return {
-      text: root.textContent,
+      text: root.textContent.replaceAll('\u2060', ''),
       selected: getSelection()?.toString() ?? '',
       map,
       editing: root.isContentEditable === true,

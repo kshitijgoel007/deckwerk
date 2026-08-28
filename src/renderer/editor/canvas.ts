@@ -2151,6 +2151,7 @@ export class EditorCanvas {
     const finish = (commit: boolean) => {
       body.removeEventListener('blur', onBlur);
       body.removeEventListener('keydown', onKey);
+      body.removeEventListener('beforeinput', onBeforeInput);
       body.removeEventListener('input', onInput);
       body.removeEventListener('paste', onPaste);
       body.removeEventListener('pointerdown', onTablePointerDown);
@@ -2219,6 +2220,35 @@ export class EditorCanvas {
       }
       if (el.type === 'text' && (el.autoFit || el.noWrap)) scheduleAutoFit(node!);
       if (this.liveTextSync && !liveTimer) liveTimer = window.setTimeout(pushLive, 250);
+    };
+    const onBeforeInput = (event: InputEvent) => {
+      if (
+        event.inputType !== 'insertText'
+        || event.data === null
+        || event.isComposing
+      ) return;
+      const range = this.activeTextRange(body);
+      if (!range || !range.collapsed) return;
+      const container = range.startContainer instanceof Element
+        ? range.startContainer
+        : range.startContainer.parentElement;
+      const marker = container?.closest<HTMLElement>('[data-editor-typing-style]') ?? null;
+      if (!marker || !body.contains(marker)) return;
+
+      // Chromium's native Input.insertText sometimes moves inserted text
+      // beside an empty inline marker instead of inheriting it. Own this one
+      // narrow case so pending Cmd+B/Cmd+I state has identical semantics for
+      // physical typing, automation, and collaboration clients.
+      event.preventDefault();
+      const inserted = document.createTextNode(event.data);
+      range.insertNode(inserted);
+      range.setStartAfter(inserted);
+      range.collapse(true);
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+      this.textSelectionRange = range.cloneRange();
+      onInput(event);
     };
     const onKey = (e: KeyboardEvent) => {
       // Editing keys must not reach the canvas shortcuts (Delete would remove
@@ -2297,6 +2327,7 @@ export class EditorCanvas {
 
     body.addEventListener('blur', onBlur);
     body.addEventListener('keydown', onKey);
+    body.addEventListener('beforeinput', onBeforeInput);
     body.addEventListener('input', onInput);
     body.addEventListener('paste', onPaste);
     body.addEventListener('pointerdown', onTablePointerDown);

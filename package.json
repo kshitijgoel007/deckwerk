@@ -20,6 +20,8 @@
     "start": "electron-vite preview",
     "pretest": "node scripts/check-test-environment.cjs",
     "test": "vitest run",
+    "pretest:long": "node scripts/check-test-environment.cjs",
+    "test:long": "vitest run --config vitest.long.config.ts",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "export": "npm run build:export >/dev/null && vite-node --config vitest.config.ts scripts/export-deck.mts --",
