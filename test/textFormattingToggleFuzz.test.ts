@@ -98,6 +98,21 @@ function toggleButton(inspectorHost: HTMLElement, format: Format): void {
   button.click();
 }
 
+function typeAtCaret(content: HTMLElement, value: string): void {
+  const selection = window.getSelection()!;
+  const range = selection.getRangeAt(0);
+  const text = document.createTextNode(value);
+  range.insertNode(text);
+  range.setStartAfter(text);
+  range.collapse(true);
+  selection.removeAllRanges();
+  selection.addRange(range);
+  content.dispatchEvent(new InputEvent('input', {
+    inputType: 'insertText', data: value, bubbles: true,
+  }));
+  document.dispatchEvent(new Event('selectionchange'));
+}
+
 function effectiveFormat(node: Text, root: HTMLElement, format: Format): boolean {
   for (let current = node.parentElement; current && current !== root; current = current.parentElement) {
     if (format === 'italic') {
@@ -171,6 +186,31 @@ describe('stateful inline text formatting fuzzing', () => {
       )
         .toBe(attempt % 2 === 0);
     }
+  });
+
+  it('uses Cmd+B at a collapsed caret as the explicit style for text typed next', () => {
+    const { store, content, inspectorHost } = setup();
+    const at = TEXT.indexOf('ipsum');
+    selectOffsets(content, at, at);
+
+    toggleShortcut(content, 'bold');
+    expect(inspectorHost.querySelector<HTMLButtonElement>(
+      'button[aria-label="Bold (Cmd/Ctrl+B)"]',
+    )?.getAttribute('aria-pressed')).toBe('true');
+    typeAtCaret(content, 'very ');
+
+    toggleButton(inspectorHost, 'bold');
+    typeAtCaret(content, 'plain ');
+
+    expect(content.textContent?.replaceAll('\u2060', ''))
+      .toBe(`Lorem very plain ${TEXT.slice(at)}`);
+    const state = formatMap(content, 'bold');
+    expect(state.slice('Lorem '.length, 'Lorem very '.length).every(Boolean)).toBe(true);
+    expect(state.slice('Lorem very '.length, 'Lorem very plain '.length).some(Boolean)).toBe(false);
+    content.dispatchEvent(new FocusEvent('blur', { relatedTarget: null }));
+    expect(savedText(store)).toBe(`Lorem very plain ${TEXT.slice(at)}`);
+    expect(savedHtml(store)).not.toContain('data-editor-typing-style');
+    expect(savedHtml(store)).not.toContain('\u2060');
   });
 
   it('turns italics off for a subset without changing adjacent words', () => {

@@ -141,6 +141,46 @@ describe('edit history', () => {
     expect(store.get().deck.title).toBe('Revision 6');
   });
 
+  it('keeps persisted immutable snapshots by reference instead of cloning the whole log per read', () => {
+    const store = new EditorStore(emptyDeck('History'), '/tmp/history');
+    store.commit((deck) => { deck.title = 'One'; }, { label: 'First edit' });
+    store.commit((deck) => { deck.title = 'Two'; }, { label: 'Second edit' });
+
+    const first = store.persistedHistory();
+    const second = store.persistedHistory();
+    expect(second.entries[0].deck).toBe(first.entries[0].deck);
+    expect(second.entries[1].deck).toBe(first.entries[1].deck);
+  });
+
+  it('does not notify history subscribers for ordinary selection changes', () => {
+    const store = new EditorStore(emptyDeck('History'), '/tmp/history');
+    let notifications = 0;
+    store.subscribeHistory(() => { notifications += 1; });
+
+    store.select(['missing']);
+    store.clearSelection();
+    store.selectSlide(0);
+    expect(notifications).toBe(0);
+
+    store.commit((deck) => { deck.title = 'Edited'; }, { label: 'Edit title' });
+    expect(notifications).toBe(1);
+  });
+
+  it('defers hidden history-panel rebuilding until the tab becomes visible', async () => {
+    const store = new EditorStore(emptyDeck('History'), '/tmp/history');
+    const host = document.createElement('div');
+    host.hidden = true;
+    document.body.appendChild(host);
+    new HistoryPanel(host, store);
+
+    store.commit((deck) => { deck.title = 'Edited'; }, { label: 'Edit title' });
+    expect(host.querySelectorAll('.history-item')).toHaveLength(0);
+
+    host.hidden = false;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(host.querySelectorAll('.history-item')).toHaveLength(1);
+  });
+
   it('shows the current state and lets an older state be selected from the panel', () => {
     const store = new EditorStore(emptyDeck('History'), '/tmp/history');
     store.commit((deck) => { deck.title = 'First title'; }, { label: 'First title' });

@@ -16,15 +16,26 @@ export class TimelinePanel {
   private host: HTMLElement;
   private store: EditorStore;
   private draggingEntryId: string | null = null;
+  private stale = false;
 
   constructor(host: HTMLElement, store: EditorStore) {
     this.host = host;
     this.store = store;
-    store.subscribe(() => this.render());
+    store.subscribe(() => {
+      if (this.host.hidden) {
+        this.stale = true;
+        return;
+      }
+      this.render();
+    });
+    new MutationObserver(() => {
+      if (!this.host.hidden && this.stale) this.render();
+    }).observe(this.host, { attributes: true, attributeFilter: ['hidden'] });
     this.render();
   }
 
   render(): void {
+    this.stale = false;
     const slide = this.store.slide;
     this.host.replaceChildren();
     if (!slide) return;
@@ -373,4 +384,3 @@ export function reorderBuildEntry(
     timeline.splice(targetIndex + (mode === 'after' ? 1 : 0), 0, dragged);
   }
 }
-

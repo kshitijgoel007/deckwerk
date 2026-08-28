@@ -76,14 +76,17 @@ export class EditorStore {
     | ((prev: Deck, next: Deck, label: string, coalesceKey?: string) => void)
     | null = null;
 
-  /** Persisted after each new/coalesced restorable snapshot. */
-  onHistoryChange: ((history: DeckHistoryDocument) => void) | null = null;
+  /** Signals that the independently persisted history needs a later flush. */
+  onHistoryChange: (() => void) | null = null;
 
   private state: EditorState;
   private listeners = new Set<Listener>();
+  private historyListeners = new Set<() => void>();
   private undoStack: UndoItem[] = [];
   private redoStack: UndoItem[] = [];
   private historyLog: DeckHistoryItem[] = [];
+  /** The history row represented by `state.deck`, or null for an unrecorded state. */
+  private currentHistoryId: number | null = null;
   private nextHistoryId = 1;
   /** Fixed end of a Shift-click range; ordinary slide selection resets it. */
   private slideSelectionAnchor = 0;
@@ -115,8 +118,18 @@ export class EditorStore {
     return () => this.listeners.delete(fn);
   }
 
+  /** Subscribe only to history metadata/current-row changes, not canvas selection churn. */
+  subscribeHistory(fn: () => void): () => void {
+    this.historyListeners.add(fn);
+    return () => this.historyListeners.delete(fn);
+  }
+
   private emit(): void {
     for (const fn of this.listeners) fn(this.state);
+  }
+
+  private emitHistory(): void {
+    for (const fn of this.historyListeners) fn();
   }
 
   /** Replace the deck wholesale and hydrate its independently persisted history. */
@@ -133,6 +146,10 @@ export class EditorStore {
       deck: parseDeck(item.deck),
       slideIndex: Math.min(item.slideIndex, Math.max(0, item.deck.slides.length - 1)),
     }));
+    const persistedTip = this.historyLog[this.historyLog.length - 1];
+    this.currentHistoryId = persistedTip && sameDeck(persistedTip.deck, deck)
+      ? persistedTip.id
+      : null;
     // An external reload (agent edit, git) must not teleport the editor away
     // from the slide being worked on.
     const slideIndex = opts.keepView
@@ -147,6 +164,7 @@ export class EditorStore {
       selection: new Set(),
       dirty: false,
     };
+    this.emitHistory();
     this.emit();
   }
 
@@ -164,7 +182,9 @@ export class EditorStore {
     this.redoStack = [];
     this.txnBase = null;
     this.state = { ...this.state, dir, deck: parseDeck(deck), dirty: false };
+    this.currentHistoryId = null;
     this.restoreCursor(anchor);
+    this.emitHistory();
     this.emit();
   }
 
@@ -208,6 +228,9 @@ export class EditorStore {
         description: opts.description,
         agentChatId: opts.agentChatId,
       });
+    } else {
+      this.currentHistoryId = null;
+      this.emitHistory();
     }
     this.emit();
   }
@@ -230,6 +253,7 @@ export class EditorStore {
     this.redoStack = [];
     shareUnchangedSlides(this.state.deck, next);
     this.state = { ...this.state, dir, deck: next, dirty: false };
+    this.currentHistoryId = null;
     this.restoreCursor(anchor);
     // Selection is by stable id, so drop only ids the new deck no longer has.
     const live = new Set(this.state.deck.slides.flatMap((slide) => slide.elements.map((e) => e.id)));
@@ -237,6 +261,7 @@ export class EditorStore {
       ...this.state,
       selection: new Set([...this.state.selection].filter((id) => live.has(id))),
     };
+    this.emitHistory();
     this.emit();
   }
 
@@ -284,7 +309,12 @@ export class EditorStore {
     }
     this.state = { ...this.state, deck: next, dirty: true };
     if (!this.txnBase) {
-      if (!opts.transient) this.recordHistory(opts.label ?? 'Edit slide');
+      if (!opts.transient && opts.history !== false) {
+        this.recordHistory(opts.label ?? 'Edit slide');
+      } else {
+        this.currentHistoryId = null;
+        this.emitHistory();
+      }
       this.onLocalEdit?.(previous, next, opts.label ?? 'Edit slide', opts.coalesceKey);
     }
     this.emit();
@@ -298,6 +328,8 @@ export class EditorStore {
     if (!this.txnBase) {
       this.txnBase = this.state.deck;
       this.txnLabel = label;
+      this.currentHistoryId = null;
+      this.emitHistory();
     }
   }
 
@@ -352,14 +384,16 @@ export class EditorStore {
   }
 
   isHistoryCurrent(id: number): boolean {
-    const snapshot = this.historyLog.find((item) => item.id === id);
-    return !!snapshot && sameDeck(snapshot.deck, this.state.deck);
+    return id === this.currentHistoryId;
   }
 
   persistedHistory(): DeckHistoryDocument {
     return {
       version: 1,
-      entries: this.historyLog.map(({ id: _id, ...item }) => structuredClone(item)),
+      // Deck snapshots are immutable once recorded. IPC/schema validation will
+      // clone them at the process boundary; cloning every prior deck here made
+      // the 108-entry IARPA history block the renderer for ~150 ms per edit.
+      entries: this.historyLog.map(({ id: _id, ...item }) => ({ ...item })),
     };
   }
 
@@ -384,6 +418,7 @@ export class EditorStore {
       selection: new Set(),
       dirty: true,
     };
+    this.currentHistoryId = null;
     this.slideSelectionAnchor = this.state.slideIndex;
     this.recordHistory(label);
     this.onLocalEdit?.(previous, this.state.deck, label);
@@ -601,7 +636,9 @@ export class EditorStore {
       last.deck = this.state.deck;
       if (opts.description) last.description = opts.description;
       if (opts.agentChatId) last.agentChatId = opts.agentChatId;
-      this.onHistoryChange?.(this.persistedHistory());
+      this.currentHistoryId = last.id;
+      this.emitHistory();
+      this.onHistoryChange?.();
       return;
     }
     this.historyLog.push({
@@ -614,7 +651,9 @@ export class EditorStore {
       deck: this.state.deck,
     });
     if (this.historyLog.length > HISTORY_LIMIT) this.historyLog.shift();
-    this.onHistoryChange?.(this.persistedHistory());
+    this.currentHistoryId = this.historyLog[this.historyLog.length - 1]?.id ?? null;
+    this.emitHistory();
+    this.onHistoryChange?.();
   }
 }
 

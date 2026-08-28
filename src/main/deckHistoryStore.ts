@@ -29,26 +29,53 @@ export async function loadDeckHistory(dir: string): Promise<DeckHistoryDocument>
   }
 }
 
-/**
- * Serialize writes per deck and publish by rename. This prevents a slower,
- * older renderer update from winning a race or a crash from truncating the
- * only history file.
- */
-const writeQueues = new Map<string, Promise<void>>();
+interface QueuedHistoryWrite {
+  history: DeckHistoryDocument;
+  waiters: Array<{ resolve: () => void; reject: (error: unknown) => void }>;
+}
+
+interface HistoryWriteQueue {
+  running: boolean;
+  latest: QueuedHistoryWrite | null;
+}
+
+/** One active write and at most one latest-wins pending snapshot per deck. */
+const writeQueues = new Map<string, HistoryWriteQueue>();
 
 export function saveDeckHistory(dir: string, value: DeckHistoryDocument): Promise<void> {
   const history = DeckHistoryDocumentSchema.parse(value);
-  const previous = writeQueues.get(dir) ?? Promise.resolve();
-  const pending = previous.catch(() => undefined).then(async () => {
-    const target = join(dir, DECK_HISTORY_FILE);
-    const temporary = join(dir, `.${DECK_HISTORY_FILE}.${randomUUID()}.tmp`);
-    const compressed = await gzipAsync(`${JSON.stringify(history)}\n`);
-    await writeFile(temporary, compressed);
-    await rename(temporary, target);
+  const queue = writeQueues.get(dir) ?? { running: false, latest: null };
+  writeQueues.set(dir, queue);
+  const promise = new Promise<void>((resolve, reject) => {
+    if (queue.latest) {
+      // Nobody needs an intermediate full-history file. Attach its waiter to
+      // the newest document so all callers still observe completion/failure.
+      queue.latest.history = history;
+      queue.latest.waiters.push({ resolve, reject });
+    } else {
+      queue.latest = { history, waiters: [{ resolve, reject }] };
+    }
   });
-  writeQueues.set(dir, pending);
-  void pending.finally(() => {
-    if (writeQueues.get(dir) === pending) writeQueues.delete(dir);
-  }).catch(() => undefined);
-  return pending;
+  if (!queue.running) void drainHistoryWrites(dir, queue);
+  return promise;
+}
+
+async function drainHistoryWrites(dir: string, queue: HistoryWriteQueue): Promise<void> {
+  queue.running = true;
+  while (queue.latest) {
+    const pending = queue.latest;
+    queue.latest = null;
+    try {
+      const target = join(dir, DECK_HISTORY_FILE);
+      const temporary = join(dir, `.${DECK_HISTORY_FILE}.${randomUUID()}.tmp`);
+      const compressed = await gzipAsync(`${JSON.stringify(pending.history)}\n`);
+      await writeFile(temporary, compressed);
+      await rename(temporary, target);
+      pending.waiters.forEach(({ resolve }) => resolve());
+    } catch (error) {
+      pending.waiters.forEach(({ reject }) => reject(error));
+    }
+  }
+  queue.running = false;
+  if (writeQueues.get(dir) === queue) writeQueues.delete(dir);
 }

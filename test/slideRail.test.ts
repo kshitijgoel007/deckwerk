@@ -120,6 +120,54 @@ describe('resizing the slide rail', () => {
   });
 });
 
+describe('large-deck thumbnail virtualization', () => {
+  it('mounts only the active and near-viewport slide surfaces', () => {
+    const original = globalThis.IntersectionObserver;
+    let callback: IntersectionObserverCallback = () => {
+      throw new Error('IntersectionObserver was not constructed');
+    };
+    class FakeIntersectionObserver {
+      observed: Element[] = [];
+      constructor(next: IntersectionObserverCallback) { callback = next; }
+      observe = (target: Element) => { this.observed.push(target); };
+      unobserve = (target: Element) => {
+        this.observed = this.observed.filter((candidate) => candidate !== target);
+      };
+      disconnect = () => { this.observed = []; };
+      takeRecords = () => [];
+      root = null;
+      rootMargin = '';
+      thresholds = [];
+    }
+    globalThis.IntersectionObserver = FakeIntersectionObserver as unknown as typeof IntersectionObserver;
+
+    try {
+      const deck = emptyDeck('Large rail');
+      deck.slides = Array.from({ length: 80 }, (_, index) => ({
+        id: `slide-${index + 1}`, name: `Slide ${index + 1}`,
+        background: { color: null, image: null }, notes: '', elements: [], timeline: [],
+      }));
+      const store = new EditorStore(deck, '/tmp/large-rail');
+      const host = document.createElement('div');
+      document.body.replaceChildren(host);
+      new SlideRail(host, store);
+
+      expect(host.querySelectorAll('.rail-item')).toHaveLength(80);
+      expect(host.querySelectorAll('.rail-thumb-inner')).toHaveLength(1);
+      const placeholders = [...host.querySelectorAll<HTMLElement>('.rail-thumb-placeholder')];
+      expect(placeholders).toHaveLength(79);
+
+      callback(placeholders.slice(0, 3).map((target) => ({
+        target, isIntersecting: true,
+      } as unknown as IntersectionObserverEntry)), {} as IntersectionObserver);
+      expect(host.querySelectorAll('.rail-thumb-inner')).toHaveLength(4);
+    } finally {
+      if (original) globalThis.IntersectionObserver = original;
+      else delete (globalThis as { IntersectionObserver?: typeof IntersectionObserver }).IntersectionObserver;
+    }
+  });
+});
+
 describe('deleting slides from the rail', () => {
   beforeEach(() => document.body.replaceChildren());
 

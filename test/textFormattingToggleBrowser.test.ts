@@ -103,9 +103,16 @@ describe.skipIf(!electronBinary)('stateful inline formatting in Chromium', () =>
       root.focus();
     })()`);
     await editor.call('Input.insertText', { text: TEXT.slice(suffixStart) });
+    // A collapsed-caret shortcut is an explicit style for text typed next,
+    // independent of Chromium's deprecated execCommand typing state.
+    await editor.chord('b', 'KeyB', 66, MOD);
+    await editor.call('Input.insertText', { text: 'B' });
+    await editor.chord('b', 'KeyB', 66, MOD);
+    await editor.call('Input.insertText', { text: 'P' });
+    const authoredText = `${TEXT}BP`;
     await eventually(async () => editor!.evaluate<string>(
       `window.store.get().deck.slides[0].elements.find((element) => element.id === '${TEXT_ID}').html`,
-    ), 'typed text did not reach the live deck', (html) => html.replace(/<[^>]+>/g, '') === TEXT);
+    ), 'typed text did not reach the live deck', (html) => html.replace(/<[^>]+>/g, '') === authoredText);
 
     const word = (value: string) => ({ start: TEXT.indexOf(value), end: TEXT.indexOf(value) + value.length });
     const ipsum = word('ipsum');
@@ -126,9 +133,10 @@ describe.skipIf(!electronBinary)('stateful inline formatting in Chromium', () =>
       { ...ipsum, format: 'italic', input: 'shortcut' },
     ];
     const expected: Record<Format, boolean[]> = {
-      bold: Array(TEXT.length).fill(false), italic: Array(TEXT.length).fill(false),
+      bold: Array(authoredText.length).fill(false), italic: Array(authoredText.length).fill(false),
     };
     expected.italic.fill(true, earlyIpsum.start, earlyIpsum.end);
+    expected.bold[TEXT.length] = true;
 
     for (const [step, operation] of operations.entries()) {
       // Alternate which adjacent text node owns an exact start boundary. Real
@@ -148,7 +156,7 @@ describe.skipIf(!electronBinary)('stateful inline formatting in Chromium', () =>
 
       const state = await eventually(async () => readState(editor!, operation.format),
         `formatting step ${step + 1} did not settle`,
-        (value) => value.text === TEXT && value.selected === TEXT.slice(operation.start, operation.end));
+        (value) => value.text === authoredText && value.selected === TEXT.slice(operation.start, operation.end));
       expect(state.map, `format scope drifted at step ${step + 1}`).toEqual(expected[operation.format]);
       expect(state.editing, `editing stopped at step ${step + 1}`).toBe(true);
     }
@@ -176,7 +184,7 @@ describe.skipIf(!electronBinary)('stateful inline formatting in Chromium', () =>
         }
         expected[format].fill(next, start, end);
         const state = await readState(editor, format);
-        expect(state.text, `visible text changed for seed ${seed}, step ${seedStep + 1}`).toBe(TEXT);
+        expect(state.text, `visible text changed for seed ${seed}, step ${seedStep + 1}`).toBe(authoredText);
         expect(state.selected, `selection drifted for seed ${seed}, step ${seedStep + 1}`)
           .toBe(TEXT.slice(start, end));
         expect(state.map, `format scope drifted for seed ${seed}, step ${seedStep + 1}`)
@@ -198,7 +206,7 @@ describe.skipIf(!electronBinary)('stateful inline formatting in Chromium', () =>
       value.slides[0].elements.find((element) => element.id === TEXT_ID)?.html?.length !== 0);
     const html = persisted.slides[0].elements.find((element) => element.id === TEXT_ID)!.html!;
     const parsed = html.replace(/<[^>]+>/g, '');
-    expect(parsed).toBe(TEXT);
+    expect(parsed).toBe(authoredText);
   }, 90_000);
 });
 

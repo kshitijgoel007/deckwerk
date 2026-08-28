@@ -4,7 +4,7 @@ import { freezePreviewVideos } from '../player/previewPoster.js';
 import { renderSlide } from '../player/render.js';
 import { applySlideLayout } from './slideLayouts.js';
 import { newComment, openCommentsPopover, openCount } from './comments.js';
-import type { Slide } from '@shared/deck.js';
+import type { Deck, Slide } from '@shared/deck.js';
 import type { EditorStore } from './store.js';
 
 /**
@@ -14,6 +14,8 @@ import type { EditorStore } from './store.js';
  */
 /** Rendered width of a slide thumbnail, in CSS pixels. */
 const THUMB_WIDTH = 168;
+/** Enough decoded thumbnails for the viewport plus generous scroll overscan. */
+const THUMB_CACHE_LIMIT = 40;
 
 export interface RailPresence {
   name: string;
@@ -26,6 +28,9 @@ export class SlideRail {
   private store: EditorStore;
   /** Keeps cached slide surfaces scaled to the fluid thumbnail frame. */
   private thumbResizeObserver: ResizeObserver | null = null;
+  /** Mount full slide DOM only near the scroll viewport. */
+  private thumbVisibilityObserver: IntersectionObserver | null = null;
+  private pendingThumbs = new WeakMap<HTMLElement, { deck: Deck; slide: Slide }>();
   /** Index of the slide being dragged, while a reorder is in progress. */
   private dragFrom: number | null = null;
   /** Off-screen node used as the drag image while reordering. */
@@ -72,6 +77,19 @@ export class SlideRail {
         // track the frame without forcing its cached slide DOM to be rebuilt.
         this.refreshPresence();
       });
+    }
+    if (typeof IntersectionObserver !== 'undefined') {
+      this.thumbVisibilityObserver = new IntersectionObserver((entries) => {
+        for (const entry of entries) {
+          if (!entry.isIntersecting) continue;
+          const placeholder = entry.target as HTMLElement;
+          const pending = this.pendingThumbs.get(placeholder);
+          this.thumbVisibilityObserver?.unobserve(placeholder);
+          if (!pending || !placeholder.isConnected) continue;
+          placeholder.replaceWith(this.thumbFor(pending.deck, pending.slide));
+        }
+        this.refreshPresence();
+      }, { root: this.host, rootMargin: '400px 0px' });
     }
     store.subscribe(() => this.onStoreChange());
     this.bindKeys();
@@ -123,6 +141,7 @@ export class SlideRail {
   render(): void {
     const { deck, slideIndex, slideSelection } = this.store.get();
     this.renderedSlides = deck.slides;
+    this.thumbVisibilityObserver?.disconnect();
     // Drop cache entries for slides that no longer exist in this deck version.
     const live = new Set<unknown>(deck.slides);
     for (const key of this.thumbCache.keys()) {
@@ -281,6 +300,9 @@ export class SlideRail {
   ): HTMLElement {
     let thumb = this.thumbCache.get(slide);
     if (thumb) {
+      // Map insertion order is the LRU order.
+      this.thumbCache.delete(slide);
+      this.thumbCache.set(slide, thumb);
       // A cached thumbnail spends time detached while the rail rebuilds, and
       // the load gate aborts the fetch of a detached element. Re-queue
       // anything that came back without a frame rather than re-appending a
@@ -314,8 +336,35 @@ export class SlideRail {
       this.scaleThumb(thumb);
       this.thumbResizeObserver?.observe(thumb);
       this.thumbCache.set(slide, thumb);
+      if (this.thumbVisibilityObserver) this.trimThumbCache();
     }
     return thumb;
+  }
+
+  /** A geometry-only shell upgraded to a real slide when it nears the viewport. */
+  private deferredThumb(
+    deck: ReturnType<EditorStore['get']>['deck'],
+    slide: Slide,
+    eager: boolean,
+  ): HTMLElement {
+    if (eager || !this.thumbVisibilityObserver) return this.thumbFor(deck, slide);
+    const placeholder = document.createElement('div');
+    placeholder.className = 'rail-thumb rail-thumb-placeholder';
+    placeholder.dataset.canvasWidth = String(deck.canvas.w);
+    placeholder.style.setProperty('--rail-thumb-aspect', `${deck.canvas.w} / ${deck.canvas.h}`);
+    this.pendingThumbs.set(placeholder, { deck, slide });
+    this.thumbVisibilityObserver.observe(placeholder);
+    return placeholder;
+  }
+
+  private trimThumbCache(): void {
+    while (this.thumbCache.size > THUMB_CACHE_LIMIT) {
+      const oldest = this.thumbCache.entries().next().value as [unknown, HTMLElement] | undefined;
+      if (!oldest) return;
+      const [key, thumb] = oldest;
+      this.thumbCache.delete(key);
+      this.thumbResizeObserver?.unobserve(thumb);
+    }
   }
 
   /** Scale the canonical slide surface into its current fluid-width frame. */
@@ -415,7 +464,7 @@ export class SlideRail {
       num.className = 'rail-num';
       num.textContent = String(i + 1);
 
-      const thumb = this.thumbFor(deck, slide);
+      const thumb = this.deferredThumb(deck, slide, i === slideIndex);
       item.append(num, thumb);
       // Presence dots live on the row (not the cached thumbnail), in the left
       // gutter beside the slide's top edge. Rows are rebuilt fresh each time,

@@ -107,6 +107,7 @@ export function wireCanvasInspector(
   inspector.videoDuration = (id) => canvas.videoDuration(id);
   canvas.onMaskModeChange = () => inspector.render();
   canvas.onTextEditModeChange = () => inspector.render();
+  canvas.onTextFormatStateChange = () => inspector.render();
   canvas.onTableSelectionChange = () => inspector.render();
   canvas.onTableBorderPaintModeChange = () => inspector.render();
 }

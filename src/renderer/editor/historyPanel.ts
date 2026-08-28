@@ -6,16 +6,31 @@ export interface HistoryPanelOptions {
 
 /** Browsable deck snapshots. Selecting an older entry creates a new revert state. */
 export class HistoryPanel {
+  private stale = false;
+
   constructor(
     private host: HTMLElement,
     private store: EditorStore,
     private options: HistoryPanelOptions = {},
   ) {
-    store.subscribe(() => this.render());
+    store.subscribeHistory(() => {
+      if (this.host.hidden) {
+        this.stale = true;
+        return;
+      }
+      this.render();
+    });
+    // Tabs toggle `hidden` directly. Catch up once the panel becomes visible
+    // without making ordinary canvas selection and pointer events rebuild all
+    // history rows while the panel is closed.
+    new MutationObserver(() => {
+      if (!this.host.hidden && this.stale) this.render();
+    }).observe(this.host, { attributes: true, attributeFilter: ['hidden'] });
     this.render();
   }
 
   render(): void {
+    this.stale = false;
     this.host.replaceChildren();
     const header = document.createElement('div');
     header.className = 'panel-header';

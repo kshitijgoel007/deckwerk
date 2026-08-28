@@ -64,12 +64,30 @@ const el = <T extends HTMLElement>(id: string): T => {
 };
 
 const store = new EditorStore(emptyDeck());
-store.onHistoryChange = (history) => {
+let historySaveTimer: ReturnType<typeof setTimeout> | null = null;
+
+async function flushHistory(dir = store.get().dir): Promise<void> {
+  if (historySaveTimer) {
+    clearTimeout(historySaveTimer);
+    historySaveTimer = null;
+  }
+  if (!dir) return;
+  await window.api.saveDeckHistory(dir, store.persistedHistory());
+}
+
+store.onHistoryChange = () => {
   const dir = store.get().dir;
   if (!dir) return;
-  void window.api.saveDeckHistory(dir, history).catch((error) => {
-    console.error('Could not save edit history:', error);
-  });
+  if (historySaveTimer) clearTimeout(historySaveTimer);
+  // History is a crash-recovery sidecar, not part of the visual feedback for
+  // a formatting click. Flush once after a burst instead of cloning and
+  // sending every accumulated deck snapshot synchronously on every edit.
+  historySaveTimer = setTimeout(() => {
+    historySaveTimer = null;
+    void flushHistory(dir).catch((error) => {
+      console.error('Could not save edit history:', error);
+    });
+  }, 1_200);
 };
 const initialView = decodeEditorView(new URLSearchParams(location.search).get('view'));
 let initialViewPending = initialView !== null;
@@ -640,7 +658,7 @@ async function save(): Promise<void> {
     // Await the latest snapshot after the deck write. Save As and window close
     // can now rely on history having reached disk rather than racing a fire-
     // and-forget IPC call from the original edit.
-    await window.api.saveDeckHistory(dir, store.persistedHistory());
+    await flushHistory(dir);
   } catch (error) {
     console.error('Could not flush edit history:', error);
   }

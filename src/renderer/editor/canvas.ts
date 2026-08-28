@@ -131,6 +131,16 @@ function convertTypedListMarker(body: HTMLElement, selection: Selection | null):
 /** Serialize authored text without editor-only table selection chrome. */
 function authoredTextHtml(body: HTMLElement): string {
   const clone = body.cloneNode(true) as HTMLElement;
+  // A collapsed-caret formatting command creates an editor-only typing run.
+  // If the user typed into it, retain the authored style and text; if they
+  // merely toggled a format and moved away, discard the empty run entirely.
+  clone.querySelectorAll<HTMLElement>('[data-editor-typing-style]').forEach((marker) => {
+    for (const text of [...marker.childNodes].filter((node): node is Text => node instanceof Text)) {
+      text.data = text.data.replaceAll(TYPING_STYLE_SENTINEL, '');
+    }
+    marker.removeAttribute('data-editor-typing-style');
+    if (!(marker.textContent ?? '')) marker.remove();
+  });
   clone.querySelectorAll('.editor-table-selected, [class*="editor-table-border-preview-"]').forEach((cell) => {
     cell.classList.remove(
       'editor-table-selected',
@@ -146,6 +156,9 @@ function authoredTextHtml(body: HTMLElement): string {
   });
   return normalizeParagraphHtml(clone.innerHTML);
 }
+
+/** Invisible text that gives a collapsed caret a stable styled DOM home. */
+const TYPING_STYLE_SENTINEL = '\u2060';
 
 /** True for the anonymous inline wrappers created by character formatting. */
 function isStyleOnlySpan(node: Element): node is HTMLSpanElement {
@@ -348,6 +361,8 @@ export class EditorCanvas {
   onMaskModeChange?: (elementId: string | null) => void;
   /** Notified when inline text editing starts or ends. */
   onTextEditModeChange?: (elementId: string | null) => void;
+  /** Notified when the active caret's pending character style changes. */
+  onTextFormatStateChange?: () => void;
   /** Notified when a pasted table or its active cell changes. */
   onTableSelectionChange?: () => void;
   onTableBorderPaintModeChange?: () => void;
@@ -1858,6 +1873,18 @@ export class EditorCanvas {
     const body = node?.querySelector<HTMLElement>('.text-content') ?? null;
     if (!body) return;
 
+    // Double-click selection and an existing caret belong to the rendered DOM
+    // that is about to be replaced by authored markup. Preserve them as plain
+    // text offsets first; a live Range whose nodes are detached by innerHTML
+    // is otherwise silently collapsed or retargeted by Chromium.
+    const existingSelection = window.getSelection();
+    const existingRange = existingSelection?.rangeCount
+      ? existingSelection.getRangeAt(0)
+      : null;
+    const existingOffsets = existingRange && body.contains(existingRange.commonAncestorContainer)
+      ? this.textOffsetsForRange(body, existingRange)
+      : null;
+
     this.editingId = elementId;
     this.tableSelection = null;
     node!.classList.add('editing');
@@ -1892,6 +1919,8 @@ export class EditorCanvas {
       this.textSelectionRange = range.cloneRange();
     } else if (caretPoint) {
       this.textSelectionRange = this.placeCaretAtPoint(body, caretPoint);
+    } else if (existingOffsets) {
+      this.restoreTextRange(body, existingOffsets);
     } else {
       this.textSelectionRange = null;
     }
@@ -2339,7 +2368,9 @@ export class EditorCanvas {
       return { node: last, offset: last.data.length };
     };
     const start = locate(offsets.start, 'forward');
-    const end = locate(Math.max(offsets.start, offsets.end), 'backward');
+    const end = offsets.end === offsets.start
+      ? start
+      : locate(Math.max(offsets.start, offsets.end), 'backward');
     const range = document.createRange();
     range.setStart(start.node, start.offset);
     range.setEnd(end.node, end.offset);
@@ -2348,6 +2379,109 @@ export class EditorCanvas {
     selection?.addRange(range);
     this.textSelectionRange = range.cloneRange();
     root.focus();
+  }
+
+  /**
+   * The live browser Range when it still belongs to this editor, otherwise the
+   * offset-stable bookmark captured before focus moved into inspector chrome.
+   */
+  private activeTextRange(root: HTMLElement): Range | null {
+    const selection = window.getSelection();
+    if (selection?.rangeCount) {
+      const live = selection.getRangeAt(0);
+      if (root.contains(live.commonAncestorContainer)) return live;
+    }
+    const saved = this.textSelectionRange;
+    return saved && root.contains(saved.commonAncestorContainer) ? saved : null;
+  }
+
+  /** Text node whose authored style controls typing at a collapsed caret. */
+  private textNodeAtCaret(root: HTMLElement, range: Range): Text | null {
+    if (range.startContainer instanceof Text) return range.startContainer;
+    const offsets = this.textOffsetsForRange(root, range);
+    if (!offsets) return null;
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    let cursor = 0;
+    let previous: Text | null = null;
+    for (let current = walker.nextNode(); current; current = walker.nextNode()) {
+      const text = current as Text;
+      if (offsets.start <= cursor + text.data.length) return text;
+      cursor += text.data.length;
+      previous = text;
+    }
+    return previous;
+  }
+
+  private clearTypingStyleMarker(marker: HTMLElement): void {
+    const walker = document.createTreeWalker(marker, NodeFilter.SHOW_TEXT);
+    const texts: Text[] = [];
+    for (let current = walker.nextNode(); current; current = walker.nextNode()) {
+      texts.push(current as Text);
+    }
+    texts.forEach((text) => { text.data = text.data.replaceAll(TYPING_STYLE_SENTINEL, ''); });
+    marker.removeAttribute('data-editor-typing-style');
+    if (!(marker.textContent ?? '')) marker.remove();
+  }
+
+  /**
+   * Give a collapsed caret an explicit authored style without relying on
+   * execCommand/queryCommandState. The word-joiner keeps the Range inside the
+   * span; typed characters inherit the span and the sentinel is stripped when
+   * the DOM is serialized.
+   */
+  private applyCollapsedTypingStyle(
+    content: HTMLElement,
+    originalRange: Range,
+    property: 'fontWeight' | 'fontFamily' | 'fontSize' | 'fontStyle' | 'textDecorationLine' | 'color',
+    value: string,
+  ): boolean {
+    const offsets = this.textOffsetsForRange(content, originalRange);
+    if (!offsets) return false;
+    let range = originalRange;
+    const container = range.startContainer instanceof Element
+      ? range.startContainer
+      : range.startContainer.parentElement;
+    const existing = container?.closest<HTMLElement>('[data-editor-typing-style]') ?? null;
+    if (existing && content.contains(existing)) {
+      if ((existing.textContent ?? '') === TYPING_STYLE_SENTINEL) {
+        existing.style[property] = value;
+        const text = existing.firstChild;
+        if (text instanceof Text) {
+          const caret = document.createRange();
+          caret.setStart(text, 0);
+          caret.collapse(true);
+          const selection = window.getSelection();
+          selection?.removeAllRanges();
+          selection?.addRange(caret);
+          this.textSelectionRange = caret.cloneRange();
+        }
+        content.focus();
+        this.onTextFormatStateChange?.();
+        return true;
+      }
+      // The old typing run now contains authored characters. Seal it before
+      // starting a differently styled run at the same logical text offset.
+      this.clearTypingStyleMarker(existing);
+      this.restoreTextRange(content, { start: offsets.start, end: offsets.start });
+      range = this.activeTextRange(content) ?? range;
+    }
+
+    const marker = document.createElement('span');
+    marker.dataset.editorTypingStyle = 'true';
+    marker.style[property] = value;
+    const sentinel = document.createTextNode(TYPING_STYLE_SENTINEL);
+    marker.appendChild(sentinel);
+    range.insertNode(marker);
+    const caret = document.createRange();
+    caret.setStart(sentinel, 0);
+    caret.collapse(true);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(caret);
+    this.textSelectionRange = caret.cloneRange();
+    content.focus();
+    this.onTextFormatStateChange?.();
+    return true;
   }
 
   /** Write the edited markup back to the deck as a single undoable change. */
@@ -2533,11 +2667,8 @@ export class EditorCanvas {
     const content = this.slideLayer.querySelector<HTMLElement>(
       `[data-element-id="${CSS.escape(this.editingId)}"] .text-content`,
     );
-    const live = window.getSelection();
-    const range = live && live.rangeCount > 0 && !live.getRangeAt(0).collapsed
-      ? live.getRangeAt(0)
-      : this.textSelectionRange;
-    if (!content || !range || range.collapsed || !content.contains(range.commonAncestorContainer)) {
+    const range = content ? this.activeTextRange(content) : null;
+    if (!content || !range || !content.contains(range.commonAncestorContainer)) {
       return false;
     }
 
@@ -2553,15 +2684,16 @@ export class EditorCanvas {
 
   textSelectionFormatState(format: 'bold' | 'italic' | 'underline'): boolean {
     if (!this.editingId) return false;
-    const selection = window.getSelection();
-    const range = selection && selection.rangeCount > 0 && !selection.getRangeAt(0).collapsed
-      ? selection.getRangeAt(0)
-      : this.textSelectionRange;
-    if (!range) return false;
     const content = this.slideLayer.querySelector<HTMLElement>(
       `[data-element-id="${CSS.escape(this.editingId)}"] .text-content`,
     );
     if (!content) return false;
+    const range = this.activeTextRange(content);
+    if (!range) return false;
+    if (range.collapsed) {
+      const caret = this.textNodeAtCaret(content, range);
+      return Boolean(caret && this.textNodeFormatState(caret, content, format));
+    }
     const offsets = this.textOffsetsForRange(content, range);
     const first = offsets ? this.textSlicesForOffsets(content, offsets)[0]?.text : null;
     return Boolean(first && this.textNodeFormatState(first, content, format));
@@ -2749,7 +2881,7 @@ export class EditorCanvas {
       const target = deck.slides[this.store.get().slideIndex]?.elements.find(
         (element) => element.id === elementId,
       );
-      if (target && target.type === 'text') target.html = html;
+      if (target && (target.type === 'text' || target.type === 'html')) target.html = html;
     }, { label, coalesceKey });
   }
 
@@ -2810,12 +2942,13 @@ export class EditorCanvas {
     const content = this.slideLayer.querySelector<HTMLElement>(
       `[data-element-id="${CSS.escape(this.editingId)}"] .text-content`,
     );
-    const live = window.getSelection();
-    const range = live && live.rangeCount > 0 && !live.getRangeAt(0).collapsed
-      ? live.getRangeAt(0)
-      : this.textSelectionRange;
-    if (!content || !range || range.collapsed || !content.contains(range.commonAncestorContainer)) {
+    if (!content) return false;
+    const range = this.activeTextRange(content);
+    if (!range || !content.contains(range.commonAncestorContainer)) {
       return false;
+    }
+    if (range.collapsed) {
+      return this.applyCollapsedTypingStyle(content, range, property, value);
     }
 
     const offsets = this.textOffsetsForRange(content, range);
@@ -3188,12 +3321,22 @@ export class EditorCanvas {
   private captureTextSelection(): void {
     if (!this.editingId) return;
     const selection = window.getSelection();
-    if (!selection || selection.rangeCount === 0 || selection.isCollapsed) return;
+    if (!selection || selection.rangeCount === 0) return;
     const range = selection.getRangeAt(0);
     const content = this.slideLayer.querySelector<HTMLElement>(
       `[data-element-id="${CSS.escape(this.editingId)}"] .text-content`,
     );
     if (content?.contains(range.commonAncestorContainer)) {
+      const container = range.startContainer instanceof Element
+        ? range.startContainer
+        : range.startContainer.parentElement;
+      const activeMarker = container?.closest('[data-editor-typing-style]') ?? null;
+      // Once the caret leaves a pending run, seal authored characters and
+      // remove an unused sentinel. Otherwise invisible marker characters
+      // accumulate and corrupt later plain-text offset bookmarks.
+      content.querySelectorAll<HTMLElement>('[data-editor-typing-style]').forEach((marker) => {
+        if (marker !== activeMarker) this.clearTypingStyleMarker(marker);
+      });
       this.textSelectionRange = range.cloneRange();
     }
   }
