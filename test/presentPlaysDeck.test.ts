@@ -5,7 +5,6 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
-import { build } from 'vite';
 import { emptyDeck, type SlideElement } from '../src/shared/deck.js';
 import { saveDeck } from '../src/main/deckStore.js';
 import { startCollabServer, type RunningCollabServer } from '../src/server/collabServer.js';
@@ -18,6 +17,7 @@ import {
   stopBrowser,
   type RunningBrowser,
 } from './support/browserSession.js';
+import { collabClientDir } from './support/collabClient.js';
 
 /**
  * The most elementary promise the app makes: clicking Present shows the deck,
@@ -98,7 +98,7 @@ describe.skipIf(!electronBinary || !ffmpeg)('presenting the deck', () => {
     workDir = await mkdtemp(join(tmpdir(), 'present-plays-'));
     const decksRoot = join(workDir, 'decks');
     const deckDir = join(decksRoot, DECK_ID);
-    const clientDir = join(workDir, 'client');
+    const clientDir = await collabClientDir();
     const profileDir = join(workDir, 'electron-profile');
     await mkdir(join(deckDir, 'assets'), { recursive: true });
     await mkdir(profileDir, { recursive: true });
@@ -133,11 +133,6 @@ describe.skipIf(!electronBinary || !ffmpeg)('presenting the deck', () => {
       '',
     ].join('\n'), 'utf8');
 
-    await build({
-      configFile: join(process.cwd(), 'vite.collab.config.ts'),
-      logLevel: 'silent',
-      build: { outDir: clientDir, emptyOutDir: true },
-    });
     server = await startCollabServer({
       rootDir: decksRoot, clientDir, host: '127.0.0.1', port: 0,
     });

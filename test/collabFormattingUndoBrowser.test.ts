@@ -2,7 +2,6 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { build } from 'vite';
 import { saveDeck } from '../src/main/deckStore.js';
 import { startCollabServer, type RunningCollabServer } from '../src/server/collabServer.js';
 import { emptyDeck, type Deck, type SlideElement } from '../src/shared/deck.js';
@@ -15,6 +14,7 @@ import {
   stopBrowser,
   type RunningBrowser,
 } from './support/browserSession.js';
+import { collabClientDir } from './support/collabClient.js';
 
 /**
  * Full production-browser regression for formatting focus, scope, and undo.
@@ -55,7 +55,7 @@ describe.skipIf(!electronBinary)('formatting scope and undo in the collaboration
     workDir = await mkdtemp(join(tmpdir(), 'collab-format-undo-'));
     const decksRoot = join(workDir, 'decks');
     const deckDir = join(decksRoot, DECK_ID);
-    const clientDir = join(workDir, 'client');
+    const clientDir = await collabClientDir();
     const profileDir = join(workDir, 'electron-profile');
     await mkdir(deckDir, { recursive: true });
     await mkdir(profileDir, { recursive: true });
@@ -77,11 +77,6 @@ describe.skipIf(!electronBinary)('formatting scope and undo in the collaboration
       '',
     ].join('\n'), 'utf8');
 
-    await build({
-      configFile: join(process.cwd(), 'vite.collab.config.ts'),
-      logLevel: 'silent',
-      build: { outDir: clientDir, emptyOutDir: true },
-    });
     server = await startCollabServer({ rootDir: decksRoot, clientDir, host: '127.0.0.1', port: 0 });
     browser = await launchBrowser(
       `http://127.0.0.1:${server.port}/?deck=${DECK_ID}&name=Formatting%20Undo`,
@@ -600,7 +595,10 @@ describe.skipIf(!electronBinary)('formatting scope and undo in the collaboration
       await refocusTableAndUndo();
 
       await enterTable(scope);
-      await editor.choose(`${PANEL} .font-family-field select`, 'Arial', `${scope} font family`);
+      // The fixture already inherits Arial from the element. Choosing Arial
+      // again is correctly a no-op, so use a genuinely different family when
+      // asserting that the selected cells receive an explicit declaration.
+      await editor.choose(`${PANEL} .font-family-field select`, 'Georgia', `${scope} font family`);
       await expectTableStyled(server.port, 'font-family', affected);
       await refocusTableAndUndo();
 

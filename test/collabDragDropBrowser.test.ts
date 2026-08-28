@@ -2,7 +2,6 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { build } from 'vite';
 import { saveDeck } from '../src/main/deckStore.js';
 import { startCollabServer, type RunningCollabServer } from '../src/server/collabServer.js';
 import { emptyDeck, type Deck } from '../src/shared/deck.js';
@@ -15,6 +14,7 @@ import {
   stopBrowser,
   type RunningBrowser,
 } from './support/browserSession.js';
+import { collabClientDir } from './support/collabClient.js';
 
 /**
  * Drag-and-drop of real image and video files into the browser collab client.
@@ -64,7 +64,7 @@ describe.skipIf(!electronBinary)('collab drag-and-drop', () => {
     workDir = await mkdtemp(join(tmpdir(), 'collab-drag-drop-'));
     const decksRoot = join(workDir, 'decks');
     const deckDir = join(decksRoot, DECK_ID);
-    const clientDir = join(workDir, 'client');
+    const clientDir = await collabClientDir();
     const profileDir = join(workDir, 'electron-profile');
     await mkdir(deckDir, { recursive: true });
     await mkdir(profileDir, { recursive: true });
@@ -75,14 +75,6 @@ describe.skipIf(!electronBinary)('collab drag-and-drop', () => {
       '.slide { background: #ffffff; color: #111827; }\n',
       'utf8',
     );
-
-    // Build the real browser client into the fixture so the test always drives
-    // current production output rather than a stale dist/collab.
-    await build({
-      configFile: join(process.cwd(), 'vite.collab.config.ts'),
-      logLevel: 'silent',
-      build: { outDir: clientDir, emptyOutDir: true },
-    });
 
     server = await startCollabServer({
       rootDir: decksRoot,

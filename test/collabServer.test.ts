@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -335,7 +334,7 @@ describe('collab server', () => {
     for (let i = 0; i < 5; i++) seqs.push((await a.client.nextOfKind('txn')).seq);
     expect(seqs).toEqual([1, 2, 3, 4, 5]);
 
-    await new Promise((resolve) => setTimeout(resolve, 1100)); // outlast the save debounce
+    await server.flush();
     const persisted = parseDeck(JSON.parse(await readFile(join(deckDir, 'deck.json'), 'utf8')));
     expect(persisted.title).toBe('Title 4');
   });
@@ -357,7 +356,10 @@ describe('collab server', () => {
       ops: [{ op: 'updateDeck', title: 'Own Write' }],
     });
     await a.client.nextOfKind('txn');
-    await new Promise((resolve) => setTimeout(resolve, 1300)); // autosave lands; watcher echo must be silent
+    await server.flush();
+    // Let the watcher consume the server's own write before making an external
+    // one. The production debounce is not part of the behavior under test.
+    await new Promise((resolve) => setTimeout(resolve, 300));
 
     const external = parseDeck({ ...emptyDeck('External'), slides: [{ id: 'sX', name: 'X' }] });
     await saveDeck(deckDir, external);
@@ -525,31 +527,41 @@ describe('collab server', () => {
     expect(await response.json()).toMatchObject({ error: expect.stringMatching(/must be public/) });
   });
 
-  it.skipIf(!existsSync(join(process.cwd(), 'example_presentations', 'team_slide.key')))(
-    'imports, lists, and opens a real Keynote deck through HTTP',
-    async () => {
-      const key = await readFile(join(process.cwd(), 'example_presentations', 'team_slide.key'));
-      const imported = await fetch(
-        `http://127.0.0.1:${server.port}/api/import-keynote?name=Imported%20Team`,
-        { method: 'POST', body: key },
-      );
-      expect(imported.status).toBe(200);
-      expect(await imported.json()).toMatchObject({ id: 'Imported Team' });
+  it('imports, lists, and opens a Keynote adapter result through HTTP', async () => {
+    await server.close();
+    server = await startCollabServer({
+      rootDir,
+      port: 0,
+      host: '127.0.0.1',
+      keynoteImporter: async (keyFile, outDir) => {
+        expect(await readFile(keyFile, 'utf8')).toBe('keynote fixture');
+        await saveDeck(outDir, parseDeck({
+          ...emptyDeck('Imported Team'),
+          slides: [{ id: 'imported-slide', name: 'Imported' }],
+        }));
+        await writeFile(join(outDir, 'theme.css'), '/* imported */\n', 'utf8');
+        return { warnings: [] };
+      },
+    });
+    const imported = await fetch(
+      `http://127.0.0.1:${server.port}/api/import-keynote?name=Imported%20Team`,
+      { method: 'POST', body: 'keynote fixture' },
+    );
+    expect(imported.status).toBe(200);
+    expect(await imported.json()).toMatchObject({ id: 'Imported Team' });
 
-      const decks = await (await fetch(`http://127.0.0.1:${server.port}/api/decks`)).json() as
-        Array<{ id: string; slides: number }>;
-      expect(decks).toContainEqual(expect.objectContaining({ id: 'Imported Team', slides: expect.any(Number) }));
-      expect(decks.find((deck) => deck.id === 'Imported Team')!.slides).toBeGreaterThan(0);
+    const decks = await (await fetch(`http://127.0.0.1:${server.port}/api/decks`)).json() as
+      Array<{ id: string; slides: number }>;
+    expect(decks).toContainEqual(expect.objectContaining({ id: 'Imported Team', slides: expect.any(Number) }));
+    expect(decks.find((deck) => deck.id === 'Imported Team')!.slides).toBeGreaterThan(0);
 
-      const opened = await fetch(
-        `http://127.0.0.1:${server.port}/api/deck?deck=Imported%20Team`,
-      );
-      expect(opened.status).toBe(200);
-      const deck = await opened.json() as Deck;
-      expect(deck.slides.length).toBeGreaterThan(0);
-    },
-    30_000,
-  );
+    const opened = await fetch(
+      `http://127.0.0.1:${server.port}/api/deck?deck=Imported%20Team`,
+    );
+    expect(opened.status).toBe(200);
+    const deck = await opened.json() as Deck;
+    expect(deck.slides.length).toBeGreaterThan(0);
+  });
 
   it('previews and applies HTML once while preserving slide comments', async () => {
     const base = `http://127.0.0.1:${server.port}`;

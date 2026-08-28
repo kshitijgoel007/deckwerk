@@ -2,7 +2,6 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { build } from 'vite';
 import { saveDeck } from '../src/main/deckStore.js';
 import { startCollabServer, type RunningCollabServer } from '../src/server/collabServer.js';
 import { emptyDeck } from '../src/shared/deck.js';
@@ -15,6 +14,7 @@ import {
   stopBrowser,
   type RunningBrowser,
 } from './support/browserSession.js';
+import { collabClientDir } from './support/collabClient.js';
 
 /**
  * PDF export from the browser collaboration client.
@@ -35,11 +35,8 @@ let workDir = '';
 let server: RunningCollabServer | null = null;
 let browser: RunningBrowser | null = null;
 let editor: Cdp | null = null;
-let print: Cdp | null = null;
 
 afterEach(async () => {
-  print?.close();
-  print = null;
   editor?.close();
   editor = null;
   await stopBrowser(browser?.process ?? null);
@@ -55,7 +52,7 @@ describe.skipIf(!electronBinary)('collaboration PDF export', () => {
     workDir = await mkdtemp(join(tmpdir(), 'collab-pdf-export-'));
     const decksRoot = join(workDir, 'decks');
     const deckDir = join(decksRoot, DECK_ID);
-    const clientDir = join(workDir, 'client');
+    const clientDir = await collabClientDir();
     const profileDir = join(workDir, 'electron-profile');
     await mkdir(deckDir, { recursive: true });
     await mkdir(profileDir, { recursive: true });
@@ -88,12 +85,6 @@ describe.skipIf(!electronBinary)('collaboration PDF export', () => {
       '.role-title { font: 700 72px/1.1 sans-serif; }',
       '',
     ].join('\n'), 'utf8');
-
-    await build({
-      configFile: join(process.cwd(), 'vite.collab.config.ts'),
-      logLevel: 'silent',
-      build: { outDir: clientDir, emptyOutDir: true },
-    });
 
     server = await startCollabServer({
       rootDir: decksRoot, clientDir, host: '127.0.0.1', port: 0,
@@ -134,25 +125,36 @@ describe.skipIf(!electronBinary)('collaboration PDF export', () => {
       'PDF… menu item',
     );
     await editor.click('.pdf-export-dialog input[type="checkbox"]', 'include-builds checkbox');
+
+    // Capture the URL the real export action asks the browser to open. Letting
+    // that tab open here races its immediate native `window.print()` call: a
+    // modal print dialog can block CDP before the test has a chance to stub it.
+    // Navigating this already-controlled target to the captured URL exercises
+    // the same production print page without the native-dialog race.
+    const capturesPrintUrl = await editor.evaluate<boolean>(`(() => {
+      window.__openedPrintUrl = '';
+      window.open = (url) => {
+        window.__openedPrintUrl = String(url);
+        return {};
+      };
+      return true;
+    })()`);
+    expect(capturesPrintUrl).toBe(true);
     await editor.click('.pdf-export-dialog button.primary', 'Export');
+    const printPath = await editor.evaluate<string>('window.__openedPrintUrl');
+    expect(printPath).toContain('print.html');
+    expect(printPath).toContain(`deck=${DECK_ID}`);
+    expect(printPath).toContain('mode=every');
 
-    const printTarget = await findTarget(
-      browser.debugPort,
-      (target) => target.url.includes('print.html') && target.url.includes(`deck=${DECK_ID}`),
-      browser.log,
-    );
-    expect(printTarget.url).toContain('mode=every');
-    print = await Cdp.connect(printTarget.webSocketDebuggerUrl!);
-
-    // Reload with `window.print` stubbed: the page opens the print dialog on
-    // its own, which would block this hidden window with modal native UI.
-    await print.call('Page.enable');
-    await print.call('Page.addScriptToEvaluateOnNewDocument', {
+    await editor.call('Page.enable');
+    await editor.call('Page.addScriptToEvaluateOnNewDocument', {
       source: 'window.__printed = 0; window.print = () => { window.__printed++; };',
     });
-    await print.call('Page.reload', { ignoreCache: true });
+    await editor.call('Page.navigate', {
+      url: new URL(printPath, `http://127.0.0.1:${server.port}/`).href,
+    });
 
-    const rendered = await eventually(async () => print!.evaluate<{
+    const rendered = await eventually(async () => editor!.evaluate<{
       ready: string;
       error: string;
       pages: number;

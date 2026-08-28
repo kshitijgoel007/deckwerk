@@ -362,7 +362,9 @@ function runSequence(seed: number, steps: number): Violation[] {
     const op = ops[Math.floor(random() * ops.length)];
     log.push(op.name);
     op.run();
-    canvas.render();
+    // EditorCanvas subscribes synchronously to every store change. Calling
+    // render again here doubled the dominant DOM work without observing a
+    // different state; selection-only operations also notify that subscriber.
     for (const message of checkInvariants(store, slideLayer)) {
       violations.push({ step, op: op.name, message });
     }

@@ -142,6 +142,8 @@ export interface CollabServerOptions {
    * every browser participant can use. Account management remains loopback-only.
    */
   sharedAgent?: SharedAgentRuntimeLike;
+  /** Override the external Keynote adapter in focused server tests. */
+  keynoteImporter?: (keyFile: string, outDir: string) => Promise<unknown>;
   /**
    * Called when the host requests the session end (POST /api/end from
    * loopback in a hosted session). The owner tears the server down; the
@@ -153,6 +155,8 @@ export interface CollabServerOptions {
 export interface RunningCollabServer {
   urls: string[];
   port: number;
+  /** Persist every room immediately instead of waiting for its save debounce. */
+  flush: () => Promise<void>;
   close: () => Promise<void>;
 }
 
@@ -515,7 +519,7 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
       try {
         const keyFile = join(tmp, `${name}.key`);
         await writeFile(keyFile, body);
-        const report = await runKeynoteImport(keyFile, dir);
+        const report = await (options.keynoteImporter ?? runKeynoteImport)(keyFile, dir);
         respondJson(response, 200, { id: name, report });
       } catch (error) {
         await rm(dir, { recursive: true, force: true });
@@ -1415,6 +1419,9 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
   return {
     port,
     urls: reachableUrls(host, port),
+    flush: async () => {
+      await Promise.all([...rooms.values()].map((room) => room.session.flush()));
+    },
     close: async () => {
       wss.close();
       unsubscribeSharedAgent?.();

@@ -2602,6 +2602,27 @@ export class EditorCanvas {
     return this.editingId !== null;
   }
 
+  /** Whether inspector chrome should target characters rather than a selected
+   * table cell/range. A collapsed caret inside a selected cell is not an
+   * expanded character selection and must not consume cell typography. */
+  hasExpandedTextSelection(): boolean {
+    if (!this.editingId) return false;
+    const content = this.slideLayer.querySelector<HTMLElement>(
+      `[data-element-id="${CSS.escape(this.editingId)}"] .text-content`,
+    );
+    if (!content) return false;
+    const live = window.getSelection();
+    if (live?.rangeCount) {
+      const range = live.getRangeAt(0);
+      if (content.contains(range.commonAncestorContainer)) return !range.collapsed;
+    }
+    return Boolean(
+      this.textSelectionRange
+      && !this.textSelectionRange.collapsed
+      && content.contains(this.textSelectionRange.commonAncestorContainer),
+    );
+  }
+
   /** Refit after live theme CSS changes without rebuilding the slide DOM. */
   refitAutoText(): void {
     fitAutoText(this.slideLayer);

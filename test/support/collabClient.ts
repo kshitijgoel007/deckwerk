@@ -1,0 +1,129 @@
+import { createHash } from 'node:crypto';
+import { existsSync } from 'node:fs';
+import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, relative, resolve } from 'node:path';
+import { build } from 'vite';
+
+/**
+ * Build the production collaboration client once for all browser-test workers.
+ *
+ * Browser files used to run the identical Vite build into their own temporary
+ * directory. In a full run that meant fourteen simultaneous builds competing
+ * for CPU and disk. The content hash keeps focused test runs correct after a
+ * source edit, while the atomic lock lets separate Vitest workers safely share
+ * the immutable output.
+ */
+let pending: Promise<string> | null = null;
+
+export function collabClientDir(): Promise<string> {
+  pending ??= prepareCollabClient();
+  return pending;
+}
+
+async function prepareCollabClient(): Promise<string> {
+  const checkout = process.cwd();
+  const hash = await sourceHash(checkout);
+  const cacheRoot = join(tmpdir(), 'slide-editor-vitest-collab');
+  const outDir = join(cacheRoot, hash);
+  const ready = join(outDir, '.ready');
+  const lock = join(cacheRoot, `${hash}.lock`);
+  await mkdir(cacheRoot, { recursive: true });
+  if (existsSync(ready)) return outDir;
+
+  for (;;) {
+    try {
+      await mkdir(lock);
+      await writeFile(join(lock, 'owner.json'), JSON.stringify({
+        pid: process.pid,
+        startedAt: Date.now(),
+      }), 'utf8');
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      for (let attempt = 0; attempt < 600; attempt += 1) {
+        if (existsSync(ready)) return outDir;
+        if (!existsSync(lock)) break;
+        if (await buildLockIsStale(lock)) {
+          await rm(lock, { recursive: true, force: true });
+          break;
+        }
+        await wait(100);
+      }
+      if (existsSync(lock)) {
+        throw new Error(`Timed out waiting for shared collaboration-client build: ${lock}`);
+      }
+    }
+  }
+
+  try {
+    if (existsSync(ready)) return outDir;
+    await rm(outDir, { recursive: true, force: true });
+    await build({
+      configFile: join(checkout, 'vite.collab.config.ts'),
+      logLevel: 'silent',
+      build: { outDir, emptyOutDir: true },
+    });
+    await writeFile(ready, `${hash}\n`, 'utf8');
+    return outDir;
+  } finally {
+    await rm(lock, { recursive: true, force: true });
+  }
+}
+
+/** A killed Vitest worker must not make the next run wait two minutes. */
+async function buildLockIsStale(lock: string): Promise<boolean> {
+  const details = await stat(lock).catch(() => null);
+  if (!details || Date.now() - details.mtimeMs < 5_000) return false;
+  try {
+    const owner = JSON.parse(await readFile(join(lock, 'owner.json'), 'utf8')) as {
+      pid?: number;
+      startedAt?: number;
+    };
+    if (typeof owner.pid !== 'number') return true;
+    try {
+      process.kill(owner.pid, 0);
+      return typeof owner.startedAt === 'number' && Date.now() - owner.startedAt > 10 * 60_000;
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === 'ESRCH';
+    }
+  } catch {
+    return true;
+  }
+}
+
+async function sourceHash(checkout: string): Promise<string> {
+  const roots = [
+    resolve(checkout, 'src'),
+    resolve(checkout, 'vite.collab.config.ts'),
+    resolve(checkout, 'package-lock.json'),
+  ];
+  const files: string[] = [];
+  for (const root of roots) {
+    if (!existsSync(root)) continue;
+    const entries = await readdir(root, { withFileTypes: true }).catch(() => null);
+    if (entries === null) files.push(root);
+    else await collectFiles(root, files);
+  }
+  files.sort();
+  const hash = createHash('sha256');
+  for (const file of files) {
+    hash.update(relative(checkout, file));
+    hash.update('\0');
+    hash.update(await readFile(file));
+    hash.update('\0');
+  }
+  return hash.digest('hex').slice(0, 20);
+}
+
+async function collectFiles(dir: string, files: string[]): Promise<void> {
+  for (const entry of await readdir(dir, { withFileTypes: true })) {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) await collectFiles(path, files);
+    else if (entry.isFile()) files.push(path);
+  }
+}
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
+}

@@ -33,17 +33,44 @@ const BUNDLED_IMPORTER = join(process.cwd(), 'build', 'importers',
 
 const ready = existsSync(PYTHON) && existsSync(SCRIPT);
 
-function report(keyPath: string): {
+type ImportReport = {
   slides: number;
   elements: number;
   unsupported: Record<string, number>;
   warnings: string[];
-} {
-  const stdout = execFileSync(PYTHON, [SCRIPT, keyPath, '--report'], {
+};
+
+type FixtureAnalysis = { report: ImportReport; curves: number };
+const fixtureAnalysis = new Map<string, FixtureAnalysis>();
+
+/** Parse a fixture corpus in one Python process and retain the useful facts. */
+function analyseFixtures(keyPaths: string[]): Map<string, FixtureAnalysis> {
+  const missing = keyPaths.filter((keyPath) => !fixtureAnalysis.has(keyPath));
+  if (missing.length === 0) return fixtureAnalysis;
+  const stdout = execFileSync(PYTHON, ['-c', [
+    'import json, sys',
+    'from pathlib import Path',
+    'from importers.keynote.import_keynote import import_key',
+    'out = {}',
+    'for raw in sys.argv[1:]:',
+    "    deck, report = import_key(Path(raw), Path('/dev/null'), False)",
+    "    curves = sum(1 for slide in deck['slides'] for element in slide['elements'] if element.get('control'))",
+    "    out[raw] = {'report': report.to_dict(), 'curves': curves}",
+    'print(json.dumps(out))',
+  ].join('\n'), ...missing], {
     encoding: 'utf8',
     maxBuffer: 64 * 1024 * 1024,
+    cwd: process.cwd(),
   });
-  return JSON.parse(stdout).report;
+  const analysed = JSON.parse(stdout) as Record<string, FixtureAnalysis>;
+  for (const [keyPath, result] of Object.entries(analysed)) {
+    fixtureAnalysis.set(keyPath, result);
+  }
+  return fixtureAnalysis;
+}
+
+function report(keyPath: string): ImportReport {
+  return analyseFixtures([keyPath]).get(keyPath)!.report;
 }
 
 describe.skipIf(!ready)('keynote importer', () => {
@@ -58,8 +85,9 @@ describe.skipIf(!ready)('keynote importer', () => {
       .map((f) => join(fixtures!, f));
     expect(decks.length).toBeGreaterThan(0);
 
+    const analysed = analyseFixtures(decks);
     for (const deck of decks) {
-      const r = report(deck);
+      const r = analysed.get(deck)!.report;
       expect(r.slides, `${deck} produced no slides`).toBeGreaterThan(0);
       // The guarantee is not "everything converts" but "nothing explodes":
       // unknown objects are allowed, they just have to become placeholders.
@@ -95,7 +123,12 @@ describe.skipIf(!ready)('keynote importer', () => {
     120_000,
   );
 
-  it.skipIf(!existsSync(BUNDLED_IMPORTER) || !existsSync(join(LOCAL_FIXTURES, 'team_slide.key')))(
+  // Launching the frozen PyInstaller artifact duplicates the source-import
+  // checks above and carries several seconds of one-file extraction overhead.
+  // Keep it as an explicit release check instead of taxing every local suite.
+  it.skipIf(process.env.KEYNOTE_PACKAGED !== '1'
+    || !existsSync(BUNDLED_IMPORTER)
+    || !existsSync(join(LOCAL_FIXTURES, 'team_slide.key')))(
     'imports and reopens a real deck with the packaged sidecar',
     async () => {
       const out = await mkdtemp(join(tmpdir(), 'kn-packaged-open-'));
@@ -158,16 +191,9 @@ describe.skipIf(!ready)('keynote importer', () => {
   it.skipIf(!fixtures)('preserves curved Keynote connectors as editable curves', () => {
     const { readdirSync } = require('node:fs') as typeof import('node:fs');
     const candidates = readdirSync(fixtures!).filter((name) => name.endsWith('.key'));
-    let curves = 0;
-    for (const name of candidates.slice(0, 8)) {
-      const stdout = execFileSync(PYTHON, ['-c', [
-        'from pathlib import Path',
-        'from importers.keynote.import_keynote import import_key',
-        `d,_=import_key(Path(${JSON.stringify(join(fixtures!, name))}),Path('/dev/null'),False)`,
-        "print(sum(1 for s in d['slides'] for e in s['elements'] if e.get('control')))",
-      ].join(';')], { encoding: 'utf8', cwd: process.cwd() });
-      curves += Number(stdout.trim()) || 0;
-    }
+    const paths = candidates.slice(0, 8).map((name) => join(fixtures!, name));
+    const analysed = analyseFixtures(paths);
+    const curves = paths.reduce((total, path) => total + analysed.get(path)!.curves, 0);
     expect(curves).toBeGreaterThan(0);
   }, 600_000);
 
@@ -215,7 +241,9 @@ describe.skipIf(!ready)('keynote importer', () => {
     60_000,
   );
 
+  let bitterLessonCache: ReturnType<typeof parseDeck> | null = null;
   function importBitterLesson() {
+    if (bitterLessonCache) return bitterLessonCache;
     const stdout = execFileSync(PYTHON, ['-c', [
       'import json',
       'from pathlib import Path',
@@ -223,7 +251,8 @@ describe.skipIf(!ready)('keynote importer', () => {
       `d,_=import_key(Path(${JSON.stringify(bitterLessonDeck)}),Path('/dev/null'),False)`,
       'print(json.dumps(d))',
     ].join(';')], { encoding: 'utf8', cwd: process.cwd(), maxBuffer: 64 * 1024 * 1024 });
-    return parseDeck(JSON.parse(stdout));
+    bitterLessonCache = parseDeck(JSON.parse(stdout));
+    return bitterLessonCache;
   }
 
   it.skipIf(!existsSync(bitterLessonDeck))(

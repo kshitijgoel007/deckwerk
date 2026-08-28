@@ -4,7 +4,6 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { build } from 'vite';
 import { saveDeck } from '../src/main/deckStore.js';
 import { emptyDeck } from '../src/shared/deck.js';
 import { startCollabServer, type RunningCollabServer } from '../src/server/collabServer.js';
@@ -18,6 +17,7 @@ import {
   stopBrowser,
   launchBrowser,
 } from './support/browserSession.js';
+import { collabClientDir } from './support/collabClient.js';
 
 /**
  * End-to-end screenshot paste through the desktop app.
@@ -195,17 +195,12 @@ describe.skipIf(!runnable)('clipboard screenshot paste in the headless-server We
     workDir = await mkdtemp(join(tmpdir(), 'deckwerk-collab-clipboard-image-'));
     const decksRoot = join(workDir, 'decks');
     const deckDir = join(decksRoot, 'clipboard-web');
-    const clientDir = join(workDir, 'client');
+    const clientDir = await collabClientDir();
     const profileDir = join(workDir, 'electron-profile');
     await mkdir(profileDir, { recursive: true });
     await saveDeck(deckDir, emptyDeck('Web clipboard screenshot'));
     await writeFile(join(deckDir, 'theme.css'), '.slide { background: #fff; }\n', 'utf8');
 
-    await build({
-      configFile: join(process.cwd(), 'vite.collab.config.ts'),
-      logLevel: 'silent',
-      build: { outDir: clientDir, emptyOutDir: true },
-    });
     server = await startCollabServer({
       rootDir: decksRoot,
       clientDir,

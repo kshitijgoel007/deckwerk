@@ -13,7 +13,9 @@ import { loadDeck } from '../src/main/deckStore.js';
 import { writeHtmlScope } from '../src/main/htmlAuthoring.js';
 
 /**
- * Every slide of a real talk, exported one at a time, and demanded back intact.
+ * Every slide of a real talk, exported together and demanded back intact. The
+ * first slide and the full-bleed-background sentinel are also exported alone
+ * so single-slide authoring retains explicit boundary coverage.
  *
  * The reference deck in `htmlRoundTrip` is a tidy 22 slides. This is 58 slides
  * of a talk that was actually given: title slide with a full-bleed photographic
@@ -21,11 +23,9 @@ import { writeHtmlScope } from '../src/main/htmlAuthoring.js';
  * steps, and whatever the Keynote importer could not place. It is the deck the
  * bugs turn up in.
  *
- * Exported *per slide*, because that is what a person does — select a slide,
- * press the button — and because a bug that only shows up on slide 1 of 58 is
- * invisible in a whole-deck export where slide 1 is 2% of the page. The first
- * thing this found was exactly that: the title slide's background image was
- * dropped, since the exporter only ever wrote `background.color`.
+ * Measuring the common whole-deck page once avoids 58 browser navigations.
+ * The sentinel scopes preserve the regression that first found the title
+ * slide's dropped background image.
  *
  * Needs the importer venv, the .key, and Electron; skips politely without them.
  */
@@ -53,10 +53,12 @@ function fullBleedBackground(slide: Slide, deck: Deck) {
     && element.z === 0);
 }
 
-describe.skipIf(!runnable)('every Bitter Lesson slide, exported on its own', () => {
+describe.skipIf(!runnable)('every Bitter Lesson slide, exported and rebuilt', () => {
   let dir: string;
   let deck: Deck;
   let rebuilt: Slide[];
+  let singleRebuilt: Map<string, Slide>;
+  let singlePages: Map<string, string>;
 
   beforeAll(async () => {
     dir = await mkdtemp(join(tmpdir(), 'bitter-lesson-'));
@@ -72,16 +74,29 @@ describe.skipIf(!runnable)('every Bitter Lesson slide, exported on its own', () 
     ].join('\n')], { cwd: process.cwd(), maxBuffer: 256 * 1024 * 1024 });
     deck = await loadDeck(dir);
 
-    // One file per slide, through the same call the toolbar button makes.
-    const pages: string[] = [];
-    for (const slide of deck.slides) {
-      pages.push((await writeHtmlScope(dir, deck, [slide.id])).path);
+    // The browser can measure all sections from one page in one navigation.
+    // Keep single-slide scopes for the two boundary cases that originally
+    // motivated this regression: slide one and a full-bleed background.
+    const whole = await writeHtmlScope(dir, deck, deck.slides.map((slide) => slide.id));
+    const fullBleed = deck.slides.find((slide) => fullBleedBackground(slide, deck));
+    const sentinelIds = [...new Set([
+      deck.slides[0]?.id,
+      fullBleed?.id,
+    ].filter((id): id is string => Boolean(id)))];
+    singlePages = new Map();
+    for (const id of sentinelIds) {
+      singlePages.set(id, (await writeHtmlScope(dir, deck, [id])).path);
     }
 
-    const measured = await measureSavedPages(pages, deck.canvas) as MeasuredSlide[][];
-    // Each file holds one slide, and each is compiled against the deck it came
-    // from, exactly as saving that one file would.
-    rebuilt = measured.map((page) => slidesFromMeasured(deck, page)[0]);
+    const measured = await measureSavedPages(
+      [whole.path, ...singlePages.values()],
+      deck.canvas,
+    ) as MeasuredSlide[][];
+    rebuilt = slidesFromMeasured(deck, measured[0]);
+    singleRebuilt = new Map(sentinelIds.map((id, index) => [
+      id,
+      slidesFromMeasured(deck, measured[index + 1])[0],
+    ]));
   }, 900_000);
 
   afterAll(async () => {
@@ -110,13 +125,21 @@ describe.skipIf(!runnable)('every Bitter Lesson slide, exported on its own', () 
     expect(differences(deck, rebuilt)).toEqual([]);
   });
 
+  it('returns boundary slides exactly from a one-slide authoring scope', () => {
+    const problems = [...singleRebuilt].flatMap(([id, slide]) => {
+      const original = deck.slides.find((candidate) => candidate.id === id)!;
+      return differences({ ...deck, slides: [original] }, [slide]);
+    });
+    expect(problems).toEqual([]);
+  });
+
   it('resolves the title slide\'s full-bleed background picture to a file that is there', async () => {
     // Imported background pictures are ordinary full-bleed image elements so
     // they remain selectable and animatable. Round-tripping the deck value is
     // not enough: the browser must also resolve the image relative to edit/.
     const index = deck.slides.findIndex((slide) => fullBleedBackground(slide, deck));
     const background = fullBleedBackground(deck.slides[index], deck)!;
-    const page = join(dir, 'edit', `${deck.slides[index].id}.html`);
+    const page = singlePages.get(deck.slides[index].id)!;
     const [resolved] = await measureSavedPages([page], deck.canvas, `(() => {
       return document.querySelector('[data-element-id="${background.id}"]').currentSrc;
     })()`) as (string | null)[];

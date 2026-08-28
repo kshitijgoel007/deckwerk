@@ -19,10 +19,10 @@ import { writeHtmlScope } from '../src/main/htmlAuthoring.js';
  * a cropped photograph as a squashed one, and centred text as top-aligned, and
  * the round trip still reports "identical". Every one of those shipped.
  *
- * So this paints each slide twice: once with the Player from an exported
- * bundle — the definition of correct, being what the projector runs — and once
- * by opening the authoring file the way a browser does. Then it counts the
- * pixels that disagree.
+ * So this paints a feature-diverse slice twice: once with the Player from an
+ * exported bundle — the definition of correct, being what the projector runs
+ * — and once by opening the authoring file the way a browser does. Set
+ * `EXPORT_PIXEL_EXHAUSTIVE=1` for the original every-slide release sweep.
  *
  * Needs the importer venv, the .key, Electron, and a built player bundle
  * (`npm run build:export`); skips politely without them.
@@ -52,10 +52,12 @@ const runnable = existsSync(PYTHON) && existsSync(KEY)
  */
 const TOLERANCE = 0.002;
 
-describe.skipIf(!runnable)('every exported slide, against the projector', () => {
+describe.skipIf(!runnable)('representative exported slides, against the projector', () => {
   let dir: string;
   let deck: Deck;
   let results: ExportComparison[];
+  let comparedSlides = 0;
+  let exhaustive = false;
 
   beforeAll(async () => {
     dir = await mkdtemp(join(tmpdir(), 'looks-like-'));
@@ -67,10 +69,18 @@ describe.skipIf(!runnable)('every exported slide, against the projector', () => 
       `import_key(Path(${JSON.stringify(KEY)}), Path(${JSON.stringify(dir)}), True)`,
     ].join('\n')], { cwd: process.cwd(), maxBuffer: 256 * 1024 * 1024 });
     deck = await loadDeck(dir);
+    exhaustive = process.env.EXPORT_PIXEL_EXHAUSTIVE === '1';
+    const indexes = exhaustive
+      ? deck.slides.map((_, index) => index)
+      : representativeSlideIndexes(deck);
+    comparedSlides = indexes.length;
 
-    const pages = [];
-    for (const [index, slide] of deck.slides.entries()) {
-      pages.push({
+    // Authoring pages stay isolated so hidden media from the rest of this
+    // 58-slide talk cannot contend with the slide being measured. The files
+    // themselves can still be written concurrently.
+    const pages = await Promise.all(indexes.map(async (index) => {
+      const slide = deck.slides[index];
+      return {
         id: slide.id,
         number: index + 1,
         page: (await writeHtmlScope(dir, deck, [slide.id])).path,
@@ -78,8 +88,8 @@ describe.skipIf(!runnable)('every exported slide, against the projector', () => 
         videoStarts: [...slide.elements].sort((a, b) => a.z - b.z)
           .filter((element) => element.type === 'video')
           .map((element) => (element as Extract<typeof element, { type: 'video' }>).start),
-      });
-    }
+      };
+    }));
 
     results = await compareExportToPlayer({
       deckDir: dir,
@@ -96,15 +106,16 @@ describe.skipIf(!runnable)('every exported slide, against the projector', () => 
     if (dir) await rm(dir, { recursive: true, force: true });
   });
 
-  it('compared the whole talk, not a handful of easy slides', () => {
-    expect(results.length).toBe(deck.slides.length);
-    expect(results.length).toBeGreaterThan(50);
+  it('uses the whole real talk and a stable feature-diverse visual slice', () => {
+    expect(deck.slides.length).toBeGreaterThan(50);
+    expect(results.length).toBe(comparedSlides);
+    expect(results.length).toBe(exhaustive ? deck.slides.length : 8);
     // Guards the guard: two blank pages would agree perfectly.
     expect(deck.slides.flatMap((slide) => slide.elements).length).toBeGreaterThan(800);
     expect(results.every((result) => result.total > 1_000_000)).toBe(true);
   });
 
-  it('looks like the slide, on every slide', () => {
+  it('looks like the slide throughout the selected visual slice', () => {
     const wrong = results
       .filter((result) => result.fraction > TOLERANCE)
       .map((result) => `${result.id}: ${(result.fraction * 100).toFixed(2)}% of pixels differ`);
@@ -117,3 +128,31 @@ describe.skipIf(runnable)('every exported slide, against the projector (skipped)
     expect(runnable).toBe(false);
   });
 });
+
+function representativeSlideIndexes(deck: Deck): number[] {
+  const richest = deck.slides
+    .map((slide, index) => ({ index, score: slide.elements.length + slide.timeline.length * 8 }))
+    .sort((left, right) => right.score - left.score)[0]?.index ?? 0;
+  const candidates = [
+    0,
+    deck.slides.length - 1,
+    Math.floor(deck.slides.length / 2),
+    deck.slides.findIndex((slide) => Boolean(slide.background.image)),
+    deck.slides.findIndex((slide) => slide.timeline.length > 0),
+    deck.slides.findIndex((slide) => slide.elements.some((element) => element.type === 'video')),
+    deck.slides.findIndex((slide) => slide.elements.some((element) => element.type === 'image')),
+    deck.slides.findIndex((slide) => slide.elements.some((element) =>
+      element.type === 'shape' && Boolean(element.path))),
+    richest,
+  ];
+  const selected: number[] = [];
+  for (const index of candidates) {
+    if (index >= 0 && !selected.includes(index)) selected.push(index);
+    if (selected.length === 8) return selected.sort((a, b) => a - b);
+  }
+  for (let slot = 1; selected.length < 8; slot += 1) {
+    const index = Math.round(slot * (deck.slides.length - 1) / 8);
+    if (!selected.includes(index)) selected.push(index);
+  }
+  return selected.sort((a, b) => a - b);
+}

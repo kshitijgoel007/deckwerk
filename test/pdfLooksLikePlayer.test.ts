@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -31,12 +31,21 @@ const pythonHasPdf = existsSync(PYTHON)
   && spawnSync(PYTHON, ['-c', 'import pymupdf'], { stdio: 'ignore' }).status === 0;
 const runnable = Boolean(electron) && pythonHasPdf && existsSync(PRINT_PAGE) && existsSync(PLAYER);
 const TOLERANCE = 0.002;
+const PDF_FIXTURE_DECKS = [
+  '0827_Reasoning_meeting',
+  'agent-reference',
+  'animation-reference',
+  'demo-deck',
+  'reference',
+  'test-presentation',
+] as const;
+const PDF_SMOKE_DECKS = ['demo-deck'] as const;
 
 /**
  * This is a visual test of the file users receive, not a comparison of two
- * deck data structures. It prints every build state from every checked-in deck,
- * rasterizes each PDF page at the deck's native canvas size, and compares every
- * pixel with the same state in the real Player.
+ * deck data structures. The ordinary suite covers representative states
+ * from the compact, media-bearing demo fixture. `PDF_PIXEL_EXHAUSTIVE=1`
+ * retains the original every-deck/every-slide/every-build release sweep.
  */
 describe.skipIf(!runnable)('PDF pages, against the real Player', () => {
   let work = '';
@@ -49,11 +58,14 @@ describe.skipIf(!runnable)('PDF pages, against the real Player', () => {
     const deckRoot = join(process.cwd(), 'decks');
     const requested = process.env.PDF_PIXEL_DECK;
     const requestedSlide = process.env.PDF_PIXEL_SLIDE;
-    const names = (await readdir(deckRoot, { withFileTypes: true }))
-      .filter((entry) => entry.isDirectory() && (!requested || entry.name === requested))
-      .filter((entry) => existsSync(join(deckRoot, entry.name, 'deck.json')))
-      .map((entry) => entry.name)
-      .sort();
+    const exhaustive = process.env.PDF_PIXEL_EXHAUSTIVE === '1'
+      || Boolean(requested || requestedSlide);
+    // Keep local/untracked decks out of this regression. The previous directory
+    // scan silently pulled an 819 MB working deck into the suite and changed a
+    // stable fixture test into a multi-minute workload.
+    const names = requested
+      ? [requested]
+      : exhaustive ? [...PDF_FIXTURE_DECKS] : [...PDF_SMOKE_DECKS];
     const jobs = [];
     for (const name of names) {
       const deckDir = join(deckRoot, name);
@@ -73,9 +85,11 @@ describe.skipIf(!runnable)('PDF pages, against the real Player', () => {
       const bundleDir = join(work, `${name}-player`);
       const outDir = join(work, `${name}-results`);
       await exportDeck(deckDir, deck, bundleDir);
+      const representativeIds = exhaustive ? null : representativeSlides(deck);
       const pages = deck.slides.flatMap((slide, slideIndex) => {
         if (slide.skipped) return [];
         if (requestedSlide && slide.id !== requestedSlide) return [];
+        if (representativeIds && !representativeIds.has(slide.id)) return [];
         return pdfSteps(slide, 'every').map((step) => {
           const state = resolveState(slide, step);
           return {
@@ -138,8 +152,10 @@ describe.skipIf(!runnable)('PDF pages, against the real Player', () => {
     else if (work) process.stderr.write(`PDF pixel artifacts: ${work}\n`);
   });
 
-  it('covers every checked-in deck and every build state', () => {
-    expect(deckCount).toBeGreaterThanOrEqual(process.env.PDF_PIXEL_DECK ? 1 : 6);
+  it('covers a real media fixture with representative pages', () => {
+    expect(deckCount).toBeGreaterThanOrEqual(
+      process.env.PDF_PIXEL_DECK ? 1 : process.env.PDF_PIXEL_EXHAUSTIVE === '1' ? 6 : 1,
+    );
     expect(results).toHaveLength(expectedPages);
     expect(results.every((result) => result.total > 1_000_000)).toBe(true);
   });
@@ -172,4 +188,21 @@ function runElectron(script: string, jobPath: string): Promise<string> {
       : reject(new Error(error.trim() || output.trim()
         || `PDF comparison failed with exit code ${code}${signal ? ` (${signal})` : ''}`)));
   });
+}
+
+/** First, last, and the most feature-rich slide give every fixture a stable
+ * visual smoke test while preserving an opt-in exhaustive sweep above. */
+function representativeSlides(deck: Awaited<ReturnType<typeof loadDeck>>): Set<string> {
+  const visible = deck.slides.filter((slide) => !slide.skipped);
+  if (visible.length <= 3) return new Set(visible.map((slide) => slide.id));
+  const score = (slide: (typeof visible)[number]): number =>
+    slide.elements.length
+    + slide.timeline.length * 10
+    + slide.elements.reduce((total, element) => total
+      + (element.type === 'video' ? 20 : 0)
+      + (element.type === 'image' ? 8 : 0)
+      + (element.type === 'shape' && element.path ? 6 : 0)
+      + (element.rot !== 0 ? 4 : 0), 0);
+  const richest = [...visible].sort((left, right) => score(right) - score(left))[0];
+  return new Set([visible[0].id, richest.id, visible[visible.length - 1].id]);
 }

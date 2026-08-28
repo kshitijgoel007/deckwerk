@@ -2,7 +2,6 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { build } from 'vite';
 import { saveDeck } from '../src/main/deckStore.js';
 import { startCollabServer, type RunningCollabServer } from '../src/server/collabServer.js';
 import { emptyDeck } from '../src/shared/deck.js';
@@ -15,6 +14,7 @@ import {
   stopBrowser,
   type RunningBrowser,
 } from './support/browserSession.js';
+import { collabClientDir } from './support/collabClient.js';
 
 /** Real-Chromium coverage for repeated, overlapping inline-format edits. */
 const DECK_ID = 'format-toggle-fuzz';
@@ -48,7 +48,7 @@ describe.skipIf(!electronBinary)('stateful inline formatting in Chromium', () =>
     workDir = await mkdtemp(join(tmpdir(), 'format-toggle-fuzz-'));
     const decksRoot = join(workDir, 'decks');
     const deckDir = join(decksRoot, DECK_ID);
-    const clientDir = join(workDir, 'client');
+    const clientDir = await collabClientDir();
     const profileDir = join(workDir, 'electron-profile');
     await mkdir(deckDir, { recursive: true });
     await mkdir(profileDir, { recursive: true });
@@ -66,10 +66,6 @@ describe.skipIf(!electronBinary)('stateful inline formatting in Chromium', () =>
       '.role-body { font: 400 42px/1.35 sans-serif; }',
       '',
     ].join('\n'), 'utf8');
-    await build({
-      configFile: join(process.cwd(), 'vite.collab.config.ts'), logLevel: 'silent',
-      build: { outDir: clientDir, emptyOutDir: true },
-    });
     server = await startCollabServer({ rootDir: decksRoot, clientDir, host: '127.0.0.1', port: 0 });
     browser = await launchBrowser(
       `http://127.0.0.1:${server.port}/?deck=${DECK_ID}&name=Toggle%20Fuzz`, profileDir,

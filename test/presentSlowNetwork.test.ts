@@ -5,7 +5,6 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
-import { build } from 'vite';
 import { emptyDeck, type SlideElement } from '../src/shared/deck.js';
 import { saveDeck } from '../src/main/deckStore.js';
 import { startCollabServer, type RunningCollabServer } from '../src/server/collabServer.js';
@@ -19,6 +18,7 @@ import {
   wait,
   type RunningBrowser,
 } from './support/browserSession.js';
+import { collabClientDir } from './support/collabClient.js';
 
 /**
  * Presenting over a slow network — the collab server on a remote machine, a
@@ -104,7 +104,7 @@ describe.skipIf(!electronBinary || !ffmpeg)('presenting over a slow network', ()
     workDir = await mkdtemp(join(tmpdir(), 'present-slow-'));
     const decksRoot = join(workDir, 'decks');
     const deckDir = join(decksRoot, DECK_ID);
-    const clientDir = join(workDir, 'client');
+    const clientDir = await collabClientDir();
     const profileDir = join(workDir, 'electron-profile');
     await mkdir(join(deckDir, 'assets'), { recursive: true });
     await mkdir(profileDir, { recursive: true });
@@ -135,11 +135,6 @@ describe.skipIf(!electronBinary || !ffmpeg)('presenting over a slow network', ()
       '',
     ].join('\n'), 'utf8');
 
-    await build({
-      configFile: join(process.cwd(), 'vite.collab.config.ts'),
-      logLevel: 'silent',
-      build: { outDir: clientDir, emptyOutDir: true },
-    });
     server = await startCollabServer({
       rootDir: decksRoot, clientDir, host: '127.0.0.1', port: 0,
     });
@@ -188,7 +183,7 @@ describe.skipIf(!electronBinary || !ffmpeg)('presenting over a slow network', ()
           .filter((v) => v.networkState === HTMLMediaElement.NETWORK_LOADING).length;
       })()`);
       leastFetching = Math.min(leastFetching, fetching);
-      await wait(400);
+      await wait(150);
     }
     expect(leastFetching, 'too many preview videos fetching at once').toBeLessThanOrEqual(4);
 
@@ -226,8 +221,8 @@ describe.skipIf(!electronBinary || !ffmpeg)('presenting over a slow network', ()
         });
       }
     };
-    // Two full round trips with barely a second per slide — the presenter
-    // skimming while nothing has finished loading. Under the old code every
+    // Two rapid round trips — the presenter skimming while nothing has
+    // finished loading. Under the old code every
     // transition orphaned in-flight fetches and restarted the rest from byte
     // zero; by the second trip the visible slide's videos starved.
     for (const step of [
@@ -235,7 +230,7 @@ describe.skipIf(!electronBinary || !ffmpeg)('presenting over a slow network', ()
       'ArrowRight', 'ArrowRight', 'ArrowLeft', 'ArrowLeft',
     ] as const) {
       await key(step);
-      await wait(900);
+      await wait(250);
     }
 
     // Back on slide one. Its videos must reach a paintable frame and the

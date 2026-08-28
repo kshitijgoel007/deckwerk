@@ -2,7 +2,6 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { build } from 'vite';
 import { saveDeck } from '../src/main/deckStore.js';
 import { startCollabServer, type RunningCollabServer } from '../src/server/collabServer.js';
 import { emptyDeck, type Deck } from '../src/shared/deck.js';
@@ -15,6 +14,7 @@ import {
   stopBrowser,
   type RunningBrowser,
 } from './support/browserSession.js';
+import { collabClientDir } from './support/collabClient.js';
 
 /**
  * Production-browser smoke test for the standalone collaboration edition.
@@ -59,7 +59,7 @@ describe.skipIf(!electronBinary)('standalone collaboration browser', () => {
     workDir = await mkdtemp(join(tmpdir(), 'collab-browser-smoke-'));
     const decksRoot = join(workDir, 'decks');
     const deckDir = join(decksRoot, DECK_ID);
-    const clientDir = join(workDir, 'client');
+    const clientDir = await collabClientDir();
     const profileDir = join(workDir, 'electron-profile');
     await mkdir(deckDir, { recursive: true });
     await mkdir(profileDir, { recursive: true });
@@ -76,14 +76,6 @@ describe.skipIf(!electronBinary)('standalone collaboration browser', () => {
       '.role-title { font: 700 72px/1.1 sans-serif; }',
       '',
     ].join('\n'), 'utf8');
-
-    // Build into the disposable fixture so this test always exercises current
-    // production output and never relies on an old or missing dist/collab.
-    await build({
-      configFile: join(process.cwd(), 'vite.collab.config.ts'),
-      logLevel: 'silent',
-      build: { outDir: clientDir, emptyOutDir: true },
-    });
 
     server = await startCollabServer({
       rootDir: decksRoot,

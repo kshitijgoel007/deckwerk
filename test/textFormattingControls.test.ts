@@ -927,6 +927,34 @@ describe('text formatting from the inspector controls', () => {
     expect(textOf(store, 'text-1').html).toBe(TABLE_WORD_HTML);
   });
 
+  it('routes typography to selected table cells ahead of a collapsed caret', () => {
+    const { store, canvas, canvasHost, inspectorHost } = setup([
+      textElement('text-1', { html: TABLE_WORD_HTML }),
+    ]);
+    selectTableWord(canvas, canvasHost);
+    const cells = contentOf(canvasHost, 'text-1').querySelectorAll('td');
+    cells[1].dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+    const caret = document.createRange();
+    caret.setStart(cells[1].firstChild!, 0);
+    caret.collapse(true);
+    window.getSelection()!.removeAllRanges();
+    window.getSelection()!.addRange(caret);
+    document.dispatchEvent(new Event('selectionchange'));
+    expect(canvas.tableSelectionInfo()).toMatchObject({ row: 0, column: 1 });
+    expect(window.getSelection()!.isCollapsed).toBe(true);
+
+    const select = field(inspectorHost, 'Font family').querySelector<HTMLSelectElement>('select')!;
+    const avenir = document.createElement('option');
+    avenir.value = 'Avenir';
+    avenir.textContent = 'Avenir';
+    select.appendChild(avenir);
+    pick(select, 'Avenir');
+
+    const saved = savedTable(store);
+    expect(saved.querySelectorAll<HTMLElement>('td')[1].style.fontFamily).toContain('Avenir');
+    expect(saved.querySelectorAll('span[style*="font-family"]')).toHaveLength(0);
+  });
+
   it('applies theme and arbitrary colours only to a highlighted table word', () => {
     const { store, canvas, canvasHost, inspectorHost } = setup([
       textElement('text-1', { html: TABLE_WORD_HTML }),

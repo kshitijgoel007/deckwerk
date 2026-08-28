@@ -57,33 +57,45 @@ export function wireCanvasInspector(
   inspector.onTogglePlay = (id) => canvas.toggleVideo(id);
   inspector.onEditText = (id) => canvas.beginTextEdit(id);
   inspector.editingText = () => canvas.isEditing();
+  const targetsTableCells = () => Boolean(canvas.tableSelectionInfo())
+    && !canvas.hasExpandedTextSelection();
   inspector.onApplyTextSelectionWeight = (weight) =>
-    canvas.applyTextSelectionWeight(weight)
-      || canvas.applyTableCellTextStyle('fontWeight', String(weight));
+    targetsTableCells()
+      ? canvas.applyTableCellTextStyle('fontWeight', String(weight))
+      : canvas.applyTextSelectionWeight(weight);
   inspector.onToggleTextSelectionFormat = (format) =>
-    canvas.toggleTextSelectionFormat(format) || canvas.toggleTableCellTextFormat(format);
+    targetsTableCells()
+      ? canvas.toggleTableCellTextFormat(format)
+      : canvas.toggleTextSelectionFormat(format);
   inspector.textSelectionFormatState = (format) =>
-    canvas.textSelectionFormatState(format) || canvas.tableCellTextFormatState(format);
+    targetsTableCells()
+      ? canvas.tableCellTextFormatState(format)
+      : canvas.textSelectionFormatState(format);
   inspector.onApplyTextSelectionFontFamily = (value) =>
-    canvas.applyTextSelectionFontFamily(value)
-      || canvas.applyTableCellTextStyle('fontFamily', value || null);
+    targetsTableCells()
+      ? canvas.applyTableCellTextStyle('fontFamily', value || null)
+      : canvas.applyTextSelectionFontFamily(value);
   inspector.onApplyTextSelectionFontSize = (value) =>
-    canvas.applyTextSelectionFontSize(value)
-      || canvas.applyTableCellTextStyle(
+    targetsTableCells()
+      ? canvas.applyTableCellTextStyle(
         'fontSize', `${Math.round(Math.max(6, Math.min(400, value)) * 10) / 10}px`,
-      );
+      )
+      : canvas.applyTextSelectionFontSize(value);
   inspector.onApplyTextSelectionParagraphSpacing = (value) =>
     canvas.applyTextSelectionParagraphSpacing(value);
   inspector.textSelectionParagraphSpacing = () => canvas.textSelectionParagraphSpacing();
   inspector.onApplyTextSelectionColor = (value) => {
+    if (targetsTableCells()) {
+      canvas.applyTableCellColor('color', value);
+      return true;
+    }
     if (canvas.applyTextSelectionColor(value)) return true;
-    if (!canvas.tableSelectionInfo()) return false;
-    canvas.applyTableCellColor('color', value);
-    return true;
+    return false;
   };
   inspector.onApplyTextSelectionAlignment = (value) =>
-    canvas.applyTextSelectionAlignment(value)
-      || canvas.applyTableCellTextStyle('textAlign', value);
+    targetsTableCells()
+      ? canvas.applyTableCellTextStyle('textAlign', value)
+      : canvas.applyTextSelectionAlignment(value);
   inspector.onApplyTextSelectionListStyle = (style) =>
     canvas.applyTextSelectionListStyle(style);
   inspector.textSelectionListStyle = () => canvas.textSelectionListStyle();
