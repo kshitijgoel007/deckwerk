@@ -14,6 +14,9 @@ function comparePixelBuffers(reference, actual, width, height, options = {}) {
   const toleranceMap = highToleranceAreas.length > 0
     ? new Uint8Array(width * height).fill(channelTolerance)
     : null;
+  const radiusMap = highToleranceAreas.some((area) => area.radius !== undefined)
+    ? new Uint8Array(width * height).fill(radius)
+    : null;
   for (const area of highToleranceAreas) {
     const minX = Math.max(0, Math.floor(area.x));
     const maxX = Math.min(width, Math.ceil(area.x + area.w));
@@ -23,6 +26,9 @@ function comparePixelBuffers(reference, actual, width, height, options = {}) {
       for (let x = minX; x < maxX; x++) {
         const pixel = y * width + x;
         toleranceMap[pixel] = Math.max(toleranceMap[pixel], area.channelTolerance);
+        if (radiusMap && area.radius !== undefined) {
+          radiusMap[pixel] = Math.max(radiusMap[pixel], area.radius);
+        }
       }
     }
   }
@@ -33,9 +39,10 @@ function comparePixelBuffers(reference, actual, width, height, options = {}) {
       const pixel = y * width + x;
       const offset = pixel * 4;
       const tolerance = toleranceMap?.[pixel] ?? channelTolerance;
+      const spatialTolerance = radiusMap?.[pixel] ?? radius;
       if (withinTolerance(reference, offset, actual, offset, tolerance)) continue;
       if (matchesNearby(reference, offset, actual, x, y, width, height,
-        radius, tolerance)) continue;
+        spatialTolerance, tolerance)) continue;
       // The screen and PDF compositors use different antialiasing kernels.
       // Permit a larger channel delta only where either bitmap has a local
       // transition; unchanged solid fills remain subject to the strict base
@@ -45,7 +52,7 @@ function comparePixelBuffers(reference, actual, width, height, options = {}) {
           || isEdge(actual, x, y, width, height, tolerance))
         && (withinTolerance(reference, offset, actual, offset, edgeChannelTolerance)
           || matchesNearby(reference, offset, actual, x, y, width, height,
-            radius, edgeChannelTolerance))) continue;
+            spatialTolerance, edgeChannelTolerance))) continue;
       different[pixel] = 1;
       differing++;
     }

@@ -134,6 +134,14 @@ place it elsewhere). Export a range only when you want to *change* it.
   Never build equations out of positioned text.
 - **Text:** pick a theme role — `role-title`, `role-heading`, `role-body`,
   `role-caption` — instead of inline font sizes.
+- **Tables:** author a semantic `<table data-element="table">` with ordinary
+  `<thead>`, `<tbody>`, `<th>` and `<td>` markup. Give the table object a class
+  and style its descendants in `theme.css` (`.results-table th`,
+  `.results-table td`, striped rows, borders, padding, colours, and so on).
+  The compile keeps it as one native, editable table: outer resizing scales
+  all columns, internal dividers change adjacent column widths, and row height
+  follows the styled content. Use `data-table-widths="1,2,1"` when authored
+  column proportions matter; otherwise columns begin equal.
 - Wrapper `<div>`s are layout: they dissolve on compile and their children
   become the slide objects. Do not hand-copy `class="element …"` wrappers
   from exports around your own markup; plain semantic HTML is the input.

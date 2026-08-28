@@ -1226,6 +1226,14 @@ class Importer:
         self, obj: Any, box: dict[str, float], z: int
     ) -> dict[str, Any] | None:
         src = self.copy_data(_ref(obj, "data"))
+        # Keynote can keep a linked image's original outside the package while
+        # embedding a small preview in ``thumbnailData``.  In that case the
+        # primary data id remains in PackageMetadata but its Data/ file is not
+        # present.  Prefer the original whenever it is available, then fall
+        # back to the embedded preview instead of turning a visible Keynote
+        # image into an unsupported placeholder.
+        if src is None:
+            src = self.copy_data(_ref(obj, "thumbnailData"))
         if src is None:
             self.report.unsupported["ImageArchive (no data)"] += 1
             return self._placeholder(box, z, "ImageArchive", "image data missing")
