@@ -1421,7 +1421,11 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
       for (const stream of sharedAgentStreams) stream.response.end();
       sharedAgentStreams.clear();
       for (const room of rooms.values()) {
-        for (const peer of room.peers.values()) peer.socket.close();
+        // Shutdown cannot wait for a renderer that is paused, presenting, or
+        // already tearing down to complete the WebSocket close handshake.
+        // Upgraded sockets are not covered by closeAllConnections(), so end
+        // them synchronously before awaiting the HTTP server's close callback.
+        for (const peer of room.peers.values()) peer.socket.terminate();
       }
       // `close()` alone only stops new connections: it waits for every open
       // one to go idle first. A browser leaves plenty that never will — a

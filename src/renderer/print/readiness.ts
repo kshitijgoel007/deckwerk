@@ -68,6 +68,19 @@ async function settleVideo(video: HTMLVideoElement, at: number): Promise<void> {
   // The PDF contract pins a video to its exact poster/in-point. A two-
   // hundredths tolerance is visible on fast-motion clips and made repeated
   // exports nondeterministic by one decoded frame.
+  if (Math.abs(video.currentTime - target) <= 0.0001) {
+    // A newly mounted or reused video can report the target time while its
+    // compositor surface still contains a stale frame. Nudge away first so
+    // the seek back to the exact time necessarily asks the decoder to paint.
+    const nudge = target + 0.03 <= video.duration
+      ? target + 0.03
+      : Math.max(0, target - 0.03);
+    if (Math.abs(nudge - target) > 0.0001) {
+      const nudged = eventOrTimeout(video, 'seeked');
+      try { video.currentTime = nudge; } catch { return; }
+      await nudged;
+    }
+  }
   if (Math.abs(video.currentTime - target) > 0.0001) {
     const sought = eventOrTimeout(video, 'seeked');
     try { video.currentTime = target; } catch { return; }
@@ -78,6 +91,40 @@ async function settleVideo(video: HTMLVideoElement, at: number): Promise<void> {
       new Promise<void>((resolve) => video.requestVideoFrameCallback(() => resolve())),
       new Promise<void>((resolve) => setTimeout(resolve, 2_000)),
     ]);
+  }
+}
+
+/**
+ * Chromium's print compositor does not reliably use the frame currently
+ * presented by a paused `<video>`. It may ask the decoder for another nearby
+ * frame after readiness has completed, so the PDF and an on-screen capture of
+ * the same player state can disagree substantially. Copy the decoded frame to
+ * a canvas before printing; a canvas is a stable bitmap while retaining the
+ * video's inline crop/fit geometry.
+ */
+function freezeVideoFrame(video: HTMLVideoElement): void {
+  if (!video.videoWidth || !video.videoHeight) return;
+  try {
+    const canvas = document.createElement('canvas');
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    canvas.className = video.className;
+    canvas.style.cssText = video.style.cssText;
+    // Native video paints unused `object-fit: contain` letterbox space black.
+    // Canvas is transparent by default, which made those bands print white.
+    canvas.style.backgroundColor = 'black';
+    const context = canvas.getContext('2d');
+    if (!context) return;
+    context.drawImage(video, 0, 0, canvas.width, canvas.height);
+    video.replaceWith(canvas);
+
+    // The canvas owns the copied pixels now, so release the decoder before
+    // Chromium lays out the printable document.
+    video.removeAttribute('src');
+    try { video.load(); } catch { /* jsdom stub */ }
+  } catch {
+    // If the browser cannot copy this source, leave the settled live video in
+    // place. Export remains usable, albeit with Chromium's old frame choice.
   }
 }
 
@@ -103,11 +150,12 @@ export async function waitForPdfPage(
   // least the wait means a slow plugin cannot also cost the page its images.
   await Promise.all([...page.querySelectorAll<HTMLEmbedElement>('embed')].map((embed) =>
     Promise.race([eventOrTimeout(embed, 'load'), eventOrTimeout(embed, 'error')])));
-  await Promise.all([...page.querySelectorAll<HTMLVideoElement>('video')].map((video) => {
+  await Promise.all([...page.querySelectorAll<HTMLVideoElement>('video')].map(async (video) => {
     const id = video.closest<HTMLElement>('[data-element-id]')?.dataset.elementId;
     const element = slide.elements.find((candidate) => candidate.id === id);
     const at = element?.type === 'video' ? state.seeks.get(element.id) ?? element.start : 0;
-    return settleVideo(video, at);
+    await settleVideo(video, at);
+    freezeVideoFrame(video);
   }));
 }
 

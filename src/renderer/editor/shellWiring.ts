@@ -7,6 +7,7 @@ import {
   copySelectionToClipboard,
   copySlidesToClipboard,
   cutSelectionToClipboard,
+  pasteImageFilesFromClipboard,
   pasteFromClipboard,
 } from './store.js';
 
@@ -27,6 +28,8 @@ export interface ShellDeps {
   rail: SlideRail;
   save: () => Promise<void>;
   setStatusMessage: (text: string) => void;
+  /** Delayed shared activity chrome for work that may cross the 500 ms mark. */
+  runOperation?: <T>(message: string, action: () => Promise<T>) => Promise<T>;
   /** Desktop only: open the destructive ffmpeg trim/crop window. */
   openTrim?: (element: VideoElement) => void;
   /** Desktop only: open the destructive raster paint window. */
@@ -69,6 +72,9 @@ export function wireCanvasInspector(
       || canvas.applyTableCellTextStyle(
         'fontSize', `${Math.round(Math.max(6, Math.min(400, value)) * 10) / 10}px`,
       );
+  inspector.onApplyTextSelectionParagraphSpacing = (value) =>
+    canvas.applyTextSelectionParagraphSpacing(value);
+  inspector.textSelectionParagraphSpacing = () => canvas.textSelectionParagraphSpacing();
   inspector.onApplyTextSelectionColor = (value) => {
     if (canvas.applyTextSelectionColor(value)) return true;
     if (!canvas.tableSelectionInfo()) return false;
@@ -82,7 +88,13 @@ export function wireCanvasInspector(
     canvas.applyTextSelectionListStyle(style);
   inspector.textSelectionListStyle = () => canvas.textSelectionListStyle();
   inspector.tableSelection = () => canvas.tableSelectionInfo();
-  inspector.onSetTableSelectionMode = (mode) => canvas.setTableSelectionMode(mode);
+  inspector.tableBorderSettings = () => canvas.tableBorderSettings();
+  inspector.onSetTableBorderColor = (color) =>
+    canvas.setTableBorderSettings(color, canvas.tableBorderSettings().width);
+  inspector.onSetTableBorderWidth = (width) =>
+    canvas.setTableBorderSettings(canvas.tableBorderSettings().color, width);
+  inspector.onApplyTableBorderPreset = (preset) => canvas.applyTableBorderPreset(preset);
+  inspector.onSetTableBorderDrawing = (active) => canvas.setTableBorderDrawing(active);
   inspector.onApplyTableCellColor = (property, value) => canvas.applyTableCellColor(property, value);
   inspector.onApplyTableCellTextStyle = (property, value) =>
     canvas.applyTableCellTextStyle(property, value);
@@ -96,12 +108,15 @@ export function wireCanvasInspector(
   canvas.onMaskModeChange = () => inspector.render();
   canvas.onTextEditModeChange = () => inspector.render();
   canvas.onTableSelectionChange = () => inspector.render();
+  canvas.onTableBorderPaintModeChange = () => inspector.render();
 }
 
 export interface ClipboardActions {
   copyToClipboard: (verb: 'Copied' | 'Cut') => Promise<'elements' | 'slides' | null>;
   cutToClipboard: () => Promise<void>;
   pasteClipboard: () => Promise<void>;
+  pasteClipboardData?: (html: string, text: string) => Promise<void>;
+  pasteClipboardFiles?: (files: File[]) => Promise<void>;
 }
 
 /**
@@ -128,15 +143,34 @@ export function createClipboardActions(deps: ShellDeps): ClipboardActions {
     else if (copied === 'slides') rail.deleteSlide();
   };
 
-  const pasteClipboard = async () => {
-    const pasted = await pasteFromClipboard(store);
+  const pasteAndReport = async (paste: () => ReturnType<typeof pasteFromClipboard>) => {
+    const pasted = deps.runOperation
+      ? await deps.runOperation('Pasting clipboard content', paste)
+      : await paste();
     if (pasted) {
       const noun = pasted.kind === 'slides' ? 'slide' : 'element';
       setStatusMessage(`Pasted ${pasted.count} ${noun}${pasted.count > 1 ? 's' : ''}.`);
     }
   };
+  const pasteClipboard = () => pasteAndReport(() => pasteFromClipboard(store));
+  const pasteClipboardData = (html: string, text: string) =>
+    pasteAndReport(() => pasteFromClipboard(store, { kind: 'external-html', html, text }));
 
-  return { copyToClipboard, cutToClipboard, pasteClipboard };
+  const pasteClipboardFiles = async (files: File[]) => {
+    const paste = () => pasteImageFilesFromClipboard(store, files);
+    const pasted = deps.runOperation
+      ? await deps.runOperation('Uploading clipboard image', paste)
+      : await paste();
+    if (pasted) setStatusMessage('Pasted 1 element.');
+  };
+
+  return {
+    copyToClipboard,
+    cutToClipboard,
+    pasteClipboard,
+    pasteClipboardData,
+    pasteClipboardFiles,
+  };
 }
 
 export function duplicateSelection(store: EditorStore): void {
@@ -162,6 +196,29 @@ export function bindEditorKeys(deps: ShellDeps, clipboard: ClipboardActions): vo
     if (redo) (deps.redo ?? (() => store.redo()))();
     else (deps.undo ?? (() => store.undo()))();
   };
+  window.addEventListener('paste', (event) => {
+    // Desktop Electron has a richer native-image bridge and intercepts the
+    // shortcut below. The Web UI relies on this native event, which works on
+    // plain HTTP origins where navigator.clipboard is intentionally absent.
+    const nativeClipboard = (window.api as Partial<Window['api']>).readClipboard;
+    if (nativeClipboard || canvas.isEditing()) return;
+    const target = event.target instanceof HTMLElement ? event.target : null;
+    if (target?.isContentEditable || target?.matches('input, textarea, select')) return;
+    const html = event.clipboardData?.getData('text/html') ?? '';
+    const text = event.clipboardData?.getData('text/plain') ?? '';
+    if (/<table\b/i.test(html) || text.includes('\t')) {
+      event.preventDefault();
+      void clipboard.pasteClipboardData?.(html, text);
+      return;
+    }
+    const files = [...(event.clipboardData?.items ?? [])]
+      .filter((item) => item.kind === 'file' && item.type === 'image/png')
+      .map((item) => item.getAsFile())
+      .filter((file): file is File => file !== null);
+    if (files.length === 0) return;
+    event.preventDefault();
+    void clipboard.pasteClipboardFiles?.(files);
+  });
   window.addEventListener('keydown', (e) => {
     // `window` and `document` are event targets too, and neither answers the
     // element questions below.
@@ -219,6 +276,9 @@ export function bindEditorKeys(deps: ShellDeps, clipboard: ClipboardActions): vo
       return;
     }
     if (mod && e.key.toLowerCase() === 'v') {
+      // In the Web UI, leave Command/Ctrl+V to Chromium so it emits a native
+      // ClipboardEvent. That path also works on non-secure LAN HTTP origins.
+      if (!(window.api as Partial<Window['api']>).readClipboard) return;
       e.preventDefault();
       void clipboard.pasteClipboard();
       return;

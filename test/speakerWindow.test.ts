@@ -31,6 +31,7 @@ vi.mock('electron', () => ({
     setVisibleOnAllWorkspaces = vi.fn();
     loadFile = vi.fn();
     loadURL = vi.fn();
+    webContents = { setWindowOpenHandler: vi.fn() };
 
     constructor(options: Record<string, unknown>) {
       electron.created.push({ options, ready: () => {}, window: this });

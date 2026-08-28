@@ -1,5 +1,6 @@
 import type { ShapeEl, TextEl } from '@shared/deck.js';
 import { makeId } from '@shared/geometry.js';
+import { applyTableColumnWidths } from '@shared/paragraphs.js';
 import type { EditorStore } from './store.js';
 
 function nextZ(store: EditorStore): number {
@@ -20,6 +21,35 @@ export function insertText(store: EditorStore): TextEl {
     autoFit: true,
   };
   store.commit((d) => d.slides[store.get().slideIndex].elements.push(created));
+  store.select([created.id]);
+  return created;
+}
+
+/** Insert a native content-height table and select it. */
+export function insertTable(store: EditorStore, requestedRows: number, requestedColumns: number): TextEl {
+  const { deck } = store.get();
+  const rows = Math.max(1, Math.min(20, Math.round(requestedRows)));
+  const columns = Math.max(1, Math.min(20, Math.round(requestedColumns)));
+  const w = Math.min(Math.max(480, columns * 240), Math.round(deck.canvas.w * 0.8));
+  const naturalH = Math.max(72, rows * 72);
+  const h = Math.min(naturalH, Math.round(deck.canvas.h * 0.8));
+  const cells = Array.from({ length: rows }, () =>
+    `<tr>${Array.from({ length: columns }, () => '<td><br></td>').join('')}</tr>`).join('');
+  const widths = Array.from({ length: columns }, () => 1);
+  const created: TextEl = {
+    type: 'text', id: makeId('table'),
+    x: Math.round((deck.canvas.w - w) / 2), y: Math.round((deck.canvas.h - h) / 2),
+    w, h, rot: 0, z: nextZ(store), opacity: 1,
+    class: ['role-body', 'table-default'], style: {},
+    html: applyTableColumnWidths(`<table><tbody>${cells}</tbody></table>`, widths),
+    align: 'left', valign: 'top',
+    autoFit: naturalH > h,
+    table: { columnWidths: widths, autoHeight: true },
+  };
+  store.commit(
+    (d) => d.slides[store.get().slideIndex].elements.push(created),
+    { label: `Insert ${rows} × ${columns} table` },
+  );
   store.select([created.id]);
   return created;
 }
@@ -152,6 +182,125 @@ export function createShapeInsertPicker(store: EditorStore): HTMLElement {
     document.addEventListener('pointerdown', onOutside, true);
     document.addEventListener('keydown', onKey, true);
   }
+
+  trigger.addEventListener('click', () => (menu ? close() : open()));
+  wrap.appendChild(trigger);
+  return wrap;
+}
+
+const TABLE_PICKER_ROWS = 8;
+const TABLE_PICKER_COLUMNS = 10;
+
+/** PowerPoint-style table picker: hover a rectangle, click to insert it. */
+export function createTableInsertPicker(store: EditorStore): HTMLElement {
+  const wrap = document.createElement('span');
+  wrap.className = 'shape-menu-wrap table-picker-wrap';
+
+  const trigger = document.createElement('button');
+  trigger.type = 'button';
+  trigger.className = 'shape-menu-trigger table-picker-trigger';
+  trigger.setAttribute('aria-haspopup', 'grid');
+  trigger.setAttribute('aria-expanded', 'false');
+  trigger.innerHTML =
+    '<svg class="bar-icon" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">' +
+    '<rect x="1.5" y="2" width="13" height="12" rx="1" fill="none" stroke="currentColor" stroke-width="1.3"/>' +
+    '<path d="M1.5 6h13M1.5 10h13M6 2v12M10.5 2v12" fill="none" stroke="currentColor" stroke-width="1"/></svg>' +
+    '<span>Table</span>';
+
+  let menu: HTMLDivElement | null = null;
+  let activeRow = 1;
+  let activeColumn = 1;
+
+  const close = (): void => {
+    menu?.remove();
+    menu = null;
+    trigger.setAttribute('aria-expanded', 'false');
+    document.removeEventListener('pointerdown', onOutside, true);
+    document.removeEventListener('keydown', onKey, true);
+  };
+  const onOutside = (event: PointerEvent): void => {
+    if (!wrap.contains(event.target as Node)) close();
+  };
+  const update = (row: number, column: number, focus = false): void => {
+    activeRow = Math.max(1, Math.min(TABLE_PICKER_ROWS, row));
+    activeColumn = Math.max(1, Math.min(TABLE_PICKER_COLUMNS, column));
+    if (!menu) return;
+    menu.querySelector<HTMLElement>('.table-picker-status')!.textContent =
+      `${activeRow} × ${activeColumn} table`;
+    for (const cell of menu.querySelectorAll<HTMLButtonElement>('.table-picker-cell')) {
+      const cellRow = Number(cell.dataset.row);
+      const cellColumn = Number(cell.dataset.column);
+      const active = cellRow <= activeRow && cellColumn <= activeColumn;
+      cell.classList.toggle('active', active);
+      cell.setAttribute('aria-selected', String(active));
+    }
+    if (focus) {
+      menu.querySelector<HTMLButtonElement>(
+        `.table-picker-cell[data-row="${activeRow}"][data-column="${activeColumn}"]`,
+      )?.focus();
+    }
+  };
+  const choose = (): void => {
+    const rows = activeRow;
+    const columns = activeColumn;
+    close();
+    trigger.blur();
+    insertTable(store, rows, columns);
+  };
+  const onKey = (event: KeyboardEvent): void => {
+    if (!menu) return;
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      close();
+      trigger.focus();
+      return;
+    }
+    const delta = event.key === 'ArrowLeft' ? [0, -1]
+      : event.key === 'ArrowRight' ? [0, 1]
+        : event.key === 'ArrowUp' ? [-1, 0]
+          : event.key === 'ArrowDown' ? [1, 0] : null;
+    if (delta) {
+      event.preventDefault();
+      update(activeRow + delta[0], activeColumn + delta[1], true);
+    } else if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      choose();
+    }
+  };
+  const open = (): void => {
+    menu = document.createElement('div');
+    menu.className = 'shape-menu table-picker-menu';
+    menu.setAttribute('role', 'grid');
+    menu.setAttribute('aria-label', 'Choose table size');
+    const status = document.createElement('div');
+    status.className = 'table-picker-status';
+    const grid = document.createElement('div');
+    grid.className = 'table-picker-grid';
+    for (let row = 1; row <= TABLE_PICKER_ROWS; row++) {
+      for (let column = 1; column <= TABLE_PICKER_COLUMNS; column++) {
+        const cell = document.createElement('button');
+        cell.type = 'button';
+        cell.className = 'table-picker-cell';
+        cell.dataset.row = String(row);
+        cell.dataset.column = String(column);
+        cell.setAttribute('role', 'gridcell');
+        cell.setAttribute('aria-label', `${row} rows by ${column} columns`);
+        cell.addEventListener('pointerenter', () => update(row, column));
+        cell.addEventListener('focus', () => update(row, column));
+        cell.addEventListener('click', () => {
+          update(row, column);
+          choose();
+        });
+        grid.appendChild(cell);
+      }
+    }
+    menu.append(status, grid);
+    wrap.appendChild(menu);
+    trigger.setAttribute('aria-expanded', 'true');
+    document.addEventListener('pointerdown', onOutside, true);
+    document.addEventListener('keydown', onKey, true);
+    update(1, 1, true);
+  };
 
   trigger.addEventListener('click', () => (menu ? close() : open()));
   wrap.appendChild(trigger);

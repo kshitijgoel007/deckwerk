@@ -18,8 +18,10 @@ import {
 } from '../src/renderer/editor/shellWiring.js';
 import {
   createShapeInsertPicker,
+  createTableInsertPicker,
   insertLine,
   insertShape,
+  insertTable,
   insertText,
 } from '../src/renderer/editor/elementCreation.js';
 import { Inspector } from '../src/renderer/editor/inspector.js';
@@ -327,6 +329,29 @@ describe('inline text editing', () => {
     expect(canvas.isEditing()).toBe(false);
   });
 
+  it('turns a typed ASCII arrow into a typographic arrow', () => {
+    const { store, canvas, host } = setup();
+    canvas.beginTextEdit('text-1');
+    const body = bodyOf(host, 'text-1');
+    body.textContent = 'Original ->';
+    const text = body.firstChild!;
+    const range = document.createRange();
+    range.setStart(text, text.textContent!.length);
+    range.collapse(true);
+    window.getSelection()!.removeAllRanges();
+    window.getSelection()!.addRange(range);
+
+    body.dispatchEvent(new InputEvent('input', {
+      inputType: 'insertText', data: '>', bubbles: true,
+    }));
+
+    expect(body.textContent).toBe('Original →');
+    expect(window.getSelection()?.anchorOffset).toBe('Original →'.length);
+    body.dispatchEvent(new FocusEvent('blur'));
+    const saved = store.slide!.elements.find((element) => element.id === 'text-1')!;
+    expect(saved.type === 'text' && saved.html).toBe('Original →');
+  });
+
   it('turns typed bullet and numbered markers into continuing lists on Return', () => {
     const { store, canvas, host } = setup();
     const run = (html: string) => {
@@ -439,11 +464,16 @@ describe('inline text editing', () => {
       }
     });
     canvas.beginTextEdit('text-1');
-    const cell = bodyOf(host, 'text-1').querySelectorAll<HTMLTableCellElement>('td')[1];
-    cell.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
-    expect(canvas.tableSelectionInfo()).toMatchObject({ row: 0, column: 1, rows: 2, columns: 2 });
+    const cells = bodyOf(host, 'text-1').querySelectorAll<HTMLTableCellElement>('td');
+    cells[1].dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 7 }));
+    cells[3].dispatchEvent(new PointerEvent('pointermove', {
+      bubbles: true, cancelable: true, pointerId: 7,
+    }));
+    document.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 7 }));
+    expect(canvas.tableSelectionInfo()).toMatchObject({
+      mode: 'column', row: 0, column: 1, rowEnd: 1, columnEnd: 1, rows: 2, columns: 2,
+    });
 
-    canvas.setTableSelectionMode('column');
     canvas.applyTableCellColor('backgroundColor', '#ff0000');
     let html = (store.slide!.elements.find((element) => element.id === 'text-1') as { html: string }).html;
     expect((html.match(/background-color: rgb\(255, 0, 0\)/g) ?? [])).toHaveLength(2);
@@ -518,6 +548,36 @@ describe('inline text editing', () => {
     expect(paste.defaultPrevented).toBe(true);
     expect(body.querySelectorAll('table tr')).toHaveLength(2);
     expect(body.querySelectorAll('table td')).toHaveLength(4);
+  });
+
+  it('fills and expands native table cells from a spreadsheet paste', () => {
+    const { store, canvas, host } = setup();
+    store.select(['text-1']);
+    store.updateSelected((element) => {
+      if (element.type !== 'text') return;
+      element.html = '<table><tbody><tr><td>A</td><td>B</td></tr></tbody></table>';
+      element.table = { columnWidths: [1, 1], autoHeight: true };
+    });
+    canvas.beginTextEdit('text-1');
+    const body = bodyOf(host, 'text-1');
+    body.querySelectorAll<HTMLTableCellElement>('td')[1]
+      .dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+    const paste = new Event('paste', { bubbles: true, cancelable: true }) as ClipboardEvent;
+    Object.defineProperty(paste, 'clipboardData', {
+      value: {
+        getData: (type: string) => type === 'text/plain' ? '1\t2\n3\t4' : '',
+      },
+    });
+    body.dispatchEvent(paste);
+
+    expect(body.querySelectorAll('table tr')).toHaveLength(2);
+    expect([...body.querySelectorAll('table tr')].map((row) =>
+      [...row.querySelectorAll('td')].map((cell) => cell.textContent))).toEqual([
+      ['A', '1', '2'],
+      ['', '3', '4'],
+    ]);
+    const table = store.slide!.elements.find((element) => element.id === 'text-1');
+    expect(table?.type === 'text' && table.table?.columnWidths).toHaveLength(3);
   });
 
   it('does not show the redundant raw Style box in the inspector', () => {
@@ -1893,6 +1953,38 @@ describe('object creation and manipulation', () => {
     expect(text.autoFit).toBe(true);
   });
 
+  it('inserts a native table and chooses its size from the toolbar grid', () => {
+    const { store } = setup();
+    const direct = insertTable(store, 3, 4);
+    expect(direct).toMatchObject({
+      type: 'text',
+      class: ['role-body', 'table-default'],
+      table: { columnWidths: [1, 1, 1, 1], autoHeight: true },
+    });
+    expect((direct.html.match(/<tr>/g) ?? [])).toHaveLength(3);
+    expect((direct.html.match(/<td>/g) ?? [])).toHaveLength(12);
+
+    const picker = createTableInsertPicker(store);
+    document.body.appendChild(picker);
+    picker.querySelector<HTMLButtonElement>('.table-picker-trigger')!.click();
+    expect(picker.querySelector('[role="grid"]')).not.toBeNull();
+    expect(picker.querySelectorAll('[role="gridcell"]')).toHaveLength(80);
+
+    const cell = picker.querySelector<HTMLButtonElement>(
+      '.table-picker-cell[data-row="2"][data-column="3"]',
+    )!;
+    cell.dispatchEvent(new PointerEvent('pointerenter', { bubbles: true }));
+    expect(picker.querySelector('.table-picker-status')?.textContent).toBe('2 × 3 table');
+    expect(picker.querySelectorAll('.table-picker-cell.active')).toHaveLength(6);
+    cell.click();
+
+    expect(picker.querySelector('.table-picker-menu')).toBeNull();
+    const [selectedId] = [...store.get().selection];
+    const selected = store.slide!.elements.find((element) => element.id === selectedId);
+    expect(selected?.type === 'text' && selected.table?.columnWidths).toEqual([1, 1, 1]);
+    expect(selected?.type === 'text' && (selected.html.match(/<tr>/g) ?? [])).toHaveLength(2);
+  });
+
   it('gives layout placeholders the same auto-fit default', () => {
     const { store } = setup();
     store.commit((deck) => applySlideLayout(deck.slides[0], 'standard'));
@@ -2067,6 +2159,40 @@ describe('object creation and manipulation', () => {
     const resized = store.slide!.elements.find((el) => el.id === ellipse.id)!;
     expect(resized.w).toBeGreaterThan(ellipse.w);
     expect(resized.h).toBeGreaterThan(ellipse.h);
+  });
+
+  it('resizes native tables by total width and by adjacent column widths', () => {
+    const { store, host } = setup();
+    stageAtOne(host);
+    store.commit((deck) => {
+      deck.slides[0].elements.push({
+        id: 'table-1', type: 'text', x: 200, y: 180, w: 800, h: 160,
+        rot: 0, z: 3, opacity: 1, class: ['role-body'], style: {},
+        html: '<table><tbody><tr><td>A</td><td>B</td></tr></tbody></table>',
+        align: 'left', valign: 'top',
+        table: { columnWidths: [1, 3], autoHeight: true },
+      });
+    });
+    store.select(['table-1']);
+
+    const divider = host.querySelector<HTMLElement>(
+      '.table-column-resize-handle[data-element-id="table-1"]',
+    )!;
+    expect(divider.style.left).toBe('25%');
+    pointer(divider, 'pointerdown', 400, 220);
+    pointer(host, 'pointermove', 500, 220);
+    pointer(host, 'pointerup', 500, 220);
+    let table = store.slide!.elements.find((element) => element.id === 'table-1')!;
+    expect(table.type === 'text' && table.table?.columnWidths).toEqual([300, 500]);
+
+    const east = host.querySelector<HTMLElement>('.handle-e[data-element-id="table-1"]')!;
+    pointer(east, 'pointerdown', 1000, 260);
+    pointer(host, 'pointermove', 1100, 320);
+    pointer(host, 'pointerup', 1100, 320);
+    table = store.slide!.elements.find((element) => element.id === 'table-1')!;
+    expect(table.w).toBe(900);
+    // Vertical pointer movement never creates an arbitrary clipping box.
+    expect(table.h).toBe(160);
   });
 
   it('keeps an object centered while Option-dragging a resize handle', () => {

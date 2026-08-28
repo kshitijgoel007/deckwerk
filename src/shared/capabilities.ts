@@ -450,7 +450,7 @@ export function capabilities(): Capability[] {
     {
       id: 'html-element',
       what: 'An escape hatch element holding arbitrary markup.',
-      when: 'A small structure the object model has no vocabulary for — a table, a tight two-column flow inside one box. Reach for real text/image/shape elements first.',
+      when: 'A small structure the object model has no vocabulary for — for example a tight two-column flow inside one box. Reach for real text, table, image, and shape elements first.',
       notes: [
         'The markup renders as-is inside the element box. Nothing measures it, so overflow is yours to catch — render or screenshot the slide.',
         'It is one opaque object to the editor: a human cannot select or restyle its parts with the inspector, and auto-fit does not apply.',

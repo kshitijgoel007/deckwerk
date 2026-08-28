@@ -14,7 +14,7 @@ const { comparePixelBuffers } = createRequire(import.meta.url)(
       edgeChannelTolerance?: number;
       radius?: number;
       highToleranceAreas?: Array<{
-        x: number; y: number; w: number; h: number; channelTolerance: number;
+        x: number; y: number; w: number; h: number; channelTolerance: number; radius?: number;
       }>;
     },
   ) => { differing: number; total: number };
@@ -88,5 +88,17 @@ describe('PDF pixel comparator', () => {
       edgeChannelTolerance: 80,
       radius: 0,
     }).differing).toBe(15);
+  });
+
+  it('allows a larger spatial fringe only inside tagged areas', () => {
+    const reference = bitmap(12, 3, [[1, 1], [7, 1]]);
+    const actual = bitmap(12, 3, [[3, 1], [9, 1]]);
+    const result = comparePixelBuffers(reference, actual, 12, 3, {
+      channelTolerance: 0,
+      radius: 1,
+      highToleranceAreas: [{ x: 0, y: 0, w: 6, h: 3, channelTolerance: 0, radius: 2 }],
+    });
+    expect(result.differing).toBeGreaterThan(0);
+    expect(result.differing).toBeLessThan(2);
   });
 });

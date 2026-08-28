@@ -91,13 +91,14 @@ export async function installedFontFamilies(): Promise<string[]> {
  * fallback families used where the chosen font isn't installed.
  *
  * `value` is the element's current `font-family` (may be a full stack, or ''
- * for the theme font); `mixed` renders a disabled "Mixed" entry on top.
+ * for the theme font); `themeValue` is the resolved theme stack shown when
+ * that empty option is active; `mixed` renders a disabled "Mixed" entry on top.
  */
 export function fontFamilyField(
   label: string,
   value: string,
   onChange: (cssValue: string) => void,
-  options: { mixed?: boolean; emptyLabel?: string } = {},
+  options: { mixed?: boolean; emptyLabel?: string; themeValue?: string } = {},
 ): HTMLElement {
   const wrap = document.createElement('div');
   wrap.className = 'font-family-field';
@@ -135,7 +136,8 @@ export function fontFamilyField(
   };
 
   if (options.mixed) addOption('__mixed__', 'Mixed', true);
-  addOption('', options.emptyLabel ?? 'Theme font');
+  const themeFamily = primaryFamily(options.themeValue ?? '');
+  addOption('', options.emptyLabel ?? (themeFamily ? `${themeFamily} (Theme)` : 'Theme font'));
   const placeholder = addOption('__loading__', 'Loading fonts…', true);
 
   select.value = options.mixed ? '__mixed__' : '';

@@ -6,6 +6,8 @@ import { CollabBridge } from './collabBridge.js';
 import { createConnectionNotice } from './connectionNotice.js';
 import { PlayerPaintReadiness } from './playerReadiness.js';
 import { trackVideoLoading } from '../player/videoLoadingProgress.js';
+import { slideLinkFromEvent } from '../player/links.js';
+import { selectionPreventsAdvance } from '../player/presentationPointer.js';
 
 /**
  * The collab Present view: the real Player in a fullscreen-able browser tab,
@@ -138,8 +140,10 @@ function startPlayer(
   if (agentViewer) return;
   bindPresentKeys(window, player, { onExit: exitPresentation });
   // A click advances, like a presenter remote; double-click toggles fullscreen.
-  window.addEventListener('click', () => {
+  window.addEventListener('click', (event) => {
     if (consumeFullscreenGesture()) return;
+    if (slideLinkFromEvent(event)) return;
+    if (selectionPreventsAdvance()) return;
     player?.next();
   });
   window.addEventListener('dblclick', () => {

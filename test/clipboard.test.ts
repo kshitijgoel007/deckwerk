@@ -179,7 +179,7 @@ describe('cross-instance copy/paste', () => {
   it('pastes an Excel or web table onto the slide as one editable object', async () => {
     pasteboard = {
       kind: 'external-html',
-      html: '<div><table onclick="bad()"><tr><th>Name</th><th>Value</th></tr><tr><td contenteditable="false">A</td><td>42</td></tr></table></div>',
+      html: '<div><table onclick="bad()" style="position:fixed"><colgroup><col width="100"><col width="300"></colgroup><tr><th>Name</th><th>Value</th></tr><tr><td contenteditable="false" style="background-image:url(https://bad.test/x);background-color:red">A</td><td>42</td></tr></table></div>',
     };
     const store = new EditorStore(sampleDeck(), '/dest-deck');
     const result = await pasteFromClipboard(store);
@@ -189,6 +189,13 @@ describe('cross-instance copy/paste', () => {
     expect((selected as { html: string }).html).toContain('<table>');
     expect((selected as { html: string }).html).not.toContain('onclick');
     expect((selected as { html: string }).html).not.toContain('contenteditable');
+    expect((selected as { html: string }).html).not.toContain('position');
+    expect((selected as { html: string }).html).not.toContain('background-image');
+    expect(selected.type === 'text' && selected.table).toEqual({
+      columnWidths: [100, 300],
+      autoHeight: true,
+    });
+    expect(selected.type === 'text' && selected.autoFit).toBe(false);
   });
 
   it('pastes a macOS clipboard screenshot as a centered image', async () => {
@@ -217,6 +224,49 @@ describe('cross-instance copy/paste', () => {
     expect(selected.y).toBe(Math.round((store.get().deck.canvas.h - selected.h) / 2));
   });
 
+  it('uploads and pastes a PNG from the browser collaboration clipboard', async () => {
+    let uploaded: File | null = null;
+    window.api = {
+      importAssetFiles: async (files: File[]) => {
+        [uploaded] = files;
+        return [{
+          src: 'assets/Screenshot.browser123.png',
+          kind: 'image',
+          width: 800,
+          height: 600,
+          duration: null,
+        }];
+      },
+    } as Window['api'];
+    const prior = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        read: async () => [{
+          types: ['image/png'],
+          getType: async () => new Blob(
+            [new Uint8Array([137, 80, 78, 71])],
+            { type: 'image/png' },
+          ),
+        }],
+      },
+    });
+    try {
+      const store = new EditorStore(sampleDeck(), '/dest-deck');
+      expect(await pasteFromClipboard(store)).toEqual({ kind: 'elements', count: 1 });
+      expect(uploaded).toMatchObject({ name: 'Screenshot.png', type: 'image/png' });
+      expect(store.selectedElements()[0]).toMatchObject({
+        type: 'image',
+        src: 'assets/Screenshot.browser123.png',
+        w: 800,
+        h: 600,
+      });
+    } finally {
+      if (prior) Object.defineProperty(navigator, 'clipboard', prior);
+      else delete (navigator as unknown as Record<string, unknown>).clipboard;
+    }
+  });
+
   it('pastes the tab-separated fallback supplied by Google Sheets', async () => {
     pasteboard = {
       kind: 'external-html',
@@ -230,6 +280,9 @@ describe('cross-instance copy/paste', () => {
     expect(html).toContain('<table>');
     expect(html).toContain('<td>experiment id</td>');
     expect(html).toContain('<td>ego<br>mix</td>');
+    expect(store.selectedElements()[0]).toMatchObject({
+      table: { columnWidths: [1, 1], autoHeight: true },
+    });
   });
 
   it('reads Google Sheets HTML from the browser collaboration clipboard', async () => {

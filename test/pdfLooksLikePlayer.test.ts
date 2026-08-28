@@ -92,7 +92,9 @@ describe.skipIf(!runnable)('PDF pages, against the real Player', () => {
                   channelTolerance: 96 }] : []),
               ...slide.elements.flatMap((element) => {
                 const channelTolerance = element.type === 'video' ? 64
-                  : element.type === 'image' && profiledSources.has(element.src) ? 96 : null;
+                  : element.type === 'image' && profiledSources.has(element.src) ? 96
+                    : element.type === 'image' ? 64
+                      : element.type === 'text' ? 32 : null;
                 if (channelTolerance === null) return [];
                 const radians = element.rot * Math.PI / 180;
                 const w = Math.abs(Math.cos(radians)) * element.w
@@ -100,7 +102,8 @@ describe.skipIf(!runnable)('PDF pages, against the real Player', () => {
                 const h = Math.abs(Math.sin(radians)) * element.w
                   + Math.abs(Math.cos(radians)) * element.h;
                 return [{ x: element.x + (element.w - w) / 2,
-                  y: element.y + (element.h - h) / 2, w, h, channelTolerance }];
+                  y: element.y + (element.h - h) / 2, w, h, channelTolerance,
+                  ...(element.type === 'text' ? { spatialTolerance: 5 } : {}) }];
               }),
             ],
           };

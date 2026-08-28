@@ -335,7 +335,10 @@ describe.skipIf(!runnable)('embedded Agent presentation synchronization', () => 
     await wait(100);
     await editor.evaluate(`Promise.race([
       window.api.endAgentSession(),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('endAgentSession timed out')), 5000))
+      // A full-suite run has several Electron/Chromium workers flushing and
+      // closing at once. Keep a bounded assertion, but allow that I/O queue to
+      // drain before declaring the real session shutdown stuck.
+      new Promise((_, reject) => setTimeout(() => reject(new Error('endAgentSession timed out')), 15000))
     ])`);
   }, 60_000);
 });

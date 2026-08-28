@@ -104,6 +104,25 @@ const TextElement = BaseElement.extend({
   /** Shrink text as needed to keep it inside its box; never enlarge past its authored size. */
   autoFit: z.boolean().optional(),
   /**
+   * A text object whose sole authored child is a table. Keeping the cell HTML
+   * in the existing rich-text field preserves editing and formatting, while
+   * this structured layout record makes the object behave like a native slide
+   * table instead of an arbitrary text box.
+   *
+   * Column widths are positive relative weights. The renderer normalises them
+   * to percentages, so changing the outer width scales every column and moving
+   * an internal divider only changes its two neighbours.
+   *
+   * Formatting deliberately stays in HTML/CSS: the element's classes style
+   * its wrapper and classes or inline styles on table rows/cells stay in html.
+   * This keeps fills, borders, padding and typography fully agent-editable.
+   */
+  table: z.object({
+    columnWidths: z.array(z.number().positive()).min(1),
+    /** Grow and shrink the element height to its laid-out rows. */
+    autoHeight: z.boolean().default(true),
+  }).optional(),
+  /**
    * Disable automatic line wrapping: lines break only where the author wrote
    * a break. Overlong lines are compressed by the auto-fit shrink (which this
    * flag implies) rather than wrapped.

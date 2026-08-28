@@ -13,6 +13,7 @@ import {
   scheduleAutoFit,
   syncMediaFrame,
 } from '../player/render.js';
+import { openSlideLinkInNewTab, slideLinkFromEvent } from '../player/links.js';
 import { expandTimeline } from '@shared/timeline.js';
 import { classifyMediaName, makePendingSrc, pendingToken } from '@shared/media.js';
 import {
@@ -20,7 +21,8 @@ import {
   paragraphUnits,
   paragraphsToList,
   paragraphsToOrderedList,
-  pastedTableHtml,
+  applyTableColumnWidths,
+  pastedTableData,
 } from '@shared/paragraphs.js';
 import {
   applyPendingHud,
@@ -37,12 +39,20 @@ import type { EditorStore } from './store.js';
 
 export type TableSelection = {
   elementId: string;
-  mode: 'cell' | 'row' | 'column';
+  mode: 'cell' | 'row' | 'column' | 'range';
+  /** Anchor cell where the pointer drag began. */
   row: number;
   column: number;
+  /** Focus cell currently under the pointer. Together these form a rectangle. */
+  rowEnd: number;
+  columnEnd: number;
   rows: number;
   columns: number;
 };
+
+type TableBorderEdge = 'top' | 'right' | 'bottom' | 'left';
+export type TableBorderPreset = 'none' | 'vertical' | 'horizontal';
+export type TableBorderSettings = { color: string; width: number; drawing: boolean };
 
 /**
  * The editing surface: the slide rendered by the player, with an interaction
@@ -58,6 +68,27 @@ const SNAP_SCREEN_PX = 6;
 const LINE_HIT_SCREEN_PX = 8;
 /** Screen-pixel movement before a press becomes a drag rather than a click. */
 const DRAG_THRESHOLD_PX = 3;
+
+/** Replace a freshly typed ASCII arrow with the typographic glyph in place. */
+function convertTypedArrow(body: HTMLElement, selection: Selection | null): boolean {
+  if (!selection?.isCollapsed || selection.rangeCount === 0) return false;
+  const range = selection.getRangeAt(0);
+  const node = range.startContainer;
+  if (!body.contains(node) || node.nodeType !== Node.TEXT_NODE || range.startOffset < 2) {
+    return false;
+  }
+  const text = node.textContent ?? '';
+  const start = range.startOffset - 2;
+  if (text.slice(start, range.startOffset) !== '->') return false;
+
+  node.textContent = `${text.slice(0, start)}→${text.slice(range.startOffset)}`;
+  const caret = document.createRange();
+  caret.setStart(node, start + 1);
+  caret.collapse(true);
+  selection.removeAllRanges();
+  selection.addRange(caret);
+  return true;
+}
 
 /** Turn a Keynote-style marker paragraph into a real continuing HTML list. */
 function convertTypedListMarker(body: HTMLElement, selection: Selection | null): boolean {
@@ -100,11 +131,93 @@ function convertTypedListMarker(body: HTMLElement, selection: Selection | null):
 /** Serialize authored text without editor-only table selection chrome. */
 function authoredTextHtml(body: HTMLElement): string {
   const clone = body.cloneNode(true) as HTMLElement;
-  clone.querySelectorAll('.editor-table-selected').forEach((cell) => {
-    cell.classList.remove('editor-table-selected');
+  clone.querySelectorAll('.editor-table-selected, [class*="editor-table-border-preview-"]').forEach((cell) => {
+    cell.classList.remove(
+      'editor-table-selected',
+      'editor-table-border-preview-top',
+      'editor-table-border-preview-right',
+      'editor-table-border-preview-bottom',
+      'editor-table-border-preview-left',
+    );
+    (cell as HTMLElement).style.removeProperty('--table-border-preview-color');
+    (cell as HTMLElement).style.removeProperty('--table-border-preview-width');
+    if (cell.getAttribute('style') === '') cell.removeAttribute('style');
     if (cell.getAttribute('class') === '') cell.removeAttribute('class');
   });
   return normalizeParagraphHtml(clone.innerHTML);
+}
+
+/** True for the anonymous inline wrappers created by character formatting. */
+function isStyleOnlySpan(node: Element): node is HTMLSpanElement {
+  return node.tagName === 'SPAN'
+    && [...node.attributes].every((attribute) => attribute.name === 'style');
+}
+
+/**
+ * Collapse recursively wrapped formatting spans into one styled run per text
+ * node, then merge adjacent equal runs. Repeated overlapping edits otherwise
+ * grow a deep span tree, making selection lookup, serialization, collaboration
+ * commits, and browser layout progressively slower.
+ */
+function normalizeInlineStyleSpans(root: HTMLElement): void {
+  const authoredStyles = new Map<Text, Array<[string, string, string]>>();
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  for (let current = walker.nextNode(); current; current = walker.nextNode()) {
+    const text = current as Text;
+    if (!text.data) continue;
+    const ancestors: HTMLSpanElement[] = [];
+    for (let parent = text.parentElement; parent && parent !== root; parent = parent.parentElement) {
+      if (isStyleOnlySpan(parent)) ancestors.push(parent);
+    }
+    if (ancestors.length === 0) continue;
+    const properties = new Map<string, [string, string]>();
+    for (const span of ancestors.reverse()) {
+      for (let index = 0; index < span.style.length; index += 1) {
+        const property = span.style.item(index);
+        properties.set(property, [
+          span.style.getPropertyValue(property),
+          span.style.getPropertyPriority(property),
+        ]);
+      }
+    }
+    authoredStyles.set(text, [...properties.entries()]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([property, [value, priority]]) => [property, value, priority]));
+  }
+
+  // Moving children out preserves the Text node identities stored above.
+  for (const span of [...root.querySelectorAll('span')].filter(isStyleOnlySpan)) {
+    span.replaceWith(...span.childNodes);
+  }
+  for (const [text, properties] of authoredStyles) {
+    if (!text.isConnected || properties.length === 0) continue;
+    const span = document.createElement('span');
+    for (const [property, value, priority] of properties) {
+      span.style.setProperty(property, value, priority);
+    }
+    text.replaceWith(span);
+    span.appendChild(text);
+  }
+
+  const parents = [root, ...root.querySelectorAll<HTMLElement>('*')];
+  for (const parent of parents) {
+    for (let current = parent.firstChild; current;) {
+      const next = current.nextSibling;
+      if (
+        current instanceof HTMLSpanElement
+        && next instanceof HTMLSpanElement
+        && isStyleOnlySpan(current)
+        && isStyleOnlySpan(next)
+        && current.getAttribute('style') === next.getAttribute('style')
+      ) {
+        current.append(...next.childNodes);
+        next.remove();
+        continue;
+      }
+      current = next;
+    }
+    parent.normalize();
+  }
 }
 const MIN_ZOOM = 0.25;
 const MAX_ZOOM = 8;
@@ -122,6 +235,13 @@ type DragMode =
       origin: Rect;
       elementId: string;
       aspect: number;
+    }
+  | {
+      kind: 'table-column-resize';
+      elementId: string;
+      column: number;
+      startCanvas: { x: number; y: number };
+      originWidths: number[];
     }
   | {
       kind: 'rotate';
@@ -143,6 +263,7 @@ export class EditorCanvas {
   private slideLayer: HTMLElement;
   private overlay: HTMLElement;
   private zoomInput: HTMLInputElement;
+  private tableHeightSyncPending = false;
 
   /** Final canvas-pixel to screen-pixel scale (fit scale × user zoom). */
   private scale = 1;
@@ -196,8 +317,13 @@ export class EditorCanvas {
   private textEditOriginalHtml: string | null = null;
   /** Last non-collapsed browser selection inside the active text element. */
   private textSelectionRange: Range | null = null;
-  /** Cell/row/column currently targeted by the simple table inspector. */
+  /** Rectangular cell range currently targeted in the live table editor. */
   private tableSelection: TableSelection | null = null;
+  /** Shared paint used by table border presets and the explicit edge tool. */
+  private tableBorderSettingsValue: TableBorderSettings = {
+    color: '#000000', width: 1, drawing: false,
+  };
+  private tableBorderPreview: { cell: HTMLTableCellElement; edge: TableBorderEdge } | null = null;
   /** A click (not a drag) on an already-selected text box enters editing here. */
   private pendingTextEdit: {
     elementId: string;
@@ -224,6 +350,7 @@ export class EditorCanvas {
   onTextEditModeChange?: (elementId: string | null) => void;
   /** Notified when a pasted table or its active cell changes. */
   onTableSelectionChange?: () => void;
+  onTableBorderPaintModeChange?: () => void;
   /** Routes undo/redo through the active shell while editing text in place. */
   onUndoRequest?: (redo: boolean) => void;
   /** Pointer position in slide space on every move, null on leave. For presence. */
@@ -257,6 +384,10 @@ export class EditorCanvas {
 
     new ResizeObserver(() => this.rescale()).observe(this.host);
     this.bindPointer();
+    // Text edit mode restores raw authored markup, so its anchors may not carry
+    // the renderer-injected target yet. Intercept activation at the canvas edge
+    // and open it explicitly; this also keeps the authored HTML unmodified.
+    this.host.addEventListener('click', (event) => openSlideLinkInNewTab(event));
     this.bindViewportGestures();
     this.bindDrop();
     document.addEventListener('selectionchange', () => this.captureTextSelection());
@@ -291,6 +422,7 @@ export class EditorCanvas {
     if (slide === this.renderedSlide) {
       this.rescale();
       this.drawOverlay(deck, slide.elements, selection);
+      this.scheduleTableHeightSync();
       return;
     }
 
@@ -325,6 +457,7 @@ export class EditorCanvas {
           skipElementIds: this.editingId ? [this.editingId] : [],
         },
       );
+      this.scheduleTableHeightSync();
       return;
     }
 
@@ -380,6 +513,50 @@ export class EditorCanvas {
 
     this.rescale();
     this.drawOverlay(deck, slide.elements, selection);
+    this.scheduleTableHeightSync();
+  }
+
+  /** Keep native table frames tight around their laid-out rows. */
+  private scheduleTableHeightSync(): void {
+    if (this.tableHeightSyncPending) return;
+    this.tableHeightSyncPending = true;
+    requestAnimationFrame(() => {
+      this.tableHeightSyncPending = false;
+      if (this.editingId) return;
+      const slide = this.store.slide;
+      if (!slide) return;
+      const heights = new Map<string, number>();
+      for (const element of slide.elements) {
+        if (element.type !== 'text' || !element.table?.autoHeight || element.autoFit) continue;
+        const table = this.slideLayer.querySelector<HTMLTableElement>(
+          `[data-element-id="${CSS.escape(element.id)}"] .text-content > table`,
+        );
+        const height = Math.ceil(table?.offsetHeight ?? 0);
+        if (height >= 8 && Math.abs(height - element.h) > 1) heights.set(element.id, height);
+      }
+      if (heights.size === 0) return;
+      this.store.commit((deck) => {
+        const current = deck.slides[this.store.get().slideIndex];
+        for (const element of current?.elements ?? []) {
+          const height = heights.get(element.id);
+          if (height !== undefined) element.h = height;
+        }
+      }, { label: 'Fit table rows', transient: true });
+    });
+  }
+
+  /** Re-measure one table during its active resize transaction. */
+  private syncTableHeight(elementId: string): void {
+    const element = this.store.slide?.elements.find((candidate) => candidate.id === elementId);
+    if (element?.type !== 'text' || !element.table?.autoHeight || element.autoFit) return;
+    const table = this.slideLayer.querySelector<HTMLTableElement>(
+      `[data-element-id="${CSS.escape(elementId)}"] .text-content > table`,
+    );
+    const height = Math.ceil(table?.offsetHeight ?? 0);
+    if (height < 8 || Math.abs(height - element.h) <= 1) return;
+    this.store.updateSelected((target) => {
+      if (target.id === elementId) target.h = height;
+    });
   }
 
   /**
@@ -868,6 +1045,7 @@ export class EditorCanvas {
       if (!selection.has(el.id)) continue;
       const box = document.createElement('div');
       box.className = `sel-box${this.maskingId === el.id ? ' masking' : ''}`;
+      if (el.type === 'text' && el.table) box.classList.add('table-selection');
       box.style.left = `${el.x}px`;
       box.style.top = `${el.y}px`;
       box.style.width = `${el.w}px`;
@@ -941,12 +1119,29 @@ export class EditorCanvas {
       // Handles only on a single selection: resizing a multi-selection needs a
       // group transform, which v1 doesn't model.
       if (selection.size === 1) {
-        for (const name of HANDLE_NAMES) {
+        const tableLayout = el.type === 'text' ? el.table : undefined;
+        const handles = tableLayout
+          ? HANDLE_NAMES.filter((name) => !['n', 's'].includes(name))
+          : HANDLE_NAMES;
+        for (const name of handles) {
           const h = document.createElement('div');
           h.className = `handle handle-${name}`;
           h.dataset.handle = name;
           h.dataset.elementId = el.id;
           box.appendChild(h);
+        }
+        if (tableLayout && tableLayout.columnWidths.length > 1) {
+          const total = tableLayout.columnWidths.reduce((sum, width) => sum + width, 0);
+          let offset = 0;
+          tableLayout.columnWidths.slice(0, -1).forEach((width, column) => {
+            offset += width;
+            const divider = document.createElement('div');
+            divider.className = 'table-column-resize-handle';
+            divider.dataset.tableColumn = String(column);
+            divider.dataset.elementId = el.id;
+            divider.style.left = `${offset / total * 100}%`;
+            box.appendChild(divider);
+          });
         }
       }
       frag.appendChild(box);
@@ -1015,6 +1210,10 @@ export class EditorCanvas {
 
   private onPointerDown(ev: PointerEvent): void {
     if (ev.button !== 0) return;
+    // Authored links are interactive slide content. Let Chromium activate the
+    // prepared target=_blank link instead of turning the gesture into canvas
+    // selection (whose preventDefault would suppress navigation entirely).
+    if (slideLinkFromEvent(ev)) return;
     const target = ev.target as HTMLElement;
     // The no-deck welcome screen lives inside the canvas host, but its buttons
     // are ordinary application controls. Capturing their pointer on the canvas
@@ -1094,6 +1293,25 @@ export class EditorCanvas {
       this.store.beginTransaction();
       this.drag = { kind: 'curve-control', elementId: target.dataset.elementId };
       return;
+    }
+
+    // A native table exposes its internal column boundaries directly on the
+    // selection frame. Moving one preserves the table's total width and only
+    // redistributes space between the adjacent columns.
+    if (target.dataset?.tableColumn !== undefined && target.dataset.elementId) {
+      const el = slide.elements.find((candidate) => candidate.id === target.dataset.elementId);
+      const column = Number.parseInt(target.dataset.tableColumn, 10);
+      if (el?.type === 'text' && el.table && Number.isInteger(column)) {
+        this.store.beginTransaction('Resize table columns');
+        this.drag = {
+          kind: 'table-column-resize',
+          elementId: el.id,
+          column,
+          startCanvas: point,
+          originWidths: [...el.table.columnWidths],
+        };
+        return;
+      }
     }
 
     // Endpoint handle on a line or arrow.
@@ -1261,11 +1479,43 @@ export class EditorCanvas {
         break;
       }
 
+      case 'table-column-resize': {
+        const drag = this.drag;
+        const element = slide.elements.find((candidate) => candidate.id === drag.elementId);
+        if (element?.type !== 'text' || !element.table) break;
+        const radians = element.rot * Math.PI / 180;
+        const canvasDx = point.x - drag.startCanvas.x;
+        const canvasDy = point.y - drag.startCanvas.y;
+        const dx = radians
+          ? canvasDx * Math.cos(radians) + canvasDy * Math.sin(radians)
+          : canvasDx;
+        const totalWeight = drag.originWidths.reduce((sum, width) => sum + width, 0);
+        const pixels = drag.originWidths.map((width) => width / totalWeight * element.w);
+        const left = drag.column;
+        const right = left + 1;
+        const pair = pixels[left] + pixels[right];
+        const minimum = Math.min(40, pair / 2);
+        pixels[left] = Math.max(minimum, Math.min(pair - minimum, pixels[left] + dx));
+        pixels[right] = pair - pixels[left];
+        this.store.updateSelected((target) => {
+          if (target.id === drag.elementId && target.type === 'text' && target.table) {
+            target.table.columnWidths = pixels;
+            target.html = applyTableColumnWidths(target.html, pixels);
+          }
+        });
+        this.syncTableHeight(drag.elementId);
+        break;
+      }
+
       case 'resize': {
         const drag = this.drag;
-        const edges = HANDLES[drag.handle];
-        const o = drag.origin;
         const resizing = slide.elements.find((e) => e.id === drag.elementId);
+        const tableResize = resizing?.type === 'text' && Boolean(resizing.table);
+        const authoredEdges = HANDLES[drag.handle];
+        const edges = tableResize
+          ? { ...authoredEdges, top: false, bottom: false }
+          : authoredEdges;
+        const o = drag.origin;
         // Handles are drawn rotated with the element, so a drag along a handle's
         // own axis has to be read in the element's frame, not the canvas's.
         // Applying the raw canvas delta to unrotated edges made every handle on
@@ -1380,6 +1630,7 @@ export class EditorCanvas {
             };
           }
         });
+        if (tableResize) this.syncTableHeight(drag.elementId);
         break;
       }
 
@@ -1673,12 +1924,54 @@ export class EditorCanvas {
     const onPaste = (event: ClipboardEvent) => {
       const pasted = event.clipboardData?.getData('text/html') ?? '';
       const plainText = event.clipboardData?.getData('text/plain') ?? '';
-      const safeTable = pastedTableHtml(pasted, plainText);
-      if (!safeTable) return;
+      const tableData = pastedTableData(pasted, plainText);
+      const safeTable = tableData?.html ?? null;
+      if (!safeTable || !tableData) return;
       const template = document.createElement('template');
       template.innerHTML = safeTable;
       const table = template.content.querySelector('table')!;
       event.preventDefault();
+
+      // Spreadsheet semantics inside a native table: paste the rectangular
+      // range starting at the active cell, growing rows/columns as required.
+      if (el.type === 'text' && el.table && this.tableSelection) {
+        const destination = this.activeTable();
+        const active = this.tableSelection;
+        if (destination && active) {
+          const sourceRows = [...table.rows];
+          const requiredRows = active.row + sourceRows.length;
+          const requiredColumns = active.column + tableData.columnWidths.length;
+          while (destination.rows.length < requiredRows) {
+            const row = destination.insertRow();
+            for (let column = 0; column < Math.max(active.columns, requiredColumns); column++) {
+              row.insertCell().appendChild(document.createElement('br'));
+            }
+          }
+          for (const row of [...destination.rows]) {
+            while (row.cells.length < requiredColumns) {
+              row.insertCell().appendChild(document.createElement('br'));
+            }
+          }
+          sourceRows.forEach((sourceRow, rowOffset) => {
+            [...sourceRow.cells].forEach((sourceCell, columnOffset) => {
+              const cell = destination.rows[active.row + rowOffset]
+                ?.cells[active.column + columnOffset];
+              if (!cell) return;
+              cell.innerHTML = sourceCell.innerHTML;
+              cell.style.cssText = sourceCell.style.cssText;
+            });
+          });
+          active.rows = destination.rows.length;
+          active.columns = Math.max(active.columns, requiredColumns);
+          this.commitTableDom('Paste table cells', (widths) => {
+            while (widths.length < requiredColumns) widths.push(1);
+            return widths;
+          });
+          this.syncTableHeight(elementId);
+          return;
+        }
+      }
+
       const selection = window.getSelection();
       const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
       if (range && body.contains(range.commonAncestorContainer)) {
@@ -1696,22 +1989,134 @@ export class EditorCanvas {
       this.onTableSelectionChange?.();
     };
 
-    const onTablePointer = (event: PointerEvent) => {
+    let tableDrag: { pointerId: number; row: number; column: number } | null = null;
+    let borderPaintDrag: { pointerId: number; changed: boolean } | null = null;
+    const tableCellFromEvent = (event: PointerEvent | MouseEvent): HTMLTableCellElement | null => {
       const cell = (event.target as Element | null)?.closest('td, th') as HTMLTableCellElement | null;
-      if (!cell || !body.contains(cell)) return;
+      return cell && body.contains(cell) ? cell : null;
+    };
+    const tableCoordinates = (cell: HTMLTableCellElement) => {
       const row = cell.parentElement as HTMLTableRowElement | null;
       const table = cell.closest('table');
-      if (!row || !table) return;
-      this.tableSelection = {
-        elementId,
-        mode: 'cell',
+      if (!row || !table) return null;
+      return {
         row: row.rowIndex,
         column: cell.cellIndex,
         rows: table.rows.length,
         columns: Math.max(0, ...[...table.rows].map((item) => item.cells.length)),
       };
+    };
+    const borderEdgeAtPointer = (
+      cell: HTMLTableCellElement,
+      event: PointerEvent | MouseEvent,
+    ): TableBorderEdge | null => {
+      const rect = cell.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return null;
+      const distances: Array<[TableBorderEdge, number]> = [
+        ['top', Math.abs(event.clientY - rect.top)],
+        ['right', Math.abs(rect.right - event.clientX)],
+        ['bottom', Math.abs(rect.bottom - event.clientY)],
+        ['left', Math.abs(event.clientX - rect.left)],
+      ];
+      distances.sort((a, b) => a[1] - b[1]);
+      const threshold = Math.min(
+        Math.max(8, this.tableBorderSettingsValue.width / 2 + 4),
+        rect.width / 3,
+        rect.height / 3,
+      );
+      return distances[0][1] <= threshold ? distances[0][0] : null;
+    };
+    const onTablePointerDown = (event: PointerEvent) => {
+      if (event.button !== 0) return;
+      const cell = tableCellFromEvent(event);
+      if (!cell) return;
+      if (this.tableBorderSettingsValue.drawing) {
+        const edge = borderEdgeAtPointer(cell, event);
+        if (!edge) return;
+        event.preventDefault();
+        borderPaintDrag = { pointerId: event.pointerId, changed: true };
+        this.paintTableBorderEdge(cell, edge);
+        this.showTableBorderPreview(cell, edge);
+        return;
+      }
+      const point = tableCoordinates(cell);
+      if (!point) return;
+      // A fresh cell gesture invalidates any character Range from a previous
+      // cell. If this gesture stays inside the cell, selectionchange will
+      // replace it with the newly highlighted word/characters.
+      this.textSelectionRange = null;
+      tableDrag = { pointerId: event.pointerId, row: point.row, column: point.column };
+      this.tableSelection = {
+        elementId,
+        mode: 'cell',
+        row: point.row,
+        column: point.column,
+        rowEnd: point.row,
+        columnEnd: point.column,
+        rows: point.rows,
+        columns: point.columns,
+      };
       this.syncTableSelectionHighlight();
       this.onTableSelectionChange?.();
+    };
+    const onTablePointerMove = (event: PointerEvent) => {
+      if (this.tableBorderSettingsValue.drawing) {
+        const cell = tableCellFromEvent(event);
+        const edge = cell ? borderEdgeAtPointer(cell, event) : null;
+        if (cell && edge) {
+          this.showTableBorderPreview(cell, edge);
+          if (borderPaintDrag?.pointerId === event.pointerId) {
+            event.preventDefault();
+            this.paintTableBorderEdge(cell, edge);
+            borderPaintDrag.changed = true;
+          }
+        } else {
+          this.clearTableBorderPreview();
+        }
+        return;
+      }
+      if (!tableDrag || event.pointerId !== tableDrag.pointerId) return;
+      const cell = tableCellFromEvent(event);
+      if (!cell) return;
+      const point = tableCoordinates(cell);
+      if (!point || !this.tableSelection) return;
+      if (
+        point.row === this.tableSelection.rowEnd
+        && point.column === this.tableSelection.columnEnd
+      ) return;
+
+      // Once the pointer crosses a cell boundary this is a spreadsheet range
+      // gesture, not a DOM text selection. Keeping the native range would make
+      // a vertical drag include every intervening line in document order.
+      event.preventDefault();
+      window.getSelection()?.removeAllRanges();
+      this.textSelectionRange = null;
+      body.classList.add('table-cell-dragging');
+      this.tableSelection.rowEnd = point.row;
+      this.tableSelection.columnEnd = point.column;
+      this.tableSelection.mode = point.row === tableDrag.row
+        ? (point.column === tableDrag.column ? 'cell' : 'row')
+        : point.column === tableDrag.column ? 'column' : 'range';
+      this.syncTableSelectionHighlight();
+      this.onTableSelectionChange?.();
+    };
+    const onTableMouseMove = (event: MouseEvent) => {
+      if (!this.tableBorderSettingsValue.drawing || borderPaintDrag) return;
+      const cell = tableCellFromEvent(event);
+      const edge = cell ? borderEdgeAtPointer(cell, event) : null;
+      if (cell && edge) this.showTableBorderPreview(cell, edge);
+      else this.clearTableBorderPreview();
+    };
+    const onTablePointerUp = (event: PointerEvent) => {
+      if (borderPaintDrag?.pointerId === event.pointerId) {
+        const changed = borderPaintDrag.changed;
+        borderPaintDrag = null;
+        if (changed) this.commitTableDom('Draw table borders');
+        return;
+      }
+      if (!tableDrag || event.pointerId !== tableDrag.pointerId) return;
+      tableDrag = null;
+      body.classList.remove('table-cell-dragging');
     };
 
     const finish = (commit: boolean) => {
@@ -1719,7 +2124,13 @@ export class EditorCanvas {
       body.removeEventListener('keydown', onKey);
       body.removeEventListener('input', onInput);
       body.removeEventListener('paste', onPaste);
-      body.removeEventListener('pointerdown', onTablePointer);
+      body.removeEventListener('pointerdown', onTablePointerDown);
+      body.removeEventListener('pointermove', onTablePointerMove);
+      body.removeEventListener('mousemove', onTableMouseMove);
+      document.removeEventListener('pointerup', onTablePointerUp, true);
+      document.removeEventListener('pointercancel', onTablePointerUp, true);
+      body.classList.remove('table-cell-dragging');
+      this.setTableBorderDrawing(false);
       if (liveTimer) {
         clearTimeout(liveTimer);
         liveTimer = 0;
@@ -1768,7 +2179,15 @@ export class EditorCanvas {
         && event.relatedTarget.closest('.editor-inspector')) return;
       finish(true);
     };
-    const onInput = () => {
+    const onInput = (event?: Event) => {
+      const typed = event instanceof InputEvent ? event : null;
+      if (
+        typed?.inputType === 'insertText'
+        && typed.data === '>'
+        && !typed.isComposing
+      ) {
+        convertTypedArrow(body, window.getSelection());
+      }
       if (el.type === 'text' && (el.autoFit || el.noWrap)) scheduleAutoFit(node!);
       if (this.liveTextSync && !liveTimer) liveTimer = window.setTimeout(pushLive, 250);
     };
@@ -1795,7 +2214,7 @@ export class EditorCanvas {
         const selectedRange = active && active.rangeCount > 0 && !active.getRangeAt(0).collapsed
           ? active.getRangeAt(0)
           : this.textSelectionRange;
-        const offsets = !this.tableSelection && selectedRange && !selectedRange.collapsed
+        const offsets = selectedRange && !selectedRange.collapsed
           ? this.textOffsetsForRange(body, selectedRange)
           : null;
         const tableSelection = this.tableSelection ? { ...this.tableSelection } : null;
@@ -1851,7 +2270,11 @@ export class EditorCanvas {
     body.addEventListener('keydown', onKey);
     body.addEventListener('input', onInput);
     body.addEventListener('paste', onPaste);
-    body.addEventListener('pointerdown', onTablePointer);
+    body.addEventListener('pointerdown', onTablePointerDown);
+    body.addEventListener('pointermove', onTablePointerMove);
+    body.addEventListener('mousemove', onTableMouseMove);
+    document.addEventListener('pointerup', onTablePointerUp, true);
+    document.addEventListener('pointercancel', onTablePointerUp, true);
   }
 
   /** Put the editing caret at the glyph nearest the click that opened the box. */
@@ -1879,23 +2302,19 @@ export class EditorCanvas {
 
   private textOffsetsForRange(root: HTMLElement, range: Range): { start: number; end: number } | null {
     if (!root.contains(range.commonAncestorContainer)) return null;
-    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-    let cursor = 0;
-    let start: number | null = null;
-    let end: number | null = null;
-    for (let current = walker.nextNode(); current; current = walker.nextNode()) {
-      const text = current as Text;
-      let intersects = false;
-      try { intersects = range.intersectsNode(text); } catch { /* detached boundary */ }
-      if (intersects) {
-        const selectedStart = range.startContainer === text ? range.startOffset : 0;
-        const selectedEnd = range.endContainer === text ? range.endOffset : text.data.length;
-        if (start === null) start = cursor + selectedStart;
-        end = cursor + selectedEnd;
-      }
-      cursor += text.data.length;
+    try {
+      // Range#intersectsNode includes a text node that merely touches a Range
+      // boundary. Measuring each boundary from the root avoids treating that
+      // zero-width contact as selected text.
+      const prefix = document.createRange();
+      prefix.selectNodeContents(root);
+      prefix.setEnd(range.startContainer, range.startOffset);
+      const start = prefix.toString().length;
+      prefix.setEnd(range.endContainer, range.endOffset);
+      return { start, end: prefix.toString().length };
+    } catch {
+      return null;
     }
-    return start === null || end === null ? null : { start, end };
   }
 
   private restoreTextRange(root: HTMLElement, offsets: { start: number; end: number }): void {
@@ -1905,17 +2324,22 @@ export class EditorCanvas {
       texts.push(current as Text);
     }
     if (texts.length === 0) return;
-    const locate = (offset: number): { node: Text; offset: number } => {
+    const locate = (offset: number, affinity: 'forward' | 'backward'): { node: Text; offset: number } => {
       let remaining = Math.max(0, offset);
       for (const text of texts) {
-        if (remaining <= text.data.length) return { node: text, offset: remaining };
+        if (
+          remaining < text.data.length
+          || (remaining === text.data.length && affinity === 'backward')
+        ) {
+          return { node: text, offset: remaining };
+        }
         remaining -= text.data.length;
       }
       const last = texts[texts.length - 1];
       return { node: last, offset: last.data.length };
     };
-    const start = locate(offsets.start);
-    const end = locate(Math.max(offsets.start, offsets.end));
+    const start = locate(offsets.start, 'forward');
+    const end = locate(Math.max(offsets.start, offsets.end), 'backward');
     const range = document.createRange();
     range.setStart(start.node, start.offset);
     range.setEnd(end.node, end.offset);
@@ -2016,6 +2440,10 @@ export class EditorCanvas {
   /** Refit after live theme CSS changes without rebuilding the slide DOM. */
   refitAutoText(): void {
     fitAutoText(this.slideLayer);
+    // Table padding, borders and type are intentionally theme.css-driven.
+    // Re-measure the native frame as part of the same hot-reload pass so an
+    // agent can restyle rows and cells without leaving stale table geometry.
+    this.scheduleTableHeightSync();
   }
 
   /** Apply weight to the selected characters without styling the whole box. */
@@ -2033,12 +2461,8 @@ export class EditorCanvas {
     return this.applyTextSelectionStyle('fontSize', `${size}px`);
   }
 
-  applyTextSelectionColor(value: string | null): boolean {
-    return this.applyTextSelectionStyle('color', value || 'inherit');
-  }
-
-  /** Toggle a standard inline format on the active selection. */
-  toggleTextSelectionFormat(format: 'bold' | 'italic' | 'underline'): boolean {
+  /** Apply paragraph spacing to the blocks touched by the live selection. */
+  applyTextSelectionParagraphSpacing(value: number | null): boolean {
     if (!this.editingId || this.tableSelection) return false;
     const content = this.slideLayer.querySelector<HTMLElement>(
       `[data-element-id="${CSS.escape(this.editingId)}"] .text-content`,
@@ -2050,20 +2474,77 @@ export class EditorCanvas {
     if (!content || !range || range.collapsed || !content.contains(range.commonAncestorContainer)) {
       return false;
     }
+    const blocks = [...content.querySelectorAll<HTMLElement>('p, li, div')]
+      .filter((block) => {
+        try { return range.intersectsNode(block); } catch { return false; }
+      })
+      .filter((block) => !block.querySelector('p, li, div'));
+    if (blocks.length === 0) return false;
 
-    content.focus();
+    const spacing = value === null ? null : `${Math.max(0, value)}px`;
+    blocks.forEach((block) => {
+      if (spacing === null) block.style.removeProperty('margin-bottom');
+      else block.style.marginBottom = spacing;
+      if (!block.getAttribute('style')?.trim()) block.removeAttribute('style');
+    });
+    const next = document.createRange();
+    next.setStartBefore(blocks[0]);
+    next.setEndAfter(blocks[blocks.length - 1]);
     live?.removeAllRanges();
-    live?.addRange(range);
-    const command = format === 'bold' ? 'bold' : format === 'italic' ? 'italic' : 'underline';
-    if (typeof document.execCommand === 'function' && document.execCommand(command, false)) {
-      const next = live && live.rangeCount > 0 ? live.getRangeAt(0) : range;
-      this.textSelectionRange = next.cloneRange();
-      const node = content.closest<HTMLElement>('.element');
-      if (node) scheduleAutoFit(node);
-      this.commitLiveTextDom(`Toggle selected text ${format}`);
-      return true;
+    live?.addRange(next);
+    this.textSelectionRange = next.cloneRange();
+    content.focus();
+    const node = content.closest<HTMLElement>('.element');
+    if (node) scheduleAutoFit(node);
+    this.commitLiveTextDom(
+      spacing === null ? 'Use theme spacing for selected paragraphs' : 'Change selected paragraph spacing',
+    );
+    return true;
+  }
+
+  /** Return a shared authored spacing for the paragraphs in the live selection. */
+  textSelectionParagraphSpacing(): number | null {
+    if (!this.editingId || this.tableSelection) return null;
+    const content = this.slideLayer.querySelector<HTMLElement>(
+      `[data-element-id="${CSS.escape(this.editingId)}"] .text-content`,
+    );
+    const range = this.textSelectionRange;
+    if (!content || !range || range.collapsed || !content.contains(range.commonAncestorContainer)) {
+      return null;
+    }
+    const blocks = [...content.querySelectorAll<HTMLElement>('p, li, div')]
+      .filter((block) => {
+        try { return range.intersectsNode(block); } catch { return false; }
+      })
+      .filter((block) => !block.querySelector('p, li, div'));
+    if (blocks.length === 0) return null;
+    const values = blocks.map((block) => Number.parseFloat(block.style.marginBottom));
+    if (values.some((value) => !Number.isFinite(value))) return null;
+    return values.every((value) => value === values[0]) ? values[0] : null;
+  }
+
+  applyTextSelectionColor(value: string | null): boolean {
+    return this.applyTextSelectionStyle('color', value || 'inherit');
+  }
+
+  /** Toggle a standard inline format on the active selection. */
+  toggleTextSelectionFormat(format: 'bold' | 'italic' | 'underline'): boolean {
+    if (!this.editingId) return false;
+    const content = this.slideLayer.querySelector<HTMLElement>(
+      `[data-element-id="${CSS.escape(this.editingId)}"] .text-content`,
+    );
+    const live = window.getSelection();
+    const range = live && live.rangeCount > 0 && !live.getRangeAt(0).collapsed
+      ? live.getRangeAt(0)
+      : this.textSelectionRange;
+    if (!content || !range || range.collapsed || !content.contains(range.commonAncestorContainer)) {
+      return false;
     }
 
+    // Use the same offset-based formatter in Chromium and in the test/runtime
+    // fallback. execCommand mutates selection boundaries differently across
+    // focus changes and browsers, which made the toolbar and keyboard paths
+    // disagree and occasionally formatted adjacent runs.
     const active = this.textSelectionFormatState(format);
     if (format === 'bold') return this.applyTextSelectionStyle('fontWeight', active ? '400' : '700');
     if (format === 'italic') return this.applyTextSelectionStyle('fontStyle', active ? 'normal' : 'italic');
@@ -2071,15 +2552,7 @@ export class EditorCanvas {
   }
 
   textSelectionFormatState(format: 'bold' | 'italic' | 'underline'): boolean {
-    if (!this.editingId || this.tableSelection) return false;
-    try {
-      const command = format === 'bold' ? 'bold' : format === 'italic' ? 'italic' : 'underline';
-      if (typeof document.queryCommandState === 'function' && document.queryCommandState(command)) {
-        return true;
-      }
-    } catch {
-      // Fall back to authored ancestors below.
-    }
+    if (!this.editingId) return false;
     const selection = window.getSelection();
     const range = selection && selection.rangeCount > 0 && !selection.getRangeAt(0).collapsed
       ? selection.getRangeAt(0)
@@ -2088,29 +2561,10 @@ export class EditorCanvas {
     const content = this.slideLayer.querySelector<HTMLElement>(
       `[data-element-id="${CSS.escape(this.editingId)}"] .text-content`,
     );
-    const walker = content && document.createTreeWalker(content, NodeFilter.SHOW_TEXT);
-    let selectedText: Node | null = null;
-    for (let current = walker?.nextNode() ?? null; current; current = walker?.nextNode() ?? null) {
-      if (range.intersectsNode(current)) {
-        selectedText = current;
-        break;
-      }
-    }
-    const anchor = selectedText ?? range.startContainer;
-    const node = anchor.nodeType === Node.ELEMENT_NODE
-      ? anchor as Element
-      : anchor.parentElement;
-    if (!node) return false;
-    if (format === 'bold') {
-      const weight = node.closest<HTMLElement>('[style*="font-weight"]')?.style.fontWeight ?? '';
-      return Boolean(node.closest('b, strong')) || Number.parseInt(weight, 10) >= 600;
-    }
-    if (format === 'italic') {
-      return Boolean(node.closest('i, em'))
-        || node.closest<HTMLElement>('[style*="font-style"]')?.style.fontStyle === 'italic';
-    }
-    return Boolean(node.closest('u'))
-      || node.closest<HTMLElement>('[style*="text-decoration"]')?.style.textDecorationLine.includes('underline') === true;
+    if (!content) return false;
+    const offsets = this.textOffsetsForRange(content, range);
+    const first = offsets ? this.textSlicesForOffsets(content, offsets)[0]?.text : null;
+    return Boolean(first && this.textNodeFormatState(first, content, format));
   }
 
   applyTextSelectionAlignment(value: 'left' | 'center' | 'right' | 'justify'): boolean {
@@ -2299,11 +2753,60 @@ export class EditorCanvas {
     }, { label, coalesceKey });
   }
 
+  /** Positive-width text slices covered by flat character offsets. */
+  private textSlicesForOffsets(
+    root: HTMLElement,
+    offsets: { start: number; end: number },
+  ): Array<{ text: Text; start: number; end: number }> {
+    const slices: Array<{ text: Text; start: number; end: number }> = [];
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    let cursor = 0;
+    for (let current = walker.nextNode(); current; current = walker.nextNode()) {
+      const text = current as Text;
+      const start = Math.max(0, offsets.start - cursor);
+      const end = Math.min(text.data.length, offsets.end - cursor);
+      if (end > start) slices.push({ text, start, end });
+      cursor += text.data.length;
+      if (cursor >= offsets.end) break;
+    }
+    return slices;
+  }
+
+  /** Resolve one character's effective toggle state from the inside out. */
+  private textNodeFormatState(
+    text: Text,
+    root: HTMLElement,
+    format: 'bold' | 'italic' | 'underline',
+  ): boolean {
+    for (let node = text.parentElement; node && node !== root; node = node.parentElement) {
+      if (format === 'bold' && node.style.fontWeight) {
+        const weight = Number.parseInt(node.style.fontWeight, 10);
+        return node.style.fontWeight === 'bold' || weight >= 600;
+      }
+      if (format === 'italic' && node.style.fontStyle) {
+        return node.style.fontStyle === 'italic';
+      }
+      if (format === 'underline' && node.style.textDecorationLine) {
+        return node.style.textDecorationLine.includes('underline');
+      }
+      if (format === 'bold' && node.matches('b, strong')) return true;
+      if (format === 'italic' && node.matches('i, em')) return true;
+      if (format === 'underline' && node.matches('u')) return true;
+    }
+    const computed = text.parentElement ? getComputedStyle(text.parentElement) : null;
+    if (format === 'bold') {
+      const weight = Number.parseInt(computed?.fontWeight ?? '', 10);
+      return computed?.fontWeight === 'bold' || weight >= 600;
+    }
+    if (format === 'italic') return computed?.fontStyle === 'italic';
+    return computed?.textDecorationLine.includes('underline') === true;
+  }
+
   private applyTextSelectionStyle(
     property: 'fontWeight' | 'fontFamily' | 'fontSize' | 'fontStyle' | 'textDecorationLine' | 'color',
     value: string,
   ): boolean {
-    if (!this.editingId || this.tableSelection) return false;
+    if (!this.editingId) return false;
     const content = this.slideLayer.querySelector<HTMLElement>(
       `[data-element-id="${CSS.escape(this.editingId)}"] .text-content`,
     );
@@ -2315,41 +2818,27 @@ export class EditorCanvas {
       return false;
     }
 
+    const offsets = this.textOffsetsForRange(content, range);
+    if (!offsets || offsets.end <= offsets.start) return false;
+
     // Never wrap a cross-block Range in one span. A selection containing
     // paragraphs or list items would put those blocks inside an inline span;
     // Chromium repairs that invalid shape by inserting/splitting lines. Style
     // each selected text run in place so the authored block structure is
     // exactly preserved.
-    const walker = document.createTreeWalker(content, NodeFilter.SHOW_TEXT);
-    const textNodes: Text[] = [];
-    for (let current = walker.nextNode(); current; current = walker.nextNode()) {
-      const text = current as Text;
-      if (!text.data || !range.intersectsNode(text)) continue;
-      textNodes.push(text);
-    }
-    if (textNodes.length === 0) return false;
+    const slices = this.textSlicesForOffsets(content, offsets);
+    if (slices.length === 0) return false;
 
-    const spans: HTMLSpanElement[] = [];
-    for (const text of textNodes) {
-      const start = range.startContainer === text ? range.startOffset : 0;
-      const end = range.endContainer === text ? range.endOffset : text.data.length;
-      if (end <= start) continue;
+    for (const { text, start, end } of slices) {
       if (end < text.data.length) text.splitText(end);
       const selected = start > 0 ? text.splitText(start) : text;
       const span = document.createElement('span');
       span.style[property] = value;
       selected.replaceWith(span);
       span.appendChild(selected);
-      spans.push(span);
     }
-    if (spans.length === 0) return false;
-
-    const next = document.createRange();
-    next.setStartBefore(spans[0]);
-    next.setEndAfter(spans[spans.length - 1]);
-    live?.removeAllRanges();
-    live?.addRange(next);
-    this.textSelectionRange = next.cloneRange();
+    normalizeInlineStyleSpans(content);
+    this.restoreTextRange(content, offsets);
     content.focus();
     const label = property === 'fontFamily' ? 'Change selected text font'
       : property === 'fontSize' ? 'Change selected text size'
@@ -2365,16 +2854,100 @@ export class EditorCanvas {
     return this.tableSelection ? { ...this.tableSelection } : null;
   }
 
-  setTableSelectionMode(mode: TableSelection['mode']): void {
-    if (!this.tableSelection) return;
-    this.tableSelection.mode = mode;
-    this.syncTableSelectionHighlight();
-    this.onTableSelectionChange?.();
+  tableBorderSettings(): TableBorderSettings {
+    return { ...this.tableBorderSettingsValue };
+  }
+
+  setTableBorderSettings(color: string, width: number): void {
+    this.tableBorderSettingsValue.color = color || '#000000';
+    this.tableBorderSettingsValue.width = Math.round(Math.max(0.25, Math.min(40, width)) * 100) / 100;
+    this.updateTableBorderPreviewPaint();
+  }
+
+  setTableBorderDrawing(active: boolean): void {
+    // The inspector can briefly rerender between a collaboration commit and
+    // its echoed DOM patch. Keep the explicit tool state independent of that
+    // transient lookup; pointer painting still requires a real table cell.
+    const next = active;
+    if (this.tableBorderSettingsValue.drawing === next) return;
+    this.tableBorderSettingsValue.drawing = next;
+    const table = this.activeTable();
+    table?.classList.toggle('editor-table-border-drawing', next);
+    if (!next) this.clearTableBorderPreview();
+    this.onTableBorderPaintModeChange?.();
+  }
+
+  applyTableBorderPreset(preset: TableBorderPreset): void {
+    const table = this.activeTable();
+    if (!table) return;
+    this.setTableBorderDrawing(false);
+    const border = `${this.tableBorderSettingsValue.width}px solid ${this.tableBorderSettingsValue.color}`;
+    for (const cell of table.querySelectorAll<HTMLTableCellElement>('td, th')) {
+      for (const edge of ['top', 'right', 'bottom', 'left'] as const) {
+        // A zero-width explicit border reliably overrides theme.css and keeps
+        // each side independently paintable. (`border-*: none` is also
+        // inconsistently preserved by DOM CSS serializers.)
+        cell.style.setProperty(`border-${edge}`, '0px solid transparent');
+      }
+      if (preset === 'vertical') {
+        cell.style.borderLeft = border;
+        cell.style.borderRight = border;
+      } else if (preset === 'horizontal') {
+        cell.style.borderTop = border;
+        cell.style.borderBottom = border;
+      }
+    }
+    this.commitTableDom(
+      preset === 'none' ? 'Remove table borders'
+        : preset === 'vertical' ? 'Apply vertical table borders'
+          : 'Apply horizontal table borders',
+    );
+  }
+
+  private clearTableBorderPreview(): void {
+    const preview = this.tableBorderPreview;
+    if (!preview) return;
+    preview.cell.classList.remove(`editor-table-border-preview-${preview.edge}`);
+    preview.cell.style.removeProperty('--table-border-preview-color');
+    preview.cell.style.removeProperty('--table-border-preview-width');
+    if (!preview.cell.getAttribute('style')?.trim()) preview.cell.removeAttribute('style');
+    this.tableBorderPreview = null;
+  }
+
+  private updateTableBorderPreviewPaint(): void {
+    const cell = this.tableBorderPreview?.cell;
+    if (!cell) return;
+    cell.style.setProperty('--table-border-preview-color', this.tableBorderSettingsValue.color);
+    cell.style.setProperty('--table-border-preview-width', `${this.tableBorderSettingsValue.width}px`);
+  }
+
+  private showTableBorderPreview(cell: HTMLTableCellElement, edge: TableBorderEdge): void {
+    if (this.tableBorderPreview?.cell === cell && this.tableBorderPreview.edge === edge) return;
+    this.clearTableBorderPreview();
+    this.tableBorderPreview = { cell, edge };
+    cell.classList.add(`editor-table-border-preview-${edge}`);
+    this.updateTableBorderPreviewPaint();
+  }
+
+  private paintTableBorderEdge(cell: HTMLTableCellElement, edge: TableBorderEdge): void {
+    const table = cell.closest('table');
+    const row = cell.parentElement as HTMLTableRowElement | null;
+    if (!table || !row) return;
+    const border = `${this.tableBorderSettingsValue.width}px solid ${this.tableBorderSettingsValue.color}`;
+    cell.style.setProperty(`border-${edge}`, border);
+    const opposite: Record<TableBorderEdge, TableBorderEdge> = {
+      top: 'bottom', right: 'left', bottom: 'top', left: 'right',
+    };
+    const neighbour = edge === 'left' ? row.cells[cell.cellIndex - 1]
+      : edge === 'right' ? row.cells[cell.cellIndex + 1]
+        : edge === 'top' ? table.rows[row.rowIndex - 1]?.cells[cell.cellIndex]
+          : table.rows[row.rowIndex + 1]?.cells[cell.cellIndex];
+    neighbour?.style.setProperty(`border-${opposite[edge]}`, border);
   }
 
   private activeTable(): HTMLTableElement | null {
     const selected = this.tableSelection;
-    if (!selected || selected.elementId !== this.editingId) return null;
+    if (!selected) return null;
     return this.slideLayer.querySelector<HTMLTableElement>(
       `[data-element-id="${CSS.escape(selected.elementId)}"] .text-content table`,
     );
@@ -2384,12 +2957,18 @@ export class EditorCanvas {
     const table = this.activeTable();
     const selected = this.tableSelection;
     if (!table || !selected) return [];
-    if (selected.mode === 'row') return [...(table.rows[selected.row]?.cells ?? [])];
-    if (selected.mode === 'column') {
-      return [...table.rows].flatMap((row) => row.cells[selected.column] ? [row.cells[selected.column]] : []);
+    const rowStart = Math.min(selected.row, selected.rowEnd);
+    const rowEnd = Math.max(selected.row, selected.rowEnd);
+    const columnStart = Math.min(selected.column, selected.columnEnd);
+    const columnEnd = Math.max(selected.column, selected.columnEnd);
+    const cells: HTMLTableCellElement[] = [];
+    for (let row = rowStart; row <= rowEnd; row++) {
+      for (let column = columnStart; column <= columnEnd; column++) {
+        const cell = table.rows[row]?.cells[column];
+        if (cell) cells.push(cell);
+      }
     }
-    const cell = table.rows[selected.row]?.cells[selected.column];
-    return cell ? [cell] : [];
+    return cells;
   }
 
   private syncTableSelectionHighlight(): void {
@@ -2401,7 +2980,10 @@ export class EditorCanvas {
     this.selectedTableCells().forEach((cell) => cell.classList.add('editor-table-selected'));
   }
 
-  private commitTableDom(label: string): void {
+  private commitTableDom(
+    label: string,
+    updateWidths?: (widths: number[]) => number[],
+  ): void {
     const selected = this.tableSelection;
     if (!selected) return;
     const body = this.slideLayer.querySelector<HTMLElement>(
@@ -2414,7 +2996,14 @@ export class EditorCanvas {
       const target = deck.slides[this.store.get().slideIndex]?.elements.find(
         (element) => element.id === selected.elementId,
       );
-      if (target && target.type === 'text') target.html = html;
+      if (target && target.type === 'text') {
+        if (target.table && updateWidths) {
+          target.table.columnWidths = updateWidths([...target.table.columnWidths]);
+        }
+        target.html = target.table
+          ? applyTableColumnWidths(html, target.table.columnWidths)
+          : html;
+      }
     }, { label, coalesceKey });
     this.syncTableSelectionHighlight();
   }
@@ -2471,8 +3060,10 @@ export class EditorCanvas {
   }
 
   textComputedTypography(elementId: string): {
+    fontFamily: string | null;
     fontSize: number | null;
     fontWeight: number | null;
+    fontFamilyExplicit: boolean;
     fontSizeExplicit: boolean;
     fontWeightExplicit: boolean;
     fittedFontSize: number | null;
@@ -2497,8 +3088,10 @@ export class EditorCanvas {
     }
     if (!target || !node) {
       return {
+        fontFamily: null,
         fontSize: null,
         fontWeight: null,
+        fontFamilyExplicit: false,
         fontSizeExplicit: false,
         fontWeightExplicit: false,
         fittedFontSize: null,
@@ -2506,7 +3099,7 @@ export class EditorCanvas {
     }
     const style = getComputedStyle(target);
     const fontWeight = Number.parseFloat(style.fontWeight);
-    const explicit = (property: 'fontSize' | 'fontWeight'): boolean => {
+    const explicit = (property: 'fontFamily' | 'fontSize' | 'fontWeight'): boolean => {
       for (let current: HTMLElement | null = target; current && node.contains(current); current = current.parentElement) {
         // Auto-fit writes its result directly on `.text-content`. It is a
         // rendered measurement, not an authored character-level override.
@@ -2535,8 +3128,10 @@ export class EditorCanvas {
     }
     const fontSize = fontSizeExplicit ? measuredFontSize : unfittedFontSize;
     return {
+      fontFamily: style.fontFamily || null,
       fontSize: Number.isFinite(fontSize) ? fontSize : null,
       fontWeight: Number.isFinite(fontWeight) ? fontWeight : null,
+      fontFamilyExplicit: explicit('fontFamily'),
       fontSizeExplicit,
       fontWeightExplicit: explicit('fontWeight'),
       fittedFontSize: Number.isFinite(fittedFontSize) ? fittedFontSize : null,
@@ -2547,7 +3142,9 @@ export class EditorCanvas {
     const table = this.activeTable();
     const selected = this.tableSelection;
     if (!table || !selected) return;
-    const index = selected.column + (after ? 1 : 0);
+    const selectedStart = Math.min(selected.column, selected.columnEnd);
+    const selectedEnd = Math.max(selected.column, selected.columnEnd);
+    const index = after ? selectedEnd + 1 : selectedStart;
     for (const row of [...table.rows]) {
       const reference = row.cells[index] ?? null;
       const cell = document.createElement(row.parentElement?.tagName === 'THEAD' ? 'th' : 'td');
@@ -2555,18 +3152,37 @@ export class EditorCanvas {
       row.insertBefore(cell, reference);
     }
     selected.column = index;
+    selected.columnEnd = index;
+    selected.mode = 'cell';
     selected.columns += 1;
-    this.commitTableDom('Insert table column');
+    this.commitTableDom('Insert table column', (widths) => {
+      const source = Math.max(0, Math.min(widths.length - 1, after ? index - 1 : index));
+      const width = widths[source] ?? 1;
+      widths[source] = width / 2;
+      widths.splice(index, 0, width / 2);
+      return widths;
+    });
+    this.syncTableHeight(selected.elementId);
   }
 
   deleteTableColumn(): void {
     const table = this.activeTable();
     const selected = this.tableSelection;
     if (!table || !selected || selected.columns <= 1) return;
-    for (const row of [...table.rows]) row.cells[selected.column]?.remove();
+    const removedColumn = Math.min(selected.column, selected.columnEnd);
+    for (const row of [...table.rows]) row.cells[removedColumn]?.remove();
     selected.columns -= 1;
     selected.column = Math.min(selected.column, selected.columns - 1);
-    this.commitTableDom('Delete table column');
+    selected.columnEnd = selected.column;
+    selected.rowEnd = selected.row;
+    selected.mode = 'cell';
+    this.commitTableDom('Delete table column', (widths) => {
+      const [removed = 0] = widths.splice(removedColumn, 1);
+      const recipient = Math.min(removedColumn, widths.length - 1);
+      if (recipient >= 0) widths[recipient] += removed;
+      return widths;
+    });
+    this.syncTableHeight(selected.elementId);
   }
 
   private captureTextSelection(): void {

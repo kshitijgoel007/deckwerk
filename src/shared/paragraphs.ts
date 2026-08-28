@@ -292,12 +292,61 @@ function pastedTsvTable(text: string): HTMLTableElement | null {
   return table;
 }
 
-/** Extract one safe, editable table from a browser/spreadsheet paste. */
-export function pastedTableHtml(html: string, plainText = ''): string | null {
+export type PastedTableData = {
+  html: string;
+  /** Positive relative widths, one per logical column. */
+  columnWidths: number[];
+  rows: number;
+};
+
+const SAFE_TABLE_STYLES = new Set([
+  'background-color', 'color', 'font-family', 'font-size', 'font-style',
+  'font-weight', 'text-align', 'text-decoration', 'text-decoration-line',
+  'vertical-align', 'white-space', 'border', 'border-color', 'border-style',
+  'border-width', 'padding', 'padding-top', 'padding-right', 'padding-bottom',
+  'padding-left',
+]);
+
+function positiveWidth(value: string | null | undefined): number | null {
+  const parsed = Number.parseFloat(value ?? '');
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+/** Write a deterministic colgroup from relative column weights. */
+export function applyTableColumnWidths(html: string, widths: number[]): string {
+  if (widths.length === 0 || !/<table\b/i.test(html)) return html;
+  const total = widths.reduce((sum, width) => sum + Math.max(0, width), 0) || widths.length;
+  const group = `<colgroup>${widths.map((width) =>
+    `<col style="width: ${Math.max(0, width) / total * 100}%;">`).join('')}</colgroup>`;
+  const withoutGroup = html.replace(/<colgroup\b[^>]*>[\s\S]*?<\/colgroup>/i, '');
+  return withoutGroup.replace(/(<table\b[^>]*>)/i, `$1${group}`);
+}
+
+/** Extract and normalise one safe, editable table from a spreadsheet paste. */
+export function pastedTableData(html: string, plainText = ''): PastedTableData | null {
   const template = document.createElement('template');
   template.innerHTML = html;
-  const table = template.content.querySelector('table') ?? pastedTsvTable(plainText);
+  const table = template.content.querySelector<HTMLTableElement>('table') ?? pastedTsvTable(plainText);
   if (!table) return null;
+  const rows = [...table.rows];
+  const columns = Math.max(0, ...rows.map((row) =>
+    [...row.cells].reduce((count, cell) => count + Math.max(1, cell.colSpan), 0)));
+  if (columns < 2) return null;
+
+  const sourceCols = [...table.querySelectorAll<HTMLTableColElement>(':scope > colgroup > col')];
+  let columnWidths = sourceCols.map((col) =>
+    positiveWidth(col.style.width) ?? positiveWidth(col.getAttribute('width')) ?? 0);
+  if (columnWidths.length !== columns || columnWidths.some((width) => width <= 0)) {
+    const first = rows[0];
+    columnWidths = first ? [...first.cells].flatMap((cell) => {
+      const width = positiveWidth(cell.style.width) ?? positiveWidth(cell.getAttribute('width')) ?? 1;
+      return Array.from({ length: Math.max(1, cell.colSpan) }, () => width / Math.max(1, cell.colSpan));
+    }) : [];
+  }
+  if (columnWidths.length !== columns || columnWidths.some((width) => width <= 0)) {
+    columnWidths = Array.from({ length: columns }, () => 1);
+  }
+
   table.querySelectorAll('script, iframe, object, embed, link, style').forEach((node) => node.remove());
   [table, ...table.querySelectorAll<HTMLElement>('*')].forEach((node) => {
     for (const attr of [...node.attributes]) {
@@ -306,8 +355,39 @@ export function pastedTableHtml(html: string, plainText = ''): string | null {
       if (/^(?:src|href|xlink:href)$/i.test(attr.name)
         && /^\s*(?:javascript|data):/i.test(attr.value)) node.removeAttribute(attr.name);
     }
+    node.removeAttribute('id');
+    node.removeAttribute('class');
+    if (node.matches('table, thead, tbody, tfoot, tr, colgroup, col')) {
+      node.removeAttribute('style');
+      node.removeAttribute('width');
+      node.removeAttribute('height');
+    } else if (node.hasAttribute('style')) {
+      const properties = Array.from({ length: node.style.length }, (_, index) => node.style.item(index));
+      for (const property of properties) {
+        const value = node.style.getPropertyValue(property);
+        if (!SAFE_TABLE_STYLES.has(property) || /url\s*\(/i.test(value)) {
+          node.style.removeProperty(property);
+        }
+      }
+      node.style.removeProperty('width');
+      node.style.removeProperty('height');
+      if (!node.getAttribute('style')?.trim()) node.removeAttribute('style');
+    }
+    if (node.matches('td, th')) {
+      node.removeAttribute('width');
+      node.removeAttribute('height');
+    }
   });
-  return table.outerHTML;
+  return {
+    html: applyTableColumnWidths(table.outerHTML, columnWidths),
+    columnWidths,
+    rows: rows.length,
+  };
+}
+
+/** Compatibility wrapper for callers that only need the safe HTML. */
+export function pastedTableHtml(html: string, plainText = ''): string | null {
+  return pastedTableData(html, plainText)?.html ?? null;
 }
 
 /**

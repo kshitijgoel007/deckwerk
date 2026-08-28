@@ -1,5 +1,5 @@
 import { join } from 'node:path';
-import { BrowserWindow, screen } from 'electron';
+import { BrowserWindow, screen, shell } from 'electron';
 import type { Rectangle } from 'electron';
 import { chooseAudienceDisplay, chooseDisplayById } from './presentationDisplays.js';
 
@@ -55,6 +55,21 @@ function loadRenderer(win: BrowserWindow, name: string, query = ''): void {
   }
 }
 
+/** Send target=_blank web links to the user's browser, never a child app window. */
+function openWebLinksExternally(win: BrowserWindow): void {
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    try {
+      const protocol = new URL(url).protocol;
+      if (protocol === 'http:' || protocol === 'https:') {
+        void shell.openExternal(url).catch(() => {});
+      }
+    } catch {
+      // Invalid and non-web targets stay closed.
+    }
+    return { action: 'deny' };
+  });
+}
+
 /**
  * Showing a hidden BrowserWindow does not reliably finish its constructor-time
  * fullscreen transition on macOS when another window is entering fullscreen at
@@ -82,6 +97,7 @@ export function createEditorWindow(query = '', state?: WindowContinuityState): B
       sandbox: false,
     },
   });
+  openWebLinksExternally(win);
   revealWindow(win, state);
   loadRenderer(win, 'editor', query);
   return win;
@@ -148,6 +164,7 @@ export function createPresentWindow(
       autoplayPolicy: 'no-user-gesture-required',
     },
   });
+  openWebLinksExternally(win);
   if (visible) win.once('ready-to-show', () => showFullscreenWindow(win));
   const query = new URLSearchParams({ slide: String(cursorSlide) });
   if (endSlideIndex !== undefined) query.set('endSlide', String(endSlideIndex));

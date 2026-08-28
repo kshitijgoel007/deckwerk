@@ -122,6 +122,7 @@ export class Player {
   private onVisibilityChange = (): void => {
     if (document.visibilityState !== 'visible' || this.blanked) return;
     for (const [id, video] of this.intendedVideos()) {
+      if (video.dataset.holdFrame === 'true') continue;
       // A fresh budget: the pauses that exhausted it were the hidden page's.
       this.playAttempts.delete(id);
       void video.play().catch(() => this.retryPlayback(id, video));
@@ -742,12 +743,14 @@ export class Player {
       // exhausting the retry budget on its first hiccup.
       video.addEventListener('playing', () => this.playAttempts.delete(currentId()));
       video.addEventListener('pause', () => {
-        if (!this.intendedPlaying.has(currentId()) || this.blanked) return;
+        if (!this.intendedPlaying.has(currentId()) || this.blanked
+          || video.dataset.holdFrame === 'true') return;
         this.retryPlayback(currentId(), video);
       });
     }
     void video.play().catch(() => {
-      if (!this.intendedPlaying.has(id) || this.blanked) return;
+      if (!this.intendedPlaying.has(id) || this.blanked
+        || video.dataset.holdFrame === 'true') return;
       this.retryPlayback(id, video);
     });
   }
@@ -758,9 +761,11 @@ export class Player {
     if (attempts >= PLAY_RETRY_LIMIT) return;
     this.playAttempts.set(id, attempts + 1);
     const timer = setTimeout(() => {
-      if (!this.intendedPlaying.has(id) || this.blanked || !video.isConnected) return;
+      if (!this.intendedPlaying.has(id) || this.blanked || !video.isConnected
+        || video.dataset.holdFrame === 'true') return;
       void video.play().catch(() => {
-        if (this.intendedPlaying.has(id) && !this.blanked) this.retryPlayback(id, video);
+        if (this.intendedPlaying.has(id) && !this.blanked
+          && video.dataset.holdFrame !== 'true') this.retryPlayback(id, video);
       });
     }, PLAY_RETRY_DELAY_MS);
     this.pending.push(timer);

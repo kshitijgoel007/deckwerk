@@ -11,7 +11,11 @@ import { CssEditor } from '../editor/cssEditor.js';
 import { createToolbarPicker } from '../editor/exportPicker.js';
 import { showPdfExportDialog } from '../editor/pdfExportDialog.js';
 import { HistoryPanel } from '../editor/historyPanel.js';
-import { createShapeInsertPicker, insertText } from '../editor/elementCreation.js';
+import {
+  createShapeInsertPicker,
+  createTableInsertPicker,
+  insertText,
+} from '../editor/elementCreation.js';
 import { Inspector } from '../editor/inspector.js';
 import {
   barButton,
@@ -41,6 +45,7 @@ import { startPresenting } from './presentOverlay.js';
 import { setRenderInvariantChecks } from '../editor/renderInvariants.js';
 import { trackPreviewFrameRecovery } from '../player/previewFrameRecovery.js';
 import { trackVideoLoading } from '../player/videoLoadingProgress.js';
+import { DelayedOperationProgress } from '../editor/operationProgress.js';
 
 /**
  * Browser collaboration shell: the same canvas, rail, inspector, theme
@@ -113,12 +118,29 @@ let initialViewPending = initialView !== null;
 
 const PRESENT_NEEDS_SERVER = 'Presenting needs the server — waiting to reconnect.';
 let statusMessage = '';
+let statusBusy = false;
 let participantName = '';
 let sharedAgentPanel: AgentChatPanel | null = null;
 let sharedAgentBrowserApi: SharedAgentBrowserApi | null = null;
 function setStatusMessage(text: string): void {
   statusMessage = text;
+  statusBusy = false;
   renderStatus();
+}
+
+const operationProgress = new DelayedOperationProgress(({ message, busy }) => {
+  statusMessage = message;
+  statusBusy = busy;
+  renderStatus();
+});
+
+async function runOperation<T>(message: string, action: () => Promise<T>): Promise<T> {
+  const operation = operationProgress.begin(message);
+  try {
+    return await action();
+  } finally {
+    operation.finish();
+  }
 }
 
 if (!deckId) {
@@ -288,6 +310,7 @@ const shellDeps: ShellDeps = {
   // Persistence is the server's job; Cmd+S just confirms that.
   save: async () => setStatusMessage('Saved automatically — every edit syncs live.'),
   setStatusMessage,
+  runOperation,
   undo: () => bridge.undo(store.get().deck),
   redo: () => bridge.redo(store.get().deck),
 };
@@ -441,6 +464,7 @@ function buildToolbar(): void {
   mid.append(
     barIconButton('Text', TEXT_ICON, () => insertText(store)),
     createShapeInsertPicker(store),
+    createTableInsertPicker(store),
   );
 
   const right = document.createElement('div');
@@ -569,6 +593,8 @@ function renderStatus(): void {
   // that lands here cold finds its onboarding without guessing endpoints.
   bits.push('agents: GET /api/brief · await window.agent.seeComments()');
   el('status').textContent = bits.join('  ·  ');
+  el('status').dataset.busy = statusBusy ? 'true' : 'false';
+  el('status').setAttribute('aria-busy', String(statusBusy));
 }
 
 // The toolbar depends on whether this is a hosted session; one round-trip

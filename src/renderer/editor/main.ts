@@ -26,7 +26,7 @@ import { CssEditor } from './cssEditor.js';
 import { Inspector } from './inspector.js';
 import { HistoryPanel } from './historyPanel.js';
 import { authoredHtmlSync, fileName } from './htmlCompile.js';
-import { createShapeInsertPicker, insertText } from './elementCreation.js';
+import { createShapeInsertPicker, createTableInsertPicker, insertText } from './elementCreation.js';
 import { createToolbarPicker, createToolbarSplitButton } from './exportPicker.js';
 import { showPdfExportDialog } from './pdfExportDialog.js';
 import { makePanelResizable } from './panelResize.js';
@@ -281,6 +281,7 @@ function buildToolbar(): void {
   mid.append(
     barIconButton('Text', TEXT_ICON, () => addText()),
     createShapeInsertPicker(store),
+    createTableInsertPicker(store),
   );
 
   const right = document.createElement('div');
@@ -716,6 +717,7 @@ const shellDeps: ShellDeps = {
   rail,
   save,
   setStatusMessage,
+  runOperation: (message, action) => runOperation(message, async () => action()),
   openTrim,
   openRaster,
   undo: () => {

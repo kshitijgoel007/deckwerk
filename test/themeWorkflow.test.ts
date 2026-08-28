@@ -116,10 +116,10 @@ describe('role-based theme workflow', () => {
     const weight = field('Font weight').querySelector<HTMLInputElement>('input[type="number"]')!;
     expect(weight.step).toBe('25');
     expect(size.parentElement?.classList.contains('optional-number-controls')).toBe(true);
-    expect(size.nextElementSibling?.getAttribute('title')).toBe('Use theme value');
+    expect(size.parentElement?.querySelector('button[title="Use theme value"]')).not.toBeNull();
     const spacing = field('Paragraph spacing').querySelector<HTMLInputElement>('input')!;
     expect(spacing.parentElement?.classList.contains('optional-number-controls')).toBe(true);
-    expect(spacing.nextElementSibling?.getAttribute('title')).toBe('Use theme value');
+    expect(spacing.parentElement?.querySelector('button[title="Use theme value"]')).not.toBeNull();
 
     size.value = '54';
     size.dispatchEvent(new Event('change', { bubbles: true }));

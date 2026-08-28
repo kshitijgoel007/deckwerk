@@ -150,6 +150,29 @@ export class Cdp {
     await this.mouse('mouseReleased', x, y, 1);
   }
 
+  /** Move the real pointer to a fractional point inside a visible element. */
+  async hoverWithin(
+    selector: string,
+    fractionX: number,
+    fractionY: number,
+    label = selector,
+  ): Promise<void> {
+    const box = await this.boxOf(selector, label);
+    const x = box.x + (fractionX - 0.5) * box.width;
+    const y = box.y + (fractionY - 0.5) * box.height;
+    await this.mouse('mouseMoved', x, y, 0);
+  }
+
+  /** Drag from the centre of one visible element to another with the primary pointer. */
+  async dragBetween(startSelector: string, endSelector: string, label = 'drag'): Promise<void> {
+    const start = await this.boxOf(startSelector, `${label} start`);
+    const end = await this.boxOf(endSelector, `${label} end`);
+    await this.mouse('mouseMoved', start.x, start.y, 0);
+    await this.mouse('mousePressed', start.x, start.y, 1);
+    await this.mouse('mouseMoved', end.x, end.y, 1);
+    await this.mouse('mouseReleased', end.x, end.y, 1);
+  }
+
   /** Click near the leading edge of a rendered character at a text offset. */
   async clickTextAtOffset(
     selector: string,
@@ -238,6 +261,7 @@ export class Cdp {
     code: string,
     windowsVirtualKeyCode: number,
     modifiers: number,
+    commands?: string[],
   ): Promise<void> {
     for (const type of ['keyDown', 'keyUp']) {
       await this.call('Input.dispatchKeyEvent', {
@@ -245,6 +269,7 @@ export class Cdp {
         key,
         code,
         modifiers,
+        commands: type === 'keyDown' ? commands : undefined,
         windowsVirtualKeyCode,
         nativeVirtualKeyCode: windowsVirtualKeyCode,
       });

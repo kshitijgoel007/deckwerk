@@ -14,6 +14,16 @@ function pickRow(row: HTMLElement, shiftKey = false): void {
   row.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, shiftKey }));
 }
 
+function mulberry32(seed: number): () => number {
+  return () => {
+    seed |= 0;
+    seed = seed + 0x6D2B79F5 | 0;
+    let value = Math.imul(seed ^ seed >>> 15, 1 | seed);
+    value = value + Math.imul(value ^ value >>> 7, 61 | value) ^ value;
+    return ((value ^ value >>> 14) >>> 0) / 4294967296;
+  };
+}
+
 function setup() {
   (globalThis as unknown as { window: Window }).window.api = {
     assetUrl: (src: string) => src,
@@ -168,6 +178,85 @@ describe('deleting slides from the rail', () => {
 
     host.dispatchEvent(new KeyboardEvent('keydown', { key: 'Backspace', bubbles: true }));
     expect(store.get().deck.slides).toHaveLength(2);
+  });
+
+  it('selects and deletes a large collapsed hidden suffix without expanding it', () => {
+    const deck = emptyDeck('Imported deck with hidden appendix');
+    deck.slides = Array.from({ length: 215 }, (_, index) => ({
+      id: `slide-${index + 1}`,
+      name: `Slide ${index + 1}`,
+      background: { color: null, image: null },
+      notes: '',
+      elements: [],
+      timeline: [],
+      ...(index >= 181 ? { skipped: true } : {}),
+    }));
+    const store = new EditorStore(deck, '/tmp/large-hidden-suffix');
+    const host = document.createElement('div');
+    document.body.replaceChildren(host);
+    new SlideRail(host, store);
+
+    store.selectSlide(180);
+    const collapsed = host.querySelector<HTMLElement>('.rail-collapsed')!;
+    expect(collapsed.title).toBe('Show hidden slides 182–215');
+    expect(host.querySelector('.rail-run')).toBeNull();
+
+    pickRow(collapsed, true);
+
+    expect(store.get().slideIndex).toBe(214);
+    expect([...store.get().slideSelection]).toEqual(
+      Array.from({ length: 34 }, (_, index) => `slide-${index + 182}`),
+    );
+    expect(host.querySelector('.rail-run')).toBeNull();
+    expect(host.querySelector('.rail-collapsed.selected')).not.toBeNull();
+
+    host.dispatchEvent(new KeyboardEvent('keydown', { key: 'Delete', bubbles: true }));
+
+    expect(store.get().deck.slides).toHaveLength(181);
+    expect(store.get().deck.slides.at(-1)?.id).toBe('slide-181');
+    expect(store.history()[0].label).toBe('Delete 34 slides');
+  });
+
+  it('fuzzes collapsed hidden suffix selection, deletion, and undo', () => {
+    const random = mulberry32(2608182);
+    for (let attempt = 0; attempt < 24; attempt += 1) {
+      const slideCount = 3 + Math.floor(random() * 68);
+      const hiddenCount = 2 + Math.floor(random() * (slideCount - 2));
+      const hiddenStart = slideCount - hiddenCount;
+      const ids = Array.from({ length: slideCount }, (_, index) => `fuzz-${attempt}-${index}`);
+      const deck = emptyDeck(`Hidden suffix fuzz ${attempt}`);
+      deck.slides = ids.map((id, index) => ({
+        id,
+        name: id,
+        background: { color: null, image: null },
+        notes: '',
+        elements: [],
+        timeline: [],
+        ...(index >= hiddenStart ? { skipped: true } : {}),
+      }));
+      const store = new EditorStore(deck, `/tmp/hidden-suffix-fuzz-${attempt}`);
+      const host = document.createElement('div');
+      document.body.replaceChildren(host);
+      new SlideRail(host, store);
+      store.selectSlide(hiddenStart - 1);
+
+      const collapsed = host.querySelector<HTMLElement>('.rail-collapsed')!;
+      pickRow(collapsed, true);
+      expect([...store.get().slideSelection], `attempt ${attempt}: selected ids`)
+        .toEqual(ids.slice(hiddenStart));
+      expect(host.querySelector('.rail-run'), `attempt ${attempt}: stayed collapsed`).toBeNull();
+
+      host.dispatchEvent(new KeyboardEvent('keydown', { key: 'Backspace', bubbles: true }));
+      expect(
+        store.get().deck.slides.map((slide) => slide.id),
+        `attempt ${attempt}: surviving prefix`,
+      ).toEqual(ids.slice(0, hiddenStart));
+      store.undo();
+      expect(
+        store.get().deck.slides.map((slide) => slide.id),
+        `attempt ${attempt}: undo`,
+      ).toEqual(ids);
+    }
   });
 });
 

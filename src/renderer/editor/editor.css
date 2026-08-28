@@ -450,6 +450,31 @@ body.panel-resizing iframe { pointer-events: none; }
 .handle-sw { bottom: calc(-5px * var(--inv)); left: calc(-5px * var(--inv)); cursor: nesw-resize; }
 .handle-w  { top: 50%; left: calc(-5px * var(--inv)); margin-top: calc(-5px * var(--inv)); cursor: ew-resize; }
 
+/* Native tables are content-height objects. Their corner handles change the
+   total column width while the rows reflow, so all six outer handles read as
+   horizontal resize affordances. */
+.table-selection :is(.handle-nw, .handle-ne, .handle-sw, .handle-se) { cursor: ew-resize; }
+
+.table-column-resize-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: calc(12px * var(--inv));
+  margin-left: calc(-6px * var(--inv));
+  cursor: col-resize;
+  pointer-events: auto;
+}
+
+.table-column-resize-handle::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: calc(1px * var(--inv));
+  background: color-mix(in srgb, var(--accent) 70%, transparent);
+}
+
 /* Keynote-style Command-drag rotation. The host class changes on keydown, so
    the cursor updates even when the pointer is already stationary on a handle. */
 .canvas-host.command-rotate .handle:not(.handle-curve-control),
@@ -1220,8 +1245,7 @@ input[type="range"] { accent-color: var(--accent); padding: 0; background: trans
 .agent-history-message strong { display: block; margin-bottom: 5px; font-size: 10px; }
 .agent-history-message div { font-size: 11px; line-height: 1.5; white-space: pre-wrap; }
 .text-selection-style { display: grid; gap: 6px; margin: 4px 0 8px; }
-.text-selection-style > span { color: var(--muted); font-size: 10.5px; }
-.text-selection-style .button-row { display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; }
+.text-selection-style .button-row { display: grid; gap: 4px; }
 .text-selection-style button { padding: 5px 2px; font-size: 10px; }
 .text-selection-style .text-format-buttons { grid-template-columns: repeat(3, 1fr); }
 .text-format-bold { font-weight: 800; }
@@ -2212,14 +2236,47 @@ button.magic-object-hit.selected-source:hover:not(:disabled) {
   outline-offset: calc(-2px * var(--editor-inv-scale, 1));
 }
 
-.table-scope-buttons button[aria-pressed="true"] {
-  border-color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 24%, var(--panel-2));
+.canvas-host .text-content.table-cell-dragging { user-select: none; }
+
+.canvas-host .text-content table.editor-table-border-drawing :is(td, th) {
+  position: relative;
+  cursor: crosshair;
+  user-select: none;
 }
+
+.canvas-host .text-content :is(td, th)[class*="editor-table-border-preview-"]::after {
+  content: "";
+  position: absolute;
+  z-index: 3;
+  background: var(--table-border-preview-color, var(--accent));
+  pointer-events: none;
+}
+.canvas-host .editor-table-border-preview-top::after,
+.canvas-host .editor-table-border-preview-bottom::after {
+  right: 0;
+  left: 0;
+  height: var(--table-border-preview-width, 2px);
+}
+.canvas-host .editor-table-border-preview-top::after { top: 0; }
+.canvas-host .editor-table-border-preview-bottom::after { bottom: 0; }
+.canvas-host .editor-table-border-preview-left::after,
+.canvas-host .editor-table-border-preview-right::after {
+  top: 0;
+  bottom: 0;
+  width: var(--table-border-preview-width, 2px);
+}
+.canvas-host .editor-table-border-preview-left::after { left: 0; }
+.canvas-host .editor-table-border-preview-right::after { right: 0; }
 
 .table-column-buttons { flex-wrap: wrap; }
 .table-column-buttons button { flex: 1 1 calc(50% - 4px); }
 .table-column-buttons button.danger { color: var(--danger); }
+.table-border-buttons { flex-wrap: wrap; }
+.table-border-buttons button { flex: 1 1 calc(50% - 4px); }
+.table-border-buttons button[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 24%, var(--panel-2));
+}
 
 /* Neither may the slide layer clip while editing. Presenting and exporting
    crop to the slide, but an editor that does the same makes anything dragged
@@ -2776,6 +2833,42 @@ select.panel-action-select {
 .shape-menu-item:hover { background: var(--accent); color: #fff; border-color: transparent; }
 .shape-menu-item:hover svg { color: #fff; }
 .shape-menu-item svg { flex: none; color: var(--muted); }
+
+.table-picker-menu {
+  min-width: 0;
+  padding: 8px;
+}
+
+.table-picker-status {
+  min-height: 18px;
+  margin-bottom: 6px;
+  color: var(--text);
+  font-size: 12px;
+  text-align: center;
+}
+
+.table-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(10, 18px);
+  gap: 3px;
+}
+
+.table-picker-cell {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  background: var(--panel-2);
+}
+
+.table-picker-cell:hover,
+.table-picker-cell:focus-visible,
+.table-picker-cell.active {
+  border-color: color-mix(in srgb, var(--accent) 75%, white);
+  background: color-mix(in srgb, var(--accent) 55%, var(--panel-2));
+  outline: none;
+}
 
 .shape-menu-section {
   margin-top: 4px;

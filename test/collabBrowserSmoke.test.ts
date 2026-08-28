@@ -115,8 +115,34 @@ describe.skipIf(!electronBinary)('standalone collaboration browser', () => {
       panels: [...document.querySelectorAll('#side-tabs button')].map((button) => button.textContent?.trim() ?? '')
     }))()`), 'browser editor did not finish connecting', (value) => value.connected);
     expect(opened.title).toBe('Browser collaboration smoke');
-    expect(opened.controls).toEqual(expect.arrayContaining(['Text', 'Present', 'Save As…']));
+    expect(opened.controls).toEqual(expect.arrayContaining(['Text', 'Table', 'Present', 'Save As…']));
     expect(opened.panels).toEqual(['Props', 'Theme', 'Build', 'History']);
+
+    // The Web UI has no Electron clipboard bridge. A native browser paste on
+    // the slide must consume Google Sheets' TSV/HTML flavours directly and
+    // create one native table object without an existing textbox.
+    const sheetsTsv = [
+      ['time', 'experiment id', ...Array.from({ length: 10 }, (_, index) => `header ${index + 3}`)]
+        .join('\t'),
+      ['2026-08-18', 'ego', '47135', '128', 'regular', 'web data', 'r2r data',
+        '60250', '10.847', '18760.497', '0.311', '5555'].join('\t'),
+    ].join('\n');
+    const pastePrevented = await editor.evaluate<boolean>(`(() => {
+      const data = new DataTransfer();
+      data.setData('text/plain', ${JSON.stringify(sheetsTsv)});
+      const event = new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true });
+      window.dispatchEvent(event);
+      return event.defaultPrevented;
+    })()`);
+    expect(pastePrevented).toBe(true);
+    await eventually(async () => {
+      const live = await fetchDeck(server!.port);
+      return live.slides[0].elements.some((element) =>
+        element.type === 'text'
+        && element.table?.columnWidths.length === 12
+        && element.html.includes('2026-08-18')
+        && element.html.includes('experiment'));
+    }, 'native Google Sheets paste did not create a table on the slide');
 
     // Use the real toolbar to create the object, then finish the same edit
     // through the exposed store just as canvas/inspector controls do.

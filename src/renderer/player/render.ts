@@ -4,8 +4,10 @@ import { fitScale } from '@shared/geometry.js';
 import { fitAutoTextElement } from '@shared/autoFit.js';
 import { isPendingSrc, pendingName, pendingToken } from '@shared/media.js';
 import { gateVideoLoad } from './mediaLoadGate.js';
+import { prepareSlideLinks } from './links.js';
 import { quadraticPath, shapeSvg } from '@shared/shapeSvg.js';
 import { isMediaBorderPaint, typedPropertyOwnsCss } from '@shared/nativeCss.js';
+import { applyTableColumnWidths } from '@shared/paragraphs.js';
 import renderMathInElement from 'katex/contrib/auto-render';
 import 'katex/dist/katex.min.css';
 
@@ -237,6 +239,7 @@ export function renderElement(
   }
 
   node.appendChild(body);
+  prepareSlideLinks(node);
   if (el.type === 'image' || el.type === 'video') syncMediaFrame(node, el, body);
   applyTextRenderState(node, el);
   return node;
@@ -302,6 +305,9 @@ export function applyTextRenderState(
 ): void {
   if (el.type !== 'text') return;
 
+  if (el.table) node.dataset.table = 'true';
+  else delete node.dataset.table;
+
   if (el.paragraphSpacing !== undefined) {
     node.dataset.paragraphSpacing = String(el.paragraphSpacing);
     node.style.setProperty('--paragraph-spacing', `${el.paragraphSpacing}px`);
@@ -349,6 +355,19 @@ export function applyTextRenderState(
     }
     for (const [property, value] of Object.entries(el.contentStyle ?? {})) {
       content.style.setProperty(property, value);
+    }
+    if (el.table) {
+      const table = content.querySelector<HTMLTableElement>(':scope > table');
+      if (table) {
+        const template = document.createElement('template');
+        template.innerHTML = applyTableColumnWidths(table.outerHTML, el.table.columnWidths);
+        const nextGroup = template.content.querySelector('colgroup');
+        const priorGroup = table.querySelector(':scope > colgroup');
+        if (nextGroup) {
+          if (priorGroup) priorGroup.replaceWith(nextGroup);
+          else table.insertBefore(nextGroup, table.firstChild);
+        }
+      }
     }
   }
 
@@ -626,7 +645,10 @@ function renderBody(el: SlideElement, opts: RenderOptions): HTMLElement | SVGEle
       // KaTeX auto-render does not exclude escaped delimiter characters before
       // pairing `$...$`. Protect literal dollars, render, then restore them.
       const escapedDollar = '\uE000';
-      content.innerHTML = el.html.replace(/\\\$/g, escapedDollar);
+      const authored = el.table
+        ? applyTableColumnWidths(el.html, el.table.columnWidths)
+        : el.html;
+      content.innerHTML = authored.replace(/\\\$/g, escapedDollar);
       renderMathInElement(content, {
         // Standard TeX convention: display math first so $$ is not consumed
         // as two empty inline expressions. A literal dollar is written as \$.

@@ -6,7 +6,11 @@ import {
   hasList,
   listToParagraphs,
 } from '@shared/paragraphs.js';
-import type { TableSelection } from './canvas.js';
+import type {
+  TableBorderPreset,
+  TableBorderSettings,
+  TableSelection,
+} from './canvas.js';
 import { type AlignMode, alignElements } from './align.js';
 import type { EditorStore } from './store.js';
 import { LAYOUT_LABELS, applySlideLayout, type SlideLayout } from './slideLayouts.js';
@@ -119,13 +123,21 @@ export class Inspector {
   /** Apply a family to only the selected characters in the live text edit. */
   onApplyTextSelectionFontFamily?: (value: string) => boolean;
   onApplyTextSelectionFontSize?: (value: number) => boolean;
+  /** Apply spacing after only the paragraphs covered by the live text selection. */
+  onApplyTextSelectionParagraphSpacing?: (value: number | null) => boolean;
+  /** Authored spacing shared by the paragraphs in the live text selection. */
+  textSelectionParagraphSpacing?: () => number | null;
   onApplyTextSelectionColor?: (value: string | null) => boolean;
   onApplyTextSelectionAlignment?: (value: 'left' | 'center' | 'right' | 'justify') => boolean;
   /** Convert only the paragraphs covered by the live text selection. */
   onApplyTextSelectionListStyle?: (style: ListStyle) => boolean;
   textSelectionListStyle?: () => ListStyle | null;
   tableSelection?: () => TableSelection | null;
-  onSetTableSelectionMode?: (mode: TableSelection['mode']) => void;
+  tableBorderSettings?: () => TableBorderSettings;
+  onSetTableBorderColor?: (color: string) => void;
+  onSetTableBorderWidth?: (width: number) => void;
+  onApplyTableBorderPreset?: (preset: TableBorderPreset) => void;
+  onSetTableBorderDrawing?: (active: boolean) => void;
   onApplyTableCellColor?: (property: 'backgroundColor' | 'color', value: string | null) => void;
   onApplyTableCellTextStyle?: (
     property: 'fontFamily' | 'fontSize' | 'fontWeight' | 'fontStyle'
@@ -133,8 +145,10 @@ export class Inspector {
     value: string | null,
   ) => boolean;
   textComputedTypography?: (elementId: string) => {
+    fontFamily: string | null;
     fontSize: number | null;
     fontWeight: number | null;
+    fontFamilyExplicit: boolean;
     fontSizeExplicit: boolean;
     fontWeightExplicit: boolean;
     fittedFontSize: number | null;
@@ -682,7 +696,10 @@ export class Inspector {
       ));
     }
 
+    const computedTypography = texts.map((text) => this.textComputedTypography?.(text.id));
     const families = commonValue(texts.map((text) => text.style['font-family'] ?? ''));
+    const themeFamilies = sharedValue(computedTypography.map((value) => value?.fontFamily ?? null));
+    const inheritedFamiliesDiffer = families === '' && themeFamilies.mixed;
     wrap.appendChild(fontFamilyField(
       'Font family', families ?? '',
       (value) => this.store.updateSelected((element) => {
@@ -692,15 +709,22 @@ export class Inspector {
         else delete style['font-family'];
         element.style = style;
       }, { label: 'Change font family' }),
-      { mixed: families === null },
+      {
+        mixed: families === null || inheritedFamiliesDiffer,
+        themeValue: families === '' && !themeFamilies.mixed
+          ? themeFamilies.value ?? undefined
+          : undefined,
+      },
     ));
 
     const sizes = sharedValue(texts.map((text) => {
       const size = Number.parseFloat(text.style['font-size'] ?? '');
       return Number.isFinite(size) ? size : null;
     }));
+    const themeSizes = sharedValue(computedTypography.map((value) => value?.fontSize ?? null));
+    const inheritedSizesDiffer = sizes.value === null && themeSizes.mixed;
     const sizeField = optionalNumberField(
-      'Font size', sizes.mixed ? null : sizes.value,
+      'Font size', sizes.mixed || inheritedSizesDiffer ? null : sizes.value,
       (value) => this.store.updateSelected((element) => {
         if (element.type === 'text') element.style = {
           ...element.style, 'font-size': `${fontSizeValue(value)}px`,
@@ -713,17 +737,26 @@ export class Inspector {
         element.style = style;
       }),
       'px',
-      { min: 6, max: 400, maxFractionDigits: 1 },
+      {
+        min: 6,
+        max: 400,
+        maxFractionDigits: 1,
+        themeValue: !sizes.mixed && sizes.value === null && !themeSizes.mixed
+          ? themeSizes.value
+          : null,
+      },
     );
-    if (sizes.mixed) sizeField.querySelector('input')!.placeholder = 'Mixed';
+    if (sizes.mixed || inheritedSizesDiffer) sizeField.querySelector('input')!.placeholder = 'Mixed';
     wrap.appendChild(sizeField);
 
     const weights = sharedValue(texts.map((text) => {
       const weight = Number.parseFloat(text.style['font-weight'] ?? '');
       return Number.isFinite(weight) ? weight : null;
     }));
+    const themeWeights = sharedValue(computedTypography.map((value) => value?.fontWeight ?? null));
+    const inheritedWeightsDiffer = weights.value === null && themeWeights.mixed;
     const weightField = optionalNumberField(
-      'Font weight', weights.mixed ? null : weights.value,
+      'Font weight', weights.mixed || inheritedWeightsDiffer ? null : weights.value,
       (value) => this.store.updateSelected((element) => {
         if (element.type !== 'text') return;
         element.style = {
@@ -738,9 +771,16 @@ export class Inspector {
         element.style = style;
       }),
       '',
-      { min: 1, max: 1000, step: 25 },
+      {
+        min: 1,
+        max: 1000,
+        step: 25,
+        themeValue: !weights.mixed && weights.value === null && !themeWeights.mixed
+          ? themeWeights.value
+          : null,
+      },
     );
-    if (weights.mixed) weightField.querySelector('input')!.placeholder = 'Mixed';
+    if (weights.mixed || inheritedWeightsDiffer) weightField.querySelector('input')!.placeholder = 'Mixed';
     wrap.appendChild(weightField);
 
     const roles = texts.map((text) =>
@@ -1012,19 +1052,24 @@ export class Inspector {
         const typography = optionSection('Typography', 'text-typography-options');
         const layout = optionSection('Layout', 'text-layout-options');
 
-        layout.content.appendChild(checkboxField('Auto-fit text to box', Boolean(el.autoFit), (on) =>
-          this.store.updateSelected((target) => {
-            if (target.type === 'text') target.autoFit = on;
-          }, { label: on ? 'Enable text auto-fit' : 'Disable text auto-fit' }),
-        ));
+        if (el.table) {
+          layout.content.appendChild(hint(
+            'Table rows automatically fit their contents. Drag the outer handles or blue column dividers to resize.',
+          ));
+        } else {
+          layout.content.appendChild(checkboxField('Auto-fit text to box', Boolean(el.autoFit), (on) =>
+            this.store.updateSelected((target) => {
+              if (target.type === 'text') target.autoFit = on;
+            }, { label: on ? 'Enable text auto-fit' : 'Disable text auto-fit' }),
+          ));
+          layout.content.appendChild(checkboxField('Disable automatic line breaks', editableTextNoWrap(el), (on) =>
+            this.store.updateSelected((target) => {
+              if (target.type === 'text') setTextNoWrap(target, on);
+            }, { label: on ? 'Disable automatic line breaks' : 'Enable automatic line breaks' }),
+          ));
+        }
 
-        layout.content.appendChild(checkboxField('Disable automatic line breaks', editableTextNoWrap(el), (on) =>
-          this.store.updateSelected((target) => {
-            if (target.type === 'text') setTextNoWrap(target, on);
-          }, { label: on ? 'Disable automatic line breaks' : 'Enable automatic line breaks' }),
-        ));
-
-        if (editableTextNoWrap(el)) {
+        if (!el.table && editableTextNoWrap(el)) {
           layout.content.appendChild(selectField(
             'Compress by', ['shrink', 'condense'], el.noWrapMode ?? 'shrink',
             (v) => this.store.updateSelected((target) => {
@@ -1033,8 +1078,12 @@ export class Inspector {
           ));
         }
 
+        const computedTypography = this.textComputedTypography?.(el.id);
+        const authoredFamily = el.style['font-family'] ?? '';
+        const displayedFamily = authoredFamily
+          || (computedTypography?.fontFamilyExplicit ? computedTypography.fontFamily ?? '' : '');
         typography.content.appendChild(fontFamilyField(
-          'Font family', el.style['font-family'] ?? '',
+          'Font family', displayedFamily,
           (value) => {
             if (this.onApplyTextSelectionFontFamily?.(value)) return;
             this.store.updateSelected((target) => {
@@ -1045,9 +1094,11 @@ export class Inspector {
               target.style = style;
             }, { label: 'Change font family' });
           },
+          {
+            themeValue: displayedFamily ? undefined : computedTypography?.fontFamily ?? undefined,
+          },
         ));
 
-        const computedTypography = this.textComputedTypography?.(el.id);
         const authoredSize = Number.parseFloat(el.style['font-size'] ?? '') || null;
         const displayedSize = authoredSize
           ?? (computedTypography?.fontSizeExplicit ? computedTypography.fontSize : null);
@@ -1149,18 +1200,7 @@ export class Inspector {
             choice.addEventListener('pointerdown', (event) => event.preventDefault());
             formatButtons.appendChild(choice);
           }
-          const selectionLabel = document.createElement('span');
-          selectionLabel.textContent = 'Selected text weight';
-          const buttons = document.createElement('div');
-          buttons.className = 'button-row text-weight-buttons';
-          for (const weight of [100, 200, 300, 400, 500, 600, 700, 800, 900]) {
-            const choice = button(String(weight), () => this.onApplyTextSelectionWeight?.(weight));
-            // Keep the contenteditable selection alive while the button is
-            // pressed; blur would commit and destroy its Range before click.
-            choice.addEventListener('pointerdown', (event) => event.preventDefault());
-            buttons.appendChild(choice);
-          }
-          selectionStyle.append(formatButtons, selectionLabel, buttons);
+          selectionStyle.appendChild(formatButtons);
           typography.content.appendChild(selectionStyle);
         }
 
@@ -1222,21 +1262,24 @@ export class Inspector {
           const table = optionSection('Table', 'text-table-options');
           const selected = this.tableSelection?.();
           if (!selected || selected.elementId !== el.id) {
-            table.content.appendChild(hint('Double-click the text, then click a table cell to edit it.'));
-          } else {
             table.content.appendChild(hint(
-              `Row ${selected.row + 1}, column ${selected.column + 1} · ${selected.rows} × ${selected.columns}`,
+              'Double-click the table, then drag horizontally, vertically, or diagonally across cells.',
             ));
-            const scope = document.createElement('div');
-            scope.className = 'button-row table-scope-buttons';
-            for (const [mode, label] of [
-              ['cell', 'Cell'], ['row', 'Row'], ['column', 'Column'],
-            ] as const) {
-              const choice = button(label, () => this.onSetTableSelectionMode?.(mode));
-              choice.setAttribute('aria-pressed', String(selected.mode === mode));
-              scope.appendChild(choice);
-            }
-            table.content.appendChild(scope);
+          } else {
+            const rowStart = Math.min(selected.row, selected.rowEnd) + 1;
+            const rowEnd = Math.max(selected.row, selected.rowEnd) + 1;
+            const columnStart = Math.min(selected.column, selected.columnEnd) + 1;
+            const columnEnd = Math.max(selected.column, selected.columnEnd) + 1;
+            const location = selected.mode === 'cell'
+              ? `Row ${rowStart}, column ${columnStart}`
+              : selected.mode === 'row'
+                ? `Row ${rowStart}, columns ${columnStart}–${columnEnd}`
+                : selected.mode === 'column'
+                  ? `Column ${columnStart}, rows ${rowStart}–${rowEnd}`
+                  : `Rows ${rowStart}–${rowEnd}, columns ${columnStart}–${columnEnd}`;
+            table.content.appendChild(hint(
+              `${location} · drag to select a rectangular range`,
+            ));
             table.content.appendChild(colorField(
               'Cell fill', null,
               (value) => this.onApplyTableCellColor?.('backgroundColor', value),
@@ -1247,6 +1290,30 @@ export class Inspector {
               (value) => this.onApplyTableCellColor?.('color', value),
               { clear: { kind: 'none', label: 'Inherited text colour' } },
             ));
+            const borderSettings = this.tableBorderSettings?.() ?? {
+              color: '#000000', width: 1, drawing: false,
+            };
+            const borderPaint = document.createElement('div');
+            borderPaint.className = 'compact-field-row table-border-paint';
+            borderPaint.append(
+              colorField('Border color', borderSettings.color, (value) =>
+                this.onSetTableBorderColor?.(value ?? '#000000')),
+              numberField('Border width', borderSettings.width, (value) =>
+                this.onSetTableBorderWidth?.(value), { step: 0.25 }),
+            );
+            table.content.appendChild(borderPaint);
+            const borders = document.createElement('div');
+            borders.className = 'button-row table-border-buttons';
+            borders.append(
+              button('No borders', () => this.onApplyTableBorderPreset?.('none')),
+              button('Vertical borders', () => this.onApplyTableBorderPreset?.('vertical')),
+              button('Horizontal borders', () => this.onApplyTableBorderPreset?.('horizontal')),
+            );
+            const draw = button('Draw borders', () =>
+              this.onSetTableBorderDrawing?.(!borderSettings.drawing));
+            draw.setAttribute('aria-pressed', String(borderSettings.drawing));
+            borders.appendChild(draw);
+            table.content.appendChild(borders);
             const columns = document.createElement('div');
             columns.className = 'button-row table-column-buttons';
             columns.append(
@@ -1306,15 +1373,23 @@ export class Inspector {
           ),
         );
         layout.content.appendChild(alignment);
+        const selectedParagraphSpacing = this.textSelectionParagraphSpacing?.() ?? null;
         layout.content.appendChild(optionalNumberField(
           'Paragraph spacing',
-          el.paragraphSpacing ?? null,
-          (value) => this.store.updateSelected((e) => {
-            if (e.type === 'text') e.paragraphSpacing = Math.max(0, value);
-          }, { label: 'Change paragraph spacing' }),
-          () => this.store.updateSelected((e) => {
-            if (e.type === 'text') delete e.paragraphSpacing;
-          }, { label: 'Use theme paragraph spacing' }),
+          selectedParagraphSpacing ?? el.paragraphSpacing ?? null,
+          (value) => {
+            const spacing = Math.max(0, value);
+            if (this.onApplyTextSelectionParagraphSpacing?.(spacing)) return;
+            this.store.updateSelected((e) => {
+              if (e.type === 'text') e.paragraphSpacing = spacing;
+            }, { label: 'Change paragraph spacing' });
+          },
+          () => {
+            if (this.onApplyTextSelectionParagraphSpacing?.(null)) return;
+            this.store.updateSelected((e) => {
+              if (e.type === 'text') delete e.paragraphSpacing;
+            }, { label: 'Use theme paragraph spacing' });
+          },
           'px',
           { min: 0 },
         ));
@@ -2015,7 +2090,7 @@ function optionalNumberField(
   if (inherited !== null) {
     const indicator = document.createElement('span');
     indicator.className = 'theme-value-indicator';
-    indicator.textContent = '(theme)';
+    indicator.textContent = '(Theme)';
     controls.appendChild(indicator);
     controls.classList.add('has-theme-value');
   }

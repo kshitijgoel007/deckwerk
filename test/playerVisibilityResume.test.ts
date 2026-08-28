@@ -92,6 +92,24 @@ describe('playback resumes when the page becomes visible', () => {
     player.destroy();
   });
 
+  it('does not restart a frame claimed by a capture path', async () => {
+    vi.useFakeTimers();
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const player = new Player({ deck: videoDeck(), container: host, resolveSrc: (src) => src });
+    const video = host.querySelector('video')!;
+    video.dataset.holdFrame = 'true';
+    const plays = playCalls;
+
+    video.dispatchEvent(new Event('pause'));
+    document.dispatchEvent(new Event('visibilitychange'));
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(playCalls).toBe(plays);
+
+    player.destroy();
+    vi.useRealTimers();
+  });
+
   it('stops listening after destroy', () => {
     const host = document.createElement('div');
     document.body.appendChild(host);

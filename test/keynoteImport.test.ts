@@ -198,6 +198,22 @@ describe.skipIf(!ready)('keynote importer', () => {
   );
 
   const bitterLessonDeck = join(LOCAL_FIXTURES, '2606_bitter_lesson.key');
+  const icmlWorkshopDeck = join(LOCAL_FIXTURES, '2607_ICML_workshop.key');
+
+  it.skipIf(!existsSync(icmlWorkshopDeck))(
+    'falls back to embedded thumbnails when linked Keynote images are absent',
+    () => {
+      const imported = report(icmlWorkshopDeck);
+
+      expect(imported.unsupported['ImageArchive (no data)']).toBeUndefined();
+      expect(imported.warnings).toEqual(expect.arrayContaining([
+        expect.stringContaining('Screenshot 2026-06-18 at 3.27.15'),
+        expect.stringContaining('Screenshot 2026-06-25 at 12.12.40'),
+        expect.stringContaining('Screenshot 2026-06-18 at 4.37.04'),
+      ]));
+    },
+    60_000,
+  );
 
   function importBitterLesson() {
     const stdout = execFileSync(PYTHON, ['-c', [

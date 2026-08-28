@@ -7,7 +7,7 @@ import {
   remapSlideIds,
 } from '@shared/clipboard.js';
 import { makeId } from '@shared/geometry.js';
-import { pastedTableHtml } from '@shared/paragraphs.js';
+import { pastedTableData } from '@shared/paragraphs.js';
 import type {
   DeckHistoryDocument,
   PersistedDeckHistoryEntry,
@@ -423,6 +423,27 @@ export class EditorStore {
     this.emit();
   }
 
+  /** Select one contiguous rail range without first exposing either endpoint. */
+  selectSlideRange(startIndex: number, endIndex: number): void {
+    if (this.state.deck.slides.length === 0) return;
+    const last = this.state.deck.slides.length - 1;
+    const start = Math.min(Math.max(startIndex, 0), last);
+    const end = Math.min(Math.max(endIndex, 0), last);
+    const lo = Math.min(start, end);
+    const hi = Math.max(start, end);
+    const slideSelection = new Set(
+      this.state.deck.slides.slice(lo, hi + 1).map((slide) => slide.id),
+    );
+    this.slideSelectionAnchor = start;
+    this.state = {
+      ...this.state,
+      slideIndex: end,
+      slideSelection,
+      selection: new Set(),
+    };
+    this.emit();
+  }
+
   /**
    * Ctrl/Cmd+A in the slide rail. Selecting every slide is only meaningful
    * alongside an empty element selection -- the two selections are exclusive
@@ -633,24 +654,25 @@ let fallbackClipboard: ClipboardWriteRequest | null = null;
 async function writeSystemClipboard(request: ClipboardWriteRequest): Promise<void> {
   fallbackClipboard = request;
   try {
-    await window.api?.writeClipboard?.(request);
+    if (typeof window !== 'undefined') await window.api?.writeClipboard?.(request);
   } catch (err) {
     console.error('Could not write the system clipboard:', err);
   }
 }
 
 async function readSystemClipboard(): Promise<ClipboardReadResult | ClipboardWriteRequest | null> {
-  if (window.api?.readClipboard) {
+  if (typeof window !== 'undefined' && window.api?.readClipboard) {
     try {
       const payload = await window.api.readClipboard();
       if (payload) return payload;
     } catch (err) {
       console.error('Could not read the system clipboard:', err);
     }
-  } else if (navigator.clipboard?.read) {
+  } else if (typeof navigator !== 'undefined' && navigator.clipboard?.read) {
     try {
       let html = '';
       let text = '';
+      let image: Blob | null = null;
       for (const item of await navigator.clipboard.read()) {
         if (!html && item.types.includes('text/html')) {
           html = await (await item.getType('text/html')).text();
@@ -658,9 +680,18 @@ async function readSystemClipboard(): Promise<ClipboardReadResult | ClipboardWri
         if (!text && item.types.includes('text/plain')) {
           text = await (await item.getType('text/plain')).text();
         }
+        if (!image && item.types.includes('image/png')) {
+          image = await item.getType('image/png');
+        }
       }
       if (/<table\b/i.test(html) || text.includes('\t')) {
         return { kind: 'external-html', html, text };
+      }
+      if (image && window.api.importAssetFiles) {
+        const [asset] = await window.api.importAssetFiles([
+          new File([image], 'Screenshot.png', { type: 'image/png' }),
+        ]);
+        if (asset) return { kind: 'external-image', asset };
       }
     } catch (err) {
       console.error('Could not read the browser clipboard:', err);
@@ -706,56 +737,25 @@ export async function copySlidesToClipboard(store: EditorStore): Promise<number>
  */
 export async function pasteFromClipboard(
   store: EditorStore,
+  providedPayload?: ClipboardReadResult | ClipboardWriteRequest | null,
 ): Promise<{ kind: 'elements' | 'slides'; count: number } | null> {
-  const payload = await readSystemClipboard();
+  const payload = providedPayload ?? await readSystemClipboard();
   if (!payload) return null;
 
   if (payload.kind === 'external-image') {
-    const { asset } = payload;
-    const id = makeId('image');
-    store.commit((deck) => {
-      const slide = deck.slides[store.get().slideIndex];
-      if (!slide) return;
-      const naturalW = asset.width ?? 1600;
-      const naturalH = asset.height ?? 900;
-      const scale = Math.min(
-        1,
-        (deck.canvas.w * 0.8) / naturalW,
-        (deck.canvas.h * 0.8) / naturalH,
-      );
-      const w = Math.round(naturalW * scale);
-      const h = Math.round(naturalH * scale);
-      slide.elements.push({
-        id,
-        type: 'image',
-        x: Math.round((deck.canvas.w - w) / 2),
-        y: Math.round((deck.canvas.h - h) / 2),
-        w,
-        h,
-        rot: 0,
-        z: slide.elements.reduce((max, element) => Math.max(max, element.z), 0) + 1,
-        opacity: 1,
-        class: [],
-        style: {},
-        src: asset.src,
-        fit: 'contain',
-        alt: 'Pasted screenshot',
-        sourceBox: null,
-      });
-    }, { label: 'Paste screenshot' });
-    store.select([id]);
-    return { kind: 'elements', count: 1 };
+    return insertClipboardImage(store, payload.asset);
   }
 
   if (payload.kind === 'external-html') {
-    const html = pastedTableHtml(payload.html, payload.text);
-    if (!html) return null;
+    const table = pastedTableData(payload.html, payload.text);
+    if (!table) return null;
     const id = makeId('table');
     store.commit((deck) => {
       const slide = deck.slides[store.get().slideIndex];
       if (!slide) return;
-      const w = Math.min(1400, deck.canvas.w - 160);
-      const h = Math.min(620, deck.canvas.h - 160);
+      const w = Math.min(Math.max(360, table.columnWidths.length * 260), deck.canvas.w - 160);
+      const naturalH = Math.max(72, table.rows * 72);
+      const h = Math.min(naturalH, deck.canvas.h - 160);
       slide.elements.push({
         id,
         type: 'text',
@@ -768,10 +768,16 @@ export async function pasteFromClipboard(
         opacity: 1,
         class: ['role-body'],
         style: {},
-        html,
+        html: table.html,
         align: 'left',
         valign: 'top',
-        autoFit: true,
+        // Ordinary tables grow their rows instead of shrinking the type. Very
+        // tall pasted ranges use the existing uniform font fit as a fallback.
+        autoFit: naturalH > h,
+        table: {
+          columnWidths: table.columnWidths,
+          autoHeight: true,
+        },
       });
     }, { label: 'Paste table' });
     store.select([id]);
@@ -811,6 +817,60 @@ export async function pasteFromClipboard(
   }, { label: elements.length === 1 ? 'Paste object' : `Paste ${elements.length} objects` });
   store.select(created);
   return { kind: 'elements', count: elements.length };
+}
+
+/** Native browser paste events expose image bytes even on plain HTTP origins,
+ * where `navigator.clipboard.read()` is unavailable. Upload those bytes using
+ * the same collaboration asset bridge as drag-and-drop. */
+export async function pasteImageFilesFromClipboard(
+  store: EditorStore,
+  files: File[],
+): Promise<{ kind: 'elements'; count: number } | null> {
+  const image = files.find((file) => file.type === 'image/png');
+  if (!image || !window.api.importAssetFiles) return null;
+  const [asset] = await window.api.importAssetFiles([
+    new File([image], 'Screenshot.png', { type: 'image/png' }),
+  ]);
+  return asset ? insertClipboardImage(store, asset) : null;
+}
+
+function insertClipboardImage(
+  store: EditorStore,
+  asset: Extract<ClipboardReadResult, { kind: 'external-image' }>['asset'],
+): { kind: 'elements'; count: number } {
+  const id = makeId('image');
+  store.commit((deck) => {
+    const slide = deck.slides[store.get().slideIndex];
+    if (!slide) return;
+    const naturalW = asset.width ?? 1600;
+    const naturalH = asset.height ?? 900;
+    const scale = Math.min(
+      1,
+      (deck.canvas.w * 0.8) / naturalW,
+      (deck.canvas.h * 0.8) / naturalH,
+    );
+    const w = Math.round(naturalW * scale);
+    const h = Math.round(naturalH * scale);
+    slide.elements.push({
+      id,
+      type: 'image',
+      x: Math.round((deck.canvas.w - w) / 2),
+      y: Math.round((deck.canvas.h - h) / 2),
+      w,
+      h,
+      rot: 0,
+      z: slide.elements.reduce((max, element) => Math.max(max, element.z), 0) + 1,
+      opacity: 1,
+      class: [],
+      style: {},
+      src: asset.src,
+      fit: 'contain',
+      alt: 'Pasted screenshot',
+      sourceBox: null,
+    });
+  }, { label: 'Paste screenshot' });
+  store.select([id]);
+  return { kind: 'elements', count: 1 };
 }
 
 export function deckFrom(raw: unknown): Deck {

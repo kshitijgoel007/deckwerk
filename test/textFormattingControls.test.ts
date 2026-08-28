@@ -153,6 +153,33 @@ const contentOf = (host: HTMLElement, id: string): HTMLElement =>
 const nodeOf = (host: HTMLElement, id: string): HTMLElement =>
   host.querySelector<HTMLElement>(`[data-element-id="${id}"]`)!;
 
+const TABLE_WORD_HTML =
+  '<table><tbody><tr><td>alpha beta</td><td>gamma</td></tr></tbody></table>';
+
+function selectTableWord(canvas: EditorCanvas, canvasHost: HTMLElement): {
+  content: HTMLElement;
+  cell: HTMLTableCellElement;
+} {
+  canvas.beginTextEdit('text-1');
+  const content = contentOf(canvasHost, 'text-1');
+  const cell = content.querySelector<HTMLTableCellElement>('td')!;
+  cell.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+  const text = cell.firstChild!;
+  const range = document.createRange();
+  range.setStart(text, 6);
+  range.setEnd(text, 10);
+  window.getSelection()!.removeAllRanges();
+  window.getSelection()!.addRange(range);
+  document.dispatchEvent(new Event('selectionchange'));
+  return { content, cell };
+}
+
+function savedTable(store: EditorStore): HTMLElement {
+  const saved = document.createElement('div');
+  saved.innerHTML = textOf(store, 'text-1').html;
+  return saved;
+}
+
 /** Type a value into a control and fire the `change` the browser would fire. */
 function type(input: HTMLInputElement, value: string): void {
   input.value = value;
@@ -184,9 +211,6 @@ describe('text formatting from the inspector controls', () => {
       'Align', 'Vertical', 'Paragraph spacing',
     ]);
     expect(labels('.text-format-buttons button')).toEqual(['B', 'I', 'U']);
-    expect(labels('.text-weight-buttons button')).toEqual([
-      '100', '200', '300', '400', '500', '600', '700', '800', '900',
-    ]);
     expect(labels('.number-step-buttons button')).toEqual(['▲', '▼', '▲', '▼', '▲', '▼']);
 
     const table = setup([textElement('table-1', {
@@ -199,8 +223,13 @@ describe('text formatting from the inspector controls', () => {
     );
     const tableLabels = (selector: string) => [...table.inspectorHost.querySelectorAll<HTMLElement>(selector)]
       .map((node) => node.textContent?.trim());
-    expect(tableLabels('.table-scope-buttons button')).toEqual(['Cell', 'Row', 'Column']);
-    expect(tableLabels('.text-table-options .field > span')).toEqual(['Cell fill', 'Cell text']);
+    expect(table.inspectorHost.querySelector('.table-scope-buttons')).toBeNull();
+    expect(tableLabels('.text-table-options .field > span')).toEqual([
+      'Cell fill', 'Cell text', 'Border color', 'Border width',
+    ]);
+    expect(tableLabels('.table-border-buttons button')).toEqual([
+      'No borders', 'Vertical borders', 'Horizontal borders', 'Draw borders',
+    ]);
     expect(tableLabels('.table-column-buttons button')).toEqual([
       'Insert before', 'Insert after', 'Delete column',
     ]);
@@ -388,40 +417,6 @@ describe('text formatting from the inspector controls', () => {
     expect(textOf(store, 'text-1').html).toBe(original);
   });
 
-  it('keeps a selected word alive while clicking a font-weight button', () => {
-    const { store, canvas, canvasHost, inspectorHost } = setup([
-      textElement('text-1', { html: '<p>First paragraph</p><p>Second paragraph</p>' }),
-    ]);
-    canvas.beginTextEdit('text-1');
-    const body = bodyOf(canvasHost, 'text-1');
-    const content = contentOf(canvasHost, 'text-1');
-    const text = content.querySelector('p')!.firstChild!;
-    const range = document.createRange();
-    range.setStart(text, 0);
-    range.setEnd(text, 5);
-    window.getSelection()!.removeAllRanges();
-    window.getSelection()!.addRange(range);
-
-    const weight = [...inspectorHost.querySelectorAll<HTMLButtonElement>(
-      '.text-selection-style button',
-    )].find((button) => button.textContent === '700')!;
-    const pointerDown = new PointerEvent('pointerdown', { bubbles: true, cancelable: true });
-    expect(weight.dispatchEvent(pointerDown)).toBe(false);
-    expect(pointerDown.defaultPrevented).toBe(true);
-    weight.click();
-
-    const span = body.querySelector<HTMLSpanElement>('span')!;
-    expect(span.textContent).toBe('First');
-    expect(span.style.fontWeight).toBe('700');
-    expect(window.getSelection()!.toString()).toBe('First');
-    expect(canvas.isEditing()).toBe(true);
-
-    content.dispatchEvent(new KeyboardEvent('keydown', {
-      key: 'Enter', ctrlKey: true, bubbles: true, cancelable: true,
-    }));
-    expect(textOf(store, 'text-1').html).toContain('font-weight: 700');
-  });
-
   it.each([
     ['Bold (Cmd/Ctrl+B)', 'fontWeight', '700'],
     ['Italic (Cmd/Ctrl+I)', 'fontStyle', 'italic'],
@@ -477,8 +472,21 @@ describe('text formatting from the inspector controls', () => {
     const weight = field(inspectorHost, 'Font weight');
     expect(size.querySelector<HTMLInputElement>('input')!.value).toBe('42');
     expect(weight.querySelector<HTMLInputElement>('input')!.value).toBe('500');
-    expect(size.querySelector('.theme-value-indicator')?.textContent).toBe('(theme)');
-    expect(weight.querySelector('.theme-value-indicator')?.textContent).toBe('(theme)');
+    expect(size.querySelector('.theme-value-indicator')?.textContent).toBe('(Theme)');
+    expect(weight.querySelector('.theme-value-indicator')?.textContent).toBe('(Theme)');
+    style.remove();
+  });
+
+  it('names the resolved theme font in the family selector', () => {
+    const style = document.createElement('style');
+    style.textContent = '.role-body .text-content { font-family: Avenir, sans-serif; }';
+    document.head.appendChild(style);
+    const { inspectorHost } = setup([
+      textElement('text-1', { class: ['role-body'], style: {} }),
+    ]);
+    const select = field(inspectorHost, 'Font family').querySelector<HTMLSelectElement>('select')!;
+    expect(select.value).toBe('');
+    expect(select.selectedOptions[0]?.textContent).toBe('Avenir (Theme)');
     style.remove();
   });
 
@@ -540,6 +548,39 @@ describe('text formatting from the inspector controls', () => {
     const span = content.querySelector<HTMLSpanElement>('span')!;
     expect(span.textContent).toBe('First');
     expect(span.style[property]).toBe(expected);
+    expect(canvas.isEditing()).toBe(true);
+    content.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'z', ctrlKey: true, bubbles: true, cancelable: true,
+    }));
+    expect(textOf(store, 'text-1').html).toBe(original);
+  });
+
+  it('keeps the selected paragraph while changing paragraph spacing through its number input', () => {
+    const original = '<p>First paragraph</p><p>Second paragraph</p>';
+    const { store, canvas, canvasHost, inspectorHost } = setup([
+      textElement('text-1', { html: original }),
+    ]);
+    canvas.beginTextEdit('text-1');
+    const content = contentOf(canvasHost, 'text-1');
+    const text = content.querySelector('p')!.firstChild!;
+    const range = document.createRange();
+    range.setStart(text, 0);
+    range.setEnd(text, 5);
+    window.getSelection()!.removeAllRanges();
+    window.getSelection()!.addRange(range);
+    document.dispatchEvent(new Event('selectionchange'));
+
+    const input = field(inspectorHost, 'Paragraph spacing').querySelector<HTMLInputElement>('input')!;
+    content.dispatchEvent(new FocusEvent('blur', { relatedTarget: input }));
+    input.value = '32';
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+
+    const paragraphs = content.querySelectorAll<HTMLParagraphElement>('p');
+    expect(paragraphs[0].style.marginBottom).toBe('32px');
+    expect(paragraphs[1].style.marginBottom).toBe('');
+    expect(field(inspectorHost, 'Paragraph spacing').querySelector<HTMLInputElement>('input')!.value)
+      .toBe('32');
+    expect(textOf(store, 'text-1').paragraphSpacing).toBeUndefined();
     expect(canvas.isEditing()).toBe(true);
     content.dispatchEvent(new KeyboardEvent('keydown', {
       key: 'z', ctrlKey: true, bubbles: true, cancelable: true,
@@ -686,10 +727,11 @@ describe('text formatting from the inspector controls', () => {
   });
 
   it.each([
-    ['Cell', [1]],
-    ['Row', [0, 1]],
-    ['Column', [1, 3]],
-  ] as const)('formats only the selected table %s through the inspector', (scope, expected) => {
+    ['Cell', 1, 1, [1]],
+    ['Row', 0, 1, [0, 1]],
+    ['Column', 1, 3, [1, 3]],
+    ['Range', 0, 3, [0, 1, 2, 3]],
+  ] as const)('formats only the dragged table %s through the inspector', (scope, start, end, expected) => {
     const { store, canvas, canvasHost, inspectorHost } = setup([
       textElement('text-1', {
         html: '<table><tbody><tr><td>A</td><td>B</td></tr>'
@@ -698,19 +740,16 @@ describe('text formatting from the inspector controls', () => {
     ]);
     canvas.beginTextEdit('text-1');
     const content = contentOf(canvasHost, 'text-1');
-    content.querySelectorAll('td')[1].dispatchEvent(
-      new PointerEvent('pointerdown', { bubbles: true }),
-    );
-
-    const scopeButton = [...inspectorHost.querySelectorAll<HTMLButtonElement>(
-      '.table-scope-buttons button',
-    )].find((button) => button.textContent === scope)!;
-    const pointerDown = new PointerEvent('pointerdown', { bubbles: true, cancelable: true });
-    expect(scopeButton.dispatchEvent(pointerDown)).toBe(false);
-    expect(pointerDown.defaultPrevented).toBe(true);
-    scopeButton.click();
-    expect([...inspectorHost.querySelectorAll<HTMLButtonElement>('.table-scope-buttons button')]
-      .find((button) => button.textContent === scope)?.getAttribute('aria-pressed')).toBe('true');
+    const cells = content.querySelectorAll('td');
+    cells[start].dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 9 }));
+    if (end !== start) {
+      const move = new PointerEvent('pointermove', {
+        bubbles: true, cancelable: true, pointerId: 9,
+      });
+      expect(cells[end].dispatchEvent(move)).toBe(false);
+      expect(move.defaultPrevented).toBe(true);
+    }
+    document.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 9 }));
 
     field(inspectorHost, 'Cell fill')
       .querySelector<HTMLButtonElement>('.color-picker-trigger')!.click();
@@ -740,11 +779,12 @@ describe('text formatting from the inspector controls', () => {
       }),
     ]);
     canvas.beginTextEdit('text-1');
-    contentOf(canvasHost, 'text-1').querySelectorAll('td')[1].dispatchEvent(
-      new PointerEvent('pointerdown', { bubbles: true }),
-    );
-    [...inspectorHost.querySelectorAll<HTMLButtonElement>('.table-scope-buttons button')]
-      .find((button) => button.textContent === 'Column')!.click();
+    const cells = contentOf(canvasHost, 'text-1').querySelectorAll('td');
+    cells[1].dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 11 }));
+    cells[3].dispatchEvent(new PointerEvent('pointermove', {
+      bubbles: true, cancelable: true, pointerId: 11,
+    }));
+    document.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 11 }));
 
     const columnButton = (label: string) => [...inspectorHost.querySelectorAll<HTMLButtonElement>(
       '.table-column-buttons button',
@@ -753,14 +793,254 @@ describe('text formatting from the inspector controls', () => {
     let saved = document.createElement('div');
     saved.innerHTML = textOf(store, 'text-1').html;
     expect([...saved.querySelectorAll('tr')].map((row) => row.cells.length)).toEqual([3, 3]);
-    expect(canvas.tableSelectionInfo()).toMatchObject({ mode: 'column', columns: 3 });
+    expect(canvas.tableSelectionInfo()).toMatchObject({ mode: 'cell', columns: 3 });
 
     columnButton('Delete column').click();
     saved = document.createElement('div');
     saved.innerHTML = textOf(store, 'text-1').html;
     expect([...saved.querySelectorAll('tr')].map((row) => row.cells.length)).toEqual([2, 2]);
-    expect(canvas.tableSelectionInfo()).toMatchObject({ mode: 'column', columns: 2 });
+    expect(canvas.tableSelectionInfo()).toMatchObject({ mode: 'cell', columns: 2 });
     expect(canvas.isEditing()).toBe(true);
+  });
+
+  it.each([
+    ['Bold (Cmd/Ctrl+B)', 'fontWeight', '700'],
+    ['Italic (Cmd/Ctrl+I)', 'fontStyle', 'italic'],
+    ['Underline (Cmd/Ctrl+U)', 'textDecorationLine', 'underline'],
+  ] as const)('formats only a highlighted table word with the %s button and undoes it', (
+    label, property, expected,
+  ) => {
+    const { store, canvas, canvasHost, inspectorHost } = setup([
+      textElement('text-1', { html: TABLE_WORD_HTML }),
+    ]);
+    const { content } = selectTableWord(canvas, canvasHost);
+    const choice = inspectorHost.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!;
+    expect(choice.dispatchEvent(new PointerEvent(
+      'pointerdown', { bubbles: true, cancelable: true },
+    ))).toBe(false);
+    choice.click();
+
+    const saved = savedTable(store);
+    const styled = [...saved.querySelectorAll<HTMLElement>('td span')]
+      .find((span) => span.style[property] === expected)!;
+    expect(styled.textContent).toBe('beta');
+    expect([...saved.querySelectorAll<HTMLElement>('td')]
+      .every((tableCell) => !tableCell.style[property])).toBe(true);
+    expect(saved.querySelectorAll('td')[1].hasAttribute('style')).toBe(false);
+    expect(canvas.tableSelectionInfo()).toMatchObject({ mode: 'cell', row: 0, column: 0 });
+    expect(inspectorHost.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!
+      .getAttribute('aria-pressed')).toBe('true');
+
+    content.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'z', ctrlKey: true, bubbles: true, cancelable: true,
+    }));
+    expect(textOf(store, 'text-1').html).toBe(TABLE_WORD_HTML);
+    expect(window.getSelection()!.toString()).toBe('beta');
+    expect(canvas.isEditing()).toBe(true);
+  });
+
+  it.each([
+    ['b', 'fontWeight', '700'],
+    ['i', 'fontStyle', 'italic'],
+    ['u', 'textDecorationLine', 'underline'],
+  ] as const)('applies Cmd/Ctrl+%s only to a highlighted table word and undoes it', (
+    key, property, expected,
+  ) => {
+    const { store, canvas, canvasHost } = setup([
+      textElement('text-1', { html: TABLE_WORD_HTML }),
+    ]);
+    const { content } = selectTableWord(canvas, canvasHost);
+    const shortcut = new KeyboardEvent('keydown', {
+      key, metaKey: true, bubbles: true, cancelable: true,
+    });
+    content.dispatchEvent(shortcut);
+
+    expect(shortcut.defaultPrevented).toBe(true);
+    const saved = savedTable(store);
+    const styled = [...saved.querySelectorAll<HTMLElement>('td span')]
+      .find((span) => span.style[property] === expected)!;
+    expect(styled.textContent).toBe('beta');
+    expect([...saved.querySelectorAll<HTMLElement>('td')]
+      .every((tableCell) => !tableCell.style[property])).toBe(true);
+
+    content.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'z', metaKey: true, bubbles: true, cancelable: true,
+    }));
+    expect(textOf(store, 'text-1').html).toBe(TABLE_WORD_HTML);
+    expect(window.getSelection()!.toString()).toBe('beta');
+  });
+
+  it.each([
+    ['Font size', '44', 'fontSize', '44px'],
+    ['Font weight', '650', 'fontWeight', '650'],
+  ] as const)('formats only a highlighted table word through the %s input', (
+    label, value, property, expected,
+  ) => {
+    const { store, canvas, canvasHost, inspectorHost } = setup([
+      textElement('text-1', { html: TABLE_WORD_HTML }),
+    ]);
+    const { content } = selectTableWord(canvas, canvasHost);
+    const input = field(inspectorHost, label).querySelector<HTMLInputElement>('input')!;
+    content.dispatchEvent(new FocusEvent('blur', { relatedTarget: input }));
+    type(input, value);
+
+    const saved = savedTable(store);
+    const styled = [...saved.querySelectorAll<HTMLElement>('td span')]
+      .find((span) => span.style[property] === expected)!;
+    expect(styled.textContent).toBe('beta');
+    expect([...saved.querySelectorAll<HTMLElement>('td')]
+      .every((tableCell) => !tableCell.style[property])).toBe(true);
+    expect(canvas.isEditing()).toBe(true);
+
+    content.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'z', ctrlKey: true, bubbles: true, cancelable: true,
+    }));
+    expect(textOf(store, 'text-1').html).toBe(TABLE_WORD_HTML);
+    expect(window.getSelection()!.toString()).toBe('beta');
+  });
+
+  it('changes only a highlighted table word font family and keeps its selection', () => {
+    const { store, canvas, canvasHost, inspectorHost } = setup([
+      textElement('text-1', { html: TABLE_WORD_HTML }),
+    ]);
+    const { content } = selectTableWord(canvas, canvasHost);
+    const select = field(inspectorHost, 'Font family').querySelector<HTMLSelectElement>('select')!;
+    content.dispatchEvent(new FocusEvent('blur', { relatedTarget: select }));
+    window.getSelection()!.removeAllRanges();
+    const avenir = document.createElement('option');
+    avenir.value = 'Avenir';
+    avenir.textContent = 'Avenir';
+    select.appendChild(avenir);
+    pick(select, 'Avenir');
+
+    const saved = savedTable(store);
+    const styled = [...saved.querySelectorAll<HTMLElement>('td span')]
+      .find((span) => span.style.fontFamily.includes('Avenir'))!;
+    expect(styled.textContent).toBe('beta');
+    expect(saved.querySelectorAll('td[style*="font-family"]')).toHaveLength(0);
+    expect(window.getSelection()!.toString()).toBe('beta');
+    expect(canvas.isEditing()).toBe(true);
+
+    content.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'z', ctrlKey: true, bubbles: true, cancelable: true,
+    }));
+    expect(textOf(store, 'text-1').html).toBe(TABLE_WORD_HTML);
+  });
+
+  it('applies theme and arbitrary colours only to a highlighted table word', () => {
+    const { store, canvas, canvasHost, inspectorHost } = setup([
+      textElement('text-1', { html: TABLE_WORD_HTML }),
+    ]);
+    const { content } = selectTableWord(canvas, canvasHost);
+    const trigger = () => field(inspectorHost, 'Colour')
+      .querySelector<HTMLButtonElement>('.color-picker-trigger')!;
+
+    trigger().click();
+    document.querySelector<HTMLButtonElement>(
+      '.color-picker-palette-button[title="#112233"]',
+    )!.click();
+    let saved = savedTable(store);
+    let styled = [...saved.querySelectorAll<HTMLElement>('td span')]
+      .find((span) => span.style.color === 'rgb(17, 34, 51)')!;
+    expect(styled.textContent).toBe('beta');
+    expect(saved.querySelectorAll('td[style*="color"]')).toHaveLength(0);
+
+    content.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'z', ctrlKey: true, bubbles: true, cancelable: true,
+    }));
+    expect(textOf(store, 'text-1').html).toBe(TABLE_WORD_HTML);
+    expect(window.getSelection()!.toString()).toBe('beta');
+
+    trigger().click();
+    const picker = document.querySelector<HTMLElement>('.color-picker-popover')!;
+    type(picker.querySelector<HTMLInputElement>('input[aria-label="Hex color"]')!, '#3366cc');
+    const opacity = picker.querySelector<HTMLInputElement>('input[aria-label="Opacity"]')!;
+    opacity.value = '50';
+    opacity.dispatchEvent(new Event('input', { bubbles: true }));
+    opacity.dispatchEvent(new Event('change', { bubbles: true }));
+
+    saved = savedTable(store);
+    styled = [...saved.querySelectorAll<HTMLElement>('td span')]
+      .find((span) => span.style.color === 'rgba(51, 102, 204, 0.5)')!;
+    expect(styled.textContent).toBe('beta');
+    expect(saved.querySelectorAll('td[style*="color"]')).toHaveLength(0);
+    expect(canvas.isEditing()).toBe(true);
+  });
+
+  it('interactively applies every table border preset and paints one edge', () => {
+    const { store, canvas, canvasHost, inspectorHost } = setup([
+      textElement('text-1', {
+        html: '<table><tbody><tr><td>A</td><td>B</td></tr>'
+          + '<tr><td>C</td><td>D</td></tr></tbody></table>',
+      }),
+    ]);
+    canvas.beginTextEdit('text-1');
+    contentOf(canvasHost, 'text-1').querySelector('td')!.dispatchEvent(
+      new PointerEvent('pointerdown', { bubbles: true }),
+    );
+    expect(canvas.tableSelectionInfo(), 'selection before immediate preset').toMatchObject({
+      elementId: 'text-1', row: 0, column: 0,
+    });
+    const borderButton = (label: string) => [...inspectorHost.querySelectorAll<HTMLButtonElement>(
+      '.table-border-buttons button',
+    )].find((button) => button.textContent === label)!;
+    const width = field(inspectorHost, 'Border width').querySelector<HTMLInputElement>('input')!;
+    width.value = '3';
+    width.dispatchEvent(new Event('change', { bubbles: true }));
+    field(inspectorHost, 'Border color')
+      .querySelector<HTMLButtonElement>('.color-picker-trigger')!.click();
+    document.querySelector<HTMLButtonElement>('.color-picker-palette-button')!.click();
+    const paint = canvas.tableBorderSettings();
+    expect(paint.width).toBe(3);
+    expect(canvas.isEditing()).toBe(true);
+    expect(canvas.tableSelectionInfo()).toMatchObject({ elementId: 'text-1' });
+    expect(contentOf(canvasHost, 'text-1').querySelector('table')).not.toBeNull();
+
+    const savedCells = () => {
+      const saved = document.createElement('div');
+      saved.innerHTML = textOf(store, 'text-1').html;
+      return [...saved.querySelectorAll<HTMLTableCellElement>('td')];
+    };
+    borderButton('No borders').click();
+    const noBorderCells = savedCells();
+    expect(noBorderCells.every((cell) =>
+      ['borderTopWidth', 'borderRightWidth', 'borderBottomWidth', 'borderLeftWidth']
+        .every((property) => cell.style[property as keyof CSSStyleDeclaration] === '0px')),
+    noBorderCells.map((cell) => cell.getAttribute('style')).join(' | ')).toBe(true);
+
+    borderButton('Vertical borders').click();
+    expect(savedCells().every((cell) =>
+      cell.style.borderLeftWidth === '3px'
+      && cell.style.borderRightWidth === '3px'
+      && cell.style.borderTopWidth === '0px'
+      && cell.style.borderBottomWidth === '0px')).toBe(true);
+
+    borderButton('Horizontal borders').click();
+    expect(savedCells().every((cell) =>
+      cell.style.borderTopWidth === '3px'
+      && cell.style.borderBottomWidth === '3px'
+      && cell.style.borderLeftWidth === '0px'
+      && cell.style.borderRightWidth === '0px')).toBe(true);
+
+    borderButton('No borders').click();
+    borderButton('Draw borders').click();
+    expect(canvas.tableBorderSettings().drawing).toBe(true);
+    const liveCells = contentOf(canvasHost, 'text-1').querySelectorAll<HTMLTableCellElement>('td');
+    liveCells[0].getBoundingClientRect = () => ({
+      x: 0, y: 0, left: 0, top: 0, right: 100, bottom: 50,
+      width: 100, height: 50, toJSON: () => ({}),
+    }) as DOMRect;
+    liveCells[0].dispatchEvent(new PointerEvent('pointermove', {
+      bubbles: true, clientX: 99, clientY: 25, pointerId: 21,
+    }));
+    expect(liveCells[0].classList.contains('editor-table-border-preview-right')).toBe(true);
+    liveCells[0].dispatchEvent(new PointerEvent('pointerdown', {
+      bubbles: true, cancelable: true, clientX: 99, clientY: 25, pointerId: 21,
+    }));
+    document.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 21 }));
+    const drawn = savedCells();
+    expect(drawn[0].style.borderRightWidth).toBe('3px');
+    expect(drawn[1].style.borderLeftWidth).toBe('3px');
   });
 
   it('keeps a heading outside a typed numbered list and removes typed markers', () => {
@@ -933,7 +1213,7 @@ describe('inline run formatting while editing text', () => {
     document.body.replaceChildren();
   });
 
-  it('applies a weight to the selected run without leaving the editor', () => {
+  it('uses the font weight field for the selected run without a duplicate weight picker', () => {
     installDomShims();
     const deck = emptyDeck('Runs');
     deck.slides[0].elements = [textElement('text-1', { html: 'Weighted run' })];
@@ -949,18 +1229,9 @@ describe('inline run formatting while editing text', () => {
     };
     store.select(['text-1']);
 
-    const weights = [...inspectorHost.querySelectorAll<HTMLButtonElement>(
-      '.text-selection-style .text-weight-buttons button',
-    )];
-    expect(weights.map((button) => button.textContent))
-      .toEqual(['100', '200', '300', '400', '500', '600', '700', '800', '900']);
-
-    // Pointerdown must be prevented, or blur commits and destroys the Range
-    // the weight is meant to apply to before the click ever lands.
-    const down = new PointerEvent('pointerdown', { bubbles: true, cancelable: true });
-    weights[6].dispatchEvent(down);
-    expect(down.defaultPrevented).toBe(true);
-    weights[6].click();
+    expect(inspectorHost.querySelector('.text-weight-buttons')).toBeNull();
+    const input = field(inspectorHost, 'Font weight').querySelector<HTMLInputElement>('input')!;
+    type(input, '700');
     expect(applied).toEqual([700]);
   });
 

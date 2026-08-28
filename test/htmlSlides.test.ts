@@ -36,6 +36,24 @@ function node(over: Partial<MeasuredNode> = {}): MeasuredNode {
 }
 
 describe('measured nodes become deck objects', () => {
+  it('maps explicitly authored tables to native resizable table text', () => {
+    const element = elementFromNode(node({
+      tag: 'table',
+      classes: ['results-table'],
+      dataset: { element: 'table', tableWidths: '1,3' },
+      html: '<tbody><tr class="highlight"><td class="metric" style="background-color:#123456;border:3px solid #ffffff">A</td><td>B</td></tr></tbody>',
+    }), 'table-1', 2);
+    expect(element).toMatchObject({
+      type: 'text',
+      class: ['results-table'],
+      html: expect.stringContaining('<table>'),
+      table: { columnWidths: [1, 3], autoHeight: true },
+      autoFit: false,
+    });
+    expect(element?.type === 'text' && element.html).toContain('class="metric"');
+    expect(element?.type === 'text' && element.html).toContain('border:3px solid #ffffff');
+  });
+
   it('maps a text node, keeping its classes and authored inline style', () => {
     const element = elementFromNode(node({
       tag: 'h1',
@@ -361,6 +379,23 @@ describe('deck objects become authored HTML', () => {
     expect(html).toContain('data-autofit="true"');
     expect(html).toContain('data-build="afterPrev+250"');
     expect(html).toContain('text-align:center');
+  });
+
+  it('exports native table layout metadata and its colgroup', () => {
+    const deck = emptyDeck('Table');
+    deck.slides[0].elements = [{
+      id: 'table', type: 'text', x: 100, y: 200, w: 900, h: 240, rot: 0, z: 1,
+      opacity: 1, class: ['role-body', 'results-table'], style: {}, align: 'left', valign: 'top',
+      html: '<table><tbody><tr><td class="metric" style="border-width:4px">A</td><td>B</td></tr></tbody></table>',
+      table: { columnWidths: [1, 2], autoHeight: true },
+    }];
+    const html = slideToHtml(parseDeck(deck).slides[0], deck.canvas);
+    expect(html).toContain('data-table="true"');
+    expect(html).toContain('data-table-widths="1,2"');
+    expect(html).toContain('results-table');
+    expect(html).toContain('class="metric"');
+    expect(html).toContain('border-width:4px');
+    expect(html).toContain('<colgroup><col style="width: 33.333');
   });
 
   it('promotes CSS no-wrap into the editable text option and preserves an explicit clear', () => {

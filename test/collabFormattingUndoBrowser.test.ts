@@ -270,7 +270,8 @@ describe.skipIf(!electronBinary)('formatting scope and undo in the collaboration
       }
 
       await beginSelectAll(id);
-      await editor.click(`${PANEL} .text-weight-buttons button:nth-child(7)`, `${id} 700 text weight`);
+      const weight = await idField('Font weight', `test-${id}-selected-font-weight`, '.field-number');
+      await editor.typeInto(weight, '700', `${id} 700 font weight`);
       await expectHtml(server.port, id, (html) => hasOriginalStructure(id, html, tag, amount)
         && html.includes('font-weight: 700'));
       await undoEditing(id);
@@ -285,10 +286,12 @@ describe.skipIf(!electronBinary)('formatting scope and undo in the collaboration
           await beginSelectAll(id);
           const selector = await idField(
             label, `test-${id}-${label.replace(' ', '-')}-${direction}`, '.field-number');
-          expect(await editor.evaluate<{ value: string; theme: string | null }>(`(() => {
+          const inheritedField = await editor.evaluate<{ value: string; theme: string | null }>(`(() => {
             const input = document.querySelector('${selector}');
             return { value: input.value, theme: input.parentElement.querySelector('.theme-value-indicator')?.textContent ?? null };
-          })()`)).toEqual({ value: expectedTheme, theme: '(theme)' });
+          })()`);
+          expect({ ...inheritedField, theme: inheritedField.theme?.toLowerCase() ?? null })
+            .toEqual({ value: expectedTheme, theme: '(theme)' });
           await editor.click(`${PANEL} button[aria-label="${label} ${direction}"]`,
             `${id} ${label} ${direction} stepper`);
           await expectHtml(server.port, id, (html) => hasOriginalStructure(id, html, tag, amount)
@@ -424,16 +427,90 @@ describe.skipIf(!electronBinary)('formatting scope and undo in the collaboration
       'whole table box font size did not apply', (value) => value === '48px');
     await undoChrome(TABLE_ID);
 
-    /* Table cell, row, and column scope must survive every real button click. */
-    const enterTable = async (scope: 'Cell' | 'Row' | 'Column') => {
+    /* Native character selections inside cells mirror every inline text path. */
+    await editor.doubleClick(`${ON_CANVAS(TABLE_ID)} .text-content`, 'table text for word formatting');
+    const selectTableWord = async () => beginSelectFirstWord(
+      TABLE_ID, 'tbody tr:first-child td:nth-child(2)',
+    );
+    const expectTableWordStyled = async (marker: RegExp, cellMarker: RegExp) => {
+      await expectHtml(server!.port, TABLE_ID, (html) => marker.test(html) && !cellMarker.test(html));
+    };
+
+    for (const [label, marker, cellMarker] of [
+      ['Bold (Cmd/Ctrl+B)', /<(?:b|strong)\b|font-weight:\s*700/i,
+        /<td[^>]*style="[^"]*font-weight/i],
+      ['Italic (Cmd/Ctrl+I)', /<(?:i|em)\b|font-style:\s*italic/i,
+        /<td[^>]*style="[^"]*font-style/i],
+      ['Underline (Cmd/Ctrl+U)', /<u\b|text-decoration(?:-line)?:\s*underline/i,
+        /<td[^>]*style="[^"]*text-decoration/i],
+    ] as const) {
+      await selectTableWord();
+      await editor.click(`${PANEL} button[aria-label="${label}"]`, `${label} table word`);
+      await expectTableWordStyled(marker, cellMarker);
+      await expectFormatButtonPressed(label);
+      await undoEditing(TABLE_ID);
+    }
+
+    for (const [key, marker, cellMarker] of [
+      ['b', /<(?:b|strong)\b|font-weight:\s*700/i, /<td[^>]*style="[^"]*font-weight/i],
+      ['i', /<(?:i|em)\b|font-style:\s*italic/i, /<td[^>]*style="[^"]*font-style/i],
+      ['u', /<u\b|text-decoration(?:-line)?:\s*underline/i,
+        /<td[^>]*style="[^"]*text-decoration/i],
+    ] as const) {
+      await selectTableWord();
+      await editor.chord(key, `Key${key.toUpperCase()}`, key.toUpperCase().charCodeAt(0), MOD);
+      await expectTableWordStyled(marker, cellMarker);
+      await undoEditing(TABLE_ID);
+    }
+
+    for (const [label, value, marker, cellMarker] of [
+      ['Font size', '44', /font-size:\s*44px/i, /<td[^>]*style="[^"]*font-size/i],
+      ['Font weight', '650', /font-weight:\s*650/i, /<td[^>]*style="[^"]*font-weight/i],
+    ] as const) {
+      await selectTableWord();
+      const input = await idField(
+        label, `test-table-word-${label.replace(' ', '-')}`, '.field-number');
+      await editor.typeInto(input, value, `${label} table word`);
+      await expectTableWordStyled(marker, cellMarker);
+      await undoEditing(TABLE_ID);
+    }
+
+    await selectTableWord();
+    await editor.choose(`${PANEL} .font-family-field select`, 'Georgia', 'table word font family');
+    await expectTableWordStyled(
+      /font-family:\s*Georgia/i, /<td[^>]*style="[^"]*font-family/i,
+    );
+    await undoEditing(TABLE_ID);
+
+    await selectTableWord();
+    const wordColourTrigger = `${PANEL} .field-color .color-picker-trigger[aria-label^="Colour"]`;
+    await editor.click(wordColourTrigger, 'table word colour');
+    await editor.click(
+      '.color-picker-popover .color-picker-palette-button[title="#1d7d45"]',
+      'green table word',
+    );
+    await expectTableWordStyled(
+      /color:\s*(?:#1d7d45|rgb\(29,\s*125,\s*69\))/i,
+      /<td[^>]*style="[^"]*color/i,
+    );
+    await undoEditing(TABLE_ID);
+
+    /* A real cell drag determines cell, horizontal, vertical, or rectangular scope. */
+    const enterTable = async (scope: 'Cell' | 'Row' | 'Column' | 'Range') => {
       await editor!.doubleClick(`${ON_CANVAS(TABLE_ID)} .text-content`, 'table text');
-      await editor!.click(`${ON_CANVAS(TABLE_ID)} tbody tr:first-child td:nth-child(2)`, 'table cell B');
-      const index = { Cell: 1, Row: 2, Column: 3 }[scope];
-      await editor!.click(`${PANEL} .table-scope-buttons button:nth-child(${index})`, `${scope} scope`);
-      const expected = { Cell: 1, Row: 2, Column: 2 }[scope];
+      const cells = {
+        A: `${ON_CANVAS(TABLE_ID)} tbody tr:first-child td:first-child`,
+        B: `${ON_CANVAS(TABLE_ID)} tbody tr:first-child td:nth-child(2)`,
+        D: `${ON_CANVAS(TABLE_ID)} tbody tr:nth-child(2) td:nth-child(2)`,
+      };
+      if (scope === 'Cell') await editor!.click(cells.B, 'table cell B');
+      else if (scope === 'Row') await editor!.dragBetween(cells.A, cells.B, 'table row drag');
+      else if (scope === 'Column') await editor!.dragBetween(cells.B, cells.D, 'table column drag');
+      else await editor!.dragBetween(cells.A, cells.D, 'table rectangular drag');
+      const expected = { Cell: 1, Row: 2, Column: 2, Range: 4 }[scope];
       await eventually(async () => editor!.evaluate<number>(
         `document.querySelectorAll('${ON_CANVAS(TABLE_ID)} .editor-table-selected').length`,
-      ), `${scope} selection was cleared by its button`, (value) => value === expected);
+      ), `${scope} drag did not select the expected cells`, (value) => value === expected);
       expect(await editor!.evaluate<boolean>(
         `document.querySelector('${ON_CANVAS(TABLE_ID)} .text-content')?.isContentEditable === true`,
       )).toBe(true);
@@ -443,8 +520,73 @@ describe.skipIf(!electronBinary)('formatting scope and undo in the collaboration
       await undoEditing(TABLE_ID, false);
     };
 
-    for (const scope of ['Cell', 'Row', 'Column'] as const) {
-      const affected = { Cell: 1, Row: 2, Column: 2 }[scope];
+    /* Every table border control is exercised through real Chromium input. */
+    await enterTable('Cell');
+    const borderWidth = await idField(
+      'Border width', 'test-table-border-width', '.table-border-paint .field-number');
+    await editor.typeInto(borderWidth, '3', 'table border width');
+    await editor.click(
+      `${PANEL} .table-border-paint .color-picker-trigger`, 'table border colour');
+    await editor.click(
+      '.color-picker-popover .color-picker-palette-button[title="#1d7d45"]', 'green border');
+    await editor.click(await buttonId('No borders', 'test-no-borders', editor), 'no table borders');
+    await eventually(async () => tableBordersFromServer(server!.port, editor!),
+      'no-border preset did not clear every edge', (cells) => cells.length === 4
+        && cells.every((cell) => Object.values(cell.widths).every((width) => width === '0px')));
+
+    await editor.click(
+      await buttonId('Vertical borders', 'test-vertical-borders', editor),
+      'vertical table borders',
+    );
+    await eventually(async () => tableBordersFromServer(server!.port, editor!),
+      'vertical-border preset did not isolate vertical edges', (cells) => cells.length === 4
+        && cells.every((cell) => cell.widths.left === '3px' && cell.widths.right === '3px'
+          && cell.widths.top === '0px' && cell.widths.bottom === '0px'
+          && cell.colors.left === 'rgb(29, 125, 69)'
+          && cell.colors.right === 'rgb(29, 125, 69)'));
+
+    await editor.click(
+      await buttonId('Horizontal borders', 'test-horizontal-borders', editor),
+      'horizontal table borders',
+    );
+    await eventually(async () => tableBordersFromServer(server!.port, editor!),
+      'horizontal-border preset did not isolate horizontal edges', (cells) => cells.length === 4
+        && cells.every((cell) => cell.widths.top === '3px' && cell.widths.bottom === '3px'
+          && cell.widths.left === '0px' && cell.widths.right === '0px'
+          && cell.colors.top === 'rgb(29, 125, 69)'
+          && cell.colors.bottom === 'rgb(29, 125, 69)'));
+
+    await editor.click(
+      await buttonId('No borders', 'test-no-borders-again', editor),
+      'clear borders before drawing',
+    );
+    await editor.click(
+      await buttonId('Draw borders', 'test-draw-borders', editor),
+      'enable border drawing',
+    );
+    const firstCell = `${ON_CANVAS(TABLE_ID)} tbody tr:first-child td:first-child`;
+    expect(await editor.evaluate<boolean>(
+      `document.querySelector(${JSON.stringify(firstCell)})?.closest('table')?.classList.contains('editor-table-border-drawing') === true`,
+    )).toBe(true);
+    await editor.hoverWithin(firstCell, 0.995, 0.5, 'hover first-cell right border');
+    const hoveredCellClass = await editor.evaluate<string>(
+      `document.querySelector(${JSON.stringify(firstCell)})?.className ?? ''`,
+    );
+    expect(hoveredCellClass).toContain('editor-table-border-preview-right');
+    await editor.clickWithin(firstCell, 0.995, 0.5, 'draw first-cell right border');
+    await eventually(async () => tableBordersFromServer(server!.port, editor!),
+      'draw-border tool did not persist the shared edge', (cells) => cells.length === 4
+        && cells[0].widths.right === '3px' && cells[1].widths.left === '3px'
+        && cells[0].colors.right === 'rgb(29, 125, 69)'
+        && cells[1].colors.left === 'rgb(29, 125, 69)');
+    await editor.click(
+      await buttonId('Draw borders', 'test-draw-borders-off', editor),
+      'disable border drawing',
+    );
+    await refocusTableAndUndo();
+
+    for (const scope of ['Cell', 'Row', 'Column', 'Range'] as const) {
+      const affected = { Cell: 1, Row: 2, Column: 2, Range: 4 }[scope];
       await enterTable(scope);
       await editor.click(`${PANEL} .text-table-options .color-picker-trigger:first-of-type`, `${scope} fill`);
       await editor.click('.color-picker-popover .color-picker-palette-button[title="#1d7d45"]', 'green fill');
@@ -573,6 +715,35 @@ async function buttonId(label: string, id: string, cdp: Cdp): Promise<string> {
   })()`);
   expect(found).toBe(true);
   return `#${id}`;
+}
+
+type PersistedCellBorders = {
+  widths: Record<'top' | 'right' | 'bottom' | 'left', string>;
+  colors: Record<'top' | 'right' | 'bottom' | 'left', string>;
+};
+
+/** Parse the server's saved cell styles through Chromium's real CSSOM. */
+async function tableBordersFromServer(port: number, cdp: Cdp): Promise<PersistedCellBorders[]> {
+  const element = await liveElement(port, TABLE_ID);
+  if (element.type !== 'text') return [];
+  return cdp.evaluate<PersistedCellBorders[]>(`(() => {
+    const template = document.createElement('template');
+    template.innerHTML = ${JSON.stringify(element.html)};
+    return [...template.content.querySelectorAll('td, th')].map((cell) => ({
+      widths: {
+        top: cell.style.borderTopWidth,
+        right: cell.style.borderRightWidth,
+        bottom: cell.style.borderBottomWidth,
+        left: cell.style.borderLeftWidth,
+      },
+      colors: {
+        top: cell.style.borderTopColor,
+        right: cell.style.borderRightColor,
+        bottom: cell.style.borderBottomColor,
+        left: cell.style.borderLeftColor,
+      },
+    }));
+  })()`);
 }
 
 async function expectTableStyled(port: number, declaration: string, countExpected: number): Promise<void> {

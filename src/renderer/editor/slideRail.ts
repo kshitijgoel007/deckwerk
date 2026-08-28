@@ -155,7 +155,9 @@ export class SlideRail {
       const explicitlyCollapsed = containsActive
         && deck.slides[slideIndex]?.id === this.collapsedActiveSlideId;
       if (!this.expandedRuns.has(runKey) && (!containsActive || explicitlyCollapsed)) {
-        this.host.appendChild(this.buildCollapsedRun(deck, i, end, runKey));
+        this.host.appendChild(
+          this.buildCollapsedRun(deck, i, end, runKey, slideSelection),
+        );
       } else {
         this.expandedRuns.add(runKey);
         this.host.appendChild(this.buildExpandedRun(deck, i, end, runKey, slideIndex, slideSelection));
@@ -187,9 +189,14 @@ export class SlideRail {
     start: number,
     end: number,
     runKey: string,
+    slideSelection: Set<string>,
   ): HTMLElement {
     const row = document.createElement('button');
-    row.className = 'rail-item rail-collapsed';
+    const selected = deck.slides
+      .slice(start, end + 1)
+      .some((slide) => slideSelection.has(slide.id));
+    row.className = `rail-item rail-collapsed${selected ? ' selected' : ''}`;
+    row.setAttribute('aria-selected', String(selected));
     row.title = `Show hidden slides ${start + 1}–${end + 1}`;
 
     const num = document.createElement('span');
@@ -206,7 +213,23 @@ export class SlideRail {
     badge.textContent = `${end - start + 1} hidden`;
 
     row.append(num, stack, badge);
-    row.addEventListener('click', () => {
+    // A collapsed run is also the only affordable target for selecting a
+    // large hidden range. Shift-clicking it selects the represented run and
+    // deliberately leaves the thumbnails folded.
+    // Expanding a media-heavy suffix merely to select it can create dozens of
+    // video surfaces at once and exhaust Chromium's renderer.
+    row.addEventListener('pointerdown', (event) => {
+      if (event.button !== 0 || !event.shiftKey) return;
+      event.preventDefault();
+      event.stopPropagation();
+      this.collapsedActiveSlideId = deck.slides[end]?.id ?? null;
+      this.store.selectSlideRange(start, end);
+      this.host.focus({ preventScroll: true });
+    });
+    row.addEventListener('click', (event) => {
+      // pointerdown above synchronously re-renders the row; keep this guard for
+      // synthetic clicks and browsers that still dispatch the trailing click.
+      if (event.shiftKey) return;
       this.expandedRuns.add(runKey);
       this.collapsedActiveSlideId = null;
       this.render();
@@ -511,10 +534,10 @@ export class SlideRail {
         this.addSlide();
         return;
       }
-      if (e.key === 'Backspace') {
-        // When the rail or its active thumbnail owns focus, Backspace is a
-        // slide command. Stop it here so the window-level shortcut cannot also
-        // delete a selected canvas object.
+      if (e.key === 'Backspace' || e.key === 'Delete') {
+        // When the rail or its active thumbnail owns focus, either deletion
+        // key is a slide command. Stop it here so the window-level shortcut
+        // cannot also delete a selected canvas object.
         e.preventDefault();
         e.stopPropagation();
         this.deleteSlide();

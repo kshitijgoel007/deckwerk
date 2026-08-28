@@ -4,6 +4,7 @@ import type { Deck, MediaEffect, Slide, SlideElement, TimelineEntry } from './de
 import { fitAutoTextElement } from './autoFit.js';
 import { KATEX_AUTO_RENDER_JS, KATEX_CSS, KATEX_JS } from './katexInline.js';
 import { shapeSvg } from './shapeSvg.js';
+import { applyTableColumnWidths } from './paragraphs.js';
 import {
   cssMediaBorder,
   cssMediaRadius,
@@ -519,7 +520,10 @@ export function elementFromNode(
     opacity: node.opacity,
     class: node.classes,
     style: pickStyle(node.style),
-    ...(node.dataset.magicMove ? { magicMoveId: node.dataset.magicMove } : {}),
+    ...(node.dataset.magicMove !== undefined
+      ? { magicMoveId: node.dataset.magicMove || null } : {}),
+    ...(node.dataset.lineageId !== undefined
+      ? { lineageId: node.dataset.lineageId || null } : {}),
   };
   const mediaBase = { ...base, style: { ...base.style } };
   // The player wrapper clips native media for crops and rounded corners. That
@@ -629,6 +633,32 @@ export function elementFromNode(
     };
   }
 
+  if (node.dataset.element === 'table' && node.tag === 'table') {
+    const authored = `<table>${node.html.trim()}</table>`;
+    let widths = (node.dataset.tableWidths ?? '')
+      .split(',')
+      .map((value) => Number.parseFloat(value))
+      .filter((value) => Number.isFinite(value) && value > 0);
+    if (widths.length === 0) {
+      const firstRow = /<tr\b[^>]*>([\s\S]*?)<\/tr>/i.exec(node.html)?.[1] ?? '';
+      const columns = [...firstRow.matchAll(/<(?:td|th)\b([^>]*)>/gi)]
+        .reduce((count, cell) => {
+          const span = /\bcolspan\s*=\s*["']?(\d+)/i.exec(cell[1])?.[1];
+          return count + Math.max(1, Number.parseInt(span ?? '1', 10) || 1);
+        }, 0);
+      widths = Array.from({ length: Math.max(1, columns) }, () => 1);
+    }
+    return {
+      ...base,
+      type: 'text',
+      html: applyTableColumnWidths(authored, widths),
+      align: alignFrom(node.attrs.textAlign),
+      valign: 'top',
+      autoFit: false,
+      table: { columnWidths: widths, autoHeight: true },
+    };
+  }
+
   // Anything the walker could not reduce to a known object — an inline SVG
   // chart, a gradient panel, a table — is preserved verbatim rather than
   // dropped or flattened to a picture. It still drags and resizes; only its
@@ -645,6 +675,10 @@ export function elementFromNode(
   }
 
   const noWrap = noWrapFromNode(node, base.style);
+  const tableWidths = (node.dataset.tableWidths ?? '')
+    .split(',')
+    .map((value) => Number.parseFloat(value))
+    .filter((value) => Number.isFinite(value) && value > 0);
   return {
     ...base,
     ...effectsFromNode(node, base.style),
@@ -658,6 +692,12 @@ export function elementFromNode(
     valign: valignFrom(node.dataset.valign),
     ...(contentStyle ? { contentStyle } : {}),
     ...(node.dataset.autofit !== undefined ? { autoFit: node.dataset.autofit !== 'false' } : {}),
+    ...(node.dataset.table === 'true' && tableWidths.length > 0 ? {
+      table: {
+        columnWidths: tableWidths,
+        autoHeight: node.dataset.tableAutoHeight !== 'false',
+      },
+    } : {}),
     ...noWrap,
     ...(node.dataset.fitMode === 'condense' ? { noWrapMode: 'condense' as const } : {}),
     ...(Number.isFinite(Number.parseFloat(node.dataset.paragraphSpacing ?? ''))
@@ -742,7 +782,10 @@ function elementToHtml(element: SlideElement, build?: TimelineEntry): string {
     // player's structural classes.
     element.class.length > 0 && element.type !== 'text'
       ? `class="${escape(element.class.join(' '))}"` : '',
-    element.magicMoveId ? `data-magic-move="${escape(element.magicMoveId)}"` : '',
+    element.magicMoveId !== undefined
+      ? `data-magic-move="${escape(element.magicMoveId ?? '')}"` : '',
+    element.lineageId !== undefined
+      ? `data-lineage-id="${escape(element.lineageId ?? '')}"` : '',
     build ? `data-build="${build.trigger.on}${build.trigger.delay ? `+${build.trigger.delay}` : ''}"` : '',
   ].filter(Boolean).join(' ');
 
@@ -772,15 +815,20 @@ function elementToHtml(element: SlideElement, build?: TimelineEntry): string {
           Object.entries(element.contentStyle ?? {})
             .map(([property, value]) => `${property}:${value};`)
             .join(' '))}>`
-        + `${element.html}</div></div>`;
+        + `${element.table
+          ? applyTableColumnWidths(element.html, element.table.columnWidths)
+          : element.html}</div></div>`;
       return `  <div ${attrs} class="element element-text${element.class.length > 0
         ? ` ${escape(element.class.join(' '))}` : ''}" data-valign="${element.valign}"`
         + effectsDataAttrs(element)
         + `${element.contentStyle && Object.keys(element.contentStyle).length > 0
           ? ` data-content-style="${escape(encodeURIComponent(JSON.stringify(element.contentStyle)))}"` : ''}`
         + `${element.autoFit ? ' data-autofit="true"' : ''}`
+        + `${element.table
+          ? ` data-table="true" data-table-widths="${element.table.columnWidths.join(',')}" data-table-auto-height="${element.table.autoHeight}"`
+          : ''}`
         + `${element.noWrap !== undefined ? ` data-nowrap="${element.noWrap}"` : ''}`
-        + `${element.noWrap && element.noWrapMode === 'condense' ? ' data-fit-mode="condense"' : ''}`
+        + `${element.noWrapMode === 'condense' ? ' data-fit-mode="condense"' : ''}`
         + `${element.paragraphSpacing !== undefined
           ? ` data-paragraph-spacing="${element.paragraphSpacing}"` : ''}`
         + ` ${styleAttr(position, inline, `text-align:${element.align};`,
