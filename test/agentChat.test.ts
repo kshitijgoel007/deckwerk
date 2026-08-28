@@ -229,7 +229,7 @@ describe('embedded agent chat controller', () => {
       .toBe('low');
   });
 
-  it('advertises the host browser when a dynamic-tool handler is available', async () => {
+  it('advertises the host browser and presentation API when a dynamic-tool handler is available', async () => {
     const server = new FakeAppServer();
     const controller = new AgentChatController({
       clientFactory: () => server,
@@ -237,8 +237,9 @@ describe('embedded agent chat controller', () => {
     });
     await controller.getState('/tmp/talk');
     await controller.send('/tmp/talk', request, async () => 'HTTP session');
-    expect(server.requests.find((entry) => entry.method === 'thread/start')?.params.dynamicTools)
-      .toEqual([expect.objectContaining({ type: 'function', name: 'browser_open' })]);
+    expect(server.requests.find((entry) => entry.method === 'thread/start')?.params.dynamicTools
+      .map((tool: { name: string }) => tool.name))
+      .toEqual(['presentation_api', 'browser_open']);
   });
 
   it('opens managed ChatGPT sign-in when no account is available', async () => {
@@ -351,7 +352,10 @@ describe('embedded agent chat controller', () => {
         .toEqual([['user', 'Polish this slide'], ['assistant', 'Saved reply']]);
 
       const secondServer = new FakeAppServer();
-      const second = new AgentChatController({ clientFactory: () => secondServer });
+      const second = new AgentChatController({
+        clientFactory: () => secondServer,
+        onDynamicToolCall: async () => ({ success: true, contentItems: [] }),
+      });
       const restored = await second.getState(deckPath);
       expect(restored.messages.map((message) => [message.role, message.text]))
         .toEqual([['user', 'Polish this slide'], ['assistant', 'Saved reply']]);
@@ -361,6 +365,10 @@ describe('embedded agent chat controller', () => {
           threadId: 'thread-1',
           developerInstructions: 'fresh live HTTP session',
           runtimeWorkspaceRoots: [expect.stringContaining('deckwerk-agent-runtime')],
+          dynamicTools: expect.arrayContaining([
+            expect.objectContaining({ name: 'presentation_api' }),
+            expect.objectContaining({ name: 'browser_open' }),
+          ]),
         });
       expect(secondServer.requests.filter((entry) => entry.method === 'thread/start')).toHaveLength(0);
       second.close();

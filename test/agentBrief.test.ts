@@ -32,12 +32,20 @@ describe('agent clipboard brief', () => {
   });
 
   it('teaches both visual routes and the exact KaTeX convention', () => {
+    expect(AGENT_BRIEF).toContain('presentation_api');
+    expect(AGENT_BRIEF).toContain('host scopes the request to');
     expect(AGENT_BRIEF).toContain('browser_open');
     expect(AGENT_BRIEF).toContain('contact-sheet PNG');
     expect(AGENT_BRIEF).toContain('$f_\\theta(x)$');
     expect(AGENT_BRIEF).toContain('$$\\int p(x)\\,dx = 1$$');
     expect(AGENT_BRIEF).toContain('Never imitate equations with Unicode subscripts');
     expect(AGENT_BRIEF).not.toContain('Never install');
+  });
+
+  it('documents variable-length HTML replacement as one atomic change', () => {
+    expect(AGENT_BRIEF).toMatch(/different number\s+of draft slides than targets/);
+    expect(AGENT_BRIEF).toContain('extra drafts are inserted');
+    expect(AGENT_BRIEF).toContain('extra targets are deleted');
   });
 
   it('matches an established deck style and asks when visual direction is ambiguous', () => {

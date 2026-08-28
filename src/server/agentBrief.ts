@@ -11,6 +11,12 @@ and authoritative PNG contact sheets and slide renders through the HTTP API.
 Use whichever is most useful for the task. Do not author by clicking editor
 controls.
 
+In DeckWerk's embedded desktop chat, call the host-provided \`presentation_api\`
+tool with a relative documented \`/api/...\` path. The host scopes the request to
+the open deck and carries it to the live local slide server; do not substitute a
+sandboxed shell request. Command-line agents may call the same endpoints with
+\`curl\`.
+
 ## Establish deck context before editing
 
 Do this before every task, including a change to only one object:
@@ -147,7 +153,10 @@ editable native objects. It preserves the smallest unsupported region as isolate
 HTML. Visual fidelity has priority over native-object ratio.
 
 Replacement preserves slide IDs, comments, speaker notes, and hidden state while
-replacing visual content and builds. A multi-slide draft applies atomically.
+replacing visual content and builds. A replacement may contain a different number
+of draft slides than targets: extra drafts are inserted after the final target,
+and extra targets are deleted. Paired slides keep their existing metadata. The
+whole multi-slide change applies atomically.
 
 ## Verification and completion
 
@@ -177,6 +186,12 @@ request and your verification reply, then re-read \`GET /api/comments\` and
 confirm that neither remains in the unresolved set.
 
 ## HTTP examples
+
+Embedded desktop agent:
+
+\`presentation_api({ path: "/api/context" })\`
+
+\`presentation_api({ path: "/api/preview-html", method: "POST", body: { html, target } })\`
 
 \`\`\`js
 const deck = new URLSearchParams(location.search).get("deck");

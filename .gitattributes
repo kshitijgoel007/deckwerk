@@ -1,4 +1,0 @@
-decks/2608_IARPA/assets/*.mp4 filter=lfs diff=lfs merge=lfs -text
-decks/2608_IARPA/assets/*.mov filter=lfs diff=lfs merge=lfs -text
-decks/2608_IARPA/assets/*.qt filter=lfs diff=lfs merge=lfs -text
-decks/2608_IARPA/assets/*.m4v filter=lfs diff=lfs merge=lfs -text

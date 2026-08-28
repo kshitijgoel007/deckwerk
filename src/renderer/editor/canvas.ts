@@ -237,6 +237,11 @@ const MAX_ZOOM = 8;
 const ZOOM_STEP = 0.25;
 const HANDLE_NAMES = Object.keys(HANDLES);
 type MoveOrigin = Rect & { control?: { x: number; y: number } };
+type ResizeOrigin = Rect & {
+  rot: number;
+  sourceBox?: Rect | null;
+  control?: { x: number; y: number } | null;
+};
 
 type DragMode =
   | { kind: 'none' }
@@ -246,6 +251,7 @@ type DragMode =
       handle: string;
       startCanvas: { x: number; y: number };
       origin: Rect;
+      origins: Map<string, ResizeOrigin>;
       elementId: string;
       aspect: number;
     }
@@ -1131,20 +1137,21 @@ export class EditorCanvas {
         continue;
       }
 
-      // Handles only on a single selection: resizing a multi-selection needs a
-      // group transform, which v1 doesn't model.
+      // PowerPoint-style multi-selection: every selected object keeps its own
+      // handles. Dragging any one of them applies the same scale to all of the
+      // selected objects around their corresponding opposite edges.
+      const tableLayout = el.type === 'text' ? el.table : undefined;
+      const handles = tableLayout
+        ? HANDLE_NAMES.filter((name) => !['n', 's'].includes(name))
+        : HANDLE_NAMES;
+      for (const name of handles) {
+        const h = document.createElement('div');
+        h.className = `handle handle-${name}`;
+        h.dataset.handle = name;
+        h.dataset.elementId = el.id;
+        box.appendChild(h);
+      }
       if (selection.size === 1) {
-        const tableLayout = el.type === 'text' ? el.table : undefined;
-        const handles = tableLayout
-          ? HANDLE_NAMES.filter((name) => !['n', 's'].includes(name))
-          : HANDLE_NAMES;
-        for (const name of handles) {
-          const h = document.createElement('div');
-          h.className = `handle handle-${name}`;
-          h.dataset.handle = name;
-          h.dataset.elementId = el.id;
-          box.appendChild(h);
-        }
         if (tableLayout && tableLayout.columnWidths.length > 1) {
           const total = tableLayout.columnWidths.reduce((sum, width) => sum + width, 0);
           let offset = 0;
@@ -1352,11 +1359,28 @@ export class EditorCanvas {
           // resize scales it with the box.
           this.maskOrigin = el.sourceBox ? { ...el.sourceBox } : null;
         }
+        const origins = new Map<string, ResizeOrigin>();
+        for (const selected of this.store.selectedElements()) {
+          origins.set(selected.id, {
+            x: selected.x,
+            y: selected.y,
+            w: selected.w,
+            h: selected.h,
+            rot: selected.rot,
+            ...((selected.type === 'image' || selected.type === 'video')
+              ? { sourceBox: selected.sourceBox ? { ...selected.sourceBox } : null }
+              : {}),
+            ...((selected.type === 'shape' && selected.control)
+              ? { control: { ...selected.control } }
+              : {}),
+          });
+        }
         this.drag = {
           kind: 'resize',
           handle,
           startCanvas: point,
           origin: { x: el.x, y: el.y, w: el.w, h: el.h },
+          origins,
           elementId: el.id,
           aspect: el.w / el.h,
         };
@@ -1589,7 +1613,7 @@ export class EditorCanvas {
         // Guides align to what is on screen, which for a rotated neighbour is
         // its rotated bounding box, not its unrotated one.
         const others = slide.elements
-          .filter((e) => e.id !== drag.elementId)
+          .filter((e) => !drag.origins.has(e.id))
           .map((e) => rotatedBounds(e));
         // A rotated element's own edges are not axis-aligned, so there is
         // nothing meaningful to snap them to; snapping it would only nudge the
@@ -1624,28 +1648,35 @@ export class EditorCanvas {
           this.applyMaskResize(drag.elementId, r, drag.origin);
           break;
         }
-        const cropBase = this.maskOrigin;
+        const scaleX = r.w / drag.origin.w;
+        const scaleY = r.h / drag.origin.h;
         this.store.updateSelected((el) => {
-          if (el.id !== drag.elementId) return;
-          el.x = Math.round(r.x);
-          el.y = Math.round(r.y);
-          el.w = Math.max(8, Math.round(r.w));
-          el.h = Math.max(8, Math.round(r.h));
+          const origin = drag.origins.get(el.id);
+          if (!origin) return;
+          const resized = resizeByScale(origin, edges, scaleX, scaleY, centered);
+          el.x = Math.round(resized.x);
+          el.y = Math.round(resized.y);
+          el.w = Math.max(1, Math.round(resized.w));
+          el.h = Math.max(1, Math.round(resized.h));
           // Resizing a cropped element scales the whole picture with its
           // window, so the crop composition is preserved — without this, a
           // resize silently re-crops instead of scaling.
-          if ((el.type === 'image' || el.type === 'video') && cropBase) {
-            const fx = el.w / Math.max(1, drag.origin.w);
-            const fy = el.h / Math.max(1, drag.origin.h);
+          if ((el.type === 'image' || el.type === 'video') && origin.sourceBox) {
+            const fx = el.w / origin.w;
+            const fy = el.h / origin.h;
             el.sourceBox = {
-              x: Math.round(cropBase.x * fx),
-              y: Math.round(cropBase.y * fy),
-              w: Math.max(1, Math.round(cropBase.w * fx)),
-              h: Math.max(1, Math.round(cropBase.h * fy)),
+              x: Math.round(origin.sourceBox.x * fx),
+              y: Math.round(origin.sourceBox.y * fy),
+              w: Math.max(1, Math.round(origin.sourceBox.w * fx)),
+              h: Math.max(1, Math.round(origin.sourceBox.h * fy)),
             };
           }
+          if (el.type === 'shape' && origin.control) {
+            const control = resizePointByScale(origin.control, origin, resized, scaleX, scaleY);
+            el.control = { x: Math.round(control.x), y: Math.round(control.y) };
+          }
         });
-        if (tableResize) this.syncTableHeight(drag.elementId);
+        for (const id of drag.origins.keys()) this.syncTableHeight(id);
         break;
       }
 
@@ -4033,4 +4064,69 @@ function constrainAspect(
   if (edges.left) out.x = origin.x + origin.w - out.w;
   if (edges.top) out.y = origin.y + origin.h - out.h;
   return out;
+}
+
+/**
+ * Apply one resize scale to an object's own box.
+ *
+ * Multi-selected objects do not become a temporary group: each keeps its
+ * position and uses the same handle/opposite-edge relationship as the object
+ * whose handle is being dragged. This is the Office-style behaviour that lets
+ * several separate objects grow or shrink identically without changing the
+ * spacing between their anchor edges.
+ */
+function resizeByScale(
+  origin: ResizeOrigin,
+  edges: { left: boolean; right: boolean; top: boolean; bottom: boolean },
+  scaleX: number,
+  scaleY: number,
+  centered: boolean,
+): Rect {
+  const w = origin.w * scaleX;
+  const h = origin.h * scaleY;
+  let x = centered
+    ? origin.x + (origin.w - w) / 2
+    : edges.left
+      ? origin.x + origin.w - w
+      : origin.x;
+  let y = centered
+    ? origin.y + (origin.h - h) / 2
+    : edges.top
+      ? origin.y + origin.h - h
+      : origin.y;
+
+  // Each object's handles live in its own rotated frame. Keep its opposite
+  // visible edge pinned just as a direct single-object resize does.
+  if (origin.rot) {
+    const radians = origin.rot * Math.PI / 180;
+    const cos = Math.cos(radians);
+    const sin = Math.sin(radians);
+    const localDx = x + w / 2 - (origin.x + origin.w / 2);
+    const localDy = y + h / 2 - (origin.y + origin.h / 2);
+    x = origin.x + origin.w / 2 + (localDx * cos - localDy * sin) - w / 2;
+    y = origin.y + origin.h / 2 + (localDx * sin + localDy * cos) - h / 2;
+  }
+
+  return { x, y, w, h };
+}
+
+/** Scale an absolute point in the same local, possibly rotated frame. */
+function resizePointByScale(
+  point: { x: number; y: number },
+  origin: ResizeOrigin,
+  resized: Rect,
+  scaleX: number,
+  scaleY: number,
+): { x: number; y: number } {
+  const radians = origin.rot * Math.PI / 180;
+  const cos = Math.cos(radians);
+  const sin = Math.sin(radians);
+  const dx = point.x - (origin.x + origin.w / 2);
+  const dy = point.y - (origin.y + origin.h / 2);
+  const localX = (dx * cos + dy * sin) * scaleX;
+  const localY = (-dx * sin + dy * cos) * scaleY;
+  return {
+    x: resized.x + resized.w / 2 + localX * cos - localY * sin,
+    y: resized.y + resized.h / 2 + localX * sin + localY * cos,
+  };
 }

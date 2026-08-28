@@ -53,6 +53,7 @@ import { startWorkflow } from './workflow.js';
 import { handoffWhenReady } from './windowHandoff.js';
 import { AgentRuntime } from './agentRuntime.js';
 import { AgentChatController } from './agentChat.js';
+import { callPresentationApi } from './agentPresentationApi.js';
 import type { DynamicToolCall, DynamicToolResult } from './codexAppServer.js';
 import { installAssetProtocol, registerAssetScheme, setDeckDir } from './assetProtocol.js';
 import {
@@ -143,10 +144,14 @@ const agentChat = new AgentChatController({
       editorWindow.webContents.send(IPC.agentChatState, state);
     }
   },
-  onDynamicToolCall: openAgentBrowser,
+  onDynamicToolCall: handleAgentDynamicTool,
 });
 
-async function openAgentBrowser(call: DynamicToolCall): Promise<DynamicToolResult> {
+async function handleAgentDynamicTool(call: DynamicToolCall): Promise<DynamicToolResult> {
+  if (call.tool === 'presentation_api') {
+    if (!collabServer || !session) throw new Error('The deck-scoped slide server is not running');
+    return callPresentationApi(call, { port: collabServer.port, deckPath: session.dir });
+  }
   if (call.tool !== 'browser_open') throw new Error(`Unknown DeckWerk tool: ${call.tool}`);
   const args = call.arguments && typeof call.arguments === 'object'
     ? call.arguments as Record<string, unknown>

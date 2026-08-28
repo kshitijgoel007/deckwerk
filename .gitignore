@@ -8,16 +8,10 @@ artifacts/
 __pycache__/
 *.py[cod]
 
-# Reference/test/example decks live under decks/. Only what the tests and
-# the agent CLI need is tracked: demo-deck, reference, agent-reference,
-# test-presentation geometry, and animation-reference's deck files. Everything
-# else — imported corpora, large media, generated renders — stays local.
-decks/imported-*/
-decks/exported-*/
-decks/animation-reference/assets/
-decks/*/edit/.workflow*
+# Presentation decks are private local data. Synthetic test fixtures belong
+# under test/fixtures instead of this directory.
+decks/
 test_presentation.key
-decks/test-presentation/assets/
 
 # Large local presentation corpus used by the importer regression suite.
 example_presentations/
@@ -27,5 +21,3 @@ collab-decks/
 
 # Local reference presentation (>100MB, stripped from history).
 reference.key
-decks/2608_Reasoning_Meeting/
-decks/Rhoda_demo/

@@ -654,6 +654,44 @@ describe('collab server', () => {
     expect(afterResolve.outline.find((slide) => slide.id === 's1')?.openComments).toBe(0);
   }, 20_000);
 
+  it('allows an HTML replacement to expand one target into multiple slides', async () => {
+    const base = `http://127.0.0.1:${server.port}`;
+    const preview = await fetch(`${base}/api/preview-html?deck=${DECK_ID}`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        html: '<!doctype html><section class="slide"><h1>Part one</h1></section><section class="slide"><h1>Part two</h1></section>',
+        target: { mode: 'replace', slideIds: ['s1'] },
+      }),
+    });
+    expect(preview.status).toBe(200);
+    const draft = await preview.json() as { draftId: string; revision: string };
+    const observer = await connect('Replacement observer');
+    const applied = await fetch(`${base}/api/apply-html?deck=${DECK_ID}`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        draftId: draft.draftId,
+        expectedRevision: draft.revision,
+        idempotencyKey: 'expand-s1',
+        label: 'Agent: expand first slide',
+      }),
+    });
+    expect(applied.status).toBe(200);
+    const result = await applied.json() as { slideIds: string[] };
+    expect(result.slideIds).toHaveLength(2);
+    expect(result.slideIds[0]).toBe('s1');
+
+    const historyTxn = await observer.client.nextOfKind('txn');
+    expect(historyTxn).toMatchObject({
+      ops: [
+        expect.objectContaining({ op: 'replaceSlide', slideId: 's1' }),
+        expect.objectContaining({ op: 'insertSlides', afterSlideId: 's1' }),
+      ],
+    });
+    const deck = await (await fetch(`${base}/api/deck?deck=${DECK_ID}`)).json() as Deck;
+    expect(deck.slides.map((slide) => slide.id))
+      .toEqual(['s1', result.slideIds[1], 's2']);
+  }, 20_000);
+
   it('discovers, previews, and atomically applies surgical native edits', async () => {
     const base = `http://127.0.0.1:${server.port}`;
     const schema = await (await fetch(`${base}/api/edit-schema`)).json() as any;

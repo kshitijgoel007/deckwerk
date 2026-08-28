@@ -18,6 +18,7 @@ import {
   type DynamicToolCall,
   type DynamicToolResult,
 } from './codexAppServer.js';
+import { PRESENTATION_API_TOOL } from './agentPresentationApi.js';
 
 const BROWSER_OPEN_TOOL = {
   type: 'function',
@@ -35,6 +36,8 @@ const BROWSER_OPEN_TOOL = {
     additionalProperties: false,
   },
 } as const;
+
+const DECKWERK_DYNAMIC_TOOLS = [PRESENTATION_API_TOOL, BROWSER_OPEN_TOOL] as const;
 
 interface AccountReadResult {
   account: null | { type: 'apiKey' }
@@ -848,6 +851,7 @@ export class AgentChatController {
           developerInstructions: livePrompt,
           personality: 'friendly',
           excludeTurns: true,
+          ...(this.options.onDynamicToolCall ? { dynamicTools: DECKWERK_DYNAMIC_TOOLS } : {}),
         });
         session.threadId = resumed.thread.id;
         session.threadAttached = true;
@@ -873,7 +877,7 @@ export class AgentChatController {
       // Agent button historically copied to the user's clipboard.
       developerInstructions: promptWithTranscript(livePrompt, previousMessages),
       personality: 'friendly',
-      ...(this.options.onDynamicToolCall ? { dynamicTools: [BROWSER_OPEN_TOOL] } : {}),
+      ...(this.options.onDynamicToolCall ? { dynamicTools: DECKWERK_DYNAMIC_TOOLS } : {}),
     });
     session.threadId = started.thread.id;
     session.threadAttached = true;

@@ -29,6 +29,7 @@ import { NativeEditRequestSchema, applyNativeEdits, nativeEditContract } from '.
 import type { Deck, Slide, SlideElement } from '../shared/deck.js';
 import type { AgentChatState } from '../shared/ipc.js';
 import type { SharedAgentRuntimeLike } from './sharedAgent.js';
+import { planHtmlReplacement } from './htmlReplacement.js';
 
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -1180,15 +1181,13 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
         appliedIds.push(...draft.slides.map((slide) => slide.id));
       } else {
         const ids = target.slideIds ?? [];
-        if (ids.length !== draft.slides.length) return respondJson(response, 400, { error: 'replace target count does not match draft' });
-        for (let index = 0; index < ids.length; index += 1) {
-          const previous = room.session.deck.slides.find((slide) => slide.id === ids[index]);
-          if (!previous) return respondJson(response, 404, { error: `no slide ${ids[index]}` });
-          const visual = structuredClone(draft.slides[index]);
-          visual.id = previous.id; visual.comments = previous.comments; visual.notes = previous.notes; visual.skipped = previous.skipped;
-          operations.push({ op: 'replaceSlide', slideId: previous.id, slide: visual });
-          appliedIds.push(previous.id);
-        }
+        if (ids.length === 0) return respondJson(response, 400, { error: 'replacement requires at least one target slide' });
+        if (new Set(ids).size !== ids.length) return respondJson(response, 400, { error: 'replacement target contains duplicate slide ids' });
+        const missing = ids.find((id) => !room.session.deck.slides.some((slide) => slide.id === id));
+        if (missing) return respondJson(response, 404, { error: `no slide ${missing}` });
+        const plan = planHtmlReplacement(room.session.deck, ids, draft.slides);
+        operations.push(...plan.operations);
+        appliedIds.push(...plan.appliedSlideIds);
       }
       const label = payload.label?.trim().slice(0, 200) || 'Agent: apply HTML slides';
       const applied = room.session.applyOps(operations);

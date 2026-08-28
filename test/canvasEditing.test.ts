@@ -2161,6 +2161,54 @@ describe('object creation and manipulation', () => {
     expect(resized.h).toBeGreaterThan(ellipse.h);
   });
 
+  it('shows handles on every multi-selected object and resizes them by the same scale', () => {
+    const { store, host } = setup();
+    stageAtOne(host);
+    store.commit((deck) => {
+      const video = deck.slides[0].elements.find((element) => element.id === 'video-1');
+      if (video?.type === 'video') {
+        video.sourceBox = { x: -20, y: -10, w: 680, h: 380 };
+      }
+    });
+    store.select(['text-1', 'video-1']);
+
+    expect(host.querySelectorAll('.sel-box .handle')).toHaveLength(16);
+    expect(host.querySelectorAll('.handle[data-element-id="text-1"]')).toHaveLength(8);
+    expect(host.querySelectorAll('.handle[data-element-id="video-1"]')).toHaveLength(8);
+
+    // Grow the text box by 50% in both axes. The selected video receives the
+    // same scale around its own northwest anchor; its crop scales with it.
+    const handle = host.querySelector<HTMLElement>(
+      '.handle-se[data-element-id="text-1"]',
+    )!;
+    pointer(handle, 'pointerdown', 700, 220);
+    pointer(host, 'pointermove', 1000, 280);
+    pointer(host, 'pointerup', 1000, 280);
+
+    expect(store.slide!.elements.find((element) => element.id === 'text-1'))
+      .toMatchObject({ x: 100, y: 100, w: 900, h: 180 });
+    expect(store.slide!.elements.find((element) => element.id === 'video-1'))
+      .toMatchObject({
+        x: 100,
+        y: 300,
+        w: 960,
+        h: 540,
+        sourceBox: { x: -30, y: -15, w: 1020, h: 570 },
+      });
+
+    store.undo();
+    expect(store.slide!.elements.find((element) => element.id === 'text-1'))
+      .toMatchObject({ x: 100, y: 100, w: 600, h: 120 });
+    expect(store.slide!.elements.find((element) => element.id === 'video-1'))
+      .toMatchObject({
+        x: 100,
+        y: 300,
+        w: 640,
+        h: 360,
+        sourceBox: { x: -20, y: -10, w: 680, h: 380 },
+      });
+  });
+
   it('resizes native tables by total width and by adjacent column widths', () => {
     const { store, host } = setup();
     stageAtOne(host);
