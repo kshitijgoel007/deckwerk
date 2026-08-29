@@ -29,6 +29,8 @@ export interface AgentChatPanelOptions {
   userRoleLabel?: string;
   /** Account credentials are server-owner controls in shared demo mode. */
   canManageAccount?: boolean;
+  /** Lets the editor expose a deck-level reopen control outside the chat. */
+  onScratchpadState?: (state: { available: boolean; visible: boolean }) => void;
 }
 
 /** A persistent, non-modal chat surface anchored beneath the editor toolbar. */
@@ -93,12 +95,12 @@ export class AgentChatPanel {
     this.conversationSelect.title = 'Current and past chats saved with this deck';
     this.conversationSelect.addEventListener('change', () => void this.changeConversation());
     this.reset = smallButton('New chat', () => void this.newChat());
-    const close = smallButton('Close', () => {
-      if (options.onClose) options.onClose();
-      else this.hide();
-    });
-    close.setAttribute('aria-label', 'Close agent chat');
-    headerActions.append(this.conversationSelect, this.reset, close);
+    const hide = smallButton('Hide', () => this.hide());
+    hide.setAttribute('aria-label', 'Hide agent chat');
+    const end = options.onClose ? smallButton('End session', options.onClose) : null;
+    end?.setAttribute('aria-label', 'End agent session');
+    headerActions.append(this.conversationSelect, this.reset, hide);
+    if (end) headerActions.append(end);
     header.append(titleWrap, headerActions);
 
     this.account = document.createElement('div');
@@ -145,7 +147,8 @@ export class AgentChatPanel {
     this.scratchpadBar.hidden = true;
     this.scratchpadLabel = document.createElement('span');
     this.scratchpadLabel.textContent = 'Scratchpad';
-    const showScratchpad = smallButton('Show draft', () => this.showScratchpad('source'));
+    const showScratchpad = smallButton('Show scratchpad', () => this.showScratchpad('source'));
+    showScratchpad.setAttribute('aria-label', 'Show Agent scratchpad');
     this.scratchpadBar.append(this.scratchpadLabel, showScratchpad);
 
     this.scratchpadPanel = document.createElement('aside');
@@ -162,7 +165,10 @@ export class AgentChatPanel {
       'Contact sheet',
       () => this.showScratchpad(undefined, 'contact'),
     );
-    const hideScratchpad = smallButton('Hide', () => { this.scratchpadPanel.hidden = true; });
+    const hideScratchpad = smallButton('Hide', () => {
+      this.scratchpadPanel.hidden = true;
+      this.emitScratchpadState();
+    });
     scratchActions.append(
       this.scratchpadSource,
       this.scratchpadImported,
@@ -292,7 +298,7 @@ export class AgentChatPanel {
 
   show(): void {
     this.element.hidden = false;
-    if (this.state?.scratchpad) this.scratchpadPanel.hidden = false;
+    this.scratchpadPanel.classList.remove('agent-chat-closed');
     this.input.focus();
     void this.options.api.getAgentChatState()
       .then((state) => this.applyState(state))
@@ -302,6 +308,17 @@ export class AgentChatPanel {
   hide(): void {
     this.element.hidden = true;
     this.scratchpadPanel.hidden = true;
+    this.scratchpadPanel.classList.add('agent-chat-closed');
+    this.emitScratchpadState();
+  }
+
+  toggleScratchpad(): void {
+    if (!this.state?.scratchpad) return;
+    if (this.scratchpadPanel.hidden) this.showScratchpad();
+    else {
+      this.scratchpadPanel.hidden = true;
+      this.emitScratchpadState();
+    }
   }
 
   private async submit(): Promise<void> {
@@ -470,13 +487,18 @@ export class AgentChatPanel {
       this.lastScratchpadId = null;
       this.scratchpadPanel.hidden = true;
       this.scratchpadFrame.removeAttribute('src');
+      this.emitScratchpadState();
       return;
     }
+    this.scratchpadSource.textContent = scratchpad.sourceLabel ?? 'Source';
+    this.scratchpadImported.textContent = scratchpad.importedLabel ?? 'Imported';
     if (scratchpad.draftId !== this.lastScratchpadId) {
       this.lastScratchpadId = scratchpad.draftId;
       this.scratchpadView = 'source';
       this.scratchpadMode = 'slides';
       this.showScratchpad();
+    } else {
+      this.emitScratchpadState();
     }
   }
 
@@ -522,6 +544,15 @@ export class AgentChatPanel {
     this.scratchpadSlides.classList.toggle('active', this.scratchpadMode === 'slides');
     this.scratchpadContact.classList.toggle('active', this.scratchpadMode === 'contact');
     this.scratchpadPanel.hidden = false;
+    this.scratchpadPanel.classList.toggle('agent-chat-closed', this.element.hidden);
+    this.emitScratchpadState();
+  }
+
+  private emitScratchpadState(): void {
+    this.options.onScratchpadState?.({
+      available: Boolean(this.state?.scratchpad),
+      visible: Boolean(this.state?.scratchpad) && !this.scratchpadPanel.hidden,
+    });
   }
 
   private renderModels(state: AgentChatState): void {

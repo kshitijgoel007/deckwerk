@@ -2,6 +2,7 @@
 import { describe, expect, it } from 'vitest';
 import { applyAgentTransaction } from '../src/shared/agent.js';
 import { emptyDeck } from '../src/shared/deck.js';
+import { prepareHtmlDraftRenderPage } from '../src/cli/compileHtml.js';
 import { authoringPageHtml, measureSlides, measureSlidesSource } from '../src/shared/htmlMeasure.js';
 import { adoptAuthoredIds, htmlSlideScope, slidesFromMeasured, slidesToHtml, type MeasuredSlide } from '../src/shared/htmlSlides.js';
 import { applySlideLayout } from '../src/renderer/editor/slideLayouts.js';
@@ -135,6 +136,23 @@ describe('the exported document', () => {
     expect(page).toContain('<style>.slide { color: red; }</style>');
     expect(page).not.toContain('<link rel="stylesheet"');
     expect(page).toContain('.role-title { font-size: 92px; }');
+  });
+});
+
+describe('HTML draft file rendering', () => {
+  it('retargets deck assets and inlines the HTTP-only theme', () => {
+    const prepared = prepareHtmlDraftRenderPage(`<!doctype html><html><head>
+      <base href="/decks/talk/">
+      <link rel="stylesheet" href="/api/theme?deck=talk">
+    </head><body><img src="assets/portrait.png"></body></html>`, {
+      base: 'file:///Users/example/talk/',
+      stylesheets: [{ href: '/api/theme?deck=talk', css: '.slide { color: rebeccapurple; }' }],
+    });
+
+    expect(prepared).toContain('<base href="file:///Users/example/talk/">');
+    expect(prepared).toContain('<style>.slide { color: rebeccapurple; }</style>');
+    expect(prepared).not.toContain('/api/theme?deck=talk');
+    expect(prepared).toContain('src="assets/portrait.png"');
   });
 });
 

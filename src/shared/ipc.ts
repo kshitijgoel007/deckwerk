@@ -110,8 +110,11 @@ export interface AgentChatScratchpad {
   slideCount: number;
   sourceUrl: string;
   importedUrl: string;
+  comparisonUrl?: string;
   sourceContactSheetUrl: string;
   importedContactSheetUrl: string;
+  sourceLabel?: string;
+  importedLabel?: string;
 }
 
 /** Complete renderer snapshot for one open deck's embedded agent conversation. */
@@ -190,6 +193,8 @@ export interface AgentSessionConnection {
   deckId: string;
   wsUrl: string;
   name: string;
+  /** Which desktop feature owns the background collaboration connection. */
+  mode?: 'agent' | 'collaboration';
 }
 
 export type AgentSessionState = AgentSessionConnection | { active: false };

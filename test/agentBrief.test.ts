@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { AGENT_BRIEF, agentClipboardPrompt, collaborationInviteUrl } from '../src/server/agentBrief.js';
+import { AGENT_BRIEF, AGENT_RUNTIME_BRIEF, agentClipboardPrompt, collaborationInviteUrl } from '../src/server/agentBrief.js';
 
 describe('agent clipboard brief', () => {
   it('includes the live deck-scoped connection and both editing lanes without a concrete task', () => {
@@ -12,6 +12,14 @@ describe('agent clipboard brief', () => {
     expect(prompt).toContain('The user will provide the concrete presentation task');
     expect(prompt).not.toContain('ten current lab members');
     expect(prompt).not.toContain('Scene Representation Networks');
+  });
+
+  it('keeps the repeated embedded prompt lean while retaining the bounded workflow', () => {
+    expect(AGENT_RUNTIME_BRIEF.length).toBeLessThan(AGENT_BRIEF.length / 3);
+    expect(AGENT_RUNTIME_BRIEF).toContain('Import each asset once');
+    expect(AGENT_RUNTIME_BRIEF).toContain('comparisonUrl');
+    expect(AGENT_RUNTIME_BRIEF).toContain('open one returned `playerUrl`');
+    expect(AGENT_RUNTIME_BRIEF).toContain('and stop');
   });
 
   it('documents the surgical discovery, preview, apply, and verification loop', () => {
@@ -35,7 +43,7 @@ describe('agent clipboard brief', () => {
     expect(AGENT_BRIEF).toContain('presentation_api');
     expect(AGENT_BRIEF).toContain('host scopes the request to');
     expect(AGENT_BRIEF).toContain('browser_open');
-    expect(AGENT_BRIEF).toContain('contact-sheet PNG');
+    expect(AGENT_BRIEF).toContain('PNG contact sheets');
     expect(AGENT_BRIEF).toContain('$f_\\theta(x)$');
     expect(AGENT_BRIEF).toContain('$$\\int p(x)\\,dx = 1$$');
     expect(AGENT_BRIEF).toContain('Never imitate equations with Unicode subscripts');
@@ -55,6 +63,22 @@ describe('agent clipboard brief', () => {
     expect(AGENT_BRIEF).toMatch(/If it is not[\s\S]*ask the\s+user one brief question/);
     expect(AGENT_BRIEF).toMatch(/basic or understated\s+option/);
     expect(AGENT_BRIEF).toContain('Do not silently choose a more elaborate aesthetic');
+  });
+
+  it('defines the bounded HTML import fast path and its stopping condition', () => {
+    expect(AGENT_BRIEF).toContain('Import each asset once');
+    expect(AGENT_BRIEF).toContain('workflow.state');
+    expect(AGENT_BRIEF).toContain('comparisonUrl');
+    expect(AGENT_BRIEF).toContain('one complete');
+    expect(AGENT_BRIEF).toContain('one correct real-player check');
+    expect(AGENT_BRIEF).toContain('Do not run additional checks after it passes');
+    expect(AGENT_BRIEF).toContain('/api/html-drafts/<draftId>/compare');
+  });
+
+  it('uses one comparison and one live-player check for native edits too', () => {
+    expect(AGENT_BRIEF).toContain('Open `comparisonUrl` once');
+    expect(AGENT_BRIEF).toContain('do not capture the PNG route too');
+    expect(AGENT_RUNTIME_BRIEF).toContain('its single `comparisonUrl`');
   });
 
   it('uses localhost for desktop agents and the LAN address for people', () => {

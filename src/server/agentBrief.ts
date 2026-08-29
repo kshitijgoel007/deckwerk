@@ -70,14 +70,14 @@ Move settings. Unmentioned properties and unrelated objects remain unchanged.
 2. Read \`GET /api/context?deck=…\`, then inspect the relevant slides and their
    immediate neighbors with \`GET /api/inspect?deck=…&slideIds=slide-a,slide-b\`.
 3. Send one batch to \`POST /api/preview-edits?deck=…\`.
-4. Open and screenshot every affected slide's Before and After URLs. Diagnostics
-   alone are not visual verification.
+4. Open \`comparisonUrl\` once. It contains every affected slide's Before and
+   After state in one view. Do not send the individual URLs as additional images.
 5. Fix clipping, overlap, poor hierarchy, unintended movement, and every new or
    worsened overflow. Existing overflows are reported separately.
 6. Apply the draft once through \`POST /api/apply-edits?deck=…\` with its revision,
    a new idempotency key, and a descriptive label.
-7. Inspect the affected slides through \`GET /api/render-slide.png\` and iterate if
-   the rendered result is wrong.
+7. Open one \`playerUrl\` returned by apply. A successful apply plus one correct
+   real-player check is the stopping condition; do not capture the PNG route too.
 
 When opening a real-player URL, navigation completion is not render completion:
 the deck arrives over WebSocket. Wait until the root \`<html>\` element has
@@ -125,17 +125,33 @@ Use HTML when creating slides or when the requested composition is genuinely
 easier to redesign than patch.
 
 1. Import public assets through \`POST /api/import-url\` or upload bytes through
-   \`POST /api/upload\`.
+   \`POST /api/upload\`. Import each asset once and reuse the returned \`assets/…\`
+   path exactly; do not test alternate URL spellings or copy the same asset into
+   near-duplicate drafts.
 2. Write a complete document with one \`<section class="slide" data-name="…">\`
    per slide at the canvas size reported by context.
 3. Preview with \`POST /api/preview-html\` without changing the deck. The newest
-   preview is immediately published to the user's Agent scratchpad.
-4. Inspect both Source and Imported previews. You may open their URLs with
-   \`browser_open\`, or download the returned contact-sheet PNGs and use the
-   per-slide PNG route for anything that needs a full-size look.
-5. Fix missing/blocked assets, unexplained overflow, clipping, hierarchy, and
-   visible source/import drift.
-6. Apply once with \`POST /api/apply-html\`, then inspect the real player.
+   preview is immediately published to the user's Agent scratchpad. Its
+   \`workflow\` is the authoritative decision: it lists exact blocking issues,
+   the local fix for each, and the next action.
+4. If \`workflow.state\` is \`blocked\`, fix only those blocking issues and preview
+   the complete document once more. A tiny overflow is a text-box fix, not a
+   reason to investigate media or renderer internals.
+5. If it is \`ready-to-apply\`, open \`comparisonUrl\` once. It shows Source and
+   Imported side by side through the supported HTTP renderer, including raster
+   deck assets. Do not also open source, imported, contact-sheet, per-slide PNG,
+   and scratchpad variants unless that one comparison has a task-relevant defect.
+6. Apply once with \`POST /api/apply-html\`. The response returns the exact
+   \`playerUrls\`; open the affected real-player view once for final verification.
+   A successful apply plus one correct real-player check is the stopping
+   condition. Do not run additional checks after it passes.
+
+The normal HTML-authoring budget is one asset import per asset, one complete
+draft, one comparison view, one apply, and one final player check. A second
+draft is justified only by a listed blocking issue or a visible task-relevant
+defect. If one documented render route itself fails while the comparison or
+real player is correct, report that renderer fault separately; do not generate
+experimental slide variants to diagnose the application during an authoring task.
 
 For a substantial new design, preserve the first genuinely designed preview
 before making importer-driven compromises. This control distinguishes a design
@@ -242,6 +258,7 @@ Command-line agents can send a large HTML file without JSON escaping:
 - \`POST /api/preview-edits?deck=…\`
 - \`GET /api/edit-drafts/<draftId>/before?deck=…&slideId=…\`
 - \`GET /api/edit-drafts/<draftId>/after?deck=…&slideId=…\`
+- \`GET /api/edit-drafts/<draftId>/compare?deck=…\`
 - \`POST /api/apply-edits?deck=…\`
 - \`GET /api/comments?deck=…\`
 - \`POST /api/comments?deck=…\`
@@ -252,6 +269,7 @@ Command-line agents can send a large HTML file without JSON escaping:
 - \`GET /api/html-drafts/latest?deck=…\`
 - \`GET /api/html-drafts/<draftId>/source?deck=…\`
 - \`GET /api/html-drafts/<draftId>/imported?deck=…\`
+- \`GET /api/html-drafts/<draftId>/compare?deck=…\`
 - \`GET /api/html-drafts/<draftId>/source/contact-sheet.png?deck=…\`
 - \`GET /api/html-drafts/<draftId>/imported/contact-sheet.png?deck=…\`
 - \`GET /api/html-drafts/<draftId>/<source|imported>/slide-<n>.png?deck=…\`
@@ -260,7 +278,39 @@ Command-line agents can send a large HTML file without JSON escaping:
 - \`GET /api/render-slide.png?deck=…&slideId=…\`
 
 The HTTP API is the authoritative editing surface. Its PNG endpoints and the
-host-provided \`browser_open\` tool are complementary visual-verification paths.
+host-provided \`browser_open\` tool are alternative visual-verification paths;
+do not send both representations of the same state into model context.
+`;
+
+/** Lean developer prompt repeated on every embedded-agent turn. */
+export const AGENT_RUNTIME_BRIEF = `# Fast presentation editing contract
+
+The user's request is the source of truth. Work only through the deck-scoped
+\`presentation_api\` HTTP surface; do not inspect application internals or deck
+JSON. Read context, relevant comments, and the target plus its immediate visual
+neighbors once before editing. Match the existing deck unless the user asks for
+a restyle. The complete reference is available from \`GET /api/brief\`; read it
+only when the selected lane or a returned diagnostic is unfamiliar.
+
+## Native edits — existing content and local changes
+
+Use \`/api/edit-schema\`, inspect once, send one \`/api/preview-edits\` batch, open
+its single \`comparisonUrl\`, fix only new or worsened diagnostics, apply once,
+open one returned \`playerUrl\`, and stop when that real-player check is correct.
+
+## HTML authoring — new slides and substantial redesigns
+
+Import each asset once and reuse its returned \`assets/…\` path. Author one
+complete document and call \`/api/preview-html\` once. Follow the returned
+\`workflow\` exactly:
+
+- \`blocked\`: fix only \`blockingIssues\`, then preview the complete draft again.
+- \`ready-to-apply\`: open \`comparisonUrl\` once. Do not probe alternate source,
+  imported, PNG, contact-sheet, or scratchpad routes if this comparison is correct.
+
+Apply once through \`/api/apply-html\`, open one returned \`playerUrl\`, and stop
+when that real-player check is correct. A renderer inconsistency is not permission
+to generate experimental draft variants. Never retry a timed-out apply blindly.
 `;
 
 /** Complete clipboard handoff for a user-created agent chat. */
@@ -275,7 +325,7 @@ Deck ID: ${deckId}
 The user will provide the concrete presentation task. Follow the task using the
 session and task-neutral editing contract below.
 
-${AGENT_BRIEF}`;
+${AGENT_RUNTIME_BRIEF}`;
 }
 
 /** Pick the address appropriate to the invite recipient and add deck scope. */

@@ -38,7 +38,9 @@ const PNG_BASE64 =
 let workDir = '';
 let server: RunningCollabServer | null = null;
 let browser: RunningBrowser | null = null;
+let peerBrowser: RunningBrowser | null = null;
 let editor: Cdp | null = null;
+let peerEditor: Cdp | null = null;
 let presentation: Cdp | null = null;
 
 afterEach(async () => {
@@ -46,8 +48,12 @@ afterEach(async () => {
   presentation = null;
   editor?.close();
   editor = null;
+  peerEditor?.close();
+  peerEditor = null;
   await stopBrowser(browser?.process ?? null);
   browser = null;
+  await stopBrowser(peerBrowser?.process ?? null);
+  peerBrowser = null;
   await server?.close();
   server = null;
   if (workDir) await rm(workDir, { recursive: true, force: true });
@@ -109,6 +115,43 @@ describe.skipIf(!electronBinary)('standalone collaboration browser', () => {
     expect(opened.title).toBe('Browser collaboration smoke');
     expect(opened.controls).toEqual(expect.arrayContaining(['Text', 'Table', 'Present', 'Save As…']));
     expect(opened.panels).toEqual(['Props', 'Theme', 'Build', 'History']);
+
+    const peerProfileDir = join(workDir, 'peer-electron-profile');
+    await mkdir(peerProfileDir, { recursive: true });
+    peerBrowser = await launchBrowser(
+      `http://127.0.0.1:${server.port}/?deck=${DECK_ID}&name=Peer%20Browser`,
+      peerProfileDir,
+    );
+    const peerTarget = await findTarget(
+      peerBrowser.debugPort,
+      (target) => target.url.includes(`deck=${DECK_ID}`) && !target.url.includes('present.html'),
+      peerBrowser.log,
+    );
+    peerEditor = await Cdp.connect(peerTarget.webSocketDebuggerUrl!);
+    await eventually(async () => peerEditor!.evaluate<boolean>(
+      `document.getElementById('status')?.textContent?.includes('connected as Peer Browser') === true`,
+    ), 'peer browser did not finish connecting');
+
+    await editor.hoverWithin('#canvas .stage', 0.65, 0.65, 'collaboration canvas');
+    await editor.click('#canvas [data-element-id="initial-title"]', 'initial title');
+    const remotePresence = await eventually(async () => peerEditor!.evaluate<{
+      cursor: string | null;
+      selection: string | null;
+      railDot: string | null;
+    }>(`(() => ({
+      cursor: document.querySelector('.presence-cursor span')?.textContent ?? null,
+      selection: document.querySelector('.presence-selection .presence-tag')?.textContent ?? null,
+      railDot: document.querySelector('.rail-presence-dot')?.getAttribute('title') ?? null
+    }))()`), 'peer did not render the collaborator indicators', (value) => (
+      value.cursor === 'Smoke Browser'
+      && value.selection === 'Smoke Browser'
+      && value.railDot === 'Smoke Browser'
+    ));
+    expect(remotePresence).toEqual({
+      cursor: 'Smoke Browser',
+      selection: 'Smoke Browser',
+      railDot: 'Smoke Browser',
+    });
 
     // The Web UI has no Electron clipboard bridge. A native browser paste on
     // the slide must consume Google Sheets' TSV/HTML flavours directly and

@@ -124,9 +124,9 @@ describe('embedded agent chat controller', () => {
       connection: 'ready',
       auth: 'signedIn',
       accountLabel: 'slides@example.com',
-      selectedModel: 'gpt-5.6-sol',
-      selectedReasoningEffort: 'medium',
-      fastMode: true,
+      selectedModel: 'gpt-5.6-terra',
+      selectedReasoningEffort: 'low',
+      fastMode: false,
     });
 
     const completePrompt = agentClipboardPrompt(
@@ -142,9 +142,9 @@ describe('embedded agent chat controller', () => {
       cwd: expect.stringContaining('deckwerk-agent-runtime'),
       approvalPolicy: 'never',
       sandbox: 'workspace-write',
-      model: 'gpt-5.6-sol',
-      serviceTier: 'priority',
+      model: 'gpt-5.6-terra',
     });
+    expect(thread.params.serviceTier).toBe('default');
     expect(thread.params.developerInstructions).toBe(completePrompt);
     const turn = server.requests.find((entry) => entry.method === 'turn/start')!;
     expect(turn.params.sandboxPolicy).toMatchObject({
@@ -153,9 +153,9 @@ describe('embedded agent chat controller', () => {
       networkAccess: true,
     });
     expect(turn.params.input[0].text).toBe('Polish this slide');
-    expect(turn.params.model).toBe('gpt-5.6-sol');
-    expect(turn.params.effort).toBe('medium');
-    expect(turn.params.serviceTier).toBe('priority');
+    expect(turn.params.model).toBe('gpt-5.6-terra');
+    expect(turn.params.effort).toBe('low');
+    expect(turn.params.serviceTier).toBe('default');
 
     notify({
       method: 'item/agentMessage/delta',
@@ -262,7 +262,7 @@ describe('embedded agent chat controller', () => {
     await controller.send('/tmp/talk', { text: 'Now use the balanced model' }, async () => 'unused');
     expect(server.requests.filter((entry) => entry.method === 'thread/start')).toHaveLength(1);
     expect(server.requests.filter((entry) => entry.method === 'turn/start').map((entry) => entry.params.model))
-      .toEqual(['gpt-5.6-sol', 'gpt-5.6-terra']);
+      .toEqual(['gpt-5.6-terra', 'gpt-5.6-terra']);
   });
 
   it('ignores a stale login cancellation after the account is signed in', async () => {
@@ -315,6 +315,33 @@ describe('embedded agent chat controller', () => {
     const starts = server.requests.filter((entry) => entry.method === 'thread/start');
     expect(starts.map((entry) => entry.params.developerInstructions))
       .toEqual(['first HTTP session', 'second HTTP session']);
+  });
+
+  it('keeps the deck scratchpad available across new and restored chats', async () => {
+    const { controller, server, notify } = fixture();
+    const scratchpad = {
+      draftId: 'draft-1', slideCount: 1,
+      sourceUrl: 'http://127.0.0.1:5800/source',
+      importedUrl: 'http://127.0.0.1:5800/imported',
+      sourceContactSheetUrl: 'http://127.0.0.1:5800/source.png',
+      importedContactSheetUrl: 'http://127.0.0.1:5800/imported.png',
+    };
+    await controller.getState('/tmp/talk');
+    await controller.send('/tmp/talk', request, async () => 'first session');
+    notify({
+      method: 'turn/completed',
+      params: { threadId: 'thread-1', turn: { id: 'turn-1', status: 'completed' } },
+    });
+    controller.setScratchpad('/tmp/talk', scratchpad);
+    expect((await controller.reset('/tmp/talk')).scratchpad).toEqual(scratchpad);
+
+    server.nextThreadId = 'thread-2';
+    await controller.send('/tmp/talk', { text: 'Second chat' }, async () => 'second session');
+    notify({
+      method: 'turn/completed',
+      params: { threadId: 'thread-2', turn: { id: 'turn-2', status: 'completed' } },
+    });
+    expect((await controller.select('/tmp/talk', 'thread-1')).scratchpad).toEqual(scratchpad);
   });
 
   it('saves chat with the deck and resumes its Codex thread after restart', async () => {

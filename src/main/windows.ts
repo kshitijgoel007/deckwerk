@@ -13,6 +13,7 @@ import { chooseAudienceDisplay, chooseDisplayById } from './presentationDisplays
 
 const preload = () => join(import.meta.dirname, '../preload/index.mjs');
 const APP_BACKGROUND = '#16161e';
+const HEADLESS_TEST = process.env['DECKWERK_HEADLESS_TEST'] === '1';
 
 export interface WindowContinuityState {
   bounds: Rectangle;
@@ -36,12 +37,25 @@ function continuityOptions(state?: WindowContinuityState): Partial<Rectangle> {
   return state?.bounds ?? {};
 }
 
+function showWindow(win: BrowserWindow, state?: WindowContinuityState): void {
+  // Production-browser integration tests drive windows through CDP. Keeping
+  // them hidden prevents a successful test cleanup from looking like the
+  // user's real DeckWerk app opened and then crashed.
+  if (HEADLESS_TEST) return;
+  if (state?.fullScreen) win.setFullScreen(true);
+  else if (state?.maximized) win.maximize();
+  win.show();
+}
+
 function revealWindow(win: BrowserWindow, state?: WindowContinuityState): void {
   win.once('ready-to-show', () => {
-    if (state?.fullScreen) win.setFullScreen(true);
-    else if (state?.maximized) win.maximize();
-    win.show();
+    showWindow(win, state);
   });
+}
+
+/** Reveal a window whose application-level readiness was checked elsewhere. */
+export function revealReadyWindow(win: BrowserWindow, state?: WindowContinuityState): void {
+  showWindow(win, state);
 }
 
 function loadRenderer(win: BrowserWindow, name: string, query = ''): void {
@@ -126,7 +140,10 @@ export function createCollabHostWindow(url: string, state?: WindowContinuityStat
       autoplayPolicy: 'no-user-gesture-required',
     },
   });
-  revealWindow(win, state);
+  // Unlike a static editor window, the collaboration shell is not usable when
+  // its HTML first paints: it still has to connect its WebSocket and receive
+  // the authoritative deck. The main process reveals it only after that
+  // application-level readiness handshake succeeds.
   void win.loadURL(url);
   return win;
 }

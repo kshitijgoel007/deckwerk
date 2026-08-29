@@ -732,7 +732,7 @@ export class SlideRail {
         timeline: [],
       };
       deck.slides.splice(at, 0, slide);
-      applySlideLayout(slide, 'standard');
+      applySlideLayout(slide, 'standard', deck.layoutMasters);
     }, { label: 'Add slide' });
     this.store.selectSlide(at);
   }

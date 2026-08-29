@@ -16,7 +16,9 @@ if (!apiKey) {
 }
 
 const attempts = Math.max(1, Number(process.env.AGENT_EVAL_ATTEMPTS ?? 3));
-const model = 'gpt-5.6-luna';
+const model = process.env.AGENT_EVAL_MODEL ?? 'gpt-5.6-terra';
+const reasoningEffort = process.env.AGENT_EVAL_REASONING ?? 'low';
+const promptVariants = ['api-led', 'budget-led', 'stop-led'] as const;
 const root = resolve(process.env.AGENT_EVAL_OUTPUT ?? 'artifacts/agent-eval', new Date().toISOString().replace(/[:.]/g, '-'));
 const clientDir = resolve('dist/collab');
 if (!existsSync(join(clientDir, 'index.html'))) {
@@ -97,14 +99,16 @@ for (let attempt = 1; attempt <= attempts; attempt += 1) {
   let cdp: Cdp | null = null;
   try {
     cdp = await Cdp.connect(debugPort);
-    const run = await runAttempt(cdp, attemptDir, attempt, url);
+    const promptVariant = promptVariants[(attempt - 1) % promptVariants.length];
+    const run = await runAttempt(cdp, attemptDir, attempt, url, promptVariant);
     const judge = await judgeScreenshots(attemptDir, run.artifacts);
     const deck = await loadDeck(deckDir);
     const comments = collectComments(deck);
     const summary = {
       attempt,
+      promptVariant,
       model,
-      reasoningEffort: 'low',
+      reasoningEffort,
       workspaceIndependent: true,
       viewerOnly: true,
       initialSourceAccess: false,
@@ -112,12 +116,13 @@ for (let attempt = 1; attempt <= attempts; attempt += 1) {
         'web_search', 'browser_navigate', 'browser_page_text', 'browser_list_media',
         'browser_import_asset', 'browser_screenshot', 'browser_wait',
         'agent_read_brief', 'agent_get_capabilities', 'agent_get_context', 'agent_list_comments', 'agent_preview_html',
-        'agent_open_preview', 'agent_apply_html', 'agent_add_comment', 'agent_resolve_comment',
+        'agent_open_comparison', 'agent_apply_html', 'agent_add_comment', 'agent_resolve_comment',
         'agent_open_player',
       ],
       slides: deck.slides.map((slide, index) => ({ index: index + 1, id: slide.id, name: slide.name, elements: slide.elements.length })),
       unresolvedSeededComments: comments.filter((comment) => !comment.resolved && comment.author === 'Benchmark').length,
       usage: run.usage,
+      workflowMetrics: run.metrics,
       estimatedTokenCostUsd: estimateCost(run.usage),
       latencyMs: run.latencyMs,
       finalText: run.finalText,
@@ -149,6 +154,16 @@ async function seedBenchmark(deckDir: string): Promise<void> {
   await saveDeck(deckDir, deck);
 }
 
+function promptVariantInstruction(variant: typeof promptVariants[number]): string {
+  if (variant === 'api-led') {
+    return 'Treat workflow.state, blockingIssues, comparisonUrl, playerUrls, and stopCondition as executable API instructions.';
+  }
+  if (variant === 'budget-led') {
+    return 'Optimize for the smallest complete trace: one asset import per asset, one full draft unless blocked, one comparison, one apply, and one player check.';
+  }
+  return 'At each successful milestone ask whether the documented stop condition is satisfied; once it is, return the final record immediately.';
+}
+
 function benchmarkSlide(id: string, name: string, instruction: string) {
   return {
     id, name, notes: '', background: { color: null, image: null }, elements: [], timeline: [],
@@ -156,12 +171,20 @@ function benchmarkSlide(id: string, name: string, instruction: string) {
   };
 }
 
-async function runAttempt(cdp: Cdp, attemptDir: string, attempt: number, url: string) {
+async function runAttempt(
+  cdp: Cdp,
+  attemptDir: string,
+  attempt: number,
+  url: string,
+  promptVariant: typeof promptVariants[number],
+) {
   const prompt = `You are a presentation designer working through a hosted slide-editing session. Do not assume a repository checkout, working directory, CLI, or filesystem access. The app may provide any useful authoring information through its documented tools.
 Use only web search and the named browser and presentation API tools. Open ${url}. Read the agent brief and all open comments through the API tools. The app page is a read-only real-player viewer; do not look for authoring controls.
 Complete the three requested slides as beautiful, independent 1920×1080 HTML/CSS designs. Use public facts and media from vincentsitzmann.com and scenerepresentations.org. Import public images with browser_import_asset. Give every section a data-name. Preview before apply.
 
-VISUAL VERIFICATION IS MANDATORY. For every draft, open the SOURCE URL and call browser_screenshot, then open the IMPORTED URL and call browser_screenshot. Fetching HTML, checking status codes, or comparing byte counts does not count as looking. Do not apply while any overflow, missing asset, or blocked resource remains. After apply, open the real-player URL and call browser_screenshot again. Inspect the screenshot for clipping, overlap, tiny text, broken media, weak hierarchy, and source/import drift. If it fails, revise and repeat the entire preview/look/apply/look cycle. If browser screenshots are unavailable, stop as blocked: do not apply and do not resolve comments.
+VISUAL VERIFICATION IS MANDATORY, AND THE API DEFINES THE FAST PATH. Create one complete draft. Read its workflow. If blocked, fix only the listed blocking issues and preview the complete draft again. If ready, open comparisonUrl once and take one screenshot of the side-by-side Source / Imported view. Do not open alternate source, imported, PNG, contact-sheet, or scratchpad routes when that comparison is correct. Apply once, open one playerUrl returned by apply, and take one final screenshot. A successful apply plus one correct real-player screenshot is the stopping condition. Do not continue checking after it passes. If the supported comparison itself is unavailable, stop as blocked rather than generating experimental drafts.
+
+Prompt variant: ${promptVariant}. ${promptVariantInstruction(promptVariant)}
 
 MECHANICAL SUCCESS IS NOT DESIGN SUCCESS. Before applying, turn each request into a content inventory and verify every item in the screenshots. The team slide must contain ten current lab members excluding Vincent, with ten distinct portraits. The timeline must include all six named papers and meaningful publication media or thumbnails for every paper where media is publicly available; a bare line of labels is incomplete. Reject an incomplete, generic, or overly sparse composition even when the importer reports no errors. State the completed inventory in your final record.
 
@@ -185,28 +208,31 @@ Do not ask for repository access. Keep a concise final record of changes and any
       html: { type: 'string' }, mode: { type: 'string', enum: ['insert', 'replace'] },
       after_slide_id: { type: 'string' }, slide_ids: { type: 'array', items: { type: 'string' } },
     }, ['html', 'mode', 'after_slide_id', 'slide_ids']),
-    fnTool('agent_open_preview', 'Open the source or imported view from an existing preview draft.', {
-      draft_id: { type: 'string' }, view: { type: 'string', enum: ['source', 'imported'] },
-    }, ['draft_id', 'view']),
+    fnTool('agent_open_comparison', 'Open the one supported side-by-side Source / Imported comparison for an existing draft.', {
+      draft_id: { type: 'string' },
+    }, ['draft_id']),
     fnTool('agent_apply_html', 'Atomically apply a previewed draft with revision and idempotency protection.', {
       draft_id: { type: 'string' }, expected_revision: { type: 'string' }, idempotency_key: { type: 'string' }, label: { type: 'string' },
-      mode: { type: 'string', enum: ['insert', 'replace'] }, after_slide_id: { type: 'string' },
-      slide_ids: { type: 'array', items: { type: 'string' } },
-    }, ['draft_id', 'expected_revision', 'idempotency_key', 'label', 'mode', 'after_slide_id', 'slide_ids']),
+    }, ['draft_id', 'expected_revision', 'idempotency_key', 'label']),
     fnTool('agent_add_comment', 'Reply to a comment after implementing and verifying it. Use an empty parent_id only for a new comment.', {
       slide_id: { type: 'string' }, parent_id: { type: 'string' }, text: { type: 'string' },
     }, ['slide_id', 'parent_id', 'text']),
     fnTool('agent_resolve_comment', 'Resolve a completed comment after verification.', { comment_id: { type: 'string' } }, ['comment_id']),
-    fnTool('agent_open_player', 'Open the real player at a slide for final visual verification.', { slide_id: { type: 'string' } }, ['slide_id']),
+    fnTool('agent_open_player', 'Open one exact real-player URL returned by apply for final visual verification.', { url: { type: 'string' } }, ['url']),
     fnTool('browser_screenshot', 'Capture the current browser viewport for visual inspection.', { label: { type: 'string' } }, ['label']),
     fnTool('browser_wait', 'Wait briefly for rendering or synchronization.', { milliseconds: { type: 'number', minimum: 0, maximum: 5000 } }, ['milliseconds']),
   ];
-  const state: EvalToolState = { appUrl: new URL(url), drafts: new Map(), feedbackSeeded: false };
+  const state: EvalToolState = {
+    appUrl: new URL(url), drafts: new Map(), feedbackSeeded: false,
+    comparedDrafts: new Set(), playerOpenedForApply: false,
+    visualGeneration: 0, screenshotGeneration: -1,
+    metrics: { previews: 0, comparisons: 0, applies: 0, playerChecks: 0, screenshots: 0, suppressedVisuals: 0 },
+  };
   const toolLog: unknown[] = [];
   const artifacts: string[] = [];
   const usage = { input_tokens: 0, output_tokens: 0, input_tokens_details: { cached_tokens: 0 } };
   const start = Date.now();
-  let response = await openai({ model, reasoning: { effort: 'low' }, text: { verbosity: 'low' }, instructions: 'Use only the provided tools. The presentation tools are the complete supported interface. Never seek or infer hidden application internals.', input: prompt, tools });
+  let response = await openai({ model, reasoning: { effort: reasoningEffort }, text: { verbosity: 'low' }, instructions: 'Use only the provided tools. The presentation tools are the complete supported interface. Never seek or infer hidden application internals.', input: prompt, tools });
   addUsage(usage, response.usage);
   for (let turn = 0; turn < 80; turn += 1) {
     const calls = (response.output ?? []).filter((item: any) => item.type === 'function_call');
@@ -214,7 +240,7 @@ Do not ask for repository access. Keep a concise final record of changes and any
       const finalText = (response.output ?? []).flatMap((item: any) => item.content ?? []).filter((item: any) => item.type === 'output_text').map((item: any) => item.text).join('\n');
       await writeFile(join(attemptDir, 'tool-log.json'), JSON.stringify(toolLog, null, 2));
       await writeFile(join(attemptDir, 'final.txt'), finalText);
-      return { finalText, usage, latencyMs: Date.now() - start, artifacts };
+      return { finalText, usage, latencyMs: Date.now() - start, artifacts, metrics: state.metrics };
     }
     const outputs: any[] = [];
     for (const call of calls) {
@@ -229,7 +255,7 @@ Do not ask for repository access. Keep a concise final record of changes and any
         ] });
       }
     }
-    response = await openai({ model, reasoning: { effort: 'low' }, text: { verbosity: 'low' }, previous_response_id: response.id, input: outputs, tools });
+    response = await openai({ model, reasoning: { effort: reasoningEffort }, text: { verbosity: 'low' }, previous_response_id: response.id, input: outputs, tools });
     addUsage(usage, response.usage);
   }
   throw new Error('Source-blind attempt exceeded 80 browser turns.');
@@ -241,8 +267,13 @@ function fnTool(name: string, description: string, properties: Record<string, un
 
 interface EvalToolState {
   appUrl: URL;
-  drafts: Map<string, { source: string; imported: string }>;
+  drafts: Map<string, { comparison: string }>;
   feedbackSeeded: boolean;
+  comparedDrafts: Set<string>;
+  playerOpenedForApply: boolean;
+  visualGeneration: number;
+  screenshotGeneration: number;
+  metrics: { previews: number; comparisons: number; applies: number; playerChecks: number; screenshots: number; suppressedVisuals: number };
 }
 
 async function executeBrowserTool(
@@ -258,6 +289,7 @@ async function executeBrowserTool(
       const target = safeBrowserUrl(args.url, state);
       await cdp.call('Page.navigate', { url: target.href });
       await wait(700);
+      state.visualGeneration += 1;
       return simple({ url: target.href });
     }
     case 'browser_page_text': return simple(await cdp.evaluate(
@@ -304,32 +336,40 @@ async function executeBrowserTool(
       return simple({ commentCount: comments.length, comments });
     }
     case 'agent_preview_html': {
+      state.metrics.previews += 1;
       const target = htmlTarget(args);
       const value = await agentJson(state, '/api/preview-html', {
         method: 'POST', body: JSON.stringify({ html: args.html, target }),
-      }) as { draftId: string; sourceUrl: string; importedUrl: string };
-      const source = appEndpoint(state, value.sourceUrl);
-      const imported = appEndpoint(state, value.importedUrl);
-      state.drafts.set(value.draftId, { source: source.href, imported: imported.href });
-      return simple({ ...value, sourceUrl: source.href, importedUrl: imported.href });
+      }) as { draftId: string; comparisonUrl: string };
+      const comparison = appEndpoint(state, value.comparisonUrl);
+      state.drafts.set(value.draftId, { comparison: comparison.href });
+      return simple({ ...value, comparisonUrl: comparison.href });
     }
-    case 'agent_open_preview': {
+    case 'agent_open_comparison': {
+      if (state.comparedDrafts.has(args.draft_id)) {
+        state.metrics.suppressedVisuals += 1;
+        return simple({ suppressed: true, reason: 'This draft comparison is already in model context.' });
+      }
+      state.metrics.comparisons += 1;
       const draft = state.drafts.get(args.draft_id);
       if (!draft) throw new Error('Unknown draft. Preview HTML first.');
-      const url = args.view === 'source' ? draft.source : draft.imported;
+      const url = draft.comparison;
       await cdp.call('Page.navigate', { url });
       await wait(700);
-      return simple({ url, view: args.view });
+      state.comparedDrafts.add(args.draft_id);
+      state.visualGeneration += 1;
+      return simple({ url, view: 'source-imported-comparison' });
     }
     case 'agent_apply_html': {
-      const target = htmlTarget(args);
+      state.metrics.applies += 1;
       const value = await agentJson(state, '/api/apply-html', {
         method: 'POST',
         body: JSON.stringify({
           draftId: args.draft_id, expectedRevision: args.expected_revision,
-          idempotencyKey: args.idempotency_key, label: args.label, target,
+          idempotencyKey: args.idempotency_key, label: args.label,
         }),
-      }) as { slideIds?: string[] };
+      }) as { slideIds?: string[]; playerUrls?: Array<{ url: string }> };
+      state.playerOpenedForApply = false;
       if (!state.feedbackSeeded && value.slideIds?.includes('slide-vincent')) {
         const feedback = await agentJson(state, '/api/comments', {
           method: 'POST',
@@ -353,23 +393,31 @@ async function executeBrowserTool(
       method: 'POST', body: JSON.stringify({ commentId: args.comment_id, resolved: true }),
     }));
     case 'agent_open_player': {
-      const context = await agentJson(state, '/api/context') as {
-        outline?: Array<{ id: string; index: number }>;
-      };
-      const slide = context.outline?.find((candidate) => candidate.id === args.slide_id);
-      if (!slide) throw new Error(`No slide ${args.slide_id}`);
-      const target = appEndpoint(state, '/present.html');
-      target.searchParams.set('slide', String(slide.index));
+      if (state.metrics.applies === 0) throw new Error('Apply a verified draft before opening the final player.');
+      if (state.playerOpenedForApply) {
+        state.metrics.suppressedVisuals += 1;
+        return simple({ suppressed: true, reason: 'The final player has already been opened for this apply. Stop if its screenshot passed.' });
+      }
+      state.metrics.playerChecks += 1;
+      const target = safeBrowserUrl(args.url, state);
       await cdp.call('Page.navigate', { url: target.href });
       await wait(900);
-      return simple({ url: target.href, slide: slide.index });
+      state.playerOpenedForApply = true;
+      state.visualGeneration += 1;
+      return simple({ url: target.href });
     }
     case 'browser_wait': await wait(Math.min(5000, Math.max(0, args.milliseconds))); return simple({ waited: args.milliseconds });
     case 'browser_screenshot': {
+      if (state.screenshotGeneration === state.visualGeneration) {
+        state.metrics.suppressedVisuals += 1;
+        return simple({ suppressed: true, reason: 'This visual is already in model context. Navigate only when another documented check is required.' });
+      }
+      state.metrics.screenshots += 1;
       const capture = await cdp.call('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
       const file = join(dir, `${String(artifacts.length + 1).padStart(3, '0')}-${safe(args.label || 'screenshot')}.png`);
       await writeFile(file, Buffer.from(capture.data, 'base64'));
       artifacts.push(basename(file));
+      state.screenshotGeneration = state.visualGeneration;
       return { output: { saved: basename(file) }, summary: { saved: basename(file) }, image: `data:image/png;base64,${capture.data}` };
     }
     default: throw new Error(`Unknown browser tool ${name}`);
@@ -405,7 +453,7 @@ function safeBrowserUrl(raw: string, state: EvalToolState): URL {
   const allowedAppPage = url.pathname === '/' && url.searchParams.get('deck') === deck;
   const allowedPlayer = url.pathname === '/present.html' && url.searchParams.get('deck') === deck;
   const allowedDraft = [...state.drafts.values()].some((draft) =>
-    url.href === draft.source || url.href === draft.imported);
+    url.href === draft.comparison);
   if (!allowedAppPage && !allowedPlayer && !allowedDraft) {
     throw new Error('Local app source, bundle, and undocumented API navigation is blocked.');
   }

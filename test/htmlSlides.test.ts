@@ -344,6 +344,12 @@ describe('deck objects become authored HTML', () => {
     expect(htmlSlideScope('<section class="slide"></section>')).toBeNull();
   });
 
+  it('renders exported object dimensions as the measured border box', () => {
+    const html = slidesToHtml(emptyDeck('Boxes').slides, { w: 1920, h: 1080 });
+
+    expect(html).toContain('[data-element-id] { box-sizing: border-box; }');
+  });
+
   it('round-trips a shape through its data attributes', () => {
     const deck = emptyDeck('Shapes');
     deck.slides[0].elements = [{
@@ -359,6 +365,24 @@ describe('deck objects become authored HTML', () => {
     expect(html).toContain('data-control="400,240"');
     expect(html).toContain('data-arrow-end="true"');
     expect(html).not.toContain('data-arrow-start');
+  });
+
+  it('matches the HTML preview wrapper to rounded shape effect contours', () => {
+    const deck = emptyDeck('Shape effects');
+    const shape = {
+      id: 'shape', type: 'shape', x: 200, y: 300, w: 400, h: 120, rot: 0, z: 2,
+      opacity: 1, class: [], style: { 'box-shadow': '0 8px 24px #0008' },
+      shape: 'ellipse', fill: '#ffffff', stroke: null, strokeWidth: 0, radius: 0,
+      path: null, pathSize: null, arrowStart: false, arrowEnd: false, control: null,
+    } satisfies Extract<SlideElement, { type: 'shape' }>;
+    deck.slides[0].elements = [shape];
+
+    const ellipseHtml = slideToHtml(parseDeck(deck).slides[0], { w: 1920, h: 1080 });
+    expect(ellipseHtml).toContain('box-shadow:0 8px 24px #0008; border-radius:50%;');
+
+    deck.slides[0].elements = [{ ...shape, shape: 'rect', radius: 31 }];
+    const roundedRectHtml = slideToHtml(parseDeck(deck).slides[0], { w: 1920, h: 1080 });
+    expect(roundedRectHtml).toContain('box-shadow:0 8px 24px #0008; border-radius:31px;');
   });
 
   it('exports text with the attributes that have no CSS equivalent', () => {

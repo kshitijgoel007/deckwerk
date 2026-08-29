@@ -55,8 +55,8 @@ const DEFAULT_THEME = `/* Fonts, sizes and colours live here. The editor never r
 }
 
 .element-text {
-  font-size: 44px;
-  line-height: 1.25;
+  font-size: 48px;
+  line-height: 1.28;
 }
 
 .role-title, .title {
@@ -66,12 +66,12 @@ const DEFAULT_THEME = `/* Fonts, sizes and colours live here. The editor never r
 }
 
 .role-body {
-  font-size: 44px;
+  font-size: 48px;
   line-height: 1.3;
 }
 
 .role-caption, .caption {
-  font-size: 28px;
+  font-size: 30px;
   color: #666666;
 }
 `;

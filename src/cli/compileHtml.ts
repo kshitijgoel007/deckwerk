@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -10,6 +10,7 @@ import {
   authoringPageHtml,
   measureSlidesSource,
   measureTextOverflowsSource,
+  withBase,
   type TextOverflow,
 } from '@shared/htmlMeasure.js';
 import { PLAYER_TYPE_CSS } from '@shared/playerTypeCss.js';
@@ -130,6 +131,37 @@ export async function measureSavedPages(
   return runPages(pagePaths, canvas, script);
 }
 
+export interface HtmlDraftRenderAssets {
+  /** File URL for the deck root while the temporary render page is open. */
+  base?: string;
+  /** HTTP-only stylesheets that need inlining before the page is opened from disk. */
+  stylesheets?: Array<{ href: string; css: string }>;
+}
+
+/**
+ * Retarget an HTTP scratchpad page for the temporary file used by Electron.
+ *
+ * Draft pages are normally served by the collaboration server, so their base
+ * is `/decks/<id>/` and their theme points at `/api/theme`. The PNG renderer
+ * writes that same page into a temp directory and opens it as `file://`; without
+ * this retargeting every image resolves under `file:///decks/` and silently
+ * disappears, while the theme resolves under `file:///api/` and disappears too.
+ */
+export function prepareHtmlDraftRenderPage(
+  html: string,
+  assets: HtmlDraftRenderAssets = {},
+): string {
+  let prepared = assets.base ? withBase(html, assets.base) : html;
+  for (const stylesheet of assets.stylesheets ?? []) {
+    const href = stylesheet.href.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const link = new RegExp(`<link\\b(?=[^>]*\\bhref=["']${href}["'])[^>]*>`, 'i');
+    if (link.test(prepared)) {
+      prepared = prepared.replace(link, () => `<style>${stylesheet.css}</style>`);
+    }
+  }
+  return prepared;
+}
+
 /**
  * Render one authored/imported HTML slide, or a contact sheet of every slide,
  * inside the Electron process that is already hosting the collaboration API.
@@ -139,17 +171,42 @@ export async function renderHtmlDraftPng(
   html: string,
   canvas: { w: number; h: number },
   slideIndex: number | null,
+  assets: HtmlDraftRenderAssets = {},
 ): Promise<Buffer> {
   const electronModule = createRequire(import.meta.url)('electron') as
     | string
     | typeof import('electron');
-  if (typeof electronModule === 'string') {
-    throw new Error('HTML draft rendering requires the native editor');
-  }
   const work = await mkdtemp(join(tmpdir(), 'slide-agent-draft-render-'));
   const pagePath = join(work, 'draft.html');
-  await writeFile(pagePath, html, 'utf8');
-  const win = new electronModule.BrowserWindow({
+  const outPath = join(work, 'render.png');
+  try {
+    await writeFile(pagePath, prepareHtmlDraftRenderPage(html, assets), 'utf8');
+    if (typeof electronModule === 'string') {
+      const jobPath = join(work, 'job.json');
+      await writeFile(jobPath, JSON.stringify({ pagePath, outPath, canvas, slideIndex }), 'utf8');
+      await runElectron(draftRendererScript(), jobPath);
+      return await readFile(outPath);
+    }
+    return await renderHtmlDraftPngInCurrentElectron(
+      pagePath,
+      work,
+      canvas,
+      slideIndex,
+      electronModule.BrowserWindow,
+    );
+  } finally {
+    await rm(work, { recursive: true, force: true });
+  }
+}
+
+async function renderHtmlDraftPngInCurrentElectron(
+  pagePath: string,
+  work: string,
+  canvas: { w: number; h: number },
+  slideIndex: number | null,
+  BrowserWindow: typeof import('electron').BrowserWindow,
+): Promise<Buffer> {
+  const win = new BrowserWindow({
     width: canvas.w,
     height: canvas.h,
     show: false,
@@ -160,7 +217,11 @@ export async function renderHtmlDraftPng(
     await win.loadURL(pathToFileURL(pagePath).href);
     await win.webContents.executeJavaScript('document.fonts.ready.then(() => true)');
     await win.webContents.executeJavaScript(
-      'Promise.all([...document.images].map((image) => image.decode().catch(() => null))).then(() => true)',
+      `Promise.all([...document.images].map((image) => image.decode().catch(() => null))).then(() => {
+        const failed = [...document.images].filter((image) => !image.complete || image.naturalWidth === 0);
+        if (failed.length) throw new Error('Raster assets failed to load: ' + failed.map((image) => image.currentSrc || image.src).join(', '));
+        return true;
+      })`,
     );
     const count = await win.webContents.executeJavaScript(
       'document.querySelectorAll("section.slide, .slide").length',
@@ -282,6 +343,10 @@ async function runPagesInCurrentElectron(
 
 function compilerScript(): string {
   return fileURLToPath(new URL('../../scripts/compile-slides.cjs', import.meta.url));
+}
+
+function draftRendererScript(): string {
+  return fileURLToPath(new URL('../../scripts/render-html-draft.cjs', import.meta.url));
 }
 
 function runElectron(script: string, jobPath: string): Promise<string> {

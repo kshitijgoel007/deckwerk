@@ -23,7 +23,7 @@ import { PRESENTATION_API_TOOL } from './agentPresentationApi.js';
 const BROWSER_OPEN_TOOL = {
   type: 'function',
   name: 'browser_open',
-  description: 'Open an HTTP(S) page in DeckWerk\'s Chromium browser and return a screenshot plus page metadata. Use it for visual inspection when a live browser view is more useful than the presentation PNG endpoints.',
+  description: 'Open an HTTP(S) page in DeckWerk\'s Chromium browser and return one screenshot plus page metadata. Repeated captures of the same visual in one turn are suppressed. Draft source/imported/PNG routes are normalized to the single comparison view; after apply, open one returned live-player URL and stop when it is correct.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -477,7 +477,6 @@ export class AgentChatController {
     session.activeTurnId = null;
     session.agentPrompt = null;
     session.runtimeDir = null;
-    session.scratchpad = null;
     session.queuedFollowUps = [];
     session.messages = [];
     session.updatedAt = new Date().toISOString();
@@ -609,17 +608,14 @@ export class AgentChatController {
       cursor = result.nextCursor;
     } while (cursor);
     this.models = models;
-    const fallback = models.find((candidate) => candidate.isDefault)?.model
-      ?? models[0]?.model
+    const fallback = preferredPresentationModel(models)?.model
       ?? null;
     for (const session of this.sessions.values()) {
       const selected = models.find((candidate) => candidate.model === session.model);
       if (!selected) {
         session.model = fallback;
         const replacement = models.find((candidate) => candidate.model === fallback);
-        session.reasoningEffort = replacement?.defaultReasoningEffort
-          ?? replacement?.reasoningEfforts[0]?.effort
-          ?? null;
+        session.reasoningEffort = initialPresentationEffort(replacement);
         session.fastMode = defaultFastMode(
           replacement,
         );
@@ -749,7 +745,7 @@ export class AgentChatController {
     const key = conversationKey ? `${deckPath}\u0000${conversationKey}` : deckPath;
     let session = this.sessions.get(key);
     if (!session) {
-      const selected = this.models.find((candidate) => candidate.isDefault) ?? this.models[0];
+      const selected = preferredPresentationModel(this.models);
       // Shared demo conversations are partitioned by an ephemeral browser id
       // and deliberately stay in memory. The ordinary desktop conversation
       // keeps its existing deck-side persistence unchanged.
@@ -765,9 +761,7 @@ export class AgentChatController {
         agentPrompt: null,
         runtimeDir: null,
         model: active?.model ?? selected?.model ?? null,
-        reasoningEffort: active?.reasoningEffort ?? selected?.defaultReasoningEffort
-          ?? selected?.reasoningEfforts[0]?.effort
-          ?? null,
+        reasoningEffort: active?.reasoningEffort ?? initialPresentationEffort(selected),
         fastMode: active?.fastMode ?? defaultFastMode(selected),
         scratchpad: null,
         queuedFollowUps: [],
@@ -1005,7 +999,6 @@ function loadConversation(session: AgentChatSession, conversation: PersistedConv
   session.model = conversation.model;
   session.reasoningEffort = conversation.reasoningEffort;
   session.fastMode = conversation.fastMode;
-  session.scratchpad = null;
   session.queuedFollowUps = [];
   session.messages = conversation.messages.map((item) => ({ ...item }));
   session.updatedAt = conversation.updatedAt;
@@ -1051,9 +1044,24 @@ function fastTier(model: AgentChatModel | undefined): AgentChatModel['serviceTie
   });
 }
 
-function defaultFastMode(model: AgentChatModel | undefined): boolean {
-  const tier = fastTier(model);
-  return Boolean(tier && tier.id === model?.defaultServiceTier);
+function defaultFastMode(_model: AgentChatModel | undefined): boolean {
+  // Routine presentation work defaults to the standard service tier. Users
+  // can still opt into Fast explicitly for a particular conversation.
+  return false;
+}
+
+function preferredPresentationModel(models: AgentChatModel[]): AgentChatModel | undefined {
+  return models.find((candidate) => candidate.model === 'gpt-5.6-terra')
+    ?? models.find((candidate) => candidate.isDefault)
+    ?? models[0];
+}
+
+function initialPresentationEffort(model: AgentChatModel | undefined): string | null {
+  if (model?.model === 'gpt-5.6-terra') {
+    const low = model.reasoningEfforts.find((candidate) => candidate.effort === 'low');
+    if (low) return low.effort;
+  }
+  return model?.defaultReasoningEffort ?? model?.reasoningEfforts[0]?.effort ?? null;
 }
 
 function activityForItem(item: Record<string, unknown>): string {

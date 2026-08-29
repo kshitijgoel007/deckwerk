@@ -44,9 +44,9 @@ export const FONT_SETS: FontSet[] = [
     roles: {
       title: { family: SANS, size: 96, weight: 700, lineHeight: 1.05, letterSpacing: '-0.03em' },
       heading: { family: SANS, size: 64, weight: 600, lineHeight: 1.1, letterSpacing: '-0.02em' },
-      body: { family: SANS, size: 40, weight: 400, lineHeight: 1.3, letterSpacing: '0' },
-      caption: { family: SANS, size: 28, weight: 400, lineHeight: 1.3, letterSpacing: '0', color: '#6b7280' },
-      base: { family: SANS, size: 36, weight: 400, lineHeight: 1.3, letterSpacing: '0' },
+      body: { family: SANS, size: 46, weight: 400, lineHeight: 1.3, letterSpacing: '0' },
+      caption: { family: SANS, size: 30, weight: 400, lineHeight: 1.3, letterSpacing: '0', color: '#6b7280' },
+      base: { family: SANS, size: 42, weight: 400, lineHeight: 1.3, letterSpacing: '0' },
     },
   },
   {
@@ -68,9 +68,9 @@ export const FONT_SETS: FontSet[] = [
     roles: {
       title: { family: SERIF, size: 88, weight: 700, lineHeight: 1.08, letterSpacing: '-0.01em' },
       heading: { family: SERIF, size: 56, weight: 600, lineHeight: 1.15, letterSpacing: '0' },
-      body: { family: SANS, size: 38, weight: 400, lineHeight: 1.35, letterSpacing: '0' },
-      caption: { family: SANS, size: 26, weight: 400, lineHeight: 1.3, letterSpacing: '0', color: '#6b7280' },
-      base: { family: SANS, size: 34, weight: 400, lineHeight: 1.35, letterSpacing: '0' },
+      body: { family: SANS, size: 46, weight: 400, lineHeight: 1.34, letterSpacing: '0' },
+      caption: { family: SANS, size: 30, weight: 400, lineHeight: 1.3, letterSpacing: '0', color: '#6b7280' },
+      base: { family: SANS, size: 42, weight: 400, lineHeight: 1.34, letterSpacing: '0' },
     },
   },
   {
@@ -80,9 +80,9 @@ export const FONT_SETS: FontSet[] = [
     roles: {
       title: { family: SANS, size: 84, weight: 700, lineHeight: 1.05, letterSpacing: '-0.02em' },
       heading: { family: SANS, size: 52, weight: 600, lineHeight: 1.15, letterSpacing: '-0.01em' },
-      body: { family: SANS, size: 36, weight: 400, lineHeight: 1.35, letterSpacing: '0' },
-      caption: { family: MONO, size: 24, weight: 400, lineHeight: 1.3, letterSpacing: '0', color: '#4b5563' },
-      base: { family: MONO, size: 30, weight: 400, lineHeight: 1.35, letterSpacing: '0' },
+      body: { family: SANS, size: 44, weight: 400, lineHeight: 1.34, letterSpacing: '0' },
+      caption: { family: MONO, size: 28, weight: 400, lineHeight: 1.3, letterSpacing: '0', color: '#4b5563' },
+      base: { family: MONO, size: 38, weight: 400, lineHeight: 1.34, letterSpacing: '0' },
     },
   },
 ];

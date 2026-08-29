@@ -3,11 +3,13 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import WebSocket from 'ws';
-import { connect as connect_ } from 'node:net';
+import { connect as connect_, createServer as createNetServer } from 'node:net';
 import { emptyDeck, parseDeck, type Deck } from '../src/shared/deck.js';
 import { saveDeck } from '../src/main/deckStore.js';
 import { COLLAB_PROTOCOL_VERSION, ServerMessageSchema, type ClientMessage, type ServerMessage } from '../src/shared/collab.js';
-import { startCollabServer, type RunningCollabServer } from '../src/server/collabServer.js';
+import {
+  startCollabServer, type NativeDraftPreview, type RunningCollabServer,
+} from '../src/server/collabServer.js';
 import type { AgentChatState } from '../src/shared/ipc.js';
 import type { SharedAgentRuntimeLike } from '../src/server/sharedAgent.js';
 
@@ -37,6 +39,7 @@ class FakeSharedAgent implements SharedAgentRuntimeLike {
   sent: Array<{ participantId: string; text: string }> = [];
   prompts: string[] = [];
   private listeners = new Set<(state: AgentChatState, participantId: string) => void>();
+  get listenerCount() { return this.listeners.size; }
 
   async getState(deckPath: string, participantId: string) {
     return sharedAgentState(deckPath, { chatId: `thread-${participantId}` });
@@ -135,6 +138,7 @@ describe('collab server', () => {
   let rootDir: string;
   let deckDir: string;
   let server: RunningCollabServer;
+  let publishedNativeDraft: NativeDraftPreview | null;
   let clients: TestClient[] = [];
 
   const connect = async (name?: string, deckId = DECK_ID) => {
@@ -145,6 +149,7 @@ describe('collab server', () => {
   };
 
   beforeEach(async () => {
+    publishedNativeDraft = null;
     rootDir = await mkdtemp(join(tmpdir(), 'collab-root-'));
     deckDir = join(rootDir, DECK_ID);
     await mkdir(deckDir, { recursive: true });
@@ -162,6 +167,7 @@ describe('collab server', () => {
       port: 0,
       host: '127.0.0.1',
       getAgentChatId: () => 'thread-1',
+      onNativeDraft: (draft) => { publishedNativeDraft = draft; },
     });
   });
 
@@ -176,6 +182,28 @@ describe('collab server', () => {
     const decks = await (await fetch(`http://127.0.0.1:${server.port}/api/decks`)).json() as
       Array<{ id: string; title: string; slides: number }>;
     expect(decks).toEqual([{ id: DECK_ID, title: 'Collab', slides: 2 }]);
+  });
+
+  it('does not subscribe shared-agent state when its requested port is unavailable', async () => {
+    const blocker = createNetServer();
+    await new Promise<void>((resolvePromise, reject) => {
+      blocker.once('error', reject);
+      blocker.listen(0, '127.0.0.1', resolvePromise);
+    });
+    const address = blocker.address();
+    if (!address || typeof address === 'string') throw new Error('test server did not bind TCP');
+    const sharedAgent = new FakeSharedAgent();
+    try {
+      await expect(startCollabServer({
+        rootDir,
+        port: address.port,
+        host: '127.0.0.1',
+        sharedAgent,
+      })).rejects.toMatchObject({ code: 'EADDRINUSE' });
+      expect(sharedAgent.listenerCount).toBe(0);
+    } finally {
+      await new Promise<void>((resolvePromise) => blocker.close(() => resolvePromise()));
+    }
   });
 
   it('exposes one server-owned shared agent to every browser in opt-in test mode', async () => {
@@ -580,9 +608,22 @@ describe('collab server', () => {
       }),
     });
     expect(preview.status).toBe(200);
-    const draft = await preview.json() as { draftId: string; revision: string; report: { nativeObjectRatio: number } };
+    const draft = await preview.json() as {
+      draftId: string; revision: string; report: { nativeObjectRatio: number };
+      comparisonUrl: string; workflow: { state: string; nextAction: { action: string } };
+    };
     expect(draft.revision).toBe(context.revision);
     expect(draft.report.nativeObjectRatio).toBeGreaterThan(0);
+    expect((draft as any).report.timingsMs).toMatchObject({
+      sanitize: expect.any(Number), compile: expect.any(Number),
+      overflowCheck: expect.any(Number), total: expect.any(Number),
+    });
+    expect(draft.workflow).toMatchObject({
+      state: 'ready-to-apply', nextAction: { action: 'inspect-comparison-once' },
+    });
+    expect(draft).toMatchObject({
+      blockingIssues: [], nextAction: { action: 'inspect-comparison-once' },
+    });
 
     const request = {
       draftId: draft.draftId, expectedRevision: draft.revision,
@@ -597,6 +638,12 @@ describe('collab server', () => {
       idempotent: false,
       slideIds: ['s1'],
       label: 'Agent: replace first slide',
+      playerUrls: [{
+        slideId: 's1',
+        url: `/present.html?deck=${DECK_ID}&slide=1&agent=1`,
+        pngUrl: `/api/render-slide.png?deck=${DECK_ID}&slideId=s1`,
+      }],
+      stopCondition: expect.stringContaining('Stop unless'),
     });
     const historyTxn = await observer.client.nextOfKind('txn');
     expect(historyTxn).toMatchObject({
@@ -723,7 +770,15 @@ describe('collab server', () => {
       revision: inspected.revision,
       affectedSlideIds: ['s1'],
       affectedElementIds: ['e1'],
+      comparisonUrl: expect.stringContaining('/api/edit-drafts/'),
       report: { newOrWorsenedOverflows: [] },
+    });
+    expect(publishedNativeDraft).toMatchObject({
+      draftId: draft.draftId,
+      slideCount: 1,
+      beforeUrl: expect.stringContaining('/before?deck=demo'),
+      afterUrl: expect.stringContaining('/after?deck=demo'),
+      comparisonUrl: expect.stringContaining('/compare?deck=demo'),
     });
     expect(draft.operations).toEqual([expect.objectContaining({ op: 'replaceElement', slideId: 's1', elementId: 'e1' })]);
 
@@ -737,6 +792,11 @@ describe('collab server', () => {
     expect(beforeView.status).toBe(200);
     expect(afterView.status).toBe(200);
     expect(await afterView.text()).toContain('hi');
+    const comparisonView = await fetch(`${base}${draft.comparisonUrl}`);
+    expect(comparisonView.status).toBe(200);
+    const comparisonHtml = await comparisonView.text();
+    expect(comparisonHtml).toContain('Before / After comparison');
+    expect(comparisonHtml.match(/<iframe/g)).toHaveLength(2);
 
     const observer = await connect('Native observer');
     const request = {
@@ -751,6 +811,8 @@ describe('collab server', () => {
     expect(appliedResponse.status).toBe(200);
     expect(await appliedResponse.json()).toMatchObject({
       idempotent: false, slideIds: ['s1'], elementIds: ['e1'], label: request.label,
+      playerUrls: [{ slideId: 's1', url: `/present.html?deck=${DECK_ID}&slide=1&agent=1` }],
+      stopCondition: expect.stringContaining('Stop unless'),
     });
     expect(await observer.client.nextOfKind('txn')).toMatchObject({
       byClientId: 'agent-http', agentChatId: 'thread-1', label: request.label,
@@ -850,7 +912,7 @@ describe('collab server', () => {
       }),
     });
     expect(preview.status).toBe(200);
-    const draft = await preview.json() as { sourceUrl: string };
+    const draft = await preview.json() as { draftId: string; sourceUrl: string; comparisonUrl: string };
     const savedSource = await readFile(join(deckDir, 'edit', '.scratchpad', 'source.html'), 'utf8');
     const savedImported = await readFile(join(deckDir, 'edit', '.scratchpad', 'imported.html'), 'utf8');
     expect(savedSource).toContain('<base href="../../">');
@@ -861,6 +923,12 @@ describe('collab server', () => {
     expect(source).toContain(`<base href="/decks/${DECK_ID}/">`);
     expect(source).toContain('.from-deck-theme { color: rgb(1, 2, 3); }');
     expect(source).toContain('src="assets/pixel.png"');
+
+    const comparison = await (await fetch(`${base}${draft.comparisonUrl}?deck=${DECK_ID}`)).text();
+    expect(comparison).toContain('Source / Imported comparison');
+    expect(comparison).toContain(`/api/html-drafts/`);
+    expect(comparison).toContain('scratchpad=slides');
+    expect(comparison.match(/<iframe/g)).toHaveLength(2);
 
     const fitted = await (await fetch(
       `${base}${draft.sourceUrl}?deck=${DECK_ID}&scratchpad=slides`,
@@ -880,6 +948,22 @@ describe('collab server', () => {
     const asset = await fetch(`${base}/decks/${DECK_ID}/assets/pixel.png`);
     expect(asset.status).toBe(200);
     expect(Buffer.from(await asset.arrayBuffer())).toEqual(pixel);
+
+    const sourcePngUrl = `${base}/api/html-drafts/${draft.draftId}/source/slide-1.png?deck=${DECK_ID}`;
+    const importedPngUrl = `${base}/api/html-drafts/${draft.draftId}/imported/slide-1.png?deck=${DECK_ID}`;
+    const sourcePngResponse = await fetch(sourcePngUrl);
+    const importedPngResponse = await fetch(importedPngUrl);
+    expect(sourcePngResponse.status).toBe(200);
+    expect(importedPngResponse.status).toBe(200);
+    expect(sourcePngResponse.headers.get('x-deckwerk-render-cache')).toBe('miss');
+    const sourcePng = Buffer.from(await sourcePngResponse.arrayBuffer());
+    const importedPng = Buffer.from(await importedPngResponse.arrayBuffer());
+    expect(sourcePng.subarray(0, 8).toString('hex')).toBe('89504e470d0a1a0a');
+    expect(importedPng.subarray(0, 8).toString('hex')).toBe('89504e470d0a1a0a');
+    const cachedResponse = await fetch(sourcePngUrl);
+    expect(cachedResponse.headers.get('x-deckwerk-render-cache')).toBe('hit');
+    const cached = Buffer.from(await cachedResponse.arrayBuffer());
+    expect(cached).toEqual(sourcePng);
   }, 20_000);
 
   it('refuses to apply a draft with blocked resources', async () => {
@@ -892,7 +976,16 @@ describe('collab server', () => {
       }),
     });
     expect(preview.status).toBe(200);
-    const draft = await preview.json() as { draftId: string; revision: string };
+    const draft = await preview.json() as {
+      draftId: string; revision: string;
+      workflow: { state: string }; blockingIssues: Array<{ code: string; fix: string }>;
+      nextAction: { action: string };
+    };
+    expect(draft).toMatchObject({
+      workflow: { state: 'blocked' },
+      blockingIssues: [{ code: 'blocked-resource' }],
+      nextAction: { action: 'revise-html' },
+    });
     const applied = await fetch(`${base}/api/apply-html?deck=${DECK_ID}`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -905,11 +998,29 @@ describe('collab server', () => {
     expect(applied.status).toBe(422);
     expect(await applied.json()).toMatchObject({
       error: expect.stringContaining('blocking import diagnostics'),
-      blockingDiagnostics: expect.arrayContaining(['missingAssets', 'blockedResources']),
+      blockingDiagnostics: ['blockedResources'],
     });
 
     const deck = await (await fetch(`${base}/api/deck?deck=${DECK_ID}`)).json() as Deck;
     expect(deck.slides[0].elements[0].id).toBe('e1');
+
+    const missing = await fetch(`${base}/api/preview-html?deck=${DECK_ID}`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        html: '<section class="slide"><img src="assets/not-there.png"><h1>Missing local asset</h1></section>',
+        target: { mode: 'replace', slideIds: ['s1'] },
+      }),
+    });
+    expect(missing.status).toBe(200);
+    expect(await missing.json()).toMatchObject({
+      blockingIssues: [{ code: 'missing-asset' }],
+      nextAction: { action: 'revise-html' },
+      report: { missingAssets: ['assets/not-there.png'], blockedResources: [] },
+      workflow: {
+        state: 'blocked',
+        blockingIssues: [{ code: 'missing-asset', message: expect.stringContaining('assets/not-there.png') }],
+      },
+    });
   }, 20_000);
 
   it('rejects an HTML draft after the deck revision changes', async () => {

@@ -151,6 +151,8 @@ export class Inspector {
   private changingOpacity = false;
   private magicMoveHost = document.createElement('section');
   private magicMovePanel: MagicMovePanel;
+  /** Enter the dedicated editor for the three fixed layout masters. */
+  onEditLayouts?: (layout: SlideLayout) => void;
 
   constructor(host: HTMLElement, store: EditorStore) {
     this.host = host;
@@ -289,12 +291,24 @@ export class Inspector {
       option.textContent = label;
       layoutSelect.appendChild(option);
     }
+    const editLayouts = document.createElement('option');
+    editLayouts.value = '__edit_layouts__';
+    editLayouts.textContent = 'Edit layouts…';
+    layoutSelect.appendChild(editLayouts);
     layoutSelect.value = layouts.mixed ? '__mixed__' : layouts.value ?? 'freeform';
     layoutSelect.addEventListener('change', () => {
       if (layoutSelect.value === '__mixed__') return;
+      if (layoutSelect.value === '__edit_layouts__') {
+        const current = layouts.mixed ? 'freeform' : layouts.value ?? 'freeform';
+        layoutSelect.value = layouts.mixed ? '__mixed__' : current;
+        this.onEditLayouts?.(current);
+        return;
+      }
       this.store.commit((next) => {
         for (const slide of next.slides) {
-          if (selectedIds.has(slide.id)) applySlideLayout(slide, layoutSelect.value as SlideLayout);
+          if (selectedIds.has(slide.id)) {
+            applySlideLayout(slide, layoutSelect.value as SlideLayout, next.layoutMasters);
+          }
         }
       }, {
         label: `Apply ${layoutSelect.selectedOptions[0]?.textContent ?? 'slide'} layout`,
@@ -303,20 +317,41 @@ export class Inspector {
     layout.append(layoutLabel, layoutSelect);
     section.content.appendChild(layout);
 
-    const backgrounds = sharedValue(slides.map((slide) => slide.background.color ?? null));
+    const masters = this.store.get().deck.layoutMasters;
+    const backgroundValues = slides.map((slide) => (
+      slide.layoutBackgroundInherited ? null : slide.background.color ?? null
+    ));
+    const backgrounds = sharedValue(backgroundValues);
+    const inheritedBackground = sharedValue(slides.map((slide) => {
+      const layoutName = (slide.layout ?? 'freeform') as SlideLayout;
+      return masters?.[layoutName].background.color
+        ?? this.store.get().deck.themeStyle?.colors.background
+        ?? null;
+    }));
     section.content.appendChild(colorField(
       backgrounds.mixed ? 'Background (mixed)' : 'Background',
       backgrounds.value,
       (value) => {
         this.store.commit((next) => {
           for (const slide of next.slides) {
-            if (selectedIds.has(slide.id)) slide.background = { color: value, image: null };
+            if (!selectedIds.has(slide.id)) continue;
+            const layoutName = (slide.layout ?? 'freeform') as SlideLayout;
+            if (value === null && next.layoutMasters) {
+              slide.background = structuredClone(next.layoutMasters[layoutName].background);
+              slide.layoutBackgroundInherited = true;
+            } else {
+              slide.background = { color: value, image: null };
+              slide.layoutBackgroundInherited = false;
+            }
           }
         }, { label: slides.length > 1 ? 'Set slide backgrounds' : 'Set slide background' });
       },
       {
-        inheritedValue: this.store.get().deck.themeStyle?.colors.background ?? null,
-        clear: { kind: 'theme', label: 'Use theme background' },
+        inheritedValue: inheritedBackground.mixed ? null : inheritedBackground.value,
+        clear: {
+          kind: 'theme',
+          label: masters ? 'Use layout background' : 'Use theme background',
+        },
         mixed: backgrounds.mixed,
       },
     ));

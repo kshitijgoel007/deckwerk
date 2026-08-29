@@ -45,86 +45,89 @@ export const NO_APPLY: ApplyOptions = {
 };
 
 /*
- * Five looks, all light (dark mode would mean re-editing every figure), each
- * with a genuinely different typographic voice. Stacks are system-first so a
- * conference laptop renders them without webfonts.
+ * Five original, light presentation systems. Their directions borrow broad
+ * lessons from strong contemporary identities (warm research editorial,
+ * restrained product minimalism, vivid accessible colour, international
+ * typographic style, and humanist publishing) without copying brand assets.
+ * Stacks are system-first so a conference laptop renders without webfonts.
  */
 const AVENIR = '"Avenir Next", Avenir, "Helvetica Neue", Inter, system-ui, sans-serif';
 const HELVETICA = '"Helvetica Now Display", "Helvetica Neue", Helvetica, Arial, sans-serif';
+const INTER = 'Inter, "Avenir Next", "Helvetica Neue", "Segoe UI", system-ui, sans-serif';
 const MONO = '"JetBrains Mono", "IBM Plex Mono", "SF Mono", ui-monospace, Menlo, monospace';
-const EDITORIAL_SERIF = '"New York", "Iowan Old Style", Palatino, Georgia, serif';
+const EDITORIAL_SERIF = 'Charter, "Iowan Old Style", "New York", Palatino, Georgia, serif';
 const HUMANIST = '"Gill Sans", "Gill Sans MT", Seravek, "Segoe UI", Verdana, sans-serif';
 
 export const THEMES: ThemePreset[] = [
   {
     id: 'basic',
-    name: 'Studio',
-    description: 'Editorial display serif over calm Avenir prose. Quiet and gallery-like.',
+    name: 'Research',
+    description: 'Warm editorial serif, humanist prose, and a restrained clay accent.',
     fonts: {
-      title: { family: EDITORIAL_SERIF, size: 102, weight: 700, lineHeight: 1.01, letterSpacing: '-0.025em' },
-      heading: { family: EDITORIAL_SERIF, size: 58, weight: 600, lineHeight: 1.1, letterSpacing: '-0.01em' },
-      body: { family: AVENIR, size: 38, weight: 400, lineHeight: 1.35, letterSpacing: '0' },
-      caption: { family: AVENIR, size: 26, weight: 500, lineHeight: 1.3, letterSpacing: '0.01em', color: '#6e6e73' },
-      base: { family: AVENIR, size: 34, weight: 400, lineHeight: 1.35, letterSpacing: '0' },
+      title: { family: EDITORIAL_SERIF, size: 108, weight: 700, lineHeight: 1.0, letterSpacing: '-0.03em' },
+      heading: { family: EDITORIAL_SERIF, size: 64, weight: 600, lineHeight: 1.08, letterSpacing: '-0.015em' },
+      body: { family: AVENIR, size: 48, weight: 400, lineHeight: 1.32, letterSpacing: '0' },
+      caption: { family: AVENIR, size: 30, weight: 500, lineHeight: 1.3, letterSpacing: '0.015em', color: '#6b6862' },
+      base: { family: AVENIR, size: 42, weight: 400, lineHeight: 1.34, letterSpacing: '0' },
     },
-    palette: ['#1d1d1f', '#6e6e73', '#0071e3', '#bf4800', '#1d7d45', '#8944ab', '#f5f5f7', '#ffffff'],
-    colors: { background: '#ffffff', text: '#1d1d1f', muted: '#6e6e73', accent: '#0071e3' },
+    palette: ['#191918', '#6b6862', '#c96442', '#6a8fab', '#71815d', '#d6a756', '#ece7dd', '#faf9f5'],
+    colors: { background: '#faf9f5', text: '#191918', muted: '#6b6862', accent: '#c96442' },
   },
   {
     id: 'hacker',
-    name: 'Hacker',
-    description: 'Monospace display over humanist prose, with crisp phosphor-green accents.',
+    name: 'Mercury',
+    description: 'Cool product minimalism with compact display type and desaturated blue.',
     fonts: {
-      title: { family: MONO, size: 84, weight: 700, lineHeight: 1.1, letterSpacing: '-0.03em' },
-      heading: { family: MONO, size: 52, weight: 600, lineHeight: 1.2, letterSpacing: '-0.02em' },
-      body: { family: HUMANIST, size: 36, weight: 400, lineHeight: 1.42, letterSpacing: '0' },
-      caption: { family: MONO, size: 22, weight: 500, lineHeight: 1.4, letterSpacing: '0', color: '#7c7f93' },
-      base: { family: HUMANIST, size: 33, weight: 400, lineHeight: 1.42, letterSpacing: '0' },
+      title: { family: HELVETICA, size: 106, weight: 700, lineHeight: 1.0, letterSpacing: '-0.045em' },
+      heading: { family: HELVETICA, size: 62, weight: 650, lineHeight: 1.08, letterSpacing: '-0.025em' },
+      body: { family: INTER, size: 46, weight: 400, lineHeight: 1.34, letterSpacing: '-0.005em' },
+      caption: { family: MONO, size: 29, weight: 500, lineHeight: 1.3, letterSpacing: '0.025em', color: '#686a73' },
+      base: { family: INTER, size: 42, weight: 400, lineHeight: 1.34, letterSpacing: '0' },
     },
-    palette: ['#24273a', '#7c7f93', '#40a02b', '#d20f39', '#1e66f5', '#df8e1d', '#8839ef', '#eff1f5'],
-    colors: { background: '#eff1f5', text: '#24273a', muted: '#7c7f93', accent: '#40a02b' },
+    palette: ['#222326', '#686a73', '#5e6ad2', '#8a7cf0', '#378a78', '#bd6f49', '#e4e6eb', '#f4f5f8'],
+    colors: { background: '#f4f5f8', text: '#222326', muted: '#686a73', accent: '#5e6ad2' },
   },
   {
     id: 'editorial',
-    name: 'Editorial',
-    description: 'Serif display on warm paper, magazine margins. For talks that read like essays.',
+    name: 'Press',
+    description: 'Modern geometric display type over literary prose with vivid editorial colour.',
     fonts: {
-      title: { family: EDITORIAL_SERIF, size: 100, weight: 700, lineHeight: 1.02, letterSpacing: '-0.015em' },
-      heading: { family: HUMANIST, size: 54, weight: 600, lineHeight: 1.15, letterSpacing: '0.01em' },
-      body: { family: AVENIR, size: 36, weight: 400, lineHeight: 1.45, letterSpacing: '0' },
-      caption: { family: AVENIR, size: 24, weight: 500, lineHeight: 1.35, letterSpacing: '0.06em', color: '#8a817c' },
-      base: { family: AVENIR, size: 33, weight: 400, lineHeight: 1.45, letterSpacing: '0' },
+      title: { family: AVENIR, size: 112, weight: 700, lineHeight: 0.99, letterSpacing: '-0.04em' },
+      heading: { family: AVENIR, size: 66, weight: 600, lineHeight: 1.06, letterSpacing: '-0.02em' },
+      body: { family: EDITORIAL_SERIF, size: 47, weight: 400, lineHeight: 1.36, letterSpacing: '0' },
+      caption: { family: MONO, size: 29, weight: 500, lineHeight: 1.3, letterSpacing: '0.05em', color: '#716b66' },
+      base: { family: EDITORIAL_SERIF, size: 42, weight: 400, lineHeight: 1.36, letterSpacing: '0' },
     },
-    palette: ['#2b2118', '#5c554e', '#9a3b3b', '#33658a', '#5f7161', '#c58940', '#f3ede4', '#faf6ef'],
-    colors: { background: '#faf6ef', text: '#2b2118', muted: '#8a817c', accent: '#9a3b3b' },
+    palette: ['#201d1b', '#716b66', '#635bff', '#e25950', '#0a8f79', '#d98923', '#eee9e3', '#fffdf9'],
+    colors: { background: '#fffdf9', text: '#201d1b', muted: '#716b66', accent: '#635bff' },
   },
   {
     id: 'swiss',
-    name: 'Swiss',
-    description: 'Oversized Helvetica over literary serif copy, with one uncompromising red accent.',
+    name: 'Grid',
+    description: 'One hard-working grotesk, oversized hierarchy, strict grid, decisive red.',
     fonts: {
-      title: { family: HELVETICA, size: 110, weight: 700, lineHeight: 0.98, letterSpacing: '-0.04em' },
-      heading: { family: HELVETICA, size: 60, weight: 700, lineHeight: 1.05, letterSpacing: '-0.02em' },
-      body: { family: EDITORIAL_SERIF, size: 38, weight: 400, lineHeight: 1.34, letterSpacing: '0' },
-      caption: { family: MONO, size: 23, weight: 600, lineHeight: 1.25, letterSpacing: '0.06em', color: '#111111' },
-      base: { family: EDITORIAL_SERIF, size: 34, weight: 400, lineHeight: 1.34, letterSpacing: '0' },
+      title: { family: HELVETICA, size: 118, weight: 700, lineHeight: 0.96, letterSpacing: '-0.05em' },
+      heading: { family: HELVETICA, size: 68, weight: 700, lineHeight: 1.02, letterSpacing: '-0.03em' },
+      body: { family: INTER, size: 48, weight: 450, lineHeight: 1.28, letterSpacing: '-0.01em' },
+      caption: { family: MONO, size: 30, weight: 600, lineHeight: 1.22, letterSpacing: '0.07em', color: '#4f4f4f' },
+      base: { family: INTER, size: 43, weight: 400, lineHeight: 1.3, letterSpacing: '0' },
     },
-    palette: ['#111111', '#555555', '#e63946', '#0057b7', '#f4a261', '#2a9d8f', '#eeeeee', '#ffffff'],
-    colors: { background: '#ffffff', text: '#111111', muted: '#555555', accent: '#e63946' },
+    palette: ['#111111', '#4f4f4f', '#e12d39', '#0759b8', '#ef9b36', '#218c74', '#eeeeec', '#ffffff'],
+    colors: { background: '#ffffff', text: '#111111', muted: '#4f4f4f', accent: '#e12d39' },
   },
   {
     id: 'soft',
-    name: 'Soft',
-    description: 'Humanist sans, cream ground, muted pastels. Friendly without being cute.',
+    name: 'Field Notes',
+    description: 'Humanist display, readable book serif, and natural low-chroma accents.',
     fonts: {
-      title: { family: HUMANIST, size: 92, weight: 600, lineHeight: 1.06, letterSpacing: '-0.01em' },
-      heading: { family: EDITORIAL_SERIF, size: 55, weight: 600, lineHeight: 1.12, letterSpacing: '0' },
-      body: { family: EDITORIAL_SERIF, size: 37, weight: 400, lineHeight: 1.4, letterSpacing: '0' },
-      caption: { family: HUMANIST, size: 25, weight: 500, lineHeight: 1.35, letterSpacing: '0.02em', color: '#9c8e85' },
-      base: { family: EDITORIAL_SERIF, size: 33, weight: 400, lineHeight: 1.4, letterSpacing: '0' },
+      title: { family: HUMANIST, size: 104, weight: 600, lineHeight: 1.03, letterSpacing: '-0.02em' },
+      heading: { family: HUMANIST, size: 64, weight: 600, lineHeight: 1.1, letterSpacing: '-0.01em' },
+      body: { family: EDITORIAL_SERIF, size: 46, weight: 400, lineHeight: 1.38, letterSpacing: '0' },
+      caption: { family: HUMANIST, size: 30, weight: 500, lineHeight: 1.32, letterSpacing: '0.025em', color: '#82766e' },
+      base: { family: EDITORIAL_SERIF, size: 42, weight: 400, lineHeight: 1.38, letterSpacing: '0' },
     },
-    palette: ['#4a4458', '#8d86a0', '#e07a5f', '#81b29a', '#6d9dc5', '#e9c46a', '#f2e9e4', '#fffdf8'],
-    colors: { background: '#fffdf8', text: '#4a4458', muted: '#9c8e85', accent: '#e07a5f' },
+    palette: ['#383431', '#82766e', '#c96f52', '#6f8f78', '#6688a3', '#d1a34b', '#eee7dc', '#fffaf2'],
+    colors: { background: '#fffaf2', text: '#383431', muted: '#82766e', accent: '#c96f52' },
   },
 ];
 

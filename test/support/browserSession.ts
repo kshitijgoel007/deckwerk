@@ -163,6 +163,28 @@ export class Cdp {
     await this.mouse('mouseMoved', x, y, 0);
   }
 
+  /**
+   * Move the real pointer through a path expressed in fractional element
+   * coordinates. Useful for collaboration tests where one final hover cannot
+   * reveal dropped, flickering, or prematurely-cleared cursor frames.
+   */
+  async hoverPathWithin(
+    selector: string,
+    points: Array<{ x: number; y: number }>,
+    intervalMs = 0,
+    label = selector,
+  ): Promise<void> {
+    const box = await this.boxOf(selector, label);
+    for (const point of points) {
+      const x = box.x + (point.x - 0.5) * box.width;
+      const y = box.y + (point.y - 0.5) * box.height;
+      await this.mouse('mouseMoved', x, y, 0);
+      if (intervalMs > 0) {
+        await new Promise<void>((resolve) => setTimeout(resolve, intervalMs));
+      }
+    }
+  }
+
   /** Drag from the centre of one visible element to another with the primary pointer. */
   async dragBetween(startSelector: string, endSelector: string, label = 'drag'): Promise<void> {
     const start = await this.boxOf(startSelector, `${label} start`);

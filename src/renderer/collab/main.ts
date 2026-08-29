@@ -46,6 +46,7 @@ import { setRenderInvariantChecks } from '../editor/renderInvariants.js';
 import { trackPreviewFrameRecovery } from '../player/previewFrameRecovery.js';
 import { trackVideoLoading } from '../player/videoLoadingProgress.js';
 import { DelayedOperationProgress } from '../editor/operationProgress.js';
+import { DesignWorkspace } from '../editor/designWorkspace.js';
 
 /**
  * Browser collaboration shell: the same canvas, rail, inspector, theme
@@ -200,13 +201,25 @@ rail.presenceForSlide = (slideId) => presence.peersOnSlide(slideId);
 
 wireCanvasInspector(canvas, inspector);
 
+const designWorkspace = new DesignWorkspace({
+  canvasHost: el('canvas'),
+  store,
+  save: async () => {},
+  setStatusMessage,
+});
 const themePanel = createThemePanel({
   store,
   cssEditor,
   save: async () => {},
   setStatusMessage,
   saveThemeCss: (css) => bridge.sendTheme(css),
+  onThemePreview: (theme) => designWorkspace.show(theme),
+  onEditLayouts: () => designWorkspace.openLayoutEditor(
+    (store.slide?.layout ?? 'freeform'),
+  ),
+  createLayoutPreview: (theme, onActivate) => designWorkspace.createLayoutSummary(theme, onActivate),
 });
+inspector.onEditLayouts = (layout) => designWorkspace.openLayoutEditor(layout);
 el('themePanel').appendChild(themePanel.element);
 el('themePanel').classList.add('theme-panel');
 
@@ -235,6 +248,11 @@ const connectionNotice = createConnectionNotice({
 const wsUrl = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws?deck=${encodeURIComponent(deckId)}`;
 const bridge = new CollabBridge(wsUrl, userName() || undefined, {
   onWelcome: (welcome) => {
+    // Presence messages are intentionally not queued while disconnected. A
+    // reconnect therefore establishes a fresh deduplication epoch: the same
+    // still-selected objects must be published to the server again.
+    lastPresenceKey = '';
+    lastCursorKey = '';
     participantName = welcome.self.name;
     setIdSuffix(welcome.clientId.slice(0, 4));
     setAgentName(welcome.self.name);
@@ -250,9 +268,10 @@ const bridge = new CollabBridge(wsUrl, userName() || undefined, {
     }
     cssEditor.setValue(welcome.themeCss);
     themePanel.noteDeckOpened(welcome.deck);
-    for (const peer of welcome.peers) presence.upsert(peer);
+    presence.replaceAll(welcome.peers);
     rail.refreshPresence();
     renderStatus();
+    document.documentElement.dataset.collabReady = 'true';
   },
   onDeckReplaced: (deck, label, options) => {
     store.applyRemote(deck, label, options);
@@ -284,6 +303,7 @@ const bridge = new CollabBridge(wsUrl, userName() || undefined, {
       // The refusal is moot once the server is back; don't leave it lingering.
       if (statusMessage === PRESENT_NEEDS_SERVER) setStatusMessage('');
     } else {
+      delete document.documentElement.dataset.collabReady;
       connectionNotice.showDisconnected();
     }
   },
@@ -326,28 +346,50 @@ let pendingCursor: { x: number; y: number } | null | undefined;
 let lastCursorSent = 0;
 let lastCursorKey = '';
 let cursorFrame = 0;
+let cursorTimer = 0;
+const flushCursor = () => {
+  cursorFrame = 0;
+  const now = performance.now();
+  const remaining = 33 - (now - lastCursorSent);
+  if (remaining > 0) {
+    // Do not drop a lone Safari compatibility-mouse sample merely because it
+    // followed another event inside the rate-limit window. Deliver the newest
+    // point once the window expires.
+    cursorTimer = window.setTimeout(() => {
+      cursorTimer = 0;
+      cursorFrame = requestAnimationFrame(flushCursor);
+    }, remaining);
+    return;
+  }
+  const slide = store.slide;
+  const cursor = pendingCursor && slide
+    ? { slideId: slide.id, x: Math.round(pendingCursor.x), y: Math.round(pendingCursor.y) }
+    : null;
+  const key = JSON.stringify(cursor);
+  if (key === lastCursorKey) return;
+  lastCursorKey = key;
+  lastCursorSent = now;
+  bridge.sendCursor(cursor);
+};
 canvas.onPointerSample = (point) => {
   pendingCursor = point;
-  if (cursorFrame) return;
-  cursorFrame = requestAnimationFrame(() => {
-    cursorFrame = 0;
-    const now = performance.now();
-    if (now - lastCursorSent < 33) return;
-    const slide = store.slide;
-    const cursor = pendingCursor && slide
-      ? { slideId: slide.id, x: Math.round(pendingCursor.x), y: Math.round(pendingCursor.y) }
-      : null;
-    const key = JSON.stringify(cursor);
-    if (key === lastCursorKey) return;
-    lastCursorKey = key;
-    lastCursorSent = now;
-    bridge.sendCursor(cursor);
-  });
+  if (cursorFrame || cursorTimer) return;
+  cursorFrame = requestAnimationFrame(flushCursor);
 };
-el('canvas').addEventListener('pointerleave', () => {
+const clearRemoteCursor = () => {
+  pendingCursor = null;
+  if (cursorFrame) cancelAnimationFrame(cursorFrame);
+  if (cursorTimer) clearTimeout(cursorTimer);
+  cursorFrame = 0;
+  cursorTimer = 0;
   lastCursorKey = 'null';
   bridge.sendCursor(null);
-});
+};
+el('canvas').addEventListener('pointerleave', clearRemoteCursor);
+// WebKit may pair its compatibility mousemove stream with mouseleave rather
+// than pointerleave. Sending null twice is safe and prevents a cursor from
+// sticking at the canvas edge.
+el('canvas').addEventListener('mouseleave', clearRemoteCursor);
 
 // Selection, active slide, editing element: edge-triggered from store changes.
 let lastPresenceKey = '';
@@ -559,6 +601,8 @@ function showPanel(id: string): void {
     b.classList.toggle('active', b.dataset.panel === id);
   }
   if (id === 'inspector') inspector.render();
+  if (id === 'themePanel') el('themePanel').scrollTop = 0;
+  if (id !== 'themePanel') designWorkspace.hide();
   canvas.setBuildBadgesVisible(id === 'timeline');
 }
 

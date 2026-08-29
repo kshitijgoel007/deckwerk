@@ -138,7 +138,7 @@ describe('slide layouts', () => {
     document.body.appendChild(rendered);
 
     expect(getComputedStyle(rendered.querySelector('.role-title')!).fontSize).toBe('92px');
-    expect(getComputedStyle(rendered.querySelector('.role-body')!).fontSize).toBe('44px');
+    expect(getComputedStyle(rendered.querySelector('.role-body')!).fontSize).toBe('48px');
     styles.remove();
   });
 });

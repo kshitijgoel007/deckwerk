@@ -52,6 +52,8 @@ describe('theme presets', () => {
       expect((r + g + b) / 3, `${t.name} background is not light`).toBeGreaterThan(200);
       expect(t.palette.length).toBeGreaterThanOrEqual(6);
       expect(t.fonts.title.size).toBeGreaterThan(t.fonts.caption.size);
+      expect(t.fonts.body.size, `${t.name} body is too small for projection`).toBeGreaterThanOrEqual(46);
+      expect(t.fonts.caption.size, `${t.name} caption is too small for projection`).toBeGreaterThanOrEqual(28);
       expect(t.fonts.title.family, `${t.name} uses one face for title and body`)
         .not.toBe(t.fonts.body.family);
     }
@@ -160,7 +162,7 @@ describe('applying a theme', () => {
 
   it('objectColors remaps shape colours to the palette', () => {
     const deck = sampleDeck();
-    const theme = THEMES[3]; // Swiss: has a strong red
+    const theme = THEMES[3]; // Grid: has a strong red
     applyThemeToDeck(deck, theme, { ...NO_APPLY, objectColors: true });
     const s1 = deck.slides[0].elements.find((e) => e.id === 's1')!;
     if (s1.type !== 'shape') throw new Error('expected shape');

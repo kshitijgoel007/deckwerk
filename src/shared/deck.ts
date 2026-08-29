@@ -73,6 +73,8 @@ const BaseElement = z.object({
   magicMoveId: z.string().nullable().optional(),
   /** Stable ancestry retained when an object is duplicated, for opt-in Auto-pair. */
   lineageId: z.string().nullable().optional(),
+  /** Source object in a fixed layout master; synchronized copies are read-only on slides. */
+  layoutMasterId: z.string().optional(),
   /** Discussion attached to this element; absent when there is none. */
   comments: z.array(CommentSchema).optional(),
 });
@@ -144,6 +146,8 @@ const TextElement = BaseElement.extend({
   valign: z.enum(['top', 'middle', 'bottom']).default('top'),
   /** Ordered, non-destructive visual effects. Order is significant. */
   effects: z.array(MediaEffectSchema).optional(),
+  /** Required semantic slot when this text is a fixed layout placeholder. */
+  layoutPlaceholder: z.enum(['title', 'body']).optional(),
 });
 
 const ImageElement = BaseElement.extend({
@@ -268,6 +272,16 @@ export const ElementSchema = z.discriminatedUnion('type', [
   UnsupportedElement,
 ]);
 
+const SlideBackgroundSchema = z.object({
+  color: z.string().nullable().default(null),
+  image: z.string().nullable().default(null),
+});
+
+const LayoutMasterSchema = z.object({
+  background: SlideBackgroundSchema.default({ color: null, image: null }),
+  elements: z.array(ElementSchema).default([]),
+});
+
 /**
  * Timeline entries are `trigger + action` pairs evaluated in array order.
  *
@@ -307,15 +321,12 @@ export const TimelineEntrySchema = z.object({
 export const SlideSchema = z.object({
   id: Id,
   name: z.string().default(''),
-  background: z
-    .object({
-      color: z.string().nullable().default(null),
-      image: z.string().nullable().default(null),
-    })
-    .default({ color: null, image: null }),
+  background: SlideBackgroundSchema.default({ color: null, image: null }),
   notes: z.string().default(''),
   /** Geometry preset; themes may decorate it but never own its positions. */
   layout: z.enum(['freeform', 'standard', 'title']).optional(),
+  /** True while the concrete slide background mirrors its selected layout master. */
+  layoutBackgroundInherited: z.boolean().optional(),
   /** Animate the transition from the preceding slide, including unpaired fades. */
   magicMoveFromPrevious: z.boolean().optional(),
   /** Duration of the Magic Move transition from the preceding slide, in milliseconds. */
@@ -340,6 +351,12 @@ export const DeckSchema = z.object({
   themePreset: z.string().nullable().default(null),
   /** Persistent deck defaults, composed property-by-property from theme presets. */
   themeStyle: ThemeStyleSchema.nullable().default(null),
+  /** Three fixed, deck-local layout masters. Null preserves legacy hard-coded layouts. */
+  layoutMasters: z.object({
+    freeform: LayoutMasterSchema,
+    standard: LayoutMasterSchema,
+    title: LayoutMasterSchema,
+  }).nullable().default(null),
   /** Deck-wide motion curve for Magic Move transitions. */
   magicMoveEasing: z.enum(['ease-in-out', 'ease-out', 'linear']).default('ease-in-out'),
   slides: z.array(SlideSchema).default([]),
@@ -361,6 +378,7 @@ export type Slide = z.infer<typeof SlideSchema>;
 export type Comment = z.infer<typeof CommentSchema>;
 export type Deck = z.infer<typeof DeckSchema>;
 export type ThemeStyle = z.infer<typeof ThemeStyleSchema>;
+export type LayoutMaster = z.infer<typeof LayoutMasterSchema>;
 
 export const DECK_VERSION = 1 as const;
 

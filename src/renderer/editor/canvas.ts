@@ -1070,6 +1070,7 @@ export class EditorCanvas {
     }
 
     for (const el of elements) {
+      if (el.layoutMasterId) continue;
       if (!selection.has(el.id)) continue;
       const box = document.createElement('div');
       box.className = `sel-box${this.maskingId === el.id ? ' masking' : ''}`;
@@ -1204,7 +1205,7 @@ export class EditorCanvas {
   }
 
   /** Screen point -> canvas point. */
-  private toCanvas(ev: PointerEvent): { x: number; y: number } {
+  private toCanvas(ev: MouseEvent): { x: number; y: number } {
     const r = this.stage.getBoundingClientRect();
     return { x: (ev.clientX - r.left) / this.scale, y: (ev.clientY - r.top) / this.scale };
   }
@@ -1216,6 +1217,14 @@ export class EditorCanvas {
       // did not receive the original keydown.
       if (this.drag.kind === 'none') this.setRotationModifier(ev.metaKey);
       this.onPointerMove(ev);
+    });
+    // Safari can deliver compatibility mouse motion without a corresponding
+    // pointermove while the trackpad is hovering (not dragging). Keep remote
+    // cursors live from that stream too. Browsers which deliver both are
+    // harmless: the collaboration sender coalesces samples in one animation
+    // frame and drops identical coordinates.
+    this.host.addEventListener('mousemove', (ev) => {
+      this.onPointerSample?.(this.toCanvas(ev));
     });
     this.host.addEventListener('pointerup', (ev) => this.onPointerUp(ev));
     this.host.addEventListener('pointercancel', () => this.endDrag());
@@ -1269,6 +1278,10 @@ export class EditorCanvas {
       this.commitTextEdit();
     }
     const point = this.toCanvas(ev);
+    // A click is also an authoritative cursor sample. This makes the remote
+    // pointer appear at the selected object even on browsers which suppress
+    // hover-only pointermove events.
+    this.onPointerSample?.(point);
     this.host.setPointerCapture(ev.pointerId);
 
     // A click away from the active crop window is the implicit "Done" action.

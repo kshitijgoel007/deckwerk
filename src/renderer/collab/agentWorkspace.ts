@@ -136,9 +136,15 @@ export function installAgentWorkspace(store: EditorStore): void {
       currentDraft.target = currentDraft.target ?? requestedTarget;
       sourceFrame.frame.src = deckUrl(currentDraft.sourceUrl);
       importedFrame.frame.src = deckUrl(currentDraft.importedUrl);
-      diagnostics.textContent = JSON.stringify(currentDraft.report, null, 2);
-      apply.disabled = false;
-      setStatus(`Draft ready · ${Math.round(currentDraft.report.nativeObjectRatio * 100)}% native objects`);
+      diagnostics.textContent = JSON.stringify({
+        workflow: currentDraft.workflow,
+        importReport: currentDraft.report,
+      }, null, 2);
+      apply.disabled = currentDraft.workflow.state !== 'ready-to-apply';
+      setStatus(currentDraft.workflow.state === 'ready-to-apply'
+        ? `Draft ready · ${Math.round(currentDraft.report.nativeObjectRatio * 100)}% native objects · compare once, then apply`
+        : currentDraft.workflow.nextAction.reason,
+      currentDraft.workflow.state !== 'ready-to-apply');
     } catch (error) {
       currentDraft = null;
       apply.disabled = true;

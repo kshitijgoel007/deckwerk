@@ -142,12 +142,8 @@ const api = {
   resetAgentChat: (): Promise<AgentChatState> =>
     ipcRenderer.invoke(IPC.agentChatReset),
 
-  /**
-   * Share the open deck for live co-editing: the main process starts a
-   * single-deck collab server and swaps this window for the browser client
-   * pointed at it. Resolves to the invite URLs.
-   */
-  startCollab: (opts: CollabStartRequest): Promise<string[]> =>
+  /** Start sharing while keeping this native editor connected as the host. */
+  startCollab: (opts: CollabStartRequest): Promise<AgentSessionConnection> =>
     ipcRenderer.invoke(IPC.collabStart, opts),
   /** Keep this native editor visible while it joins the agent's live session. */
   startAgentSession: (view: CollabStartRequest): Promise<AgentSessionConnection> =>

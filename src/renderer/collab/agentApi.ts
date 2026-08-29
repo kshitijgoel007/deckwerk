@@ -27,6 +27,7 @@ export interface HtmlImportReport {
   overflows: unknown[];
   pixelDifference: number | null;
   tolerance: number;
+  timingsMs?: { sanitize: number; compile: number; overflowCheck: number; total: number };
 }
 
 export interface HtmlDraft {
@@ -34,8 +35,17 @@ export interface HtmlDraft {
   revision: string;
   sourceUrl: string;
   importedUrl: string;
+  comparisonUrl: string;
   diffUrl: string | null;
   report: HtmlImportReport;
+  workflow: {
+    state: 'blocked' | 'ready-to-apply';
+    blockingIssues: Array<{
+      code: string; message: string; fix: string; slideId?: string | null; elementId?: string | null;
+    }>;
+    nextAction: { action: 'revise-html' | 'inspect-comparison-once'; reason: string };
+    verificationPolicy: { draft: string; afterApply: string; stopWhen: string };
+  };
   slides?: Slide[];
   target: HtmlTarget;
 }
@@ -54,6 +64,7 @@ export interface NativeEditDraft {
   revision: string;
   affectedSlideIds: string[];
   affectedElementIds: string[];
+  comparisonUrl: string;
   beforeUrl: string;
   afterUrl: string;
   slides: Array<{ slideId: string; beforeUrl: string; afterUrl: string }>;
@@ -143,7 +154,11 @@ declare global {
       previewEdits: (request: { expectedRevision?: string; edits: NativeEdit[] }) => Promise<NativeEditDraft>;
       applyEdits: (request: { draftId: string; expectedRevision?: string; idempotencyKey: string; label?: string }) => Promise<{ revision: string; slideIds: string[]; elementIds: string[]; idempotent: boolean }>;
       previewHtml: (request: { html: string; target?: HtmlTarget }) => Promise<HtmlDraft>;
-      applyHtml: (request: { draftId: string; expectedRevision?: string; idempotencyKey: string; label?: string; target?: HtmlTarget }) => Promise<{ revision: string; slideIds: string[]; idempotent: boolean }>;
+      applyHtml: (request: { draftId: string; expectedRevision?: string; idempotencyKey: string; label?: string; target?: HtmlTarget }) => Promise<{
+        revision: string; slideIds: string[]; idempotent: boolean;
+        playerUrls: Array<{ slideId: string; url: string; pngUrl: string }>;
+        stopCondition: string;
+      }>;
       renderSlide: (slideId: string) => string;
       uploadAsset: (name: string, data: Blob | ArrayBuffer) => Promise<{ src: string; kind: string; width: number; height: number; duration: number }>;
       getDeck: () => Deck; goToSlide: (number: number) => void;

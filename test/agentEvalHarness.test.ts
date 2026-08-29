@@ -45,18 +45,34 @@ describe('workspace-independent agent evaluation harness', () => {
     expect(source).toContain("fnTool('agent_add_comment'");
     expect(source).toContain("fnTool('agent_resolve_comment'");
     expect(source).toContain('VISUAL VERIFICATION IS MANDATORY');
-    expect(source).toContain('Fetching HTML, checking status codes, or comparing byte counts does not count as looking.');
-    expect(source).toContain('If browser screenshots are unavailable, stop as blocked');
+    expect(source).toContain('open comparisonUrl once');
+    expect(source).toContain('A successful apply plus one correct real-player screenshot is the stopping condition');
+    expect(source).toContain('If the supported comparison itself is unavailable, stop as blocked');
     expect(source).toContain('MECHANICAL SUCCESS IS NOT DESIGN SUCCESS');
     expect(source).toContain('ten current lab members excluding Vincent');
     expect(source).toContain('a bare line of labels is incomplete');
   });
 
   it('requires both visual and editorial acceptance in the reusable agent brief', () => {
-    expect(briefSource).toContain("Open and screenshot every affected slide's Before and After URLs");
+    expect(briefSource).toContain('Open \\`comparisonUrl\\` once');
     expect(briefSource).toContain('Inventory every');
     expect(briefSource).toContain('A clean diagnostic report is not proof of task completion');
     expect(briefSource).toContain('Judge the real player');
+    expect(briefSource).toContain('comparisonUrl');
+    expect(briefSource).toContain('A successful apply plus one correct real-player check is the stopping');
+    expect(briefSource).toContain('Do not run additional checks after it passes');
+  });
+
+  it('cycles API-, budget-, and stop-led fast-path prompts on Terra low reasoning', () => {
+    expect(source).toContain("process.env.AGENT_EVAL_MODEL ?? 'gpt-5.6-terra'");
+    expect(source).toContain("process.env.AGENT_EVAL_REASONING ?? 'low'");
+    for (const variant of ['api-led', 'budget-led', 'stop-led']) expect(source).toContain(`'${variant}'`);
+    expect(source).toContain("fnTool('agent_open_comparison'");
+    expect(source).not.toContain("fnTool('agent_open_preview'");
+    expect(source).toContain('workflowMetrics: run.metrics');
+    expect(source).toContain('suppressedVisuals');
+    expect(source).toContain('This visual is already in model context');
+    expect(source).toContain('The final player has already been opened for this apply');
   });
 
   it('closes the hidden browser gracefully before using a signal fallback', () => {

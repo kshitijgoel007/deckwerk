@@ -2,11 +2,8 @@ import type { CursorPosition, PresenceState } from '@shared/collab.js';
 import type { EditorCanvas } from '../editor/canvas.js';
 import type { EditorStore } from '../editor/store.js';
 
-const CURSOR_FADE_MS = 5000;
-
 interface PeerView {
   state: PresenceState;
-  cursorAt: number;
 }
 
 /**
@@ -19,7 +16,6 @@ interface PeerView {
 export class PresenceOverlay {
   private peers = new Map<string, PeerView>();
   private layer: HTMLElement;
-  private fadeTimer: ReturnType<typeof setInterval>;
   private unsubscribe: () => void;
   private readonly viewportHandler = () => this.render();
 
@@ -30,11 +26,9 @@ export class PresenceOverlay {
     this.layer = canvas.addStageLayer('presence-layer');
     canvas.onViewportChange = this.viewportHandler;
     this.unsubscribe = store.subscribe(() => this.render());
-    this.fadeTimer = setInterval(() => this.render(), 1000);
   }
 
   destroy(): void {
-    clearInterval(this.fadeTimer);
     this.unsubscribe();
     if (this.canvas.onViewportChange === this.viewportHandler) {
       this.canvas.onViewportChange = undefined;
@@ -46,8 +40,21 @@ export class PresenceOverlay {
     const existing = this.peers.get(state.clientId);
     this.peers.set(state.clientId, {
       state: { ...state, cursor: state.cursor ?? existing?.state.cursor ?? null },
-      cursorAt: existing?.cursorAt ?? 0,
     });
+    this.render();
+  }
+
+  /** Reconcile against the authoritative peer snapshot in a welcome frame. */
+  replaceAll(states: PresenceState[]): void {
+    const ids = new Set(states.map((state) => state.clientId));
+    for (const id of this.peers.keys()) {
+      if (!ids.has(id)) this.peers.delete(id);
+    }
+    for (const state of states) {
+      this.peers.set(state.clientId, {
+        state: { ...state },
+      });
+    }
     this.render();
   }
 
@@ -55,7 +62,6 @@ export class PresenceOverlay {
     const peer = this.peers.get(clientId);
     if (!peer) return;
     peer.state = { ...peer.state, cursor };
-    peer.cursorAt = performance.now();
     this.render();
   }
 
@@ -86,7 +92,6 @@ export class PresenceOverlay {
       return;
     }
     const inv = 1 / Math.max(this.canvas.stageScale(), 0.0001);
-    const now = performance.now();
     const nodes: HTMLElement[] = [];
 
     for (const peer of this.peers.values()) {
@@ -132,19 +137,18 @@ export class PresenceOverlay {
         }
       }
 
-      // Cursor glyph, faded out after inactivity.
+      // Cursor glyph. It remains fully visible until the peer actually leaves
+      // the canvas and sends null; an inactivity fade made a stationary mouse
+      // look disconnected and caused the name tag to "regularly vanish".
       const cursor = state.cursor;
       if (cursor && cursor.slideId === slide.id) {
-        const age = now - peer.cursorAt;
-        const opacity = age > CURSOR_FADE_MS ? 0.25 : 1;
         const glyph = document.createElement('div');
         glyph.className = 'presence-cursor';
         glyph.style.cssText = [
           'position:absolute',
           `left:${cursor.x}px`,
           `top:${cursor.y}px`,
-          `opacity:${opacity}`,
-          'transition:opacity .3s',
+          'opacity:1',
           `transform:scale(${inv})`,
           'transform-origin:top left',
         ].join(';');

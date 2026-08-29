@@ -285,6 +285,18 @@ export function applyElementBoxStyles(
     }
     s.setProperty(k, v);
   }
+  // Shape paint lives in an SVG child, but CSS effects such as box-shadow live
+  // on this positioned wrapper. Give that wrapper the same contour as the SVG
+  // or a circular imported frame casts a square shadow and a rounded card casts
+  // a sharp-cornered one. Typed shape geometry owns this property, so also
+  // clear a stale radius when a shape is changed to a line or square.
+  if (el.type === 'shape') {
+    const radius = el.shape === 'ellipse' ? '50%'
+      : el.shape === 'rect' && el.radius > 0 ? `${el.radius}px`
+        : '';
+    if (radius) s.borderRadius = radius;
+    else s.removeProperty('border-radius');
+  }
 }
 
 /**

@@ -31,6 +31,7 @@ import { createToolbarPicker, createToolbarSplitButton } from './exportPicker.js
 import { showPdfExportDialog } from './pdfExportDialog.js';
 import { makePanelResizable } from './panelResize.js';
 import { DelayedOperationProgress, type OperationHandle } from './operationProgress.js';
+import { DesignWorkspace } from './designWorkspace.js';
 import { persistSessionDeck } from './sessionPersistence.js';
 import { createThemePanel } from './themePanel.js';
 import {
@@ -50,6 +51,7 @@ import { TimelinePanel } from './timelinePanel.js';
 import { WelcomeScreen } from './welcomeScreen.js';
 import { CollabBridge } from '../collab/collabBridge.js';
 import { PresenceOverlay } from '../collab/presenceOverlay.js';
+import { openEndCollaborationPopover } from '../collab/endCollaborationPopover.js';
 import { setRenderInvariantChecks } from './renderInvariants.js';
 
 /**
@@ -142,6 +144,8 @@ let agentSessionBridge: CollabBridge | null = null;
 let agentSessionReady = false;
 let agentSessionWsUrl: string | null = null;
 let agentPresence: PresenceOverlay | null = null;
+let activeSessionMode: 'agent' | 'collaboration' | null = null;
+let collaborateButton: HTMLButtonElement | null = null;
 const persistThemeCss = (css: string): Promise<void> | void => {
   if (agentSessionReady && agentSessionBridge) {
     agentSessionBridge.sendTheme(css);
@@ -314,11 +318,11 @@ function buildToolbar(): void {
 
   const right = document.createElement('div');
   right.className = 'bar-group bar-right deck-only';
-  const collaborate = barButton('Collaborate', () => void startSharing());
-  collaborate.id = 'collaborate-trigger';
+  collaborateButton = barButton('Collaborate', () => void startSharing());
+  collaborateButton.id = 'collaborate-trigger';
   right.append(
     barButton('Agent…', () => void toggleAgentChat()),
-    collaborate,
+    collaborateButton,
     createToolbarSplitButton(
       'Present',
       () => void startPresentation(),
@@ -433,12 +437,29 @@ async function endAgentChat(): Promise<void> {
 
 async function startSharing(): Promise<void> {
   try {
+    if (activeSessionMode === 'collaboration') {
+      openEndCollaborationPopover(collaborateButton!, () => {
+        void runOperation('Ending collaboration…', async (operation) => {
+          operation.update('Saving final collaborative changes');
+          await window.api.endAgentSession();
+        }).then(() => {
+          setStatusMessage('Collaboration ended; presentation saved.');
+        }).catch((err) => {
+          setStatusMessage(`Could not end collaboration: ${err instanceof Error ? err.message : err}`);
+        });
+      });
+      return;
+    }
     await runOperation('Starting collaboration…', async (operation) => {
       operation.update('Saving presentation');
       await cssEditor.flush();
       await save();
       operation.update('Starting collaboration server');
-      await window.api.startCollab({ agent: false, ...captureEditorView(store) });
+      const connection = await window.api.startCollab({
+        agent: false,
+        ...captureEditorView(store),
+      });
+      connectAgentSession(connection);
     });
     setStatusMessage('Collaboration link copied to clipboard.');
   } catch (err) {
@@ -447,6 +468,64 @@ async function startSharing(): Promise<void> {
 }
 
 let lastAgentPresenceKey = '';
+let pendingCollaborationCursor: { x: number; y: number } | null | undefined;
+let lastCollaborationCursorSent = 0;
+let lastCollaborationCursorKey = '';
+let collaborationCursorFrame = 0;
+let collaborationCursorTimer = 0;
+
+const flushCollaborationCursor = () => {
+  collaborationCursorFrame = 0;
+  if (!agentSessionReady || !agentSessionBridge) return;
+  const now = performance.now();
+  const remaining = 33 - (now - lastCollaborationCursorSent);
+  if (remaining > 0) {
+    collaborationCursorTimer = window.setTimeout(() => {
+      collaborationCursorTimer = 0;
+      collaborationCursorFrame = requestAnimationFrame(flushCollaborationCursor);
+    }, remaining);
+    return;
+  }
+  const slide = store.slide;
+  const cursor = pendingCollaborationCursor && slide
+    ? {
+      slideId: slide.id,
+      x: Math.round(pendingCollaborationCursor.x),
+      y: Math.round(pendingCollaborationCursor.y),
+    }
+    : null;
+  const key = JSON.stringify(cursor);
+  if (key === lastCollaborationCursorKey) return;
+  lastCollaborationCursorKey = key;
+  lastCollaborationCursorSent = now;
+  agentSessionBridge.sendCursor(cursor);
+};
+
+canvas.onPointerSample = (point) => {
+  if (!agentSessionReady || !agentSessionBridge) return;
+  pendingCollaborationCursor = point;
+  if (collaborationCursorFrame || collaborationCursorTimer) return;
+  collaborationCursorFrame = requestAnimationFrame(flushCollaborationCursor);
+};
+
+const clearCollaborationCursor = () => {
+  pendingCollaborationCursor = null;
+  if (collaborationCursorFrame) cancelAnimationFrame(collaborationCursorFrame);
+  if (collaborationCursorTimer) clearTimeout(collaborationCursorTimer);
+  collaborationCursorFrame = 0;
+  collaborationCursorTimer = 0;
+  lastCollaborationCursorKey = 'null';
+  agentSessionBridge?.sendCursor(null);
+};
+el('canvas').addEventListener('pointerleave', clearCollaborationCursor);
+el('canvas').addEventListener('mouseleave', clearCollaborationCursor);
+
+function refreshCollaborationControl(): void {
+  if (!collaborateButton) return;
+  const sharing = activeSessionMode === 'collaboration';
+  collaborateButton.textContent = sharing ? 'End collaboration' : 'Collaborate';
+  collaborateButton.classList.toggle('danger', sharing);
+}
 
 function publishAgentPresence(): void {
   if (!agentSessionReady || !agentSessionBridge) return;
@@ -467,6 +546,8 @@ function publishAgentPresence(): void {
 function connectAgentSession(connection: AgentSessionConnection): void {
   if (agentSessionWsUrl === connection.wsUrl && agentSessionBridge) return;
   disconnectAgentSession();
+  activeSessionMode = connection.mode ?? 'agent';
+  refreshCollaborationControl();
   agentSessionWsUrl = connection.wsUrl;
   agentPresence = new PresenceOverlay(canvas, store);
   rail.presenceForSlide = (slideId) => agentPresence?.peersOnSlide(slideId) ?? [];
@@ -486,9 +567,12 @@ function connectAgentSession(connection: AgentSessionConnection): void {
       for (const peer of welcome.peers) agentPresence?.upsert(peer);
       rail.refreshPresence();
       lastAgentPresenceKey = '';
+      lastCollaborationCursorKey = '';
       publishAgentPresence();
       queueAgentSessionSnapshot();
-      setStatusMessage('Agent chat connected — edits sync live.');
+      setStatusMessage(activeSessionMode === 'collaboration'
+        ? 'Collaboration connected — edits and cursors sync live.'
+        : 'Agent chat connected — edits sync live.');
     },
     onDeckReplaced: (deck, label, options) => {
       store.applyRemote(deck, label, options);
@@ -507,14 +591,19 @@ function connectAgentSession(connection: AgentSessionConnection): void {
       if (!cssEditor.hasFocus() && css !== cssEditor.getValue()) cssEditor.setValue(css);
       queueAgentSessionSnapshot();
     },
-    onStatus: (text) => setStatusMessage(`Agent session: ${text}`),
+    onStatus: (text) => setStatusMessage(
+      `${activeSessionMode === 'collaboration' ? 'Collaboration' : 'Agent session'}: ${text}`,
+    ),
     onCleanChange: (clean) => {
       if (clean) store.markClean();
     },
     onEnded: () => {
       if (agentSessionBridge === bridge) {
+        const endedMode = activeSessionMode;
         disconnectAgentSession();
-        setStatusMessage('Agent session ended.');
+        setStatusMessage(endedMode === 'collaboration'
+          ? 'Collaboration ended.'
+          : 'Agent session ended.');
       }
     },
   });
@@ -527,6 +616,14 @@ function disconnectAgentSession(): void {
   agentSessionBridge = null;
   agentSessionReady = false;
   agentSessionWsUrl = null;
+  activeSessionMode = null;
+  refreshCollaborationControl();
+  pendingCollaborationCursor = undefined;
+  if (collaborationCursorFrame) cancelAnimationFrame(collaborationCursorFrame);
+  if (collaborationCursorTimer) clearTimeout(collaborationCursorTimer);
+  collaborationCursorFrame = 0;
+  collaborationCursorTimer = 0;
+  lastCollaborationCursorKey = '';
   lastAgentPresenceKey = '';
   if (store.onLocalEdit === bridge?.localEdit) store.onLocalEdit = null;
   bridge?.close();
@@ -600,13 +697,25 @@ async function importKeynotePresentation(): Promise<void> {
 }
 
 /** The Theme sidebar tab, shared with the browser collab shell. */
+const designWorkspace = new DesignWorkspace({
+  canvasHost: el('canvas'),
+  store,
+  save,
+  setStatusMessage,
+});
 const themePanel = createThemePanel({
   store,
   cssEditor,
   save,
   setStatusMessage,
   saveThemeCss: (css) => void persistThemeCss(css),
+  onThemePreview: (theme) => designWorkspace.show(theme),
+  onEditLayouts: () => designWorkspace.openLayoutEditor(
+    (store.slide?.layout ?? 'freeform'),
+  ),
+  createLayoutPreview: (theme, onActivate) => designWorkspace.createLayoutSummary(theme, onActivate),
 });
+inspector.onEditLayouts = (layout) => designWorkspace.openLayoutEditor(layout);
 /* --- side panel tabs --- */
 
 const PANELS = [
@@ -641,6 +750,8 @@ function showPanel(id: string): void {
     b.classList.toggle('active', b.dataset.panel === id);
   }
   if (id === 'inspector') inspector.render();
+  if (id === 'themePanel') el('themePanel').scrollTop = 0;
+  if (id !== 'themePanel') designWorkspace.hide();
   canvas.setBuildBadgesVisible(id === 'timeline');
 }
 
@@ -916,9 +1027,12 @@ window.api.onThemeCss?.((css) => {
 window.api.onAgentSessionState?.((state) => {
   if (state.active) connectAgentSession(state);
   else {
+    const endedMode = activeSessionMode;
     agentChatPanel.hide();
     disconnectAgentSession();
-    setStatusMessage('Agent chat closed; presentation saved.');
+    setStatusMessage(endedMode === 'collaboration'
+      ? 'Collaboration ended; presentation saved.'
+      : 'Agent chat closed; presentation saved.');
   }
 });
 

@@ -4,7 +4,7 @@ import { classifyMedia } from '../src/main/deckStore.js';
 import { emptyDeck } from '../src/shared/deck.js';
 import { Inspector } from '../src/renderer/editor/inspector.js';
 import { EditorStore } from '../src/renderer/editor/store.js';
-import { renderElement, syncMediaFrame } from '../src/renderer/player/render.js';
+import { applyElementBoxStyles, renderElement, syncMediaFrame } from '../src/renderer/player/render.js';
 
 const base = {
   x: 10, y: 20, w: 800, h: 500, rot: 0, z: 1, opacity: 1, class: [], style: {},
@@ -182,5 +182,40 @@ describe('media assets and borders', () => {
       .toBe('/decks/test/assets/portrait.jpg');
     expect(shadow.querySelector('style')!.textContent)
       .toContain('url("/decks/test/assets/texture.png")');
+  });
+});
+
+describe('shape effect contours', () => {
+  const shape = {
+    ...base,
+    id: 'shape',
+    type: 'shape' as const,
+    fill: '#ffffff',
+    stroke: '#663399',
+    strokeWidth: 4,
+    arrowStart: false,
+    arrowEnd: false,
+    path: null,
+    pathSize: null,
+    control: null,
+    style: { 'box-shadow': '0 20px 40px #0006' },
+  };
+
+  it('makes imported ellipse and rounded-rectangle shadows follow their SVG contour', () => {
+    const ellipse = renderElement({ ...shape, shape: 'ellipse', radius: 0 }, { resolveSrc: (src) => src });
+    const card = renderElement({ ...shape, shape: 'rect', radius: 31 }, { resolveSrc: (src) => src });
+
+    expect(ellipse.style.borderRadius).toBe('50%');
+    expect(card.style.borderRadius).toBe('31px');
+  });
+
+  it('clears the contour when a rounded shape becomes square', () => {
+    const rounded = { ...shape, shape: 'rect' as const, radius: 31 };
+    const square = { ...rounded, radius: 0 };
+    const node = renderElement(rounded, { resolveSrc: (src) => src });
+
+    applyElementBoxStyles(node, square, rounded);
+
+    expect(node.style.borderRadius).toBe('');
   });
 });

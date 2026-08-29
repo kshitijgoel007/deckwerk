@@ -93,6 +93,28 @@ describe('agent chat panel', () => {
     expect(input.value).toBe('');
   });
 
+  it('hides the chat without ending its session and keeps an explicit end action', () => {
+    const endSession = vi.fn();
+    const api: AgentChatApi = {
+      getAgentChatState: async () => ready(), sendAgentChatMessage: async () => ready(),
+      loginAgentChat: async () => ready(), switchAgentChatAccount: async () => ready(),
+      setAgentChatModel: async ({ model }) => ready({ selectedModel: model }),
+      setAgentChatReasoningEffort: async ({ effort }) => ready({ selectedReasoningEffort: effort }),
+      setAgentChatFastMode: async ({ enabled }) => ready({ fastMode: enabled }),
+      interruptAgentChat: async () => ready(), resetAgentChat: async () => ready(),
+      onAgentChatState: () => () => undefined,
+    };
+    const panel = new AgentChatPanel({
+      api, currentDeckPath: () => '/tmp/talk', onClose: endSession,
+    });
+    panel.show();
+    panel.element.querySelector<HTMLButtonElement>('[aria-label="Hide agent chat"]')!.click();
+    expect(panel.element.hidden).toBe(true);
+    expect(endSession).not.toHaveBeenCalled();
+    panel.element.querySelector<HTMLButtonElement>('[aria-label="End agent session"]')!.click();
+    expect(endSession).toHaveBeenCalledOnce();
+  });
+
   it('keeps follow-up sending available and exposes a separate Stop action', async () => {
     let listener: (state: AgentChatState) => void = () => undefined;
     const interrupt = vi.fn(async () => ready());
@@ -152,7 +174,7 @@ describe('agent chat panel', () => {
 
     panel.show();
     [...panel.element.querySelectorAll<HTMLButtonElement>('button')]
-      .find((button) => button.textContent === 'Close')!
+      .find((button) => button.textContent === 'End session')!
       .click();
     expect(onClose).toHaveBeenCalledOnce();
   });
@@ -315,7 +337,12 @@ describe('agent chat panel', () => {
       resetAgentChat: async () => ready(),
       onAgentChatState: (fn) => { listener = fn; return () => undefined; },
     };
-    const panel = new AgentChatPanel({ api, currentDeckPath: () => '/tmp/talk' });
+    const scratchpadStates: Array<{ available: boolean; visible: boolean }> = [];
+    const panel = new AgentChatPanel({
+      api,
+      currentDeckPath: () => '/tmp/talk',
+      onScratchpadState: (state) => scratchpadStates.push(state),
+    });
     listener(ready({
       scratchpad: {
         draftId: 'draft-1',
@@ -328,6 +355,7 @@ describe('agent chat panel', () => {
     }));
     expect(panel.element.querySelector('.agent-chat-scratchpad-bar')?.textContent)
       .toContain('8 slides');
+    expect(panel.element.querySelector('[aria-label="Show Agent scratchpad"]')).not.toBeNull();
     const scratchpad = document.querySelector<HTMLElement>('.agent-scratchpad-panel')!;
     expect(scratchpad.hidden).toBe(false);
     const frame = scratchpad.querySelector('iframe')!;
@@ -340,5 +368,15 @@ describe('agent chat panel', () => {
     [...scratchpad.querySelectorAll<HTMLButtonElement>('button')]
       .find((button) => button.textContent === 'Imported')!.click();
     expect(frame.getAttribute('src')).toContain('/imported?deck=talk&scratchpad=contact');
+
+    [...scratchpad.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent === 'Hide')!.click();
+    expect(scratchpad.hidden).toBe(true);
+    expect(scratchpadStates.at(-1)).toEqual({ available: true, visible: false });
+    panel.hide();
+    panel.toggleScratchpad();
+    expect(scratchpad.hidden).toBe(false);
+    expect(scratchpad.classList.contains('agent-chat-closed')).toBe(true);
+    expect(scratchpadStates.at(-1)).toEqual({ available: true, visible: true });
   });
 });

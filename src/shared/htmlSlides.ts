@@ -270,6 +270,10 @@ export function authoringCss(canvas: { w: number; h: number }): string {
     overflow: hidden;
     box-sizing: border-box;
   }
+  /* Compiled geometry is measured from each object's border box, and the
+     player uses the same model. Keep exported native objects on that model so
+     preserving padding or borders does not make them grow on the next render. */
+  [data-element-id] { box-sizing: border-box; }
   /* Sensible defaults so bare markup does not arrive with browser margins
      baked into its measured geometry. */
   h1, h2, h3, h4, h5, h6, p, ul, ol, figure, blockquote { margin: 0; }
@@ -889,7 +893,11 @@ function elementToHtml(element: SlideElement, build?: TimelineEntry): string {
         + (element.control ? ` data-control="${element.control.x},${element.control.y}"` : '')
         + attr('data-path', element.path)
         + (element.pathSize ? ` data-path-size="${element.pathSize.w},${element.pathSize.h}"` : '')
-        + ` ${styleAttr(position, inline)}>`
+        // Paint effects live on the wrapper rather than the nested SVG. Give
+        // that wrapper the same contour as the native shape so shadows and
+        // filters do not reveal a rectangular box around circles and rounded
+        // cards in the editable HTML preview.
+        + ` ${styleAttr(position, inline, shapeWrapperContour(element))}>`
         // The drawing itself, from the same builder the player draws with. It
         // is marked as not-an-object so the walk keeps treating the wrapper as
         // the shape and reads the parameters off the data attributes above,
@@ -1111,6 +1119,12 @@ function mediaDecorationFromNode(
  */
 function styleAttr(...declarations: string[]): string {
   return `style="${escape(declarations.filter(Boolean).join(' ').trim())}"`;
+}
+
+function shapeWrapperContour(element: Extract<SlideElement, { type: 'shape' }>): string {
+  if (element.shape === 'ellipse') return 'border-radius:50%;';
+  if (element.shape === 'rect' && element.radius > 0) return `border-radius:${element.radius}px;`;
+  return '';
 }
 
 function attr(name: string, value: string | null): string {

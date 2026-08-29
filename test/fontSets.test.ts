@@ -93,6 +93,8 @@ describe('generated stylesheet', () => {
       expect(Math.min(...sizes)).toBeGreaterThan(12);
       // Titles must outrank captions, or the hierarchy is meaningless.
       expect(set.roles.title.size).toBeGreaterThan(set.roles.caption.size);
+      expect(set.roles.body.size).toBeGreaterThanOrEqual(44);
+      expect(set.roles.caption.size).toBeGreaterThanOrEqual(28);
     },
   );
 

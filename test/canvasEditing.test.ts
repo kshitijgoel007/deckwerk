@@ -1390,6 +1390,27 @@ describe('pointer handling keeps the DOM stable', () => {
     expect(store.canUndo()).toBe(false);
   });
 
+  it('samples compatibility mouse motion and clicks for collaboration cursors', () => {
+    const { canvas, host } = setup();
+    const stage = host.querySelector<HTMLElement>('.stage')!;
+    stage.getBoundingClientRect = () =>
+      ({ left: 0, top: 0, width: 1920, height: 1080 }) as DOMRect;
+    const samples: Array<{ x: number; y: number } | null> = [];
+    canvas.onPointerSample = (point) => samples.push(point);
+
+    host.dispatchEvent(new MouseEvent('mousemove', {
+      clientX: 320,
+      clientY: 240,
+      bubbles: true,
+    }));
+    press(host, 200, 150);
+
+    expect(samples).toEqual([
+      { x: 320, y: 240 },
+      { x: 200, y: 150 },
+    ]);
+  });
+
   it('enters text editing on one click when the text box is already selected', () => {
     const { store, canvas, host } = setup();
 

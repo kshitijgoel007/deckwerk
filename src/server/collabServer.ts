@@ -7,6 +7,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { networkInterfaces, tmpdir } from 'node:os';
 import { basename, dirname, extname, join, normalize, resolve } from 'node:path';
 import { isIP } from 'node:net';
+import { pathToFileURL } from 'node:url';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { createDeck, importAsset, loadTheme, resolveAsset } from '../main/deckStore.js';
 import { AGENT_BRIEF, agentClipboardPrompt } from './agentBrief.js';
@@ -30,6 +31,7 @@ import type { Deck, Slide, SlideElement } from '../shared/deck.js';
 import type { AgentChatState } from '../shared/ipc.js';
 import type { SharedAgentRuntimeLike } from './sharedAgent.js';
 import { planHtmlReplacement } from './htmlReplacement.js';
+import { htmlDraftWorkflow, type HtmlDraftWorkflow } from './htmlDraftWorkflow.js';
 
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -81,6 +83,8 @@ interface HttpHtmlDraft {
   sourceHtml: string;
   importedHtml: string;
   report: Record<string, unknown>;
+  workflow: HtmlDraftWorkflow;
+  renderCache: Map<string, Promise<Buffer>>;
   createdAt: number;
 }
 
@@ -90,9 +94,19 @@ export interface HtmlDraftPreview {
   slideCount: number;
   sourceUrl: string;
   importedUrl: string;
+  comparisonUrl: string;
   sourceContactSheetUrl: string;
   importedContactSheetUrl: string;
   report: Record<string, unknown>;
+}
+
+export interface NativeDraftPreview {
+  draftId: string;
+  deckId: string;
+  slideCount: number;
+  beforeUrl: string;
+  afterUrl: string;
+  comparisonUrl: string;
 }
 
 interface HttpNativeDraft {
@@ -136,6 +150,8 @@ export interface CollabServerOptions {
   draftArchiveDir?: string;
   /** Publish the newest HTML work-in-progress to the embedded agent chat. */
   onHtmlDraft?: (draft: HtmlDraftPreview) => void;
+  /** Publish the newest native Before/After work-in-progress to the scratchpad. */
+  onNativeDraft?: (draft: NativeDraftPreview) => void;
   /** Attribute Agent HTTP edits to the embedded conversation that made them. */
   getAgentChatId?: (deckId: string) => string | null;
   /**
@@ -161,6 +177,8 @@ export interface RunningCollabServer {
   port: number;
   /** Persist every room immediately instead of waiting for its save debounce. */
   flush: () => Promise<void>;
+  /** Tell connected peers this was an intentional host end, not a network loss. */
+  notifyEnded: () => void;
   close: () => Promise<void>;
 }
 
@@ -301,7 +319,10 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
       );
     }
   };
-  const unsubscribeSharedAgent = sharedAgent?.subscribe(emitSharedAgentState);
+  // Subscribe only after the server owns its port. A failed listen (most
+  // commonly EADDRINUSE before the desktop retries on an ephemeral port) must
+  // not leak a duplicate listener into the shared Agent runtime.
+  let unsubscribeSharedAgent: (() => void) | undefined;
 
   const httpServer = createServer((request, response) => {
     void handleHttp(request, response).catch((error) => {
@@ -811,12 +832,36 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
         if (slideId) params.set('slideId', slideId);
         return `/api/edit-drafts/${id}/${side}?${params.toString()}`;
       };
+      const comparisonUrl = `/api/edit-drafts/${id}/compare?deck=${encodeURIComponent(deckParam)}`;
+      const nativePreview: NativeDraftPreview = {
+        draftId: id,
+        deckId: deckParam,
+        slideCount: draft.affectedSlideIds.length,
+        beforeUrl: `http://127.0.0.1:${boundPort}${draftViewUrl('before')}`,
+        afterUrl: `http://127.0.0.1:${boundPort}${draftViewUrl('after')}`,
+        comparisonUrl: `http://127.0.0.1:${boundPort}${comparisonUrl}`,
+      };
+      options.onNativeDraft?.(nativePreview);
+      if (sharedAgent && agentSessionParam) {
+        sharedAgent.setScratchpad(deckDirOf(deckParam), agentSessionParam, {
+          draftId: nativePreview.draftId,
+          slideCount: nativePreview.slideCount,
+          sourceUrl: nativePreview.beforeUrl,
+          importedUrl: nativePreview.afterUrl,
+          comparisonUrl: nativePreview.comparisonUrl,
+          sourceContactSheetUrl: nativePreview.beforeUrl,
+          importedContactSheetUrl: nativePreview.afterUrl,
+          sourceLabel: 'Before',
+          importedLabel: 'After',
+        });
+      }
       respondJson(response, 200, {
         draftId: id,
         revision,
         affectedSlideIds: draft.affectedSlideIds,
         affectedElementIds: draft.affectedElementIds,
         operations: draft.operations,
+        comparisonUrl,
         beforeUrl: draftViewUrl('before'),
         afterUrl: draftViewUrl('after'),
         slides: draft.affectedSlideIds.map((slideId) => ({
@@ -839,10 +884,29 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
       const slides = ids.map((id) => deck.slides.find((slide) => slide.id === id)).filter((slide): slide is Slide => Boolean(slide));
       if (requestedSlide && slides.length === 0) return respondJson(response, 404, { error: `no affected slide ${requestedSlide}` });
       response.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
-      response.end(slidesToHtml(slides, deck.canvas, {
+      const html = slidesToHtml(slides, deck.canvas, {
         typeCss: PLAYER_TYPE_CSS,
         base: `/decks/${encodeURIComponent(deckParam)}/`,
         theme: `/api/theme?deck=${encodeURIComponent(deckParam)}`,
+      });
+      const scratchpad = url.searchParams.get('scratchpad');
+      response.end(scratchpad === 'slides' || scratchpad === 'contact'
+        ? scratchpadDocument(html, scratchpad)
+        : html);
+      return;
+    }
+
+    const nativeDraftComparison = /^\/api\/edit-drafts\/([^/]+)\/compare$/.exec(path);
+    if (nativeDraftComparison && request.method === 'GET') {
+      const draft = nativeDrafts.get(nativeDraftComparison[1]);
+      if (!draft || draft.deckId !== deckParam) return respondJson(response, 404, { error: 'draft not found' });
+      const mode = draft.affectedSlideIds.length > 1 ? 'contact' : 'slides';
+      const deck = encodeURIComponent(draft.deckId);
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+      response.end(sideBySideComparisonDocument({
+        title: 'Before / After comparison',
+        left: { label: 'Before', url: `/api/edit-drafts/${draft.id}/before?deck=${deck}&scratchpad=${mode}` },
+        right: { label: 'After', url: `/api/edit-drafts/${draft.id}/after?deck=${deck}&scratchpad=${mode}` },
       }));
       return;
     }
@@ -901,6 +965,11 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
         slideIds: draft.affectedSlideIds,
         elementIds: draft.affectedElementIds,
         label,
+        playerUrls: draft.affectedSlideIds.map((slideId) => ({
+          slideId,
+          url: `/present.html?deck=${encodeURIComponent(deckParam)}&slide=${applied.deck.slides.findIndex((slide) => slide.id === slideId) + 1}&agent=1`,
+        })),
+        stopCondition: 'The apply succeeds and one returned real-player URL shows the requested edit correctly. Stop unless that check reveals a task-relevant defect.',
       };
       nativeIdempotency.set(key, result);
       respondJson(response, 200, { ...result, idempotent: false, digest: undefined });
@@ -979,6 +1048,7 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
 
     if (path === '/api/preview-html' && request.method === 'POST') {
       if (!deckParam) return respondJson(response, 400, { error: 'missing deck' });
+      const previewStartedAt = Date.now();
       const raw = (await readBody(request)).toString('utf8');
       const contentType = String(request.headers['content-type'] ?? '').toLowerCase();
       let payload: { html?: string; target?: HttpHtmlDraft['target'] };
@@ -1006,16 +1076,19 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
       if (!payload.html?.trim()) return respondJson(response, 400, { error: 'missing html' });
       const room = await getRoom(deckParam);
       const sanitized = await sanitizeServerHtml(payload.html, room.session.dir);
+      const sanitizedAt = Date.now();
       const temp = await mkdtemp(join(tmpdir(), 'slide-http-preview-'));
       const htmlPath = join(temp, 'slides.html');
       try {
         await writeFile(htmlPath, sanitized.html, 'utf8');
         const compiled = await compileHtmlToSlides({ deckDir: room.session.dir, deck: room.session.deck, htmlPath });
+        const compiledAt = Date.now();
         if (compiled.slides.length === 0) return respondJson(response, 400, { error: 'no slides found' });
         const all = compiled.slides.flatMap((slide) => slide.elements);
         const fallback = all.filter((element) => element.type === 'html');
         const native = all.length - fallback.length;
         const overflows = await measureBuiltTextOverflows(room.session.dir, room.session.deck, compiled.slides);
+        const overflowMeasuredAt = Date.now();
         const id = randomUUID();
         const target = payload.target ?? {
           mode: 'insert' as const,
@@ -1027,13 +1100,25 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
           fallbackObjects: fallback.length,
           fallbackReasons: [...new Set(fallback.map((element) => element.fallbackReason ?? 'Unsupported HTML region'))],
           warnings: compiled.warnings,
-          missingAssets: sanitized.blocked,
+          missingAssets: sanitized.missing,
           blockedResources: sanitized.blocked,
           extractedAssets: sanitized.assets,
           overflows,
           pixelDifference: null,
           tolerance: 0.002,
+          timingsMs: {
+            sanitize: sanitizedAt - previewStartedAt,
+            compile: compiledAt - sanitizedAt,
+            overflowCheck: overflowMeasuredAt - compiledAt,
+            total: 0,
+          },
         };
+        const workflow = htmlDraftWorkflow({
+          overflows,
+          missingAssets: sanitized.missing,
+          blockedResources: sanitized.blocked,
+          warnings: compiled.warnings,
+        });
         if (options.draftArchiveDir) {
           await mkdir(options.draftArchiveDir, { recursive: true });
           const stamp = `${Date.now()}-${id}`;
@@ -1044,6 +1129,7 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
             revision: deckRevision(room.session.deck),
             target,
             report,
+            workflow,
           }, null, 2), 'utf8');
         }
         const themeCss = await loadTheme(room.session.dir, room.session.deck.theme);
@@ -1063,7 +1149,7 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
         const draft: HttpHtmlDraft = {
           id, deckId: deckParam, revision: deckRevision(room.session.deck), slides: compiled.slides,
           target, sourceHtml, importedHtml,
-          report, createdAt: Date.now(),
+          report, workflow, renderCache: new Map(), createdAt: Date.now(),
         };
         const scratchpadDir = join(room.session.dir, 'edit', '.scratchpad');
         await mkdir(scratchpadDir, { recursive: true });
@@ -1083,18 +1169,21 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
           ), 'utf8'),
         ]);
         htmlDrafts.set(id, draft);
+        report.timingsMs.total = Date.now() - previewStartedAt;
         latestHtmlDrafts.set(deckParam, id);
         const query = `?deck=${encodeURIComponent(deckParam)}`;
         const sourcePath = `/api/html-drafts/${id}/source`;
         const importedPath = `/api/html-drafts/${id}/imported`;
         const sourceContactSheetPath = `/api/html-drafts/${id}/source/contact-sheet.png`;
         const importedContactSheetPath = `/api/html-drafts/${id}/imported/contact-sheet.png`;
+        const comparisonPath = `/api/html-drafts/${id}/compare`;
         const preview: HtmlDraftPreview = {
           draftId: id,
           deckId: deckParam,
           slideCount: draft.slides.length,
           sourceUrl: `http://127.0.0.1:${boundPort}${sourcePath}${query}`,
           importedUrl: `http://127.0.0.1:${boundPort}${importedPath}${query}`,
+          comparisonUrl: `http://127.0.0.1:${boundPort}${comparisonPath}${query}`,
           sourceContactSheetUrl: `http://127.0.0.1:${boundPort}${sourceContactSheetPath}${query}`,
           importedContactSheetUrl: `http://127.0.0.1:${boundPort}${importedContactSheetPath}${query}`,
           report,
@@ -1106,16 +1195,21 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
             slideCount: preview.slideCount,
             sourceUrl: preview.sourceUrl,
             importedUrl: preview.importedUrl,
+            comparisonUrl: preview.comparisonUrl,
             sourceContactSheetUrl: preview.sourceContactSheetUrl,
             importedContactSheetUrl: preview.importedContactSheetUrl,
           });
         }
         respondJson(response, 200, {
+          workflow,
+          blockingIssues: workflow.blockingIssues,
+          nextAction: workflow.nextAction,
           draftId: id,
           revision: draft.revision,
           slideCount: draft.slides.length,
           sourceUrl: sourcePath,
           importedUrl: importedPath,
+          comparisonUrl: comparisonPath,
           sourceContactSheetUrl: sourceContactSheetPath,
           importedContactSheetUrl: importedContactSheetPath,
           diffUrl: null,
@@ -1135,11 +1229,15 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
       if (!draft) return respondJson(response, 404, { error: 'draft not found' });
       const query = `?deck=${encodeURIComponent(deckParam)}`;
       respondJson(response, 200, {
+        workflow: draft.workflow,
+        blockingIssues: draft.workflow.blockingIssues,
+        nextAction: draft.workflow.nextAction,
         draftId: draft.id,
         revision: draft.revision,
         slideCount: draft.slides.length,
         sourceUrl: `/api/html-drafts/${draft.id}/source${query}`,
         importedUrl: `/api/html-drafts/${draft.id}/imported${query}`,
+        comparisonUrl: `/api/html-drafts/${draft.id}/compare${query}`,
         sourceContactSheetUrl: `/api/html-drafts/${draft.id}/source/contact-sheet.png${query}`,
         importedContactSheetUrl: `/api/html-drafts/${draft.id}/imported/contact-sheet.png${query}`,
         report: draft.report,
@@ -1161,21 +1259,47 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
       return;
     }
 
+    const draftComparison = /^\/api\/html-drafts\/([^/]+)\/compare$/.exec(path);
+    if (draftComparison && request.method === 'GET') {
+      const draft = htmlDrafts.get(draftComparison[1]);
+      if (!draft || draft.deckId !== deckParam) return respondJson(response, 404, { error: 'draft not found' });
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+      response.end(htmlDraftComparisonDocument(draft));
+      return;
+    }
+
     const draftRender = /^\/api\/html-drafts\/([^/]+)\/(source|imported)\/(contact-sheet|slide-(\d+))\.png$/.exec(path);
     if (draftRender && request.method === 'GET') {
       const draft = htmlDrafts.get(draftRender[1]);
       if (!draft || draft.deckId !== deckParam) return respondJson(response, 404, { error: 'draft not found' });
       const room = await getRoom(draft.deckId);
       const slideNumber = draftRender[4] ? Number(draftRender[4]) : null;
-      const png = await renderHtmlDraftPng(
-        draftRender[2] === 'source' ? draft.sourceHtml : draft.importedHtml,
-        room.session.deck.canvas,
-        slideNumber === null ? null : slideNumber - 1,
-      );
+      const themeHref = `/api/theme?deck=${encodeURIComponent(draft.deckId)}`;
+      const cacheKey = `${draftRender[2]}:${slideNumber ?? 'contact'}`;
+      let pending = draft.renderCache.get(cacheKey);
+      const cacheHit = Boolean(pending);
+      const renderStartedAt = Date.now();
+      if (!pending) {
+        pending = renderHtmlDraftPng(
+          draftRender[2] === 'source' ? draft.sourceHtml : draft.importedHtml,
+          room.session.deck.canvas,
+          slideNumber === null ? null : slideNumber - 1,
+          {
+            base: pathToFileURL(`${room.session.dir}/`).href,
+            stylesheets: [{ href: themeHref, css: await loadTheme(room.session.dir, room.session.deck.theme) }],
+          },
+        );
+        draft.renderCache.set(cacheKey, pending);
+      }
+      let png: Buffer;
+      try { png = await pending; }
+      catch (error) { draft.renderCache.delete(cacheKey); throw error; }
       response.writeHead(200, {
         'content-type': 'image/png',
         'cache-control': 'no-store',
         'content-length': String(png.length),
+        'server-timing': `draft-render;dur=${Date.now() - renderStartedAt}`,
+        'x-deckwerk-render-cache': cacheHit ? 'hit' : 'miss',
       });
       response.end(png);
       return;
@@ -1196,6 +1320,9 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
       if (blockingDiagnostics.length > 0) {
         return respondJson(response, 422, {
           error: 'draft has blocking import diagnostics; preview and revise before applying',
+          workflow: draft.workflow,
+          blockingIssues: draft.workflow.blockingIssues,
+          nextAction: draft.workflow.nextAction,
           blockingDiagnostics,
           report: draft.report,
         });
@@ -1236,7 +1363,18 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
         ops: operations,
         agentChatId: agentChatId(deckParam, agentSessionParam) ?? undefined,
       });
-      const result = { revision: deckRevision(applied.deck), slideIds: appliedIds, label };
+      const playerUrls = appliedIds.map((slideId) => {
+        const index = applied.deck.slides.findIndex((slide) => slide.id === slideId);
+        return {
+          slideId,
+          url: `/present.html?deck=${encodeURIComponent(deckParam)}&slide=${index + 1}&agent=1`,
+          pngUrl: `/api/render-slide.png?deck=${encodeURIComponent(deckParam)}&slideId=${encodeURIComponent(slideId)}`,
+        };
+      });
+      const result = {
+        revision: deckRevision(applied.deck), slideIds: appliedIds, label, playerUrls,
+        stopCondition: draft.workflow.verificationPolicy.stopWhen,
+      };
       htmlIdempotency.set(payload.idempotencyKey, result);
       respondJson(response, 200, { ...result, idempotent: false });
       return;
@@ -1255,7 +1393,13 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
         base: `/decks/${encodeURIComponent(deckParam)}/`,
         theme: `/api/theme?deck=${encodeURIComponent(deckParam)}`,
       });
-      const png = await renderHtmlDraftPng(html, room.session.deck.canvas, 0);
+      const png = await renderHtmlDraftPng(html, room.session.deck.canvas, 0, {
+        base: pathToFileURL(`${room.session.dir}/`).href,
+        stylesheets: [{
+          href: `/api/theme?deck=${encodeURIComponent(deckParam)}`,
+          css: await loadTheme(room.session.dir, room.session.deck.theme),
+        }],
+      });
       response.writeHead(200, {
         'content-type': 'image/png',
         'cache-control': 'no-store',
@@ -1447,12 +1591,16 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
     });
   });
   boundPort = port;
+  unsubscribeSharedAgent = sharedAgent?.subscribe(emitSharedAgentState);
 
   return {
     port,
     urls: reachableUrls(host, port),
     flush: async () => {
       await Promise.all([...rooms.values()].map((room) => room.session.flush()));
+    },
+    notifyEnded: () => {
+      for (const room of rooms.values()) broadcast(room, { kind: 'ended' });
     },
     close: async () => {
       wss.close();
@@ -1716,7 +1864,7 @@ function validateEditedAsset(src: string | null | undefined, deckDir: string, la
 async function sanitizeServerHtml(
   source: string,
   deckDir: string,
-): Promise<{ html: string; blocked: string[]; assets: string[] }> {
+): Promise<{ html: string; blocked: string[]; missing: string[]; assets: string[] }> {
   const blocked: string[] = [];
   const assets: string[] = [];
   let html = source
@@ -1753,7 +1901,25 @@ async function sanitizeServerHtml(
       await rm(temp, { recursive: true, force: true });
     }
   }
-  return { html, blocked, assets };
+  return { html, blocked, missing: missingDeckAssets(html, deckDir), assets };
+}
+
+function missingDeckAssets(html: string, deckDir: string): string[] {
+  const references = [
+    ...[...html.matchAll(/(?:src|poster)\s*=\s*["']([^"']+)["']/gi)].map((match) => match[1]),
+    ...[...html.matchAll(/url\(\s*["']?([^"')]+)["']?\s*\)/gi)].map((match) => match[1]),
+  ];
+  const missing = new Set<string>();
+  for (const reference of references) {
+    const normalized = reference.split(/[?#]/, 1)[0].replaceAll('\\', '/');
+    if (!normalized.startsWith('assets/')) continue;
+    try {
+      if (!existsSync(resolveAsset(deckDir, normalized))) missing.add(normalized);
+    } catch {
+      missing.add(normalized);
+    }
+  }
+  return [...missing];
 }
 
 function extensionForMime(mime: string): string {
@@ -1771,6 +1937,39 @@ function extensionForMime(mime: string): string {
  * authored 1920×1080 section to the viewport; contact mode lays every slide
  * out as a zoomable grid. The underlying draft remains unchanged.
  */
+export function htmlDraftComparisonDocument(
+  draft: Pick<HttpHtmlDraft, 'id' | 'deckId' | 'slides'>,
+): string {
+  const deck = encodeURIComponent(draft.deckId);
+  const mode = draft.slides.length > 1 ? 'contact' : 'slides';
+  const source = `/api/html-drafts/${draft.id}/source?deck=${deck}&scratchpad=${mode}`;
+  const imported = `/api/html-drafts/${draft.id}/imported?deck=${deck}&scratchpad=${mode}`;
+  return sideBySideComparisonDocument({
+    title: 'Source / Imported comparison',
+    left: { label: 'Source', url: source },
+    right: { label: 'Imported', url: imported },
+  });
+}
+
+function sideBySideComparisonDocument(input: {
+  title: string;
+  left: { label: string; url: string };
+  right: { label: string; url: string };
+}): string {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>${input.title}</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #0b0d12; color: #f4f6fb; font: 600 13px/1.2 system-ui, sans-serif; }
+  main { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; width: 100%; height: 100%; padding: 8px; }
+  section { display: grid; grid-template-rows: 28px 1fr; min-width: 0; min-height: 0; }
+  h1 { margin: 0; padding: 5px 8px; font: inherit; letter-spacing: .08em; text-transform: uppercase; }
+  iframe { width: 100%; height: 100%; border: 1px solid #363a44; background: #111318; }
+</style></head><body><main>
+<section><h1>${input.left.label}</h1><iframe title="${input.left.label} slide preview" src="${input.left.url}"></iframe></section>
+<section><h1>${input.right.label}</h1><iframe title="${input.right.label} slide preview" src="${input.right.url}"></iframe></section>
+</main></body></html>`;
+}
+
 export function scratchpadDocument(html: string, mode: 'slides' | 'contact'): string {
   const common = String.raw`<style data-agent-scratchpad>
     html, body { margin: 0 !important; width: 100vw !important; min-width: 0 !important; min-height: 100vh !important; box-sizing: border-box !important; background: #111318 !important; }
