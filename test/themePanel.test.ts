@@ -54,4 +54,27 @@ describe('theme panel', () => {
     expect(roleLabels).not.toContain('Heading');
     expect(roleLabels).not.toContain('Base');
   });
+
+  it('dismisses theme picking and the inline theme editor', () => {
+    const store = new EditorStore(emptyDeck('Theme panel'), '/tmp/theme-panel');
+    const panel = createThemePanel({
+      store,
+      cssEditor: { getValue: () => '', setValue: vi.fn() } as unknown as CssEditor,
+      save: vi.fn(),
+      setStatusMessage: vi.fn(),
+      saveThemeCss: vi.fn(),
+      onThemePreview: vi.fn(),
+    });
+    document.body.appendChild(panel.element);
+
+    panel.element.querySelector<HTMLButtonElement>('.theme-active-card')!.click();
+    panel.element.querySelector<HTMLButtonElement>('.theme-section-action')!.click();
+    expect(panel.element.querySelector<HTMLElement>('.theme-chooser')!.hidden).toBe(false);
+    expect(panel.element.querySelector<HTMLElement>('.theme-inline-editor')!.hidden).toBe(false);
+
+    expect(panel.dismiss()).toBe(true);
+    expect(panel.element.querySelector<HTMLElement>('.theme-chooser')!.hidden).toBe(true);
+    expect(panel.element.querySelector<HTMLElement>('.theme-inline-editor')!.hidden).toBe(true);
+    expect(panel.dismiss()).toBe(false);
+  });
 });

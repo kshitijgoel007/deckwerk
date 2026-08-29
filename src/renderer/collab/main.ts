@@ -219,6 +219,21 @@ const themePanel = createThemePanel({
   ),
   createLayoutPreview: (theme, onActivate) => designWorkspace.createLayoutSummary(theme, onActivate),
 });
+rail.onSlideActivate = () => {
+  themePanel.dismiss();
+  designWorkspace.hide();
+};
+document.addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape') return;
+  const escaped = designWorkspace.escape();
+  if (escaped === 'theme') themePanel.dismiss();
+  const dismissedThemeEditor = !escaped && themePanel.dismiss();
+  if (dismissedThemeEditor) designWorkspace.hide();
+  if (escaped || dismissedThemeEditor) {
+    event.preventDefault();
+    event.stopPropagation();
+  }
+}, true);
 inspector.onEditLayouts = (layout) => designWorkspace.openLayoutEditor(layout);
 el('themePanel').appendChild(themePanel.element);
 el('themePanel').classList.add('theme-panel');

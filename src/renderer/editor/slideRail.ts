@@ -66,6 +66,8 @@ export class SlideRail {
    * the rail rows. Unset outside collab sessions.
    */
   presenceForSlide?: (slideId: string) => RailPresence[];
+  /** Runs for an explicit thumbnail pick, including the already-active slide. */
+  onSlideActivate?: (slideIndex: number) => void;
 
   constructor(host: HTMLElement, store: EditorStore) {
     this.host = host;
@@ -507,6 +509,7 @@ export class SlideRail {
       item.addEventListener('pointerdown', (event) => {
         if (event.button !== 0) return;
         this.store.selectSlide(i, event.shiftKey);
+        this.onSlideActivate?.(i);
         // Picking slides makes the rail the active surface, so Backspace is a
         // slide command from here on. Without this the keystroke reaches the
         // window handler, which only knows about canvas objects, and selecting

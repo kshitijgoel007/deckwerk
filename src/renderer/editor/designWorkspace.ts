@@ -33,6 +33,7 @@ export class DesignWorkspace {
   private previewStyle: HTMLStyleElement;
   private theme: ThemePreset | null = null;
   private editingOverlay: HTMLElement | null = null;
+  private closeLayoutEditor: ((save: boolean) => void) | null = null;
   private previewObservers: ResizeObserver[] = [];
   private layoutSummaryObserver: ResizeObserver | null = null;
 
@@ -77,6 +78,17 @@ export class DesignWorkspace {
     this.preview.hidden = true;
     this.deps.canvasHost.classList.remove('design-preview-active');
     this.previewStyle.textContent = '';
+  }
+
+  /** Leave the foremost design mode. Layout edits are cancelled on Escape. */
+  escape(): 'layout' | 'theme' | null {
+    if (this.closeLayoutEditor) {
+      this.closeLayoutEditor(false);
+      return 'layout';
+    }
+    if (this.preview.hidden) return null;
+    this.hide();
+    return 'theme';
   }
 
   setTheme(theme: ThemePreset | null): void {
@@ -246,9 +258,11 @@ export class DesignWorkspace {
       }
       overlay.remove();
       this.editingOverlay = null;
+      this.closeLayoutEditor = null;
       if (!this.preview.hidden) this.render();
       else this.previewStyle.textContent = '';
     };
+    this.closeLayoutEditor = close;
   }
 }
 

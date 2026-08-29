@@ -52,6 +52,8 @@ export interface ThemePanel {
   /** Keep scope controls consistent with the rail selection. */
   syncScope(slideSelectionCount: number): void;
   applyButtonLabel(): string;
+  /** Close the theme chooser/editor and end its central preview session. */
+  dismiss(): boolean;
 }
 
 export function createThemePanel(deps: ThemePanelDeps): ThemePanel {
@@ -415,6 +417,16 @@ export function createThemePanel(deps: ThemePanelDeps): ThemePanel {
     refreshSwatches,
     syncScope,
     applyButtonLabel,
+    dismiss: () => {
+      const wasOpen = themePreviewOpen
+        || Boolean(chooser && !chooser.hidden)
+        || Boolean(themeEditor && !themeEditor.hidden);
+      themePreviewOpen = false;
+      if (chooser) chooser.hidden = true;
+      if (themeEditor) themeEditor.hidden = true;
+      renderActiveTheme();
+      return wasOpen;
+    },
     noteDeckOpened: (deck) => {
       themeGallery?.setSelected(deck.themePreset);
       themeGallery?.setInstalled(deck.themePreset);

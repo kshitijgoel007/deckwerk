@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { emptyDeck, parseDeck } from '../src/shared/deck.js';
 import { suggestMagicMovePairs } from '../src/shared/magicMove.js';
 import { Inspector } from '../src/renderer/editor/inspector.js';
@@ -79,6 +79,18 @@ describe('collaborator presence in the slide rail', () => {
     expect(secondRow.querySelector('.rail-presence-selection')).toBeNull();
     expect(secondRow.querySelector('.rail-presence-dot')).toBeNull();
     expect(host.querySelectorAll<HTMLElement>('.rail-thumb')[1]).toBe(secondThumb);
+  });
+});
+
+describe('slide activation', () => {
+  it('announces an explicit pick even when the active slide is picked again', () => {
+    const { host, rail } = setup();
+    const onSlideActivate = vi.fn();
+    rail.onSlideActivate = onSlideActivate;
+
+    pickRow(host.querySelector<HTMLElement>('.rail-item')!);
+
+    expect(onSlideActivate).toHaveBeenCalledWith(0);
   });
 });
 
