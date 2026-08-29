@@ -10,6 +10,11 @@ import {
   pasteImageFilesFromClipboard,
   pasteFromClipboard,
 } from './store.js';
+import {
+  setWholeTextFormat,
+  wholeTextFormatState,
+  type TextFormat,
+} from './textFormatting.js';
 
 /**
  * Shell-independent wiring shared by the Electron editor and the browser
@@ -99,6 +104,9 @@ export function wireCanvasInspector(
   inspector.onApplyTextSelectionListStyle = (style) =>
     canvas.applyTextSelectionListStyle(style);
   inspector.textSelectionListStyle = () => canvas.textSelectionListStyle();
+  inspector.onApplyTextSelectionMarkerColor = (value) =>
+    canvas.applyTextSelectionMarkerColor(value);
+  inspector.textSelectionMarkerColor = () => canvas.textSelectionMarkerColor();
   inspector.tableSelection = () => canvas.tableSelectionInfo();
   inspector.tableBorderSettings = () => canvas.tableBorderSettings();
   inspector.onSetTableBorderColor = (color) =>
@@ -261,6 +269,20 @@ export function bindEditorKeys(deps: ShellDeps, clipboard: ClipboardActions): vo
     if (mod && e.key.toLowerCase() === 'd') {
       e.preventDefault();
       duplicateSelection(store);
+      return;
+    }
+    if (mod && ['b', 'i', 'u'].includes(e.key.toLowerCase())) {
+      const texts = store.selectedElements()
+        .filter((element): element is Extract<SlideElement, { type: 'text' }> => element.type === 'text');
+      if (texts.length > 0) {
+        e.preventDefault();
+        const format: TextFormat = e.key.toLowerCase() === 'b'
+          ? 'bold' : e.key.toLowerCase() === 'i' ? 'italic' : 'underline';
+        const active = texts.every((element) => wholeTextFormatState(element, format));
+        store.updateSelected((element) => {
+          if (element.type === 'text') setWholeTextFormat(element, format, !active);
+        }, { label: `${active ? 'Remove' : 'Apply'} ${format}` });
+      }
       return;
     }
     if (mod && e.key.toLowerCase() === 'a') {

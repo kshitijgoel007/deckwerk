@@ -10,6 +10,7 @@ import {
   stepCount,
 } from '@shared/timeline.js';
 import { applyStageScale, fitAutoTextElement, renderSlide } from './render.js';
+import { decodeImage, revealImagesWhenDecoded } from './imageDecode.js';
 import { applyStaticSlideState } from './staticState.js';
 import {
   essentialMagicMovePairs,
@@ -47,7 +48,7 @@ export interface PlayerOptions {
 const PLAY_RETRY_LIMIT = 12;
 const PLAY_RETRY_DELAY_MS = 400;
 
-/** How many slides ahead of the cursor get their video files cache-warmed. */
+/** How many presentable slides ahead get their media cache-warmed. */
 const WARM_AHEAD_SLIDES = 2;
 
 export class Player {
@@ -83,10 +84,12 @@ export class Player {
    * "DOM churn").
    */
   private videoPool = new Map<string, HTMLVideoElement[]>();
-  /** Resolved file URLs already warmed into the HTTP cache (warmUpcomingVideos). */
+  /** Resolved video URLs already warmed into the HTTP cache. */
   private warmedSrcs = new Set<string>();
   private warmQueue: string[] = [];
   private warmInFlight = false;
+  /** Fully decoded images for the next presentable slides, kept alive until use. */
+  private warmedImages = new Map<string, HTMLImageElement>();
 
   constructor(opts: PlayerOptions) {
     this.deck = opts.deck;
@@ -157,6 +160,8 @@ export class Player {
       video.load();
     }
     this.videoPool.clear();
+    for (const image of this.warmedImages.values()) image.removeAttribute('src');
+    this.warmedImages.clear();
     this.container.replaceChildren();
   }
 
@@ -271,6 +276,8 @@ export class Player {
     }
 
     const rendered = renderSlide(slide, { resolveSrc: this.resolveSrc });
+    this.adoptWarmedImages(rendered);
+    revealImagesWhenDecoded(rendered);
     this.stage.replaceChildren(rendered);
 
     // Two passes, because identity has to win globally rather than per node: a
@@ -385,7 +392,7 @@ export class Player {
 
     this.applyState(slide, resolveState(slide, this.cursor.step));
     if (magicMove && previousSlide) this.runMagicMove(previousSlide, slide, previousNodes);
-    this.warmUpcomingVideos();
+    this.warmUpcomingMedia();
     this.onCursor?.(this.getCursor(), steps);
   }
 
@@ -402,23 +409,86 @@ export class Player {
    * flooding the origin's six connections is the bug class this file is
    * defending against.
    */
-  private warmUpcomingVideos(): void {
+  private warmUpcomingMedia(): void {
     if (typeof fetch !== 'function') return;
     const onCurrentSlide = new Set<string>();
     for (const el of this.deck.slides[this.cursor.slide]?.elements ?? []) {
       if (el.type === 'video' && !isPendingSrc(el.src)) onCurrentSlide.add(this.resolveSrc(el.src));
     }
     this.warmQueue = [];
-    const horizon = Math.min(this.deck.slides.length, this.cursor.slide + 1 + WARM_AHEAD_SLIDES);
-    for (let i = this.cursor.slide + 1; i < horizon; i += 1) {
-      for (const el of this.deck.slides[i].elements) {
+    const upcomingSlides: Slide[] = [];
+    let slidesAhead = 0;
+    for (let i = this.cursor.slide + 1;
+      i < this.deck.slides.length && slidesAhead < WARM_AHEAD_SLIDES;
+      i += 1) {
+      const upcoming = this.deck.slides[i];
+      if (upcoming.skipped) continue;
+      slidesAhead += 1;
+      upcomingSlides.push(upcoming);
+      for (const el of upcoming.elements) {
         if (el.type !== 'video' || isPendingSrc(el.src)) continue;
         const src = this.resolveSrc(el.src);
         if (onCurrentSlide.has(src) || this.warmedSrcs.has(src)) continue;
         if (!this.warmQueue.includes(src)) this.warmQueue.push(src);
       }
     }
+    this.warmUpcomingImages(upcomingSlides);
     this.pumpWarmQueue();
+  }
+
+  /**
+   * Decode upcoming still images before they become visible.
+   *
+   * Byte caching alone is insufficient for large JPEGs: Chromium may paint
+   * the scanlines decoded so far, which looks like a thin strip at the top of
+   * the element. Keeping the decoded `<img>` itself alive lets `goTo` adopt a
+   * complete bitmap atomically. Only the current lookahead is retained, so a
+   * long image-heavy deck does not accumulate decoded 4K/6K frames in memory.
+   */
+  private warmUpcomingImages(slides: Slide[]): void {
+    const desired = new Set<string>();
+    for (const slide of slides) {
+      if (slide.background.image && !isPendingSrc(slide.background.image)) {
+        desired.add(this.resolveSrc(slide.background.image));
+      }
+      for (const el of slide.elements) {
+        if (el.type !== 'image' || isPendingSrc(el.src) || /\.pdf(?:$|[?#])/i.test(el.src)) continue;
+        desired.add(this.resolveSrc(el.src));
+      }
+    }
+
+    for (const [src, image] of this.warmedImages) {
+      if (desired.has(src)) continue;
+      image.removeAttribute('src');
+      this.warmedImages.delete(src);
+    }
+    for (const src of desired) {
+      if (this.warmedImages.has(src)) continue;
+      const image = document.createElement('img');
+      image.decoding = 'async';
+      image.src = src;
+      this.warmedImages.set(src, image);
+      void decodeImage(image);
+    }
+  }
+
+  /** Move an already decoded lookahead image into the rendered slide. */
+  private adoptWarmedImages(root: HTMLElement): void {
+    for (const fresh of root.querySelectorAll<HTMLImageElement>('img')) {
+      const src = fresh.getAttribute('src');
+      if (!src) continue;
+      const warmed = this.warmedImages.get(src);
+      // A still-loading warmer is useful too: move its one in-flight request
+      // into the slide and keep it hidden until decode completes, rather than
+      // aborting it and starting the same large image again from a fresh node.
+      if (!warmed || (warmed.complete && warmed.naturalWidth <= 0)) continue;
+      warmed.className = fresh.className;
+      warmed.style.cssText = fresh.style.cssText;
+      warmed.alt = fresh.alt;
+      warmed.draggable = fresh.draggable;
+      fresh.replaceWith(warmed);
+      this.warmedImages.delete(src);
+    }
   }
 
   private pumpWarmQueue(): void {

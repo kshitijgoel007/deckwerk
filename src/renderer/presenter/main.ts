@@ -4,6 +4,8 @@ import './presenter.css';
 import type { Deck } from '@shared/deck.js';
 import type { DeckSession, PresentationState } from '@shared/ipc.js';
 import { resolveState } from '@shared/timeline.js';
+import { revealImagesWhenDecoded } from '../player/imageDecode.js';
+import { freezePreviewVideos } from '../player/previewPoster.js';
 import { applyStageScale, renderSlide } from '../player/render.js';
 import { applyStaticSlideState } from '../player/staticState.js';
 import { formatElapsed, formatWallClock, presentationLabel } from './model.js';
@@ -33,13 +35,25 @@ function preview(host: HTMLElement, slideIndex: number, step = 0): void {
   const stage = document.createElement('div');
   stage.className = 'stage';
   const slide = deck.slides[slideIndex];
-  stage.appendChild(renderSlide(slide, { resolveSrc: window.api.assetUrl }));
+  stage.appendChild(renderSlide(slide, {
+    resolveSrc: window.api.assetUrl,
+    mediaPreload: 'metadata',
+  }));
   host.appendChild(stage);
   const resolved = resolveState(slide, step);
   applyStaticSlideState(stage, slide, resolved);
   const bounds = host.getBoundingClientRect();
   applyStageScale(stage, deck, { w: bounds.width, h: bounds.height });
   for (const video of stage.querySelectorAll('video')) video.pause();
+  // Large JPEGs otherwise paint their first decoded scanlines as a thin strip
+  // before the complete bitmap is ready. Keep both current and next previews
+  // atomic just like the audience Player.
+  revealImagesWhenDecoded(stage);
+  // Speaker View is a pair of still previews, not a playback surface. Capture
+  // one decoded frame per source/in-point and reuse it across re-renders. In
+  // particular, the next slide is warm before it becomes current, so moving
+  // through a video-heavy deck never opens on an undecoded black frame.
+  freezePreviewVideos(stage);
 }
 
 function render(): void {

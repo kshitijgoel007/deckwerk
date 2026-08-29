@@ -1066,6 +1066,40 @@ describe('inline text editing', () => {
     }
   });
 
+  it('handles a native formatBold command for a word inside a normal-weight run', () => {
+    const { store, canvas, host } = setup();
+    store.commit((deck) => {
+      const text = deck.slides[0].elements.find((element) => element.id === 'text-1');
+      if (text?.type !== 'text') return;
+      text.style = { 'font-weight': '700' };
+      text.html = 'Heading: <span style="font-weight: 400">We found that</span>';
+    });
+    canvas.beginTextEdit('text-1');
+    const body = bodyOf(host, 'text-1');
+    const sentence = body.querySelector('span')!.firstChild!;
+    const range = document.createRange();
+    range.setStart(sentence, 3);
+    range.setEnd(sentence, 8);
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+
+    const command = new InputEvent('beforeinput', {
+      bubbles: true,
+      cancelable: true,
+      inputType: 'formatBold',
+    });
+    body.dispatchEvent(command);
+
+    expect(command.defaultPrevented).toBe(true);
+    expect(selection.toString()).toBe('found');
+    expect(body.innerHTML).toContain('<span style="font-weight: 700;">found</span>');
+    const text = store.slide!.elements.find((element) => element.id === 'text-1');
+    expect(text?.type === 'text' ? text.html : '').toContain(
+      '<span style="font-weight: 700;">found</span>',
+    );
+  });
+
   it('plays the video when it is double-clicked', () => {
     const { canvas, host } = setup();
     const stage = host.querySelector<HTMLElement>('.stage')!;
@@ -2101,6 +2135,33 @@ describe('object creation and manipulation', () => {
       expect(store.get().selection.size).toBe(0);
       input.remove();
     });
+  });
+
+  it('applies formatting shortcuts to every character of an object-selected text box', () => {
+    const { store, host } = setup();
+    store.commit((deck) => {
+      const text = deck.slides[0].elements.find((element) => element.id === 'text-1');
+      if (text?.type === 'text') {
+        text.html = '<p><strong>Original</strong> <span style="font-weight: 300">text</span></p>';
+      }
+    });
+    store.select(['text-1']);
+    bindEditorKeys(shellDeps(store), noopClipboard());
+
+    const event = new KeyboardEvent(
+      'keydown', { key: 'b', ctrlKey: true, bubbles: true, cancelable: true },
+    );
+    host.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(true);
+    const formatted = store.slide!.elements.find((element) => element.id === 'text-1')!;
+    expect(formatted.type === 'text' && formatted.style['font-weight']).toBe('700');
+    const saved = document.createElement('div');
+    saved.innerHTML = formatted.type === 'text' ? formatted.html : '';
+    const textParents = [...saved.querySelectorAll<HTMLElement>('*')]
+      .filter((node) => [...node.childNodes].some((child) => child.nodeType === Node.TEXT_NODE));
+    expect(textParents.length).toBeGreaterThan(0);
+    expect(textParents.every((node) => node.style.fontWeight === '700')).toBe(true);
   });
 
   it('updates the rendered layout class when switching presets on the fast path', () => {

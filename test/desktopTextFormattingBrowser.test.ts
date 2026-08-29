@@ -1,0 +1,351 @@
+import { spawn, type ChildProcess } from 'node:child_process';
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
+import { build } from 'electron-vite';
+import { saveDeck } from '../src/main/deckStore.js';
+import { emptyDeck } from '../src/shared/deck.js';
+import {
+  Cdp,
+  collectProcessOutput,
+  electronBinary,
+  eventually,
+  findTarget,
+  freePort,
+  stopBrowser,
+} from './support/browserSession.js';
+
+/**
+ * Production-desktop coverage for the complete inline-formatting journey.
+ *
+ * Unlike the collaboration-browser stress test, this launches the real main
+ * process and preload, establishes selections with pointer gestures, and
+ * waits for the resulting deck to reach disk. The app is built into the test's
+ * temporary directory so an old checkout-level `out/` cannot mask a regression.
+ */
+const TEXT_ID = 'desktop-format-text';
+const TEXT = [
+  'Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor ',
+  'incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud ',
+  'exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat.',
+].join('');
+const CONTENT = `#canvas [data-element-id="${TEXT_ID}"] .text-content`;
+const PANEL = '#inspector';
+const MOD = process.platform === 'darwin' ? 4 : 2;
+
+type Format = 'bold' | 'italic' | 'underline';
+type InputRoute = 'shortcut' | 'button';
+
+const FORMAT_UI: Record<Format, { key: string; code: string; keyCode: number; label: string }> = {
+  bold: { key: 'b', code: 'KeyB', keyCode: 66, label: 'Bold (Cmd/Ctrl+B)' },
+  italic: { key: 'i', code: 'KeyI', keyCode: 73, label: 'Italic (Cmd/Ctrl+I)' },
+  underline: { key: 'u', code: 'KeyU', keyCode: 85, label: 'Underline (Cmd/Ctrl+U)' },
+};
+
+let workDir = '';
+let appProcess: ChildProcess | null = null;
+let editor: Cdp | null = null;
+
+afterEach(async () => {
+  editor?.close();
+  editor = null;
+  await stopBrowser(appProcess);
+  appProcess = null;
+  if (workDir) await rm(workDir, { recursive: true, force: true });
+  workDir = '';
+});
+
+describe.skipIf(!electronBinary)('desktop inline-formatting matrix', () => {
+  it('formats whole text, arbitrary overlaps, and newly inserted paragraph text through chords and buttons', async () => {
+    workDir = await mkdtemp(join(tmpdir(), 'deckwerk-desktop-formatting-'));
+    const checkout = process.cwd();
+    const appDir = join(workDir, 'app');
+    const outDir = join(appDir, 'out');
+    const deckDir = join(workDir, 'deck');
+    const profileDir = join(workDir, 'electron-profile');
+    await mkdir(appDir, { recursive: true });
+    await mkdir(profileDir, { recursive: true });
+
+    await build({
+      root: checkout,
+      configFile: join(checkout, 'electron.vite.config.ts'),
+      logLevel: 'silent',
+      build: { outDir },
+    });
+    await writeFile(join(appDir, 'package.json'), JSON.stringify({
+      name: 'deckwerk-formatting-test',
+      private: true,
+      type: 'module',
+      main: 'out/main/index.js',
+    }), 'utf8');
+    await symlink(join(checkout, 'node_modules'), join(appDir, 'node_modules'), 'dir');
+
+    const deck = emptyDeck('Desktop formatting matrix');
+    deck.slides[0].elements.push({
+      id: TEXT_ID,
+      type: 'text',
+      x: 140,
+      y: 150,
+      w: 1640,
+      h: 760,
+      rot: 0,
+      z: 1,
+      opacity: 1,
+      class: ['role-body'],
+      style: {},
+      html: `<p>${TEXT}</p>`,
+      align: 'left',
+      valign: 'top',
+    });
+    await saveDeck(deckDir, deck);
+    await writeFile(join(deckDir, 'theme.css'), [
+      '.slide { background: #fff; color: #111827; }',
+      '.role-body { font: 400 42px/1.35 Arial, sans-serif; }',
+      '',
+    ].join('\n'), 'utf8');
+
+    const debugPort = await freePort();
+    appProcess = spawn(electronBinary, [
+      appDir,
+      `--remote-debugging-port=${debugPort}`,
+      '--remote-allow-origins=*',
+      `--user-data-dir=${profileDir}`,
+      deckDir,
+    ], {
+      cwd: checkout,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, ELECTRON_DISABLE_SECURITY_WARNINGS: '1' },
+    });
+    const appLog = collectProcessOutput(appProcess);
+    const target = await findTarget(
+      debugPort,
+      (candidate) => candidate.title === 'DeckWerk' || candidate.url.includes('/editor/index.html'),
+      appLog,
+      20_000,
+    );
+    editor = await Cdp.connect(target.webSocketDebuggerUrl!);
+    await eventually(async () => editor!.evaluate<boolean>(`window.api.getDeck().then(
+      (session) => session?.dir === ${JSON.stringify(deckDir)}
+        && document.querySelector(${JSON.stringify(CONTENT)})?.textContent === ${JSON.stringify(TEXT)}
+    )`), 'desktop editor did not open the formatting fixture');
+    await editor.call('Page.bringToFront');
+    await editor.evaluate('window.focus()');
+
+    // Match the reported gesture: select the box, then double-click a word.
+    await editor.click(`#canvas [data-element-id="${TEXT_ID}"]`, 'Lorem Ipsum text box');
+    const firstIpsum = wordRange(TEXT, 'ipsum');
+    await editor.doubleClickTextAtOffset(CONTENT, firstIpsum.start + 1, 'the first “ipsum”');
+    await eventually(async () => selectedText(editor!), 'double-click did not select “ipsum”',
+      (value) => value === 'ipsum');
+
+    let authoredText = TEXT;
+    const expected: Record<Format, boolean[]> = {
+      bold: Array(authoredText.length).fill(false),
+      italic: Array(authoredText.length).fill(false),
+      underline: Array(authoredText.length).fill(false),
+    };
+
+    const assertAllFormats = async (label: string, expectedSelection?: string) => {
+      for (const format of ['bold', 'italic', 'underline'] as const) {
+        const state = await readFormatState(editor!, format);
+        expect(state.text, `${label}: ${format} changed text`).toBe(authoredText);
+        expect(state.map, `${label}: ${format} scope drifted`).toEqual(expected[format]);
+        expect(state.editing, `${label}: text editing stopped`).toBe(true);
+        if (expectedSelection !== undefined) {
+          expect(normalizeSelection(state.selected), `${label}: selection drifted`)
+            .toBe(normalizeSelection(expectedSelection));
+        }
+      }
+    };
+
+    const invoke = async (format: Format, route: InputRoute, label: string) => {
+      const ui = FORMAT_UI[format];
+      if (route === 'shortcut') {
+        await editor!.chord(ui.key, ui.code, ui.keyCode, MOD);
+      } else {
+        await editor!.click(
+          `${PANEL} button[aria-label="${ui.label}"]`,
+          `${label}: ${ui.label}`,
+        );
+      }
+    };
+
+    const selectWholeText = async () => {
+      await editor!.chord('a', 'KeyA', 65, MOD, ['selectAll']);
+      await eventually(async () => selectedText(editor!), 'Cmd/Ctrl+A did not select the text box',
+        (value) => normalizeSelection(value) === normalizeSelection(authoredText));
+    };
+
+    const applyWhole = async (format: Format, route: InputRoute, active: boolean) => {
+      await selectWholeText();
+      await invoke(format, route, `whole-text ${format}`);
+      expected[format].fill(active);
+      await assertAllFormats(`whole-text ${format} via ${route}`, authoredText);
+    };
+
+    // Every format over the whole box, with both routes represented in each
+    // direction. Keeping the selection active also catches toolbar focus loss.
+    await applyWhole('bold', 'shortcut', true);
+    await applyWhole('italic', 'button', true);
+    await applyWhole('underline', 'shortcut', true);
+    await applyWhole('bold', 'button', false);
+    await applyWhole('italic', 'shortcut', false);
+    await applyWhole('underline', 'button', false);
+
+    const applyRange = async (
+      start: number,
+      end: number,
+      format: Format,
+      route: InputRoute,
+      active: boolean,
+      label: string,
+    ) => {
+      await editor!.selectTextRange(CONTENT, start, end, label);
+      const wanted = authoredText.slice(start, end);
+      await eventually(async () => selectedText(editor!), `${label}: pointer range did not settle`,
+        (value) => normalizeSelection(value) === normalizeSelection(wanted));
+      await invoke(format, route, label);
+      expected[format].fill(active, start, end);
+      await assertAllFormats(`${label}: ${format} via ${route}`, wanted);
+    };
+
+    // Arbitrary, overlapping subsets across words and punctuation. Each format
+    // runs once through each route, and later operations cross earlier spans.
+    const ipsum = wordRange(authoredText, 'ipsum');
+    const dolorPhrase = phraseRange(authoredText, 'dolor', ' amet');
+    const consecteturPhrase = phraseRange(authoredText, 'consectetur', ' elit');
+    const overlap = phraseRange(authoredText, 'sit', ' adipiscing');
+    const laborePhrase = phraseRange(authoredText, 'labore', ' dolore');
+    const nostrudPhrase = phraseRange(authoredText, 'nostrud', ' laboris');
+    await applyRange(ipsum.start, ipsum.end, 'bold', 'shortcut', true, 'single word');
+    await applyRange(dolorPhrase.start, dolorPhrase.end, 'italic', 'button', true, 'short phrase');
+    await applyRange(consecteturPhrase.start, consecteturPhrase.end,
+      'underline', 'shortcut', true, 'punctuated phrase');
+    await applyRange(overlap.start, overlap.end, 'bold', 'button', true, 'overlapping bold phrase');
+    await applyRange(laborePhrase.start, laborePhrase.end,
+      'italic', 'shortcut', true, 'second-line italic phrase');
+    await applyRange(nostrudPhrase.start, nostrudPhrase.end,
+      'underline', 'button', true, 'late underline phrase');
+
+    // Put the caret in unformatted text, insert a real paragraph break and a
+    // new word, then exercise all three formats over the newly created run.
+    const insertAt = authoredText.indexOf('tempor');
+    await editor.clickTextAtOffset(CONTENT, insertAt, 'insertion point before “tempor”');
+    await editor.key('Enter', 13);
+    await editor.call('Input.insertText', { text: 'NOVUM ' });
+    const inserted = await eventually(async () => editor!.evaluate<{
+      text: string;
+      paragraphs: number;
+    }>(`(() => {
+      const root = document.querySelector(${JSON.stringify(CONTENT)});
+      return {
+        text: root?.textContent?.replaceAll('\u2060', '') ?? '',
+        paragraphs: root?.querySelectorAll('p').length ?? 0,
+      };
+    })()`), 'Enter plus inserted word did not settle',
+    (value) => value.text.includes('NOVUM ') && value.paragraphs >= 2);
+    const insertedAt = inserted.text.indexOf('NOVUM ');
+    expect(insertedAt).toBeGreaterThanOrEqual(0);
+    const insertedLength = inserted.text.length - authoredText.length;
+    expect(insertedLength).toBe('NOVUM '.length);
+    authoredText = inserted.text;
+    for (const format of ['bold', 'italic', 'underline'] as const) {
+      expected[format].splice(insertedAt, 0, ...Array(insertedLength).fill(false));
+    }
+    await assertAllFormats('after inserting a paragraph and word');
+
+    const novum = wordRange(authoredText, 'NOVUM');
+    await applyRange(novum.start, novum.end, 'bold', 'shortcut', true, 'inserted word bold');
+    await applyRange(novum.start, novum.end, 'italic', 'button', true, 'inserted word italic');
+    await applyRange(novum.start, novum.end, 'underline', 'shortcut', true, 'inserted word underline');
+
+    // Toggle each format back off over the inserted word using the opposite
+    // route, proving repeated edits preserve the paragraph and selection.
+    await applyRange(novum.start, novum.end, 'bold', 'button', false, 'inserted word unbold');
+    await applyRange(novum.start, novum.end, 'italic', 'shortcut', false, 'inserted word unitalic');
+    await applyRange(novum.start, novum.end, 'underline', 'button', false, 'inserted word ununderline');
+
+    const liveHtml = await editor.evaluate<string>(
+      `document.querySelector(${JSON.stringify(CONTENT)})?.innerHTML ?? ''`,
+    );
+    expect(liveHtml).toContain('NOVUM');
+    expect((liveHtml.match(/<p\b/g) ?? []).length).toBeGreaterThanOrEqual(2);
+
+    // Autosave is part of the contract: a renderer-only visual change is not
+    // enough. Wait until the main-process snapshot and deck.json agree.
+    const persistedHtml = await eventually(async () => {
+      const sessionHtml = await editor!.evaluate<string>(`window.api.getDeck().then((session) => (
+        session.deck.slides[0].elements.find((element) => element.id === ${JSON.stringify(TEXT_ID)})?.html ?? ''
+      ))`);
+      const disk = JSON.parse(await readFile(join(deckDir, 'deck.json'), 'utf8')) as {
+        slides: Array<{ elements: Array<{ id: string; html?: string }> }>;
+      };
+      const diskHtml = disk.slides[0].elements.find((element) => element.id === TEXT_ID)?.html ?? '';
+      return { sessionHtml, diskHtml };
+    }, 'formatted Lorem Ipsum did not autosave',
+    (value) => value.sessionHtml.includes('NOVUM') && value.diskHtml === value.sessionHtml,
+    15_000);
+    expect(persistedHtml.diskHtml).toContain('NOVUM');
+    expect((persistedHtml.diskHtml.match(/<p\b/g) ?? []).length).toBeGreaterThanOrEqual(2);
+  }, 120_000);
+});
+
+describe.skipIf(electronBinary)('desktop inline-formatting matrix (skipped)', () => {
+  it('needs Electron', () => expect(electronBinary).toBe(''));
+});
+
+function wordRange(text: string, word: string): { start: number; end: number } {
+  const start = text.indexOf(word);
+  if (start < 0) throw new Error(`missing word ${JSON.stringify(word)}`);
+  return { start, end: start + word.length };
+}
+
+function phraseRange(text: string, startWord: string, endFragment: string): {
+  start: number;
+  end: number;
+} {
+  const start = text.indexOf(startWord);
+  const endStart = text.indexOf(endFragment, start);
+  if (start < 0 || endStart < 0) {
+    throw new Error(`missing phrase ${JSON.stringify(startWord)}…${JSON.stringify(endFragment)}`);
+  }
+  return { start, end: endStart + endFragment.length };
+}
+
+function normalizeSelection(value: string): string {
+  return value.replace(/\s+/g, ' ').trim();
+}
+
+function selectedText(cdp: Cdp): Promise<string> {
+  return cdp.evaluate(`getSelection()?.toString() ?? ''`);
+}
+
+async function readFormatState(cdp: Cdp, format: Format): Promise<{
+  text: string;
+  selected: string;
+  map: boolean[];
+  editing: boolean;
+}> {
+  return cdp.evaluate(`(() => {
+    const root = document.querySelector(${JSON.stringify(CONTENT)});
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    const map = [];
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      const style = getComputedStyle(node.parentElement);
+      const active = ${JSON.stringify(format)} === 'italic'
+        ? style.fontStyle === 'italic'
+        : ${JSON.stringify(format)} === 'underline'
+          ? style.textDecorationLine.includes('underline')
+          : (style.fontWeight === 'bold' || Number.parseInt(style.fontWeight, 10) >= 600);
+      const authored = node.data.replaceAll('\u2060', '');
+      for (let index = 0; index < authored.length; index += 1) map.push(active);
+    }
+    return {
+      text: root?.textContent?.replaceAll('\u2060', '') ?? '',
+      selected: getSelection()?.toString() ?? '',
+      map,
+      editing: root?.isContentEditable === true,
+    };
+  })()`);
+}

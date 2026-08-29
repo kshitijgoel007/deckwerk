@@ -37,6 +37,19 @@ function videoElement(
   } as unknown as SlideElement;
 }
 
+function imageElement(id: string, src: string): SlideElement {
+  return {
+    id,
+    type: 'image',
+    x: 0, y: 0, w: 640, h: 360, rot: 0, z: 1, opacity: 1,
+    class: [], style: {},
+    src,
+    alt: '',
+    fit: 'fill',
+    sourceBox: null,
+  } as unknown as SlideElement;
+}
+
 function deckWith(slides: SlideElement[][]): Deck {
   const deck = emptyDeck('Video reuse');
   deck.slides = slides.map((elements, i) => ({
@@ -53,6 +66,20 @@ function fakeReadyState(video: HTMLVideoElement, value: number): void {
 
 let host: HTMLElement;
 let player: Player | null = null;
+const originalImageDecode = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, 'decode');
+const originalImageComplete = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, 'complete');
+const originalImageNaturalWidth = Object.getOwnPropertyDescriptor(
+  HTMLImageElement.prototype,
+  'naturalWidth',
+);
+
+function restoreImageProperty(
+  name: 'decode' | 'complete' | 'naturalWidth',
+  descriptor: PropertyDescriptor | undefined,
+): void {
+  if (descriptor) Object.defineProperty(HTMLImageElement.prototype, name, descriptor);
+  else Reflect.deleteProperty(HTMLImageElement.prototype, name);
+}
 
 const stageVideo = (): HTMLVideoElement => {
   const video = host.querySelector('video');
@@ -83,6 +110,9 @@ afterEach(() => {
   player = null;
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+  restoreImageProperty('decode', originalImageDecode);
+  restoreImageProperty('complete', originalImageComplete);
+  restoreImageProperty('naturalWidth', originalImageNaturalWidth);
 });
 
 describe('video element reuse across navigation', () => {
@@ -294,5 +324,80 @@ describe('warming upcoming slides', () => {
     const warmCalls = (fetchStub.mock.calls as unknown as string[][])
       .filter(([url]) => String(url).includes('next'));
     expect(warmCalls.length).toBe(1);
+  });
+
+  it('counts presentable slides rather than skipped slides in its warm horizon', async () => {
+    const fetched: string[] = [];
+    const fetchStub = vi.fn((url: string) => {
+      fetched.push(url);
+      return Promise.resolve({ ok: true, blob: () => Promise.resolve(new Blob()) });
+    });
+    vi.stubGlobal('fetch', fetchStub);
+
+    const deck = deckWith([
+      [],
+      [videoElement('hidden', 'assets/hidden.aaaaaaaa.mp4')],
+      [videoElement('next', 'assets/next.bbbbbbbb.mp4')],
+      [videoElement('later', 'assets/later.cccccccc.mp4')],
+    ]);
+    deck.slides[1].skipped = true;
+    player = new Player({ deck, container: host, resolveSrc: (src) => `/x/${src}` });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(fetched).toEqual([
+      '/x/assets/next.bbbbbbbb.mp4',
+      '/x/assets/later.cccccccc.mp4',
+    ]);
+    expect(fetched).not.toContain('/x/assets/hidden.aaaaaaaa.mp4');
+  });
+
+  it('predecodes an upcoming image and adopts that same element on entry', () => {
+    const decode = vi.fn(() => Promise.resolve());
+    Object.defineProperty(HTMLImageElement.prototype, 'decode', {
+      configurable: true,
+      value: decode,
+    });
+    Object.defineProperty(HTMLImageElement.prototype, 'complete', {
+      configurable: true,
+      get: () => true,
+    });
+    Object.defineProperty(HTMLImageElement.prototype, 'naturalWidth', {
+      configurable: true,
+      get: () => 100,
+    });
+
+    const deck = deckWith([[], [imageElement('photo', 'assets/photo.12345678.jpeg')]]);
+    player = new Player({ deck, container: host, resolveSrc: (src) => `/x/${src}` });
+    expect(decode).toHaveBeenCalledOnce();
+    const warmed = document.querySelector<HTMLImageElement>('img');
+    expect(warmed).toBeNull();
+
+    player.goToSlide(1);
+    const shown = host.querySelector<HTMLImageElement>('img');
+    expect(shown).not.toBeNull();
+    // The lookahead image's decode was the only decode request: the fresh
+    // render was replaced by that already-decoded node rather than starting
+    // over when the slide became visible.
+    expect(decode).toHaveBeenCalledOnce();
+    expect(shown?.getAttribute('src')).toBe('/x/assets/photo.12345678.jpeg');
+  });
+
+  it('hides an uncached image until its complete load event', async () => {
+    Object.defineProperty(HTMLImageElement.prototype, 'complete', {
+      configurable: true,
+      get: () => false,
+    });
+    Reflect.deleteProperty(HTMLImageElement.prototype, 'decode');
+
+    const deck = deckWith([[imageElement('photo', 'assets/photo.12345678.jpeg')]]);
+    player = new Player({ deck, container: host, resolveSrc: (src) => `/x/${src}` });
+    const image = host.querySelector<HTMLImageElement>('img')!;
+    expect(image.style.visibility).toBe('hidden');
+
+    image.dispatchEvent(new Event('load'));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(image.style.visibility).toBe('');
   });
 });

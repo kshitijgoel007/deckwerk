@@ -39,9 +39,9 @@ white screen, then black, then eventually the first slide.
 - **`'auto'`** is for the one surface where playback is imminent: the live
   Player. Buffering ahead is the point there.
 - **`'metadata'`** is for every preview surface — editor canvas, slide rail
-  thumbnails, Magic Move panel, agent measurement. The rail and Magic Move
-  panel then freeze their videos into stills (see below); the canvas keeps
-  live elements because it plays them on demand. It fetches the
+  thumbnails, Magic Move panel, Speaker View and agent measurement. The rail,
+  Magic Move panel and Speaker View then freeze their videos into stills (see
+  below); the canvas keeps live elements because it plays them on demand. It fetches the
   container header only, then seeks one frame (the element's in-point, or a
   hair past zero) so the element shows a picture instead of black. Cost per
   element: a few hundred KB, not the whole file.
@@ -190,19 +190,23 @@ downloading, and before it existed a few forward/back navigations accumulated
 enough orphaned downloads to occupy every connection — the visible slide's
 videos then sat on a loading spinner forever.
 
-The Player also **warms upcoming slides** (`warmUpcomingVideos`): while a
-slide is on screen it `fetch()`es the video files of the next two slides into
-the HTTP cache, strictly one transfer at a time and never a file the current
-slide is already fetching itself. Content-hashed immutable responses make the
-warmed bytes directly usable by the elements that mount later, so a
-transition opens on a picture instead of a clip that pops in when its bytes
-arrive.
+The Player also **warms upcoming slides** (`warmUpcomingMedia`): while a slide
+is on screen it prepares media from the next two presentable slides (skipped
+slides do not consume the lookahead). Videos are fetched into the HTTP cache,
+strictly one transfer at a time and never a file the current slide is already
+fetching itself. Images are loaded and decoded as `<img>` elements, then the
+decoded element is adopted into the slide when it appears. This distinction
+matters for large JPEGs: cached bytes can still paint as a thin band of decoded
+scanlines, while an adopted decoded bitmap appears atomically. Only the active
+lookahead's decoded images remain resident, so a long deck does not retain a
+deck's worth of 4K/6K frames.
 
 ## Regression guards
 
 - `test/mediaLoading.test.ts` — poster-frame seek and preload behaviour of
-  `renderVideo`; source-level assertions that every preview surface passes
-  `'metadata'` and that neither asset server says `no-store`.
+  `renderVideo`; source-level assertions that every preview surface, including
+  Speaker View, passes `'metadata'` and that neither asset server says
+  `no-store`.
 - `test/collabServer.test.ts` — ETag/304/immutable behaviour of the asset
   route.
 - `test/magicMove.test.ts` — the Magic Move panel's preview surfaces survive a

@@ -3,7 +3,7 @@ import '../appChrome.css';
 import './editor.css';
 import '../collab/collab.css';
 import { applyAgentTransaction } from '@shared/agent.js';
-import type { SlideElement } from '@shared/deck.js';
+import type { Deck, SlideElement } from '@shared/deck.js';
 import { emptyDeck } from '@shared/deck.js';
 import type { AgentSessionConnection, AuthoredHtmlFile } from '@shared/ipc.js';
 import { captureEditorView, decodeEditorView, restoreEditorView } from '@shared/editorView.js';
@@ -75,8 +75,7 @@ async function flushHistory(dir = store.get().dir): Promise<void> {
   await window.api.saveDeckHistory(dir, store.persistedHistory());
 }
 
-store.onHistoryChange = () => {
-  const dir = store.get().dir;
+function scheduleHistorySave(dir = store.get().dir): void {
   if (!dir) return;
   if (historySaveTimer) clearTimeout(historySaveTimer);
   // History is a crash-recovery sidecar, not part of the visual feedback for
@@ -88,6 +87,10 @@ store.onHistoryChange = () => {
       console.error('Could not save edit history:', error);
     });
   }, 1_200);
+}
+
+store.onHistoryChange = () => {
+  scheduleHistorySave();
 };
 const initialView = decodeEditorView(new URLSearchParams(location.search).get('view'));
 let initialViewPending = initialView !== null;
@@ -148,23 +151,30 @@ const persistThemeCss = (css: string): Promise<void> | void => {
 };
 const cssEditor = new CssEditor(el('theme'), persistThemeCss);
 cssEditor.onChange = () => canvas.refitAutoText();
-let agentSnapshotSync: Promise<void> = Promise.resolve();
-function syncAgentSessionSnapshot(): Promise<void> {
-  const snapshot = { deck: store.get().deck, themeCss: cssEditor.getValue() };
-  const next = agentSnapshotSync
+let mainSessionPersistence: Promise<void> = Promise.resolve();
+function queueMainSessionPersistence(
+  deck: Deck,
+  themeCss: string,
+  collaborationOwnsDisk: boolean,
+): Promise<void> {
+  const next = mainSessionPersistence
     .catch(() => {})
     .then(() => persistSessionDeck(
       window.api,
-      snapshot.deck,
-      snapshot.themeCss,
-      true,
+      deck,
+      themeCss,
+      collaborationOwnsDisk,
     ));
-  agentSnapshotSync = next;
+  mainSessionPersistence = next;
   return next;
 }
 
+function syncMainSessionSnapshot(): Promise<void> {
+  return queueMainSessionPersistence(store.get().deck, cssEditor.getValue(), true);
+}
+
 function queueAgentSessionSnapshot(): void {
-  void syncAgentSessionSnapshot().catch((error) => {
+  void syncMainSessionSnapshot().catch((error) => {
     console.error('Could not synchronize Agent deck for presentation:', error);
   });
 }
@@ -320,17 +330,34 @@ function buildToolbar(): void {
 
 async function startPresentation(speakerView = false): Promise<void> {
   await runOperation('Preparing presentation…', async (operation) => {
-    // Flush before presenting: the projector must not show a stale theme.
-    operation.update('Saving deck.json and theme.css');
-    await cssEditor.flush();
-    await save();
-    const { deck, slideIndex, slideSelection } = store.get();
-    const range = rangeForSlideSelection(deck.slides, slideSelection);
-    operation.update('Opening presentation windows');
-    await window.api.present(range?.start ?? slideIndex, {
-      speakerView,
-      endSlideIndex: range?.end,
-    });
+    // Presentation reads the main process's in-memory session. When the deck
+    // is dirty, mirror that state directly rather than making window creation
+    // wait for deck.json plus a potentially very large compressed edit-history
+    // sidecar. Ordinary autosave resumes after the windows have been opened.
+    if (saveTimer) {
+      clearTimeout(saveTimer);
+      saveTimer = null;
+    }
+    const historyWasPending = historySaveTimer !== null;
+    if (historySaveTimer) {
+      clearTimeout(historySaveTimer);
+      historySaveTimer = null;
+    }
+    try {
+      operation.update('Synchronizing presentation');
+      await cssEditor.flush();
+      if (agentSessionReady || store.get().dirty) await syncMainSessionSnapshot();
+      const { deck, slideIndex, slideSelection } = store.get();
+      const range = rangeForSlideSelection(deck.slides, slideSelection);
+      operation.update('Opening presentation windows');
+      await window.api.present(range?.start ?? slideIndex, {
+        speakerView,
+        endSlideIndex: range?.end,
+      });
+    } finally {
+      if (store.get().dirty) scheduleSave();
+      else if (historyWasPending) scheduleHistorySave();
+    }
   });
 }
 
@@ -644,16 +671,8 @@ async function save(): Promise<void> {
     clearTimeout(saveTimer);
     saveTimer = null;
   }
-  if (agentSessionReady) {
-    await syncAgentSessionSnapshot();
-  } else {
-    await persistSessionDeck(
-      window.api,
-      store.get().deck,
-      cssEditor.getValue(),
-      false,
-    );
-  }
+  const deck = store.get().deck;
+  await queueMainSessionPersistence(deck, cssEditor.getValue(), agentSessionReady);
   try {
     // Await the latest snapshot after the deck write. Save As and window close
     // can now rely on history having reached disk rather than racing a fire-
@@ -662,7 +681,10 @@ async function save(): Promise<void> {
   } catch (error) {
     console.error('Could not flush edit history:', error);
   }
-  store.markClean();
+  // An edit made while this write was in flight belongs to a newer deck
+  // object and still needs its own autosave. Never let an older completion
+  // mark that newer state clean.
+  if (store.get().deck === deck) store.markClean();
 }
 
 function scheduleSave(): void {

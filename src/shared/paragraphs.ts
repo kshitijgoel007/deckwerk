@@ -14,6 +14,8 @@ import type { SlideState } from './timeline.js';
  */
 
 const LIST_TAGS = new Set(['UL', 'OL']);
+export const LIST_MARKER_COLOR_ATTRIBUTE = 'data-list-marker-color';
+export const LIST_MARKER_COLOR_PROPERTY = '--list-marker-color';
 const BLOCK_TAGS = new Set([
   'P', 'DIV', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6',
   'BLOCKQUOTE', 'PRE', 'TABLE', 'FIGURE', 'SECTION', 'ARTICLE', 'UL', 'OL', 'LI',
@@ -192,6 +194,46 @@ export function hasList(html: string, ordered: boolean): boolean {
   template.innerHTML = html;
   const tag = ordered ? 'OL' : 'UL';
   return [...template.content.children].some((child) => child.tagName === tag);
+}
+
+export type ListMarkerColorState = {
+  hasList: boolean;
+  mixed: boolean;
+  value: string | null;
+};
+
+/** The explicit marker paint shared by the list items in authored text. */
+export function listMarkerColorState(html: string): ListMarkerColorState {
+  const template = document.createElement('template');
+  template.innerHTML = html;
+  const items = [...template.content.querySelectorAll<HTMLElement>('li')];
+  if (items.length === 0) return { hasList: false, mixed: false, value: null };
+  const values = items.map((item) => item.hasAttribute(LIST_MARKER_COLOR_ATTRIBUTE)
+    ? item.style.getPropertyValue(LIST_MARKER_COLOR_PROPERTY).trim() || null
+    : null);
+  const mixed = !values.every((value) => value === values[0]);
+  return { hasList: true, mixed, value: mixed ? null : values[0] };
+}
+
+/** Set or clear marker paint on every list item without changing its text paint. */
+export function setListMarkerColor(html: string, value: string | null): string {
+  const template = document.createElement('template');
+  template.innerHTML = html;
+  const items = [...template.content.querySelectorAll<HTMLElement>('li')];
+  if (items.length === 0) return html;
+  for (const item of items) {
+    if (value) {
+      item.setAttribute(LIST_MARKER_COLOR_ATTRIBUTE, 'true');
+      item.style.setProperty(LIST_MARKER_COLOR_PROPERTY, value);
+    } else {
+      item.removeAttribute(LIST_MARKER_COLOR_ATTRIBUTE);
+      item.style.removeProperty(LIST_MARKER_COLOR_PROPERTY);
+      if (!item.getAttribute('style')?.trim()) item.removeAttribute('style');
+    }
+  }
+  const out = document.createElement('div');
+  out.append(template.content.cloneNode(true));
+  return out.innerHTML;
 }
 
 /** Switch an existing top-level list between bullets and numbers in place. */
@@ -404,7 +446,11 @@ export function listToParagraphs(html: string): string {
     for (const item of [...list.children]) {
       if (item.tagName !== 'LI') continue;
       const p = document.createElement('p');
-      for (const attr of [...item.attributes]) p.setAttribute(attr.name, attr.value);
+      for (const attr of [...item.attributes]) {
+        if (attr.name !== LIST_MARKER_COLOR_ATTRIBUTE) p.setAttribute(attr.name, attr.value);
+      }
+      p.style.removeProperty(LIST_MARKER_COLOR_PROPERTY);
+      if (!p.getAttribute('style')?.trim()) p.removeAttribute('style');
       p.innerHTML = item.innerHTML;
       fragment.appendChild(p);
     }

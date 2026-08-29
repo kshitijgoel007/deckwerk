@@ -87,6 +87,13 @@
   margin: 0.15em 0;
 }
 
+/* An authored marker colour is independent of character-level text runs.
+   Without this opt-in, native markers keep following the list item's colour
+   and theme.css can continue to style them normally. */
+.text-body li[data-list-marker-color]::marker {
+  color: var(--list-marker-color) !important;
+}
+
 /* Tables pasted from spreadsheets and web pages remain ordinary editable
    HTML. These restrained defaults make unstyled tables readable while inline
    cell colours from the source (or the Props panel) continue to win. */

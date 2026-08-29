@@ -4,7 +4,10 @@ import {
   paragraphsToOrderedList,
   changeListType,
   hasList,
+  listMarkerColorState,
   listToParagraphs,
+  setListMarkerColor,
+  type ListMarkerColorState,
 } from '@shared/paragraphs.js';
 import type {
   TableBorderPreset,
@@ -24,6 +27,14 @@ import {
   cssVisualEffects,
   isMediaBorderPaint,
 } from '@shared/nativeCss.js';
+import {
+  setWholeTextAlignment,
+  setWholeTextColor,
+  setWholeTextFormat,
+  setWholeTextParagraphSpacing,
+  setWholeTextStyle,
+  wholeTextFormatState,
+} from './textFormatting.js';
 
 interface TextPaintInfo {
   value: string | null;
@@ -46,43 +57,6 @@ function applyListStyleToHtml(html: string, style: ListStyle): string {
     return hasList(html, false) ? changeListType(html, true) : paragraphsToOrderedList(html);
   }
   return hasList(html, true) ? changeListType(html, false) : paragraphsToList(html);
-}
-
-function setWholeTableCellStyle(html: string, property: string, value: string | null): string {
-  const template = document.createElement('template');
-  template.innerHTML = html;
-  const cells = template.content.querySelectorAll<HTMLElement>('table th, table td');
-  if (cells.length === 0) return html;
-  cells.forEach((cell) => {
-    if (value === null) cell.style.removeProperty(property);
-    else cell.style.setProperty(property, value);
-    if (!cell.getAttribute('style')?.trim()) cell.removeAttribute('style');
-  });
-  const out = document.createElement('div');
-  out.append(template.content.cloneNode(true));
-  return out.innerHTML;
-}
-
-function setTextPaint(element: Extract<SlideElement, { type: 'text' }>, value: string | null): void {
-  const style = { ...element.style };
-  const contentStyle = { ...element.contentStyle };
-  for (const declarations of [style, contentStyle]) {
-    const textClipped = /text/i.test(
-      declarations['background-clip'] ?? declarations['-webkit-background-clip'] ?? '',
-    );
-    delete declarations.color;
-    delete declarations['-webkit-text-fill-color'];
-    if (textClipped) {
-      delete declarations.background;
-      delete declarations['background-image'];
-      delete declarations['background-clip'];
-      delete declarations['-webkit-background-clip'];
-    }
-  }
-  if (value) style.color = value;
-  element.style = style;
-  if (Object.keys(contentStyle).length > 0) element.contentStyle = contentStyle;
-  else delete element.contentStyle;
 }
 
 /** Display labels for the video behaviour flags. */
@@ -132,6 +106,9 @@ export class Inspector {
   /** Convert only the paragraphs covered by the live text selection. */
   onApplyTextSelectionListStyle?: (style: ListStyle) => boolean;
   textSelectionListStyle?: () => ListStyle | null;
+  /** Marker paint for the list items touched by the live text selection. */
+  textSelectionMarkerColor?: () => ListMarkerColorState | null;
+  onApplyTextSelectionMarkerColor?: (value: string | null) => boolean;
   tableSelection?: () => TableSelection | null;
   tableBorderSettings?: () => TableBorderSettings;
   onSetTableBorderColor?: (color: string) => void;
@@ -676,7 +653,12 @@ export class Inspector {
       'Auto-fit text to box',
       commonValue(texts.map((text) => Boolean(text.autoFit))),
       (on) => this.store.updateSelected((element) => {
-        if (element.type === 'text') element.autoFit = on;
+        if (element.type === 'text') {
+          element.autoFit = on;
+          if (on && element.style['font-size']) {
+            setWholeTextStyle(element, 'font-size', element.style['font-size']);
+          }
+        }
       }),
     ));
     wrap.appendChild(mixedCheckboxField(
@@ -704,10 +686,7 @@ export class Inspector {
       'Font family', families ?? '',
       (value) => this.store.updateSelected((element) => {
         if (element.type !== 'text') return;
-        const style = { ...element.style };
-        if (value) style['font-family'] = value;
-        else delete style['font-family'];
-        element.style = style;
+        setWholeTextStyle(element, 'font-family', value || null);
       }, { label: 'Change font family' }),
       {
         mixed: families === null || inheritedFamiliesDiffer,
@@ -726,15 +705,12 @@ export class Inspector {
     const sizeField = optionalNumberField(
       'Font size', sizes.mixed || inheritedSizesDiffer ? null : sizes.value,
       (value) => this.store.updateSelected((element) => {
-        if (element.type === 'text') element.style = {
-          ...element.style, 'font-size': `${fontSizeValue(value)}px`,
-        };
+        if (element.type === 'text') {
+          setWholeTextStyle(element, 'font-size', `${fontSizeValue(value)}px`);
+        }
       }),
       () => this.store.updateSelected((element) => {
-        if (element.type !== 'text') return;
-        const style = { ...element.style };
-        delete style['font-size'];
-        element.style = style;
+        if (element.type === 'text') setWholeTextStyle(element, 'font-size', null);
       }),
       'px',
       {
@@ -759,16 +735,14 @@ export class Inspector {
       'Font weight', weights.mixed || inheritedWeightsDiffer ? null : weights.value,
       (value) => this.store.updateSelected((element) => {
         if (element.type !== 'text') return;
-        element.style = {
-          ...element.style,
-          'font-weight': String(Math.max(1, Math.min(1000, value))),
-        };
+        setWholeTextStyle(
+          element,
+          'font-weight',
+          String(Math.max(1, Math.min(1000, value))),
+        );
       }),
       () => this.store.updateSelected((element) => {
-        if (element.type !== 'text') return;
-        const style = { ...element.style };
-        delete style['font-weight'];
-        element.style = style;
+        if (element.type === 'text') setWholeTextStyle(element, 'font-weight', null);
       }),
       '',
       {
@@ -803,6 +777,25 @@ export class Inspector {
       }),
     ));
 
+    const markerStates = texts.map((text) => listMarkerColorState(text.html))
+      .filter((state) => state.hasList);
+    if (markerStates.length > 0) {
+      const markerMixed = markerStates.some((state) => state.mixed)
+        || !markerStates.every((state) => state.value === markerStates[0].value);
+      const inherited = this.textPaintInfo(texts[0]).inheritedValue;
+      wrap.appendChild(colorField(
+        markerMixed ? 'Marker colour (mixed)' : 'Marker colour',
+        markerMixed ? null : markerStates[0].value,
+        (value) => this.store.updateSelected((element) => {
+          if (element.type === 'text') element.html = setListMarkerColor(element.html, value);
+        }, { label: value ? 'Change list marker colour' : 'Make list markers follow text colour' }),
+        {
+          inheritedValue: inherited,
+          clear: { kind: 'css', label: 'Follow text colour' },
+        },
+      ));
+    }
+
     const colors = commonValue(texts.map((text) => text.style.color ?? ''));
     const paint = this.textPaintInfo(texts[0]);
     wrap.appendChild(colorField(
@@ -810,7 +803,7 @@ export class Inspector {
       colors === null ? paint.value : (colors || paint.value),
       (value) => this.store.updateSelected((element) => {
         if (element.type !== 'text') return;
-        setTextPaint(element, value);
+        setWholeTextColor(element, value);
       }),
       {
         inheritedValue: paint.inheritedValue,
@@ -822,7 +815,7 @@ export class Inspector {
       'Align',
       commonValue(texts.map((text) => text.align)),
       (value) => this.store.updateSelected((element) => {
-        if (element.type === 'text') element.align = value;
+        if (element.type === 'text') setWholeTextAlignment(element, value);
       }, { label: 'Change text alignment' }),
     ));
     wrap.appendChild(mixedSelectField(
@@ -836,10 +829,10 @@ export class Inspector {
     const spacingField = optionalNumberField(
       'Paragraph spacing', spacings.mixed ? null : spacings.value,
       (value) => this.store.updateSelected((element) => {
-        if (element.type === 'text') element.paragraphSpacing = Math.max(0, value);
+        if (element.type === 'text') setWholeTextParagraphSpacing(element, value);
       }),
       () => this.store.updateSelected((element) => {
-        if (element.type === 'text') delete element.paragraphSpacing;
+        if (element.type === 'text') setWholeTextParagraphSpacing(element, null);
       }),
       'px',
       { min: 0 },
@@ -1059,7 +1052,12 @@ export class Inspector {
         } else {
           layout.content.appendChild(checkboxField('Auto-fit text to box', Boolean(el.autoFit), (on) =>
             this.store.updateSelected((target) => {
-              if (target.type === 'text') target.autoFit = on;
+              if (target.type === 'text') {
+                target.autoFit = on;
+                if (on && target.style['font-size']) {
+                  setWholeTextStyle(target, 'font-size', target.style['font-size']);
+                }
+              }
             }, { label: on ? 'Enable text auto-fit' : 'Disable text auto-fit' }),
           ));
           layout.content.appendChild(checkboxField('Disable automatic line breaks', editableTextNoWrap(el), (on) =>
@@ -1088,10 +1086,7 @@ export class Inspector {
             if (this.onApplyTextSelectionFontFamily?.(value)) return;
             this.store.updateSelected((target) => {
               if (target.type !== 'text') return;
-              const style = { ...target.style };
-              if (value) style['font-family'] = value;
-              else delete style['font-family'];
-              target.style = style;
+              setWholeTextStyle(target, 'font-family', value || null);
             }, { label: 'Change font family' });
           },
           {
@@ -1115,21 +1110,13 @@ export class Inspector {
             const size = `${normalized}px`;
             if (this.onApplyTextSelectionFontSize?.(normalized)) return;
             this.store.updateSelected((target) => {
-              target.style = { ...target.style, 'font-size': size };
-              if (target.type === 'text' && /<table\b/i.test(target.html)) {
-                target.html = setWholeTableCellStyle(target.html, 'font-size', size);
-              }
+              if (target.type === 'text') setWholeTextStyle(target, 'font-size', size);
             }, { label: 'Change font size' });
           },
           () => {
             if (this.onApplyTableCellTextStyle?.('fontSize', null)) return;
             this.store.updateSelected((target) => {
-              const style = { ...target.style };
-              delete style['font-size'];
-              target.style = style;
-              if (target.type === 'text' && /<table\b/i.test(target.html)) {
-                target.html = setWholeTableCellStyle(target.html, 'font-size', null);
-              }
+              if (target.type === 'text') setWholeTextStyle(target, 'font-size', null);
             }, { label: 'Use theme font size' });
           },
           'px',
@@ -1161,15 +1148,13 @@ export class Inspector {
             const weight = String(Math.max(1, Math.min(1000, value)));
             if (this.onApplyTextSelectionWeight?.(Number(weight))) return;
             this.store.updateSelected((target) => {
-              target.style = { ...target.style, 'font-weight': weight };
+              if (target.type === 'text') setWholeTextStyle(target, 'font-weight', weight);
             }, { label: 'Change font weight' });
           },
           () => {
             if (this.onApplyTableCellTextStyle?.('fontWeight', null)) return;
             this.store.updateSelected((target) => {
-              const style = { ...target.style };
-              delete style['font-weight'];
-              target.style = style;
+              if (target.type === 'text') setWholeTextStyle(target, 'font-weight', null);
             }, { label: 'Use theme font weight' });
           },
           '',
@@ -1192,11 +1177,20 @@ export class Inspector {
             ['italic', 'I', 'Italic (Cmd/Ctrl+I)'],
             ['underline', 'U', 'Underline (Cmd/Ctrl+U)'],
           ] as const) {
-            const choice = button(label, () => this.onToggleTextSelectionFormat?.(format));
+            const choice = button(label, () => {
+              if (this.onToggleTextSelectionFormat?.(format)) return;
+              const active = wholeTextFormatState(el, format);
+              this.store.updateSelected((target) => {
+                if (target.type === 'text') setWholeTextFormat(target, format, !active);
+              }, { label: `${active ? 'Remove' : 'Apply'} ${format}` });
+            });
             choice.classList.add(`text-format-${format}`);
             choice.title = title;
             choice.setAttribute('aria-label', title);
-            choice.setAttribute('aria-pressed', String(this.textSelectionFormatState?.(format) ?? false));
+            choice.setAttribute(
+              'aria-pressed',
+              String(this.textSelectionFormatState?.(format) ?? false),
+            );
             choice.addEventListener('pointerdown', (event) => event.preventDefault());
             formatButtons.appendChild(choice);
           }
@@ -1257,6 +1251,27 @@ export class Inspector {
           }
         }
         layout.content.appendChild(listStyle);
+
+        const authoredMarker = listMarkerColorState(el.html);
+        if (authoredMarker.hasList) {
+          const marker = this.textSelectionMarkerColor?.() ?? authoredMarker;
+          layout.content.appendChild(colorField(
+            marker.mixed ? 'Marker colour (mixed)' : 'Marker colour',
+            marker.value,
+            (value) => {
+              if (this.onApplyTextSelectionMarkerColor?.(value)) return;
+              this.store.updateSelected((target) => {
+                if (target.type === 'text') {
+                  target.html = setListMarkerColor(target.html, value);
+                }
+              }, { label: value ? 'Change list marker colour' : 'Make list markers follow text colour' });
+            },
+            {
+              inheritedValue: this.textPaintInfo(el).inheritedValue,
+              clear: { kind: 'css', label: 'Follow text colour' },
+            },
+          ));
+        }
 
         if (/<table\b/i.test(el.html)) {
           const table = optionSection('Table', 'text-table-options');
@@ -1346,7 +1361,7 @@ export class Inspector {
             (v) => {
               if (this.onApplyTextSelectionColor?.(v)) return;
               this.store.updateSelected((e) => {
-                if (e.type === 'text') setTextPaint(e, v);
+                if (e.type === 'text') setWholeTextColor(e, v);
               });
             },
             {
@@ -1361,7 +1376,7 @@ export class Inspector {
         alignment.appendChild(
           alignButtonsField('Align', el.align, (v) =>
             this.onApplyTextSelectionAlignment?.(v) || this.store.updateSelected((e) => {
-              if (e.type === 'text') e.align = v;
+              if (e.type === 'text') setWholeTextAlignment(e, v);
             }, { label: 'Change text alignment' }),
           ),
         );
@@ -1381,13 +1396,13 @@ export class Inspector {
             const spacing = Math.max(0, value);
             if (this.onApplyTextSelectionParagraphSpacing?.(spacing)) return;
             this.store.updateSelected((e) => {
-              if (e.type === 'text') e.paragraphSpacing = spacing;
+              if (e.type === 'text') setWholeTextParagraphSpacing(e, spacing);
             }, { label: 'Change paragraph spacing' });
           },
           () => {
             if (this.onApplyTextSelectionParagraphSpacing?.(null)) return;
             this.store.updateSelected((e) => {
-              if (e.type === 'text') delete e.paragraphSpacing;
+              if (e.type === 'text') setWholeTextParagraphSpacing(e, null);
             }, { label: 'Use theme paragraph spacing' });
           },
           'px',

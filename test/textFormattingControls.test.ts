@@ -346,6 +346,71 @@ describe('text formatting from the inspector controls', () => {
     expect(listSelect(inspectorHost).value).toBe('Bulleted');
   });
 
+  it('colours list markers independently and clears them back to following text', () => {
+    const { store, canvasHost, inspectorHost } = setup([
+      textElement('text-1', { html: '<ul><li>First</li><li>Second</li></ul>' }),
+    ]);
+    const trigger = () => field(inspectorHost, 'Marker colour')
+      .querySelector<HTMLButtonElement>('.color-picker-trigger')!;
+
+    trigger().click();
+    document.querySelector<HTMLButtonElement>(
+      '.color-picker-palette-button[title="#112233"]',
+    )!.click();
+
+    const saved = document.createElement('div');
+    saved.innerHTML = textOf(store, 'text-1').html;
+    const items = [...saved.querySelectorAll<HTMLElement>('li')];
+    expect(items.map((item) => item.getAttribute('data-list-marker-color')))
+      .toEqual(['true', 'true']);
+    expect(items.map((item) => item.style.getPropertyValue('--list-marker-color')))
+      .toEqual(['#112233', '#112233']);
+    expect(saved.querySelectorAll('span[style*="color"]')).toHaveLength(0);
+    expect(textOf(store, 'text-1').style.color).toBeUndefined();
+    expect([...contentOf(canvasHost, 'text-1').querySelectorAll<HTMLElement>('li')]
+      .map((item) => item.style.getPropertyValue('--list-marker-color')))
+      .toEqual(['#112233', '#112233']);
+
+    closePopover();
+    trigger().click();
+    const clear = document.querySelector<HTMLButtonElement>('.color-picker-clear')!;
+    expect(clear.textContent).toBe('Follow text colour');
+    clear.click();
+    expect(textOf(store, 'text-1').html).toBe('<ul><li>First</li><li>Second</li></ul>');
+  });
+
+  it('scopes marker colour to the numbered-list item containing the caret', () => {
+    const original = '<ol><li>First</li><li>Second</li></ol>';
+    const { store, canvas, canvasHost, inspectorHost } = setup([
+      textElement('text-1', { html: original }),
+    ]);
+    canvas.beginTextEdit('text-1');
+    const liveItems = contentOf(canvasHost, 'text-1').querySelectorAll('li');
+    const caret = document.createRange();
+    caret.setStart(liveItems[1].firstChild!, 2);
+    caret.collapse(true);
+    window.getSelection()!.removeAllRanges();
+    window.getSelection()!.addRange(caret);
+    document.dispatchEvent(new Event('selectionchange'));
+
+    field(inspectorHost, 'Marker colour')
+      .querySelector<HTMLButtonElement>('.color-picker-trigger')!.click();
+    document.querySelector<HTMLButtonElement>(
+      '.color-picker-palette-button[title="#ff8800"]',
+    )!.click();
+
+    const saved = document.createElement('div');
+    saved.innerHTML = textOf(store, 'text-1').html;
+    const items = saved.querySelectorAll<HTMLElement>('li');
+    expect(items[0].hasAttribute('data-list-marker-color')).toBe(false);
+    expect(items[1].style.getPropertyValue('--list-marker-color')).toBe('#ff8800');
+    expect(window.getSelection()!.isCollapsed).toBe(true);
+    expect(canvas.isEditing()).toBe(true);
+
+    store.undo();
+    expect(textOf(store, 'text-1').html).toBe(original);
+  });
+
   it.each([
     ['Bulleted', 'ul'],
     ['Numbered', 'ol'],
@@ -378,7 +443,9 @@ describe('text formatting from the inspector controls', () => {
     ['None', null],
   ] as const)('changes a whole numbered list to %s when only one word is selected', (style, tag) => {
     const original = '<p>Heading</p><ol start="3" class="steps">'
-      + '<li><strong>First</strong> item</li><li><em>Second</em> item</li></ol><p>Footer</p>';
+      + '<li><strong>First</strong> item</li>'
+      + '<li data-list-marker-color="true" style="--list-marker-color: #ff8800">'
+      + '<em>Second</em> item</li></ol><p>Footer</p>';
     const { store, canvas, canvasHost, inspectorHost } = setup([
       textElement('text-1', { html: original }),
     ]);
@@ -409,6 +476,8 @@ describe('text formatting from the inspector controls', () => {
     } else {
       expect(saved.querySelectorAll('ol, ul')).toHaveLength(0);
       expect(saved.querySelectorAll(':scope > p')).toHaveLength(4);
+      expect(saved.querySelector('[data-list-marker-color]')).toBeNull();
+      expect(textOf(store, 'text-1').html).not.toContain('--list-marker-color');
     }
 
     contentOf(canvasHost, 'text-1').dispatchEvent(new KeyboardEvent('keydown', {
@@ -503,20 +572,79 @@ describe('text formatting from the inspector controls', () => {
       .toBe('38.8');
   });
 
-  it('keeps the authored font-size ceiling in the field and identifies a reduced AutoFit size', () => {
-    const { inspector, canvasHost, inspectorHost } = setup([
-      textElement('text-1', { autoFit: true, style: { 'font-size': '44px' } }),
+  it('applies object-selected formatting uniformly across every existing text run', () => {
+    const { store, canvas, canvasHost, inspectorHost } = setup([
+      textElement('text-1', {
+        html: '<p style="font-family: Courier; font-size: 18px; color: red; text-align: right; margin-top: 90px">'
+          + '<strong style="font-weight: 900">First</strong> line</p>'
+          + '<p><em style="font-style: normal">Second</em> line</p>',
+      }),
     ]);
+    expect(canvas.isEditing()).toBe(false);
+
+    const family = field(inspectorHost, 'Font family').querySelector<HTMLSelectElement>('select')!;
+    const avenir = document.createElement('option');
+    avenir.value = 'Avenir';
+    avenir.textContent = 'Avenir';
+    family.appendChild(avenir);
+    pick(family, 'Avenir');
+    type(field(inspectorHost, 'Font size').querySelector<HTMLInputElement>('input')!, '48');
+    type(field(inspectorHost, 'Font weight').querySelector<HTMLInputElement>('input')!, '450');
+
+    field(inspectorHost, 'Colour')
+      .querySelector<HTMLButtonElement>('.color-picker-trigger')!.click();
+    document.querySelectorAll<HTMLButtonElement>('.color-picker-palette-button')[1].click();
+    alignButtons(inspectorHost)[1].click();
+    type(field(inspectorHost, 'Paragraph spacing').querySelector<HTMLInputElement>('input')!, '24');
+
+    const element = textOf(store, 'text-1');
+    const storedFamily = element.style['font-family'];
+    expect(storedFamily).toMatch(/^Avenir,/);
+    expect(element.style).toMatchObject({
+      'font-size': '48px',
+      'font-weight': '450',
+      color: '#ff8800',
+    });
+    expect(element.align).toBe('center');
+    expect(element.paragraphSpacing).toBe(24);
+
+    const saved = document.createElement('div');
+    saved.innerHTML = element.html;
+    const textParents = [...saved.querySelectorAll<HTMLElement>('*')]
+      .filter((node) => [...node.childNodes].some((child) => child.nodeType === Node.TEXT_NODE));
+    expect(textParents.length).toBeGreaterThan(0);
+    for (const parent of textParents) {
+      expect(parent.style.fontFamily).toBe(storedFamily);
+      expect(parent.style.fontSize).toBe('48px');
+      expect(parent.style.fontWeight).toBe('450');
+      expect(parent.style.color).toBe('');
+      expect(parent.style.textAlign).toBe('center');
+    }
+    expect(saved.querySelector('p')!.style.marginTop).toBe('');
+    expect(canvas.isEditing()).toBe(false);
+    expect(contentOf(canvasHost, 'text-1').textContent).toBe('First lineSecond line');
+  });
+
+  it('keeps the authored font-size ceiling in the field and identifies a reduced AutoFit size', () => {
+    const { store, inspector, canvasHost, inspectorHost } = setup([
+      textElement('text-1', {
+        autoFit: true,
+        style: { 'font-size': '44px' },
+        html: '<p><span style="font-size: 80px">Fitted text</span></p>',
+      }),
+    ]);
+    type(field(inspectorHost, 'Font size').querySelector<HTMLInputElement>('input')!, '46');
+    expect(textOf(store, 'text-1').html).not.toContain('font-size');
     const content = contentOf(canvasHost, 'text-1');
     content.style.fontSize = '19.94px';
     content.dataset.fittedFontSize = '19.94';
     inspector.render();
 
-    expect(field(inspectorHost, 'Font size').querySelector<HTMLInputElement>('input')!.value).toBe('44');
+    expect(field(inspectorHost, 'Font size').querySelector<HTMLInputElement>('input')!.value).toBe('46');
     const status = field(inspectorHost, 'Font size').querySelector<HTMLElement>('.auto-fit-value')!;
     expect(status.textContent).toBe('Fitted to 19.9 px');
     expect(status.title).toBe(
-      'Auto-fit reduced the displayed text from 44 px to 19.9 px to fit this box.',
+      'Auto-fit reduced the displayed text from 46 px to 19.9 px to fit this box.',
     );
   });
 

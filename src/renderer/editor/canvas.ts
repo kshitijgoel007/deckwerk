@@ -23,6 +23,9 @@ import {
   paragraphsToOrderedList,
   applyTableColumnWidths,
   pastedTableData,
+  LIST_MARKER_COLOR_ATTRIBUTE,
+  LIST_MARKER_COLOR_PROPERTY,
+  type ListMarkerColorState,
 } from '@shared/paragraphs.js';
 import {
   applyPendingHud,
@@ -2253,6 +2256,23 @@ export class EditorCanvas {
       if (this.liveTextSync && !liveTimer) liveTimer = window.setTimeout(pushLive, 250);
     };
     const onBeforeInput = (event: InputEvent) => {
+      const nativeFormat = event.inputType === 'formatBold'
+        ? 'bold'
+        : event.inputType === 'formatItalic'
+          ? 'italic'
+          : event.inputType === 'formatUnderline'
+            ? 'underline'
+            : null;
+      if (nativeFormat) {
+        // Electron/Chromium can route macOS editing commands through
+        // beforeinput without delivering the corresponding Cmd+B/Cmd+I/Cmd+U
+        // keydown to the contenteditable. Own those semantic commands too so
+        // native menu/accelerator routing and physical keyboard routing have
+        // identical, model-backed formatting behaviour.
+        event.preventDefault();
+        this.toggleTextSelectionFormat(nativeFormat);
+        return;
+      }
       if (
         event.inputType !== 'insertText'
         || event.data === null
@@ -2744,6 +2764,63 @@ export class EditorCanvas {
     return this.applyTextSelectionStyle('color', value || 'inherit');
   }
 
+  /** Explicit marker paint shared by the list items touched by the live selection. */
+  textSelectionMarkerColor(): ListMarkerColorState | null {
+    if (!this.editingId || this.tableSelection) return null;
+    const content = this.slideLayer.querySelector<HTMLElement>(
+      `[data-element-id="${CSS.escape(this.editingId)}"] .text-content`,
+    );
+    const range = content ? this.activeTextRange(content) : null;
+    if (!content || !range || !content.contains(range.commonAncestorContainer)) return null;
+    const items = this.listItemsForRange(content, range);
+    if (items.length === 0) return null;
+    const values = items.map((item) => item.hasAttribute(LIST_MARKER_COLOR_ATTRIBUTE)
+      ? item.style.getPropertyValue(LIST_MARKER_COLOR_PROPERTY).trim() || null
+      : null);
+    const mixed = !values.every((value) => value === values[0]);
+    return { hasList: true, mixed, value: mixed ? null : values[0] };
+  }
+
+  /** Colour the markers for the current item or selected items, without touching their text. */
+  applyTextSelectionMarkerColor(value: string | null): boolean {
+    if (!this.editingId || this.tableSelection) return false;
+    const content = this.slideLayer.querySelector<HTMLElement>(
+      `[data-element-id="${CSS.escape(this.editingId)}"] .text-content`,
+    );
+    const range = content ? this.activeTextRange(content) : null;
+    if (!content || !range || !content.contains(range.commonAncestorContainer)) return false;
+    const items = this.listItemsForRange(content, range);
+    if (items.length === 0) return false;
+    const offsets = this.textOffsetsForRange(content, range);
+    for (const item of items) {
+      if (value) {
+        item.setAttribute(LIST_MARKER_COLOR_ATTRIBUTE, 'true');
+        item.style.setProperty(LIST_MARKER_COLOR_PROPERTY, value);
+      } else {
+        item.removeAttribute(LIST_MARKER_COLOR_ATTRIBUTE);
+        item.style.removeProperty(LIST_MARKER_COLOR_PROPERTY);
+        if (!item.getAttribute('style')?.trim()) item.removeAttribute('style');
+      }
+    }
+    if (offsets) this.restoreTextRange(content, offsets);
+    content.focus();
+    this.commitLiveTextDom(value ? 'Change list marker colour' : 'Make list markers follow text colour');
+    return true;
+  }
+
+  private listItemsForRange(content: HTMLElement, range: Range): HTMLElement[] {
+    if (range.collapsed) {
+      const container = range.startContainer instanceof Element
+        ? range.startContainer
+        : range.startContainer.parentElement;
+      const item = container?.closest<HTMLElement>('li') ?? null;
+      return item && content.contains(item) ? [item] : [];
+    }
+    return [...content.querySelectorAll<HTMLElement>('li')].filter((item) => {
+      try { return range.intersectsNode(item); } catch { return false; }
+    });
+  }
+
   /** Toggle a standard inline format on the active selection. */
   toggleTextSelectionFormat(format: 'bold' | 'italic' | 'underline'): boolean {
     if (!this.editingId) return false;
@@ -2876,7 +2953,13 @@ export class EditorCanvas {
         for (const item of [...block.children] as HTMLElement[]) {
           if (item.tagName !== 'LI') continue;
           const paragraph = document.createElement('p');
-          for (const attr of [...item.attributes]) paragraph.setAttribute(attr.name, attr.value);
+          for (const attr of [...item.attributes]) {
+            if (attr.name !== LIST_MARKER_COLOR_ATTRIBUTE) {
+              paragraph.setAttribute(attr.name, attr.value);
+            }
+          }
+          paragraph.style.removeProperty(LIST_MARKER_COLOR_PROPERTY);
+          if (!paragraph.getAttribute('style')?.trim()) paragraph.removeAttribute('style');
           while (item.firstChild) paragraph.appendChild(item.firstChild);
           paragraphs.push(paragraph);
           fragment.appendChild(paragraph);

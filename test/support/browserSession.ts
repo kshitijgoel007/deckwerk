@@ -205,8 +205,14 @@ export class Cdp {
   }
 
   private mouse(type: string, x: number, y: number, clickCount: number): Promise<void> {
+    const pressed = type === 'mousePressed' || (type === 'mouseMoved' && clickCount > 0);
     return this.call('Input.dispatchMouseEvent', {
-      type, x, y, clickCount, button: clickCount ? 'left' : 'none', buttons: 0,
+      type,
+      x,
+      y,
+      clickCount,
+      button: clickCount ? 'left' : 'none',
+      buttons: pressed ? 1 : 0,
     });
   }
 
@@ -309,6 +315,101 @@ export class Cdp {
     await this.mouse('mouseReleased', point.x, point.y, 1);
     await this.mouse('mousePressed', point.x, point.y, 2);
     await this.mouse('mouseReleased', point.x, point.y, 2);
+  }
+
+  /** Double-click the rendered word containing a flat text offset. */
+  async doubleClickTextAtOffset(
+    selector: string,
+    offset: number,
+    label = selector,
+  ): Promise<void> {
+    const point = await this.textGlyphPoint(selector, offset, 0.5, label);
+    await this.mouse('mouseMoved', point.x, point.y, 0);
+    await this.mouse('mousePressed', point.x, point.y, 1);
+    await this.mouse('mouseReleased', point.x, point.y, 1);
+    await this.mouse('mousePressed', point.x, point.y, 2);
+    await this.mouse('mouseReleased', point.x, point.y, 2);
+  }
+
+  /**
+   * Select a flat character range with genuine pointer clicks over glyphs.
+   * A leading click establishes the native caret and Shift-click extends it to
+   * the trailing glyph. This covers native Selection boundary creation instead
+   * of installing a Range through Runtime.evaluate, which can hide hit-testing
+   * and focus bugs.
+   */
+  async selectTextRange(
+    selector: string,
+    start: number,
+    end: number,
+    label = selector,
+  ): Promise<void> {
+    if (end <= start) throw new Error(`cannot select empty range ${start}..${end}`);
+    const from = await this.textGlyphPoint(selector, start, 0.15, `${label} start`);
+    const to = await this.textGlyphPoint(selector, end - 1, 0.85, `${label} end`);
+    await this.call('Input.dispatchMouseEvent', {
+      type: 'mouseMoved', x: from.x, y: from.y, button: 'none', buttons: 0,
+    });
+    await this.call('Input.dispatchMouseEvent', {
+      type: 'mousePressed', x: from.x, y: from.y,
+      button: 'left', buttons: 1, clickCount: 1,
+    });
+    await this.call('Input.dispatchMouseEvent', {
+      type: 'mouseReleased', x: from.x, y: from.y,
+      button: 'left', buttons: 0, clickCount: 1,
+    });
+    await this.call('Input.dispatchMouseEvent', {
+      type: 'mouseMoved', x: to.x, y: to.y, button: 'none', buttons: 0,
+    });
+    await this.call('Input.dispatchMouseEvent', {
+      type: 'mousePressed', x: to.x, y: to.y,
+      button: 'left', buttons: 1, clickCount: 1, modifiers: 8,
+    });
+    await this.call('Input.dispatchMouseEvent', {
+      type: 'mouseReleased', x: to.x, y: to.y,
+      button: 'left', buttons: 0, clickCount: 1, modifiers: 8,
+    });
+  }
+
+  /** Viewport point inside one glyph at a flat text offset. */
+  private async textGlyphPoint(
+    selector: string,
+    offset: number,
+    fraction: number,
+    label: string,
+  ): Promise<{ x: number; y: number }> {
+    const point = await this.evaluate<{ x: number; y: number } | { error: string }>(`(() => {
+      const root = document.querySelector(${JSON.stringify(selector)});
+      if (!root) return { error: 'no element matches' };
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      let remaining = ${JSON.stringify(offset)};
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        const authored = node.data.replaceAll('\u2060', '');
+        if (remaining >= authored.length) {
+          remaining -= authored.length;
+          continue;
+        }
+        let domOffset = 0;
+        let authoredOffset = 0;
+        while (domOffset < node.data.length && authoredOffset < remaining) {
+          if (node.data[domOffset] !== '\u2060') authoredOffset += 1;
+          domOffset += 1;
+        }
+        while (node.data[domOffset] === '\u2060') domOffset += 1;
+        const range = document.createRange();
+        range.setStart(node, domOffset);
+        range.setEnd(node, Math.min(node.data.length, domOffset + 1));
+        const rect = range.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) return { error: 'character has no rendered box' };
+        return {
+          x: rect.left + rect.width * ${JSON.stringify(fraction)},
+          y: rect.top + rect.height / 2,
+        };
+      }
+      return { error: 'offset is outside rendered text' };
+    })()`);
+    if ('error' in point) throw new Error(`cannot locate ${label}: ${point.error}`);
+    return point;
   }
 
   /** Select all rendered text in a node by dragging from its first to last glyph. */

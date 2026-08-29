@@ -120,8 +120,15 @@ describe('media-loading contract across surfaces', () => {
     'src/renderer/editor/magicMovePanel.ts',
     'src/renderer/editor/agentBridge.ts',
     'src/renderer/editor/renderInvariants.ts',
+    'src/renderer/presenter/main.ts',
   ])('%s renders previews with metadata preload', (file) => {
     expect(read(file)).toContain("mediaPreload: 'metadata'");
+  });
+
+  it('freezes Speaker View videos into session-cached stills', () => {
+    const source = read('src/renderer/presenter/main.ts');
+    expect(source).toContain('freezePreviewVideos(stage)');
+    expect(source).toContain('revealImagesWhenDecoded(stage)');
   });
 
   it('the live player is the one auto-preload surface', () => {
