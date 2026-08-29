@@ -2443,51 +2443,17 @@ def import_key(path: Path, out_dir: Path, write: bool) -> tuple[dict[str, Any], 
         if write:
             out_dir.mkdir(parents=True, exist_ok=True)
             (out_dir / "assets").mkdir(exist_ok=True)
+            (out_dir / "edit").mkdir(exist_ok=True)
             (out_dir / "deck.json").write_text(
                 json.dumps(deck, indent=2) + "\n", encoding="utf8"
             )
             theme_path = out_dir / "theme.css"
             if not theme_path.exists():
                 theme_path.write_text(THEME_CSS, encoding="utf8")
-            write_agent_brief(out_dir)
 
         return deck, report
     finally:
         pkg.close()
-
-
-def write_agent_brief(out_dir: Path) -> None:
-    """Leave the same AGENTS.md brief the editor writes when it opens a deck.
-
-    An imported deck is usually handed straight to a coding agent, whose
-    working directory is the deck folder — without this file its first step is
-    guesswork. The canonical text lives in docs/deck-brief.md (shared with
-    src/main/deckStore.ts); a deck imported by a copy of this script that has
-    lost the docs folder still gets a minimal pointer at `slide-agent docs`.
-    Never overwrites: the file belongs to the user once it exists.
-    """
-    (out_dir / "edit").mkdir(exist_ok=True)
-    brief_path = out_dir / "AGENTS.md"
-    if brief_path.exists():
-        return
-    repo = Path(__file__).resolve().parent.parent.parent
-    launcher = repo / "bin" / "slide-agent"
-    hint = (
-        f"\nIf `slide-agent` is not on your PATH, it is at:\n\n    {launcher}\n"
-        if launcher.exists() else ""
-    )
-    canonical = repo / "docs" / "deck-brief.md"
-    if canonical.exists():
-        text = canonical.read_text(encoding="utf8").replace("{{LAUNCHER_HINT}}", hint)
-    else:
-        text = (
-            "# Working on this deck\n\n"
-            "Author slides through the `slide-agent` CLI from this folder. Start\n"
-            "with `slide-agent docs` for the full guide; the loop is `context` ->\n"
-            "`inspect --html` -> edit the file in `edit/` -> save (editor open) or\n"
-            "`apply` (editor closed). Never edit `deck.json`.\n" + hint
-        )
-    brief_path.write_text(text, encoding="utf8")
 
 
 def main(argv: list[str]) -> int:

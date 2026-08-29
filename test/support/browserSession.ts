@@ -361,6 +361,10 @@ export class Cdp {
     await this.call('Input.dispatchMouseEvent', {
       type: 'mouseMoved', x: to.x, y: to.y, button: 'none', buttons: 0,
     });
+    await this.call('Input.dispatchKeyEvent', {
+      type: 'keyDown', key: 'Shift', code: 'ShiftLeft', modifiers: 8,
+      windowsVirtualKeyCode: 16, nativeVirtualKeyCode: 16,
+    });
     await this.call('Input.dispatchMouseEvent', {
       type: 'mousePressed', x: to.x, y: to.y,
       button: 'left', buttons: 1, clickCount: 1, modifiers: 8,
@@ -368,6 +372,10 @@ export class Cdp {
     await this.call('Input.dispatchMouseEvent', {
       type: 'mouseReleased', x: to.x, y: to.y,
       button: 'left', buttons: 0, clickCount: 1, modifiers: 8,
+    });
+    await this.call('Input.dispatchKeyEvent', {
+      type: 'keyUp', key: 'Shift', code: 'ShiftLeft', modifiers: 0,
+      windowsVirtualKeyCode: 16, nativeVirtualKeyCode: 16,
     });
   }
 

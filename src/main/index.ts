@@ -53,6 +53,7 @@ import { startWorkflow } from './workflow.js';
 import { handoffWhenReady } from './windowHandoff.js';
 import { AgentRuntime } from './agentRuntime.js';
 import { AgentChatController } from './agentChat.js';
+import { DESKTOP_AGENT_PARTICIPANT, DesktopSharedAgent } from './desktopSharedAgent.js';
 import { callPresentationApi } from './agentPresentationApi.js';
 import type { DynamicToolCall, DynamicToolResult } from './codexAppServer.js';
 import { installAssetProtocol, registerAssetScheme, setDeckDir } from './assetProtocol.js';
@@ -61,7 +62,6 @@ import {
   deckFolderPath,
   copyDeck,
   derivedAssetPath,
-  ensureAgentGuide,
   importAsset,
   importImageBuffer,
   loadDeck,
@@ -128,6 +128,10 @@ let collabReturn: Promise<void> | null = null;
 let agentSessionReturn: Promise<void> | null = null;
 let quitting = false;
 const agentRuntime = new AgentRuntime(() => editorWindow);
+const agentChatStateListeners = new Set<(
+  state: AgentChatState,
+  conversationKey: string,
+) => void>();
 const agentChat = new AgentChatController({
   // DeckWerk owns its embedded agent login. Switching it must not sign the
   // user's other Codex clients in or out.
@@ -139,12 +143,20 @@ const agentChat = new AgentChatController({
     }
     await shell.openExternal(url);
   },
-  onState: (state) => {
-    if (editorWindow && !editorWindow.isDestroyed()) {
+  onState: (state, conversationKey) => {
+    if (conversationKey === '' && editorWindow && !editorWindow.isDestroyed()) {
       editorWindow.webContents.send(IPC.agentChatState, state);
     }
+    for (const listener of agentChatStateListeners) listener(state, conversationKey);
   },
   onDynamicToolCall: handleAgentDynamicTool,
+});
+const desktopSharedAgent = new DesktopSharedAgent({
+  controller: agentChat,
+  subscribe: (listener) => {
+    agentChatStateListeners.add(listener);
+    return () => agentChatStateListeners.delete(listener);
+  },
 });
 
 async function handleAgentDynamicTool(call: DynamicToolCall): Promise<DynamicToolResult> {
@@ -417,9 +429,6 @@ function setSession(dir: string, deck: Deck): DeckSession {
   setDeckDir(dir);
   watchDeck(dir, deck.theme);
   void agentRuntime.open(dir);
-  // New deck, opened deck, imported deck: whichever way a deck arrives, an
-  // agent asked to work on it should find instructions sitting next to it.
-  void ensureAgentGuide(dir).catch((err) => console.error('Could not write AGENTS.md:', err));
   return session;
 }
 
@@ -477,7 +486,10 @@ function watchDeck(dir: string, themeFile: string): void {
       // spawned, and the compile is measured by the engine that will draw it.
       watch(editDir, (_event, filename) => {
         if (!filename || !String(filename).endsWith('.html')) return;
-        const path = join(editDir, String(filename));
+        const path = resolve(editDir, String(filename));
+        // `.scratchpad/` holds persistent Agent preview evidence. Only direct
+        // children of edit/ are authored documents whose saves update slides.
+        if (dirname(path) !== editDir) return;
         const previous = htmlTimers.get(path);
         if (previous) clearTimeout(previous);
         htmlTimers.set(path, setTimeout(async () => {
@@ -1180,6 +1192,8 @@ function registerHandlers(): void {
       agentMode,
       clientDir,
       onSessionEnd,
+      sharedAgent: agentMode ? undefined : desktopSharedAgent,
+      sharedAgentAccess: agentMode ? undefined : 'loopback' as const,
       onHtmlDraft: agentMode ? (draft: HtmlDraftPreview) => {
         agentChat.setScratchpad(s.dir, {
           draftId: draft.draftId,
@@ -1253,6 +1267,13 @@ function registerHandlers(): void {
       await startBackgroundAgent();
       return collabServer?.urls ?? [];
     }
+    // The embedded Agent is itself backed by a hidden collaboration server.
+    // Reusing that server here used to make Collaborate appear to succeed (an
+    // invite was copied) while leaving the native editor on screen forever.
+    // Finish that authoritative session first, then start the normal hosted
+    // session and perform the desktop-to-browser handoff below.
+    if (collabMode === 'agent-background') await endBackgroundAgentSession();
+
     const s = requireSession();
     const requestedView: EditorViewSnapshot = opts ?? {
       activeSlideId: null,
@@ -1283,6 +1304,7 @@ function registerHandlers(): void {
     hostUrl.searchParams.set('deck', deckId);
     hostUrl.searchParams.set('name', hostName);
     hostUrl.searchParams.set('view', encodeEditorView(requestedView));
+    hostUrl.searchParams.set('agentParticipant', DESKTOP_AGENT_PARTICIPANT);
 
     const previousEditor = editorWindow;
     const continuity = previousEditor && !previousEditor.isDestroyed()

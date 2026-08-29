@@ -851,6 +851,12 @@ describe('collab server', () => {
     });
     expect(preview.status).toBe(200);
     const draft = await preview.json() as { sourceUrl: string };
+    const savedSource = await readFile(join(deckDir, 'edit', '.scratchpad', 'source.html'), 'utf8');
+    const savedImported = await readFile(join(deckDir, 'edit', '.scratchpad', 'imported.html'), 'utf8');
+    expect(savedSource).toContain('<base href="../../">');
+    expect(savedSource).toContain('src="assets/pixel.png"');
+    expect(savedImported).toContain('<base href="../../">');
+    expect(savedImported).toContain('Themed');
     const source = await (await fetch(`${base}${draft.sourceUrl}?deck=${DECK_ID}`)).text();
     expect(source).toContain(`<base href="/decks/${DECK_ID}/">`);
     expect(source).toContain('.from-deck-theme { color: rgb(1, 2, 3); }');
@@ -862,11 +868,14 @@ describe('collab server', () => {
     expect(fitted).toContain('data-agent-scratchpad-script');
     expect(fitted).toContain("'ArrowRight'");
     expect(fitted).toContain('--agent-scratchpad-scale');
+    expect(fitted).toContain("frame.append(slide)");
+    expect(fitted).not.toMatch(/agent-scratchpad-slides\s*>\s*\.slide/);
     const contact = await (await fetch(
       `${base}${draft.sourceUrl}?deck=${DECK_ID}&scratchpad=contact`,
     )).text();
     expect(contact).toContain('agent-scratchpad-grid');
     expect(contact).toContain('Contact sheet zoom');
+    expect(contact).not.toContain('.agent-scratchpad-cell > .slide');
 
     const asset = await fetch(`${base}/decks/${DECK_ID}/assets/pixel.png`);
     expect(asset.status).toBe(200);

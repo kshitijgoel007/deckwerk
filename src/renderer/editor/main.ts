@@ -314,9 +314,11 @@ function buildToolbar(): void {
 
   const right = document.createElement('div');
   right.className = 'bar-group bar-right deck-only';
+  const collaborate = barButton('Collaborate', () => void startSharing());
+  collaborate.id = 'collaborate-trigger';
   right.append(
     barButton('Agent…', () => void toggleAgentChat()),
-    barButton('Collaborate', () => void startSharing()),
+    collaborate,
     createToolbarSplitButton(
       'Present',
       () => void startPresentation(),
@@ -430,11 +432,14 @@ async function endAgentChat(): Promise<void> {
 }
 
 async function startSharing(): Promise<void> {
-  setStatusMessage('Starting collaboration…');
   try {
-    await cssEditor.flush();
-    await save();
-    await window.api.startCollab({ agent: false, ...captureEditorView(store) });
+    await runOperation('Starting collaboration…', async (operation) => {
+      operation.update('Saving presentation');
+      await cssEditor.flush();
+      await save();
+      operation.update('Starting collaboration server');
+      await window.api.startCollab({ agent: false, ...captureEditorView(store) });
+    });
     setStatusMessage('Collaboration link copied to clipboard.');
   } catch (err) {
     setStatusMessage(`Collaboration failed: ${err instanceof Error ? err.message : err}`);

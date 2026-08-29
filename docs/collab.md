@@ -1,5 +1,8 @@
 # Collaborative editing
 
+The remaining desktop-only capabilities are tracked in
+[Desktop → web feature parity](desktop-web-parity.md).
+
 A standalone server hosts a **directory of deck folders**; any number of
 people edit them from their browsers — over tailscale or any trusted network.
 Everyone sees everyone's cursors, selections, and which slide each person is
@@ -27,6 +30,14 @@ stop reconnecting — then reloads the deck from disk and brings the ordinary
 editor back through the same continuous handoff. The button only appears (and
 `/api/end` only works) for the
 loopback client in a hosted session, i.e. the host machine.
+
+The loopback host also keeps the desktop's **Agent…** control during
+collaboration. It uses the same private account and saved deck conversation as
+the native editor; Agent edits enter the shared transaction stream, so human
+peers see them live, in History, and as Agent presence. Remote collaborators do
+not receive the host's Agent panel or account controls. Starting collaboration
+while the native Agent panel is already active preserves that conversation
+across the handoff.
 
 Requires the built browser client (`npm run build:collab`); packaged builds
 ship it in `dist/collab`.

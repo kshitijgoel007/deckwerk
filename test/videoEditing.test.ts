@@ -189,7 +189,7 @@ describe('compact video inspector', () => {
   });
 
   it('reveals reset as a split-button segment only after mask editing is done', () => {
-    const { inspectorHost, store, inspector, canvas } = setup();
+    const { inspectorHost, store, inspector, canvas, canvasHost } = setup();
     inspector.onToggleMask = (id) => canvas.toggleMaskMode(id);
     inspector.maskingElement = () => canvas.maskingElement();
     canvas.onMaskModeChange = () => inspector.render();
@@ -204,6 +204,20 @@ describe('compact video inspector', () => {
     expect(actions.querySelector('.panel-action')?.textContent).toBe('Done editing mask');
     expect(actions.querySelector('button[title="Reset mask"]')).toBeNull();
 
+    const handle = canvasHost.querySelector<HTMLElement>(
+      '.handle-se[data-element-id="video-1"]',
+    )!;
+    handle.dispatchEvent(new PointerEvent('pointerdown', {
+      clientX: 740, clientY: 460, bubbles: true, pointerId: 1, button: 0,
+    }));
+    canvasHost.dispatchEvent(new PointerEvent('pointermove', {
+      clientX: 700, clientY: 420, bubbles: true, pointerId: 1, button: 0,
+    }));
+    canvasHost.dispatchEvent(new PointerEvent('pointerup', {
+      clientX: 700, clientY: 420, bubbles: true, pointerId: 1, button: 0,
+    }));
+
+    actions = inspectorHost.querySelector('.mask-action-row')!;
     actions.querySelector<HTMLButtonElement>('.panel-action')!.click();
     actions = inspectorHost.querySelector('.mask-action-row')!;
     expect(actions.querySelector('.panel-action')?.textContent).toBe('Edit mask');

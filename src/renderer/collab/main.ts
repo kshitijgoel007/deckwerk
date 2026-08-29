@@ -95,6 +95,7 @@ interface ServerConfig {
     enabled: true;
     name: string;
     canManageAccount: boolean;
+    personal?: boolean;
   };
 }
 
@@ -470,7 +471,12 @@ function buildToolbar(): void {
   const right = document.createElement('div');
   right.className = 'bar-group bar-right';
   if (serverConfig.sharedAgent?.enabled) {
-    right.append(barButton('Shared Agent', () => sharedAgentPanel?.toggle()));
+    const agent = barButton(
+      serverConfig.sharedAgent.personal ? 'Agent…' : 'Shared Agent',
+      () => sharedAgentPanel?.toggle(),
+    );
+    agent.id = 'agent-chat-trigger';
+    right.append(agent);
   }
   if (serverConfig.hosted) {
     right.append(
@@ -588,7 +594,11 @@ function renderStatus(): void {
     const invite = serverConfig.urls.find((u) => !u.includes('127.0.0.1')) ?? serverConfig.urls[0];
     if (invite) bits.push(`invite: ${invite}`);
   }
-  if (serverConfig.sharedAgent?.enabled) bits.push(`${serverConfig.sharedAgent.name}: shared test mode`);
+  if (serverConfig.sharedAgent?.enabled) {
+    bits.push(serverConfig.sharedAgent.personal
+      ? `${serverConfig.sharedAgent.name}: host agent`
+      : `${serverConfig.sharedAgent.name}: shared test mode`);
+  }
   // Visible in any screenshot or accessibility read of the page, so an agent
   // that lands here cold finds its onboarding without guessing endpoints.
   bits.push('agents: GET /api/brief · await window.agent.seeComments()');
@@ -606,8 +616,10 @@ void fetchServerConfig().then((config) => {
     sharedAgentPanel = new AgentChatPanel({
       api: sharedAgentBrowserApi.api,
       currentDeckPath: () => deckId,
-      title: `${config.sharedAgent.name} · test mode`,
-      userRoleLabel: 'Participant',
+      title: config.sharedAgent.personal
+        ? config.sharedAgent.name
+        : `${config.sharedAgent.name} · test mode`,
+      userRoleLabel: config.sharedAgent.personal ? 'You' : 'Participant',
       canManageAccount: config.sharedAgent.canManageAccount,
     });
   }

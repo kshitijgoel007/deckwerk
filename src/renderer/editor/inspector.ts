@@ -1,4 +1,4 @@
-import type { MediaEffect, SlideElement } from '@shared/deck.js';
+import type { MediaEffect, Slide, SlideElement } from '@shared/deck.js';
 import {
   paragraphsToList,
   paragraphsToOrderedList,
@@ -210,44 +210,15 @@ export class Inspector {
     if (slideSelection.size > 1 && selected.length === 0) {
       this.host.appendChild(sectionTitle('slides'));
       this.host.appendChild(hint(`${slideSelection.size} slides selected`));
+      this.host.appendChild(this.slideLayoutSection(this.store.selectedSlides()));
       this.appendMagicMove();
       return;
     }
 
     if (selected.length === 0) {
       this.host.appendChild(sectionTitle('slide'));
-      const layoutSection = optionSection('Layout', 'slide-layout-options');
       const slide = deck.slides[slideIndex];
-      const layout = document.createElement('label');
-      layout.className = 'field';
-      const layoutLabel = document.createElement('span');
-      layoutLabel.textContent = 'Preset';
-      const layoutSelect = document.createElement('select');
-      for (const [value, label] of LAYOUT_LABELS) {
-        const option = document.createElement('option');
-        option.value = value;
-        option.textContent = label;
-        layoutSelect.appendChild(option);
-      }
-      layoutSelect.value = slide?.layout ?? 'freeform';
-      layoutSelect.addEventListener('change', () => {
-        this.store.commit((next) => {
-          applySlideLayout(next.slides[slideIndex], layoutSelect.value as SlideLayout);
-        }, { label: `Apply ${layoutSelect.selectedOptions[0]?.textContent ?? 'slide'} layout` });
-      });
-      layout.append(layoutLabel, layoutSelect);
-      layoutSection.content.appendChild(layout);
-      layoutSection.content.appendChild(
-        colorField('Background', slide?.background.color ?? null, (value) => {
-          this.store.commit((next) => {
-            next.slides[slideIndex].background = { color: value, image: null };
-          });
-        }, {
-          inheritedValue: deck.themeStyle?.colors.background ?? null,
-          clear: { kind: 'theme', label: 'Use theme background' },
-        }),
-      );
-      this.host.appendChild(layoutSection.section);
+      if (slide) this.host.appendChild(this.slideLayoutSection([slide]));
       this.appendMagicMove();
       return;
     }
@@ -293,6 +264,63 @@ export class Inspector {
   private appendMagicMove(): void {
     this.magicMovePanel.render();
     this.host.appendChild(this.magicMoveHost);
+  }
+
+  /** Slide-level controls apply uniformly to every slide selected in the rail. */
+  private slideLayoutSection(slides: Slide[]): HTMLElement {
+    const section = optionSection('Layout', 'slide-layout-options');
+    const selectedIds = new Set(slides.map((slide) => slide.id));
+    const layouts = sharedValue(slides.map((slide) => slide.layout ?? 'freeform'));
+    const layout = document.createElement('label');
+    layout.className = 'field';
+    const layoutLabel = document.createElement('span');
+    layoutLabel.textContent = 'Preset';
+    const layoutSelect = document.createElement('select');
+    if (layouts.mixed) {
+      const mixed = document.createElement('option');
+      mixed.value = '__mixed__';
+      mixed.textContent = 'Mixed';
+      mixed.disabled = true;
+      layoutSelect.appendChild(mixed);
+    }
+    for (const [value, label] of LAYOUT_LABELS) {
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = label;
+      layoutSelect.appendChild(option);
+    }
+    layoutSelect.value = layouts.mixed ? '__mixed__' : layouts.value ?? 'freeform';
+    layoutSelect.addEventListener('change', () => {
+      if (layoutSelect.value === '__mixed__') return;
+      this.store.commit((next) => {
+        for (const slide of next.slides) {
+          if (selectedIds.has(slide.id)) applySlideLayout(slide, layoutSelect.value as SlideLayout);
+        }
+      }, {
+        label: `Apply ${layoutSelect.selectedOptions[0]?.textContent ?? 'slide'} layout`,
+      });
+    });
+    layout.append(layoutLabel, layoutSelect);
+    section.content.appendChild(layout);
+
+    const backgrounds = sharedValue(slides.map((slide) => slide.background.color ?? null));
+    section.content.appendChild(colorField(
+      backgrounds.mixed ? 'Background (mixed)' : 'Background',
+      backgrounds.value,
+      (value) => {
+        this.store.commit((next) => {
+          for (const slide of next.slides) {
+            if (selectedIds.has(slide.id)) slide.background = { color: value, image: null };
+          }
+        }, { label: slides.length > 1 ? 'Set slide backgrounds' : 'Set slide background' });
+      },
+      {
+        inheritedValue: this.store.get().deck.themeStyle?.colors.background ?? null,
+        clear: { kind: 'theme', label: 'Use theme background' },
+        mixed: backgrounds.mixed,
+      },
+    ));
+    return section.section;
   }
 
   /**

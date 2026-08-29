@@ -87,6 +87,8 @@ export function createSharedAgentApi(
 }
 
 function browserParticipantId(): string {
+  const requested = new URLSearchParams(location.search).get('agentParticipant');
+  if (requested && /^[a-zA-Z0-9_-]{8,80}$/.test(requested)) return requested;
   const storageKey = 'deckwerk.shared-agent-participant-id';
   try {
     const existing = localStorage.getItem(storageKey);

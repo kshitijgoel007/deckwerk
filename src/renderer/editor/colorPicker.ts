@@ -20,6 +20,8 @@ export interface ColorFieldOptions {
   source?: { kind: 'theme' | 'css'; preview?: string | null; label?: string };
   /** What a null value means for this particular property. */
   clear?: { kind: 'theme' | 'css' | 'none'; label: string };
+  /** The selected targets currently have different authored colours. */
+  mixed?: boolean;
 }
 
 const clamp = (value: number, min = 0, max = 1): number =>
@@ -136,7 +138,7 @@ export function colorField(
   options: ColorFieldOptions = {},
 ): HTMLElement {
   const clear = options.clear ?? { kind: 'none' as const, label: 'No color' };
-  const source = options.source
+  const source = options.mixed ? null : options.source
     ?? (value === null && clear.kind === 'theme' ? { kind: 'theme' as const } : null);
   const inherited = parseCssColor(options.inheritedValue);
   const explicit = parseCssColor(value);
@@ -149,13 +151,17 @@ export function colorField(
   const trigger = document.createElement('button');
   trigger.type = 'button';
   trigger.className = 'color-picker-trigger';
-  trigger.setAttribute('aria-label', `${label}: ${value === null && clear.kind === 'theme' ? 'theme color' : value ?? clear.label}`);
+  trigger.setAttribute('aria-label', `${label}: ${options.mixed
+    ? 'mixed'
+    : value === null && clear.kind === 'theme' ? 'theme color' : value ?? clear.label}`);
   trigger.setAttribute('aria-haspopup', 'dialog');
   trigger.setAttribute('aria-expanded', 'false');
 
   const preview = document.createElement('span');
   preview.className = 'color-picker-preview';
-  if (source?.kind === 'css' && source.preview) {
+  if (options.mixed) {
+    preview.style.setProperty('--picker-color', 'transparent');
+  } else if (source?.kind === 'css' && source.preview) {
     preview.style.setProperty('--picker-color', source.preview);
   } else if (value === null && clear.kind === 'none') {
     preview.style.setProperty('--picker-color', 'transparent');
@@ -173,6 +179,8 @@ export function colorField(
     const sourceLabel = source.label ?? (source.kind === 'theme' ? 'Theme color' : 'CSS-defined paint');
     trigger.setAttribute('aria-label', `${label}: ${sourceLabel}`);
     trigger.title = `${sourceLabel}${options.inheritedValue ? ` (${options.inheritedValue})` : ''}`;
+  } else if (options.mixed) {
+    trigger.title = 'Mixed colors';
   } else {
     trigger.title = value ?? clear.label;
   }

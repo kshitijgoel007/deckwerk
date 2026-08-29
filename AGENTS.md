@@ -207,9 +207,8 @@ my-talk/
 ## Getting this guide, from a deck folder
 
 You are probably working in a deck folder, not in the editor's source tree.
-Every deck the editor opens, creates or imports gets a short `AGENTS.md` of its
-own — that is likely how you got here. It points back at this guide, which is
-one command away:
+DeckWerk no longer writes an `AGENTS.md` into each deck folder. This repository
+guide remains available from any deck folder through the CLI:
 
 ```bash
 slide-agent docs        # this document

@@ -266,6 +266,127 @@ describe.skipIf(!electronBinary)('desktop inline-formatting matrix', () => {
     await applyRange(novum.start, novum.end, 'italic', 'shortcut', false, 'inserted word unitalic');
     await applyRange(novum.start, novum.end, 'underline', 'button', false, 'inserted word ununderline');
 
+    // Regression journey: whole-object formatting must not leave a latent
+    // bold/italic typing state that later leaks into an automatically created
+    // list. This deliberately starts through the production Text toolbar.
+    await editor.click('#toolbar .bar-icon-button', 'Text toolbar button');
+    const listTextId = await eventually(async () => editor!.evaluate<string>(`(() => {
+      const nodes = [...document.querySelectorAll('#canvas [data-element-id]')];
+      return nodes.find((node) => node.dataset.elementId !== ${JSON.stringify(TEXT_ID)}
+        && node.querySelector('.text-content')?.textContent === 'New text')?.dataset.elementId ?? '';
+    })()`), 'Text toolbar did not create and select a placeholder');
+    const listContent = `#canvas [data-element-id="${listTextId}"] .text-content`;
+
+    // Apply and remove whole-box bold and italic exactly as reported, while
+    // the object (rather than an inline range) is selected.
+    await editor.chord('b', 'KeyB', 66, MOD);
+    await editor.chord('i', 'KeyI', 73, MOD);
+    await editor.chord('b', 'KeyB', 66, MOD);
+    await editor.chord('i', 'KeyI', 73, MOD);
+    const resetBoxState = await editor.evaluate<{ weight: string; style: string }>(`(() => {
+      const style = getComputedStyle(document.querySelector(${JSON.stringify(listContent)}));
+      return { weight: style.fontWeight, style: style.fontStyle };
+    })()`);
+    expect(Number.parseInt(resetBoxState.weight, 10)).toBeLessThan(600);
+    expect(resetBoxState.style).toBe('normal');
+
+    await editor.doubleClickTextAtOffset(listContent, 1, 'new text placeholder');
+    await eventually(async () => editor!.evaluate<boolean>(
+      `document.querySelector(${JSON.stringify(listContent)})?.isContentEditable === true`,
+    ), 'new text placeholder did not enter editing');
+    await editor.chord('a', 'KeyA', 65, MOD, ['selectAll']);
+    await editor.call('Input.insertText', { text: 'Lorem plain ' });
+    await editor.chord('b', 'KeyB', 66, MOD);
+    await editor.call('Input.insertText', { text: 'bold words' });
+    await editor.chord('b', 'KeyB', 66, MOD);
+    await editor.call('Input.insertText', { text: ' plain ' });
+    await editor.chord('i', 'KeyI', 73, MOD);
+    await editor.call('Input.insertText', { text: 'italic words' });
+    await editor.chord('i', 'KeyI', 73, MOD);
+    await editor.call('Input.insertText', { text: ' plain ending.' });
+    const listParagraph = 'Lorem plain bold words plain italic words plain ending.';
+    await eventually(async () => editor!.evaluate<string>(
+      `document.querySelector(${JSON.stringify(listContent)})?.textContent?.replaceAll('\u2060', '') ?? ''`,
+    ), 'placeholder text was not replaced', (value) => value === listParagraph);
+
+    // The collapsed-caret format toggles above create and then seal internal
+    // typing-style runs. The final characters are plain before Enter.
+    const paragraphRuns = await editor.evaluate<Array<{
+      text: string;
+      weight: string;
+      style: string;
+    }>>(`(() => {
+      const root = document.querySelector(${JSON.stringify(listContent)});
+      const runs = [];
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        const text = node.data.replaceAll('\u2060', '');
+        if (!text) continue;
+        const style = getComputedStyle(node.parentElement);
+        runs.push({ text, weight: style.fontWeight, style: style.fontStyle });
+      }
+      return runs;
+    })()`);
+    expect(paragraphRuns.some((run) => run.text.includes('bold words')
+      && Number.parseInt(run.weight, 10) >= 600)).toBe(true);
+    expect(paragraphRuns.some((run) => run.text.includes('italic words')
+      && run.style === 'italic')).toBe(true);
+    const endingRun = paragraphRuns.find((run) => run.text.includes('plain ending.'));
+    expect(Number.parseInt(endingRun?.weight ?? '', 10)).toBeLessThan(600);
+    expect(endingRun?.style).toBe('normal');
+
+    await editor.key('End', 35);
+    await editor.key('Enter', 13);
+    await eventually(async () => editor!.evaluate<boolean>(`(() => {
+      const root = document.querySelector(${JSON.stringify(listContent)});
+      return document.activeElement === root
+        && getSelection()?.isCollapsed === true
+        && root.children.length >= 2;
+    })()`), 'Enter did not create a second editable paragraph');
+    await editor.call('Input.insertText', { text: '- some text' });
+    await editor.key('Enter', 13);
+
+    const listState = await eventually(async () => editor!.evaluate<{
+      html: string;
+      itemTexts: string[];
+      textRuns: Array<{ text: string; weight: string; style: string }>;
+      items: Array<{ weight: string; style: string; markerWeight: string; markerStyle: string }>;
+    }>(`(() => {
+      const root = document.querySelector(${JSON.stringify(listContent)});
+      const list = root?.querySelector('ul');
+      if (!root || !list) return { html: root?.innerHTML ?? '', itemTexts: [], textRuns: [], items: [] };
+      const textRuns = [];
+      const walker = document.createTreeWalker(list, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        const style = getComputedStyle(node.parentElement);
+        textRuns.push({ text: node.data, weight: style.fontWeight, style: style.fontStyle });
+      }
+      const items = [...list.querySelectorAll(':scope > li')].map((item) => {
+        const style = getComputedStyle(item);
+        const marker = getComputedStyle(item, '::marker');
+        return {
+          weight: style.fontWeight,
+          style: style.fontStyle,
+          markerWeight: marker.fontWeight,
+          markerStyle: marker.fontStyle,
+        };
+      });
+      return {
+        html: root.innerHTML,
+        itemTexts: [...list.querySelectorAll(':scope > li')].map((item) => item.textContent ?? ''),
+        textRuns,
+        items,
+      };
+    })()`), 'hyphen paragraph did not become a list',
+    (value) => value.itemTexts[0] === 'some text' && value.itemTexts.length >= 2);
+    expect(listState.textRuns.some((run) => run.text.includes('some text'))).toBe(true);
+    expect(listState.textRuns.every((run) => Number.parseInt(run.weight, 10) < 600)).toBe(true);
+    expect(listState.textRuns.every((run) => run.style === 'normal')).toBe(true);
+    expect(listState.items.every((item) => Number.parseInt(item.weight, 10) < 600)).toBe(true);
+    expect(listState.items.every((item) => item.style === 'normal')).toBe(true);
+    expect(listState.items.every((item) => Number.parseInt(item.markerWeight, 10) < 600)).toBe(true);
+    expect(listState.items.every((item) => item.markerStyle === 'normal')).toBe(true);
+
     const liveHtml = await editor.evaluate<string>(
       `document.querySelector(${JSON.stringify(CONTENT)})?.innerHTML ?? ''`,
     );
@@ -288,6 +409,13 @@ describe.skipIf(!electronBinary)('desktop inline-formatting matrix', () => {
     15_000);
     expect(persistedHtml.diskHtml).toContain('NOVUM');
     expect((persistedHtml.diskHtml.match(/<p\b/g) ?? []).length).toBeGreaterThanOrEqual(2);
+    const persistedList = await eventually(async () => {
+      const disk = JSON.parse(await readFile(join(deckDir, 'deck.json'), 'utf8')) as {
+        slides: Array<{ elements: Array<{ id: string; html?: string }> }>;
+      };
+      return disk.slides[0].elements.find((element) => element.id === listTextId)?.html ?? '';
+    }, 'automatically created list did not autosave', (html) => /<ul>.*some text/s.test(html));
+    expect(persistedList).not.toMatch(/<ul[^>]*>.*font-(?:weight|style):\s*(?:700|bold|italic)/s);
   }, 120_000);
 });
 

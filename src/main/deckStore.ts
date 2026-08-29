@@ -2,7 +2,6 @@ import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { copyFile, cp, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { basename, extname, join, resolve, sep } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { type Deck, emptyDeck, parseDeck } from '@shared/deck.js';
 import type { ImportedAsset } from '@shared/ipc.js';
 import { classifyMediaName } from '@shared/media.js';
@@ -20,7 +19,6 @@ import { isWebSafeCodec, probeMedia, transcodeToH264, videoCodec } from './ffmpe
 
 export const DECK_FILE = 'deck.json';
 export const ASSETS_DIR = 'assets';
-export const AGENT_GUIDE_FILE = 'AGENTS.md';
 
 /**
  * Extensions a save dialog can plausibly hand us for a *new deck folder*.
@@ -98,11 +96,13 @@ export async function saveDeck(dir: string, deck: Deck): Promise<string> {
 }
 
 export async function createDeck(dir: string, title?: string): Promise<Deck> {
-  await mkdir(join(dir, ASSETS_DIR), { recursive: true });
+  await Promise.all([
+    mkdir(join(dir, ASSETS_DIR), { recursive: true }),
+    mkdir(join(dir, 'edit'), { recursive: true }),
+  ]);
   const deck = emptyDeck(title ?? basename(dir));
   await saveDeck(dir, deck);
   await writeFile(join(dir, deck.theme), DEFAULT_THEME, 'utf8');
-  await ensureAgentGuide(dir);
   return deck;
 }
 
@@ -117,58 +117,7 @@ export async function copyDeck(sourceDir: string, targetDir: string): Promise<De
   if (existsSync(target)) throw new Error(`A file or folder already exists at ${target}`);
 
   await cp(source, target, { recursive: true, force: false, errorOnExist: true });
-  const deck = await loadDeck(target);
-  await ensureAgentGuide(target);
-  return deck;
-}
-
-/**
- * Leave a short brief for coding agents in the deck folder.
- *
- * Agent CLIs read `AGENTS.md` from their working directory, and their working
- * directory is the deck — not this repository, where the real guide lives. So
- * every deck gets a stub that points at `slide-agent docs`, which is how an
- * agent finds the format and the transaction contract without being told where
- * the editor is installed.
- *
- * Never overwrites: once the file exists it belongs to the user, who may well
- * have added their own notes about the talk to it.
- */
-export async function ensureAgentGuide(dir: string): Promise<boolean> {
-  // The guide's first instruction is to write into `edit/`; the folder must
-  // exist by then, or every agent's first save is a failed redirect.
-  await mkdir(join(dir, 'edit'), { recursive: true });
-  const path = join(dir, AGENT_GUIDE_FILE);
-  if (existsSync(path)) return false;
-  await writeFile(path, await agentGuideStub(), 'utf8');
-  return true;
-}
-
-async function agentGuideStub(): Promise<string> {
-  // A checkout has the launcher next to it; a packaged app does not ship the
-  // dev CLI at all, so the absolute-path hint is offered only when it is real.
-  const launcher = fileURLToPath(new URL('../../bin/slide-agent', import.meta.url));
-  const fallback = existsSync(launcher)
-    ? `\nIf \`slide-agent\` is not on your PATH, it is at:\n\n    ${launcher}\n`
-    : '';
-
-  // The brief's text lives in docs/deck-brief.md so the Keynote importer (a
-  // Python process with no access to this module) writes the identical brief.
-  // The inline fallback keeps deck creation working in a packaged app that
-  // did not ship the docs folder.
-  try {
-    const canonical = await readFile(
-      fileURLToPath(new URL('../../docs/deck-brief.md', import.meta.url)), 'utf8');
-    return canonical.replace('{{LAUNCHER_HINT}}', fallback);
-  } catch {
-    return `# Working on this deck
-
-Author slides through the \`slide-agent\` CLI from this folder. Start with
-\`slide-agent docs\` for the full guide; the loop is \`context\` →
-\`inspect --html\` → edit the file in \`edit/\` → save (editor open) or
-\`apply\` (editor closed). Never edit \`deck.json\`.
-${fallback}`;
-  }
+  return loadDeck(target);
 }
 
 export async function loadTheme(dir: string, theme: string): Promise<string> {

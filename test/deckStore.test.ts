@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -9,6 +9,17 @@ describe('deck folder persistence', () => {
 
   afterEach(async () => {
     await Promise.all(cleanup.splice(0).map((path) => rm(path, { recursive: true, force: true })));
+  });
+
+  it('creates the authoring folder without adding agent instructions', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'deck-create-'));
+    cleanup.push(root);
+    const deckDir = join(root, 'Deck');
+
+    await createDeck(deckDir);
+
+    await expect(access(join(deckDir, 'edit'))).resolves.toBeUndefined();
+    await expect(access(join(deckDir, 'AGENTS.md'))).rejects.toThrow();
   });
 
   it('copies the complete deck for Save As without changing the source', async () => {

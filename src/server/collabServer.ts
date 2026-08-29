@@ -139,10 +139,13 @@ export interface CollabServerOptions {
   /** Attribute Agent HTTP edits to the embedded conversation that made them. */
   getAgentChatId?: (deckId: string) => string | null;
   /**
-   * Opt-in test mode: one server-owned Codex account and conversation that
-   * every browser participant can use. Account management remains loopback-only.
+   * Browser-backed Agent runtime. Headless test mode exposes it to every
+   * participant; the desktop uses sharedAgentAccess to keep its private Agent
+   * on the loopback host. Account management always remains loopback-only.
    */
   sharedAgent?: SharedAgentRuntimeLike;
+  /** Limit an app-owned Agent panel to the host while people still collaborate. */
+  sharedAgentAccess?: 'all' | 'loopback';
   /** Override the external Keynote adapter in focused server tests. */
   keynoteImporter?: (keyFile: string, outDir: string) => Promise<unknown>;
   /**
@@ -168,6 +171,7 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
   const hostedDeckId = options.hostedDeckId;
   const agentMode = Boolean(options.agentMode);
   const sharedAgent = options.sharedAgent;
+  const sharedAgentAccess = options.sharedAgentAccess ?? 'all';
   const rooms = new Map<string, Room>();
   const htmlDrafts = new Map<string, HttpHtmlDraft>();
   const latestHtmlDrafts = new Map<string, string>();
@@ -267,6 +271,9 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
     };
     broadcast(room, { kind: 'presence', state: room.agentPresence });
   };
+
+  const canUseSharedAgent = (request: IncomingMessage): boolean => Boolean(sharedAgent)
+    && (sharedAgentAccess === 'all' || isLoopbackRequest(request));
 
   const agentChatId = (deckId: string, participantId: string | null): string | null => {
     if (sharedAgent && participantId) return sharedAgent.chatId(deckDirOf(deckId), participantId);
@@ -373,10 +380,11 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
         hosted: Boolean(hostedDeckId),
         deckId: hostedDeckId ?? null,
         agentMode: Boolean(options.agentMode),
-        sharedAgent: sharedAgent ? {
+        sharedAgent: canUseSharedAgent(request) ? {
           enabled: true,
-          name: sharedAgent.name,
+          name: sharedAgent?.name ?? 'Agent',
           canManageAccount: isLoopbackRequest(request),
+          ...(sharedAgentAccess === 'loopback' ? { personal: true } : {}),
         } : null,
         urls: boundPort === null ? [] : reachableUrls(host, boundPort),
       });
@@ -384,7 +392,9 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
     }
 
     if (path === '/api/shared-agent/events' && request.method === 'GET') {
-      if (!sharedAgent) return respondJson(response, 404, { error: 'shared agent test mode is disabled' });
+      if (!sharedAgent || !canUseSharedAgent(request)) {
+        return respondJson(response, 404, { error: 'agent is not available to this client' });
+      }
       if (!deckParam) return respondJson(response, 400, { error: 'missing deck' });
       const participantId = sharedParticipantId(url);
       if (!participantId) return respondJson(response, 400, { error: 'missing or invalid participant' });
@@ -413,7 +423,9 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
     }
 
     if (path === '/api/shared-agent/state' && request.method === 'GET') {
-      if (!sharedAgent) return respondJson(response, 404, { error: 'shared agent test mode is disabled' });
+      if (!sharedAgent || !canUseSharedAgent(request)) {
+        return respondJson(response, 404, { error: 'agent is not available to this client' });
+      }
       if (!deckParam) return respondJson(response, 400, { error: 'missing deck' });
       const participantId = sharedParticipantId(url);
       if (!participantId) return respondJson(response, 400, { error: 'missing or invalid participant' });
@@ -424,7 +436,9 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
     }
 
     if (path.startsWith('/api/shared-agent/') && request.method === 'POST') {
-      if (!sharedAgent) return respondJson(response, 404, { error: 'shared agent test mode is disabled' });
+      if (!sharedAgent || !canUseSharedAgent(request)) {
+        return respondJson(response, 404, { error: 'agent is not available to this client' });
+      }
       if (!deckParam) return respondJson(response, 400, { error: 'missing deck' });
       const participantId = sharedParticipantId(url);
       if (!participantId) return respondJson(response, 400, { error: 'missing or invalid participant' });
@@ -459,7 +473,8 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
           if (boundPort === null) throw new Error('collaboration server is not listening');
           const sessionUrl = `http://127.0.0.1:${boundPort}/?deck=${encodeURIComponent(deckParam)}&agent=1&agentSession=${encodeURIComponent(participantId)}`;
           return `${agentClipboardPrompt(sessionUrl, deckParam)}\n\n`
-            + `Shared demo identity: append \`agentSession=${participantId}\` to every /api request `
+            + `${sharedAgentAccess === 'loopback' ? 'Desktop host identity' : 'Shared demo identity'}: `
+            + `append \`agentSession=${participantId}\` to every /api request `
             + 'so edits are attributed to this participant\'s Agent chat.';
         });
       } else if (path === '/api/shared-agent/interrupt') {
@@ -1031,24 +1046,42 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
             report,
           }, null, 2), 'utf8');
         }
+        const themeCss = await loadTheme(room.session.dir, room.session.deck.theme);
         const sourceHtml = authoringPageHtml({
           authored: sanitized.html,
           typeCss: PLAYER_TYPE_CSS,
-          theme: await loadTheme(room.session.dir, room.session.deck.theme),
+          theme: themeCss,
           themeHref: room.session.deck.theme,
           canvas: room.session.deck.canvas,
           base: `/decks/${encodeURIComponent(deckParam)}/`,
         });
+        const importedHtml = slidesToHtml(compiled.slides, room.session.deck.canvas, {
+          typeCss: PLAYER_TYPE_CSS,
+          base: `/decks/${encodeURIComponent(deckParam)}/`,
+          theme: `/api/theme?deck=${encodeURIComponent(deckParam)}`,
+        });
         const draft: HttpHtmlDraft = {
           id, deckId: deckParam, revision: deckRevision(room.session.deck), slides: compiled.slides,
-          target, sourceHtml,
-          importedHtml: slidesToHtml(compiled.slides, room.session.deck.canvas, {
-            typeCss: PLAYER_TYPE_CSS,
-            base: `/decks/${encodeURIComponent(deckParam)}/`,
-            theme: `/api/theme?deck=${encodeURIComponent(deckParam)}`,
-          }),
+          target, sourceHtml, importedHtml,
           report, createdAt: Date.now(),
         };
+        const scratchpadDir = join(room.session.dir, 'edit', '.scratchpad');
+        await mkdir(scratchpadDir, { recursive: true });
+        await Promise.all([
+          writeFile(join(scratchpadDir, 'source.html'), authoringPageHtml({
+            authored: sanitized.html,
+            typeCss: PLAYER_TYPE_CSS,
+            theme: themeCss,
+            themeHref: room.session.deck.theme,
+            canvas: room.session.deck.canvas,
+            base: '../../',
+          }), 'utf8'),
+          writeFile(join(scratchpadDir, 'imported.html'), slidesToHtml(
+            compiled.slides,
+            room.session.deck.canvas,
+            { typeCss: PLAYER_TYPE_CSS, base: '../../', theme: room.session.deck.theme },
+          ), 'utf8'),
+        ]);
         htmlDrafts.set(id, draft);
         latestHtmlDrafts.set(deckParam, id);
         const query = `?deck=${encodeURIComponent(deckParam)}`;
@@ -1738,9 +1771,9 @@ function extensionForMime(mime: string): string {
  * authored 1920×1080 section to the viewport; contact mode lays every slide
  * out as a zoomable grid. The underlying draft remains unchanged.
  */
-function scratchpadDocument(html: string, mode: 'slides' | 'contact'): string {
+export function scratchpadDocument(html: string, mode: 'slides' | 'contact'): string {
   const common = String.raw`<style data-agent-scratchpad>
-    html, body { margin: 0 !important; width: 100% !important; min-width: 0 !important; min-height: 100% !important; background: #111318 !important; }
+    html, body { margin: 0 !important; width: 100vw !important; min-width: 0 !important; min-height: 100vh !important; box-sizing: border-box !important; background: #111318 !important; }
     .agent-scratchpad-controls {
       position: fixed; z-index: 2147483647; left: 50%; bottom: 12px;
       display: flex; align-items: center; gap: 8px; padding: 6px 8px;
@@ -1759,19 +1792,36 @@ function scratchpadDocument(html: string, mode: 'slides' | 'contact'): string {
   </style>`;
   const slides = String.raw`<style data-agent-scratchpad-mode>
     html, body { overflow: hidden !important; }
-    body.agent-scratchpad-slides > .slide {
-      display: none !important; position: absolute !important;
-      left: 50% !important; top: 50% !important; margin: 0 !important;
-      transform: translate(-50%, -50%) scale(var(--agent-scratchpad-scale, 1)) !important;
-      transform-origin: center center !important;
+    .agent-scratchpad-stage {
+      position: fixed; left: 0; top: 0; width: 100vw; height: 100vh;
+      overflow: hidden;
     }
-    body.agent-scratchpad-slides > .slide.agent-scratchpad-active { display: block !important; }
+    .agent-scratchpad-stage > .agent-scratchpad-frame {
+      display: none; position: absolute; left: 50%; top: 50%;
+      transform: translate(-50%, -50%) scale(var(--agent-scratchpad-scale, 1));
+      transform-origin: center center;
+    }
+    .agent-scratchpad-stage > .agent-scratchpad-frame.agent-scratchpad-active { display: block; }
   </style><script data-agent-scratchpad-script>
     (() => {
       const start = () => {
         const deck = [...document.querySelectorAll('body > section.slide, body > .slide')];
         if (!deck.length) return;
         document.body.classList.add('agent-scratchpad-slides');
+        const stage = document.createElement('main');
+        stage.className = 'agent-scratchpad-stage';
+        const frames = deck.map((slide) => {
+          const width = slide.offsetWidth || 1920;
+          const height = slide.offsetHeight || 1080;
+          const frame = document.createElement('div');
+          frame.className = 'agent-scratchpad-frame';
+          frame.style.width = String(width) + 'px';
+          frame.style.height = String(height) + 'px';
+          frame.append(slide);
+          stage.append(frame);
+          return { frame, width, height };
+        });
+        document.body.prepend(stage);
         let index = Math.max(0, Math.min(deck.length - 1, Number(new URL(location.href).searchParams.get('slide') || 1) - 1));
         const controls = document.createElement('nav');
         controls.className = 'agent-scratchpad-controls';
@@ -1784,15 +1834,13 @@ function scratchpadDocument(html: string, mode: 'slides' | 'contact'): string {
         controls.append(previous, counter, next);
         document.body.append(controls);
         const fit = () => {
-          const slide = deck[index];
-          const width = slide.offsetWidth || 1920;
-          const height = slide.offsetHeight || 1080;
+          const { width, height } = frames[index];
           const scale = Math.min((innerWidth - 24) / width, (innerHeight - 24) / height);
           document.documentElement.style.setProperty('--agent-scratchpad-scale', String(Math.max(.05, scale)));
         };
         const show = (nextIndex) => {
           index = Math.max(0, Math.min(deck.length - 1, nextIndex));
-          deck.forEach((slide, slideIndex) => slide.classList.toggle('agent-scratchpad-active', slideIndex === index));
+          frames.forEach(({ frame }, slideIndex) => frame.classList.toggle('agent-scratchpad-active', slideIndex === index));
           counter.textContent = String(index + 1) + ' / ' + String(deck.length);
           previous.disabled = index === 0; next.disabled = index === deck.length - 1;
           const url = new URL(location.href); url.searchParams.set('slide', String(index + 1));
@@ -1823,10 +1871,9 @@ function scratchpadDocument(html: string, mode: 'slides' | 'contact'): string {
       align-items: start; gap: 18px; width: 100%;
     }
     .agent-scratchpad-cell { position: relative; min-width: 0; overflow: hidden; background: #090a0d; box-shadow: 0 3px 18px rgb(0 0 0 / 38%); }
-    .agent-scratchpad-cell > .slide {
-      position: absolute !important; left: 0 !important; top: 0 !important; margin: 0 !important;
-      transform: scale(var(--agent-cell-scale, 1)) !important; transform-origin: left top !important;
-      pointer-events: none;
+    .agent-scratchpad-cell > .agent-scratchpad-frame {
+      position: absolute; left: 0; top: 0;
+      transform: scale(var(--agent-cell-scale, 1)); transform-origin: left top;
     }
     .agent-scratchpad-number {
       position: absolute; z-index: 3; right: 6px; bottom: 6px; padding: 3px 6px;
@@ -1843,8 +1890,11 @@ function scratchpadDocument(html: string, mode: 'slides' | 'contact'): string {
         const grid = document.createElement('main'); grid.className = 'agent-scratchpad-grid';
         const cells = deck.map((slide, index) => {
           const cell = document.createElement('div'); cell.className = 'agent-scratchpad-cell';
+          const width = slide.offsetWidth || 1920; const height = slide.offsetHeight || 1080;
+          const frame = document.createElement('div'); frame.className = 'agent-scratchpad-frame';
+          frame.style.width = String(width) + 'px'; frame.style.height = String(height) + 'px';
           const number = document.createElement('span'); number.className = 'agent-scratchpad-number'; number.textContent = String(index + 1);
-          cell.append(slide, number); grid.append(cell); return { cell, slide };
+          frame.append(slide); cell.append(frame, number); grid.append(cell); return { cell, width, height };
         });
         document.body.prepend(grid);
         const controls = document.createElement('nav'); controls.className = 'agent-scratchpad-controls';
@@ -1854,8 +1904,7 @@ function scratchpadDocument(html: string, mode: 'slides' | 'contact'): string {
         const larger = document.createElement('button'); larger.type = 'button'; larger.textContent = '+'; larger.title = 'Zoom in';
         controls.append(smaller, label, larger); document.body.append(controls);
         let zoom = 1;
-        const fit = () => cells.forEach(({ cell, slide }) => {
-          const width = slide.offsetWidth || 1920; const height = slide.offsetHeight || 1080;
+        const fit = () => cells.forEach(({ cell, width, height }) => {
           const scale = cell.clientWidth / width;
           cell.style.height = String(Math.round(height * scale)) + 'px';
           cell.style.setProperty('--agent-cell-scale', String(scale));

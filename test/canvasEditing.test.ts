@@ -1100,6 +1100,74 @@ describe('inline text editing', () => {
     );
   });
 
+  it('seals collapsed typing styles before a paragraph break', () => {
+    const { canvas, host } = setup();
+    canvas.beginTextEdit('text-1');
+    const body = bodyOf(host, 'text-1');
+    const selection = window.getSelection()!;
+    const atEnd = document.createRange();
+    atEnd.selectNodeContents(body);
+    atEnd.collapse(false);
+    selection.removeAllRanges();
+    selection.addRange(atEnd);
+
+    body.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'b', ctrlKey: true, bubbles: true, cancelable: true,
+    }));
+    body.dispatchEvent(new InputEvent('beforeinput', {
+      bubbles: true, cancelable: true, inputType: 'insertText', data: 'bold',
+    }));
+    body.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'b', ctrlKey: true, bubbles: true, cancelable: true,
+    }));
+    body.dispatchEvent(new InputEvent('beforeinput', {
+      bubbles: true, cancelable: true, inputType: 'insertText', data: ' plain',
+    }));
+    expect(body.querySelector('[data-editor-typing-style]')).not.toBeNull();
+
+    body.dispatchEvent(new InputEvent('beforeinput', {
+      bubbles: true, cancelable: true, inputType: 'insertParagraph',
+    }));
+
+    expect(body.querySelector('[data-editor-typing-style]')).toBeNull();
+    expect(body.textContent).toBe('Original textbold plain');
+    expect(selection.isCollapsed).toBe(true);
+  });
+
+  it('creates a plain bulleted list from text inside a reset typing-style marker', () => {
+    const { canvas, host } = setup();
+    canvas.beginTextEdit('text-1');
+    const body = bodyOf(host, 'text-1');
+    body.innerHTML = '<p><br></p>';
+    const paragraph = body.querySelector('p')!;
+    const selection = window.getSelection()!;
+    const caret = document.createRange();
+    caret.selectNodeContents(paragraph);
+    caret.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(caret);
+
+    for (const key of ['b', 'b', 'i', 'i']) {
+      body.dispatchEvent(new KeyboardEvent('keydown', {
+        key, ctrlKey: true, bubbles: true, cancelable: true,
+      }));
+    }
+    body.dispatchEvent(new InputEvent('beforeinput', {
+      bubbles: true, cancelable: true, inputType: 'insertText', data: '- some text',
+    }));
+    expect(body.querySelector('[data-editor-typing-style]')).not.toBeNull();
+
+    body.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'Enter', bubbles: true, cancelable: true,
+    }));
+
+    expect(body.querySelector('ul > li:first-child')?.textContent).toBe('some text');
+    expect(body.querySelectorAll('ul > li')).toHaveLength(2);
+    expect(body.querySelector('[data-editor-typing-style]')).toBeNull();
+    expect(body.querySelector('ul')?.getAttribute('style')).toBeNull();
+    expect(body.querySelector('li')?.getAttribute('style')).toBeNull();
+  });
+
   it('plays the video when it is double-clicked', () => {
     const { canvas, host } = setup();
     const stage = host.querySelector<HTMLElement>('.stage')!;
@@ -1144,9 +1212,42 @@ describe('inline text editing', () => {
     expect(canvas.maskingElement()).toBe('video-1');
     const video = store.slide!.elements.find((element) => element.id === 'video-1')!;
     expect(video.type).toBe('video');
-    if (video.type === 'video') expect(video.sourceBox).toEqual({ x: 0, y: 0, w: 640, h: 360 });
+    if (video.type === 'video') expect(video.sourceBox).toBeNull();
+    expect(store.canUndo()).toBe(false);
     expect(host.querySelector('.sel-box.masking')).not.toBeNull();
-    expect(host.querySelector('[data-element-id="video-1"] > div > video')).not.toBeNull();
+    expect(host.querySelector('[data-element-id="video-1"] > video')).not.toBeNull();
+  });
+
+  it('records video cropping as one undoable action', () => {
+    const { store, canvas, host } = setup();
+    const stage = host.querySelector<HTMLElement>('.stage')!;
+    stage.getBoundingClientRect = () =>
+      ({ left: 0, top: 0, width: 1920, height: 1080 }) as DOMRect;
+    canvas.toggleMaskMode('video-1');
+
+    const handle = host.querySelector<HTMLElement>(
+      '.handle-se[data-element-id="video-1"]',
+    )!;
+    handle.dispatchEvent(new PointerEvent('pointerdown', {
+      clientX: 740, clientY: 660, bubbles: true, pointerId: 1, button: 0,
+    }));
+    host.dispatchEvent(new PointerEvent('pointermove', {
+      clientX: 700, clientY: 620, bubbles: true, pointerId: 1, button: 0,
+    }));
+    host.dispatchEvent(new PointerEvent('pointerup', {
+      clientX: 700, clientY: 620, bubbles: true, pointerId: 1, button: 0,
+    }));
+
+    let video = store.slide!.elements.find((element) => element.id === 'video-1')!;
+    expect(video.type === 'video' ? video.sourceBox : null).toEqual({
+      x: 0, y: 0, w: 640, h: 360,
+    });
+    expect(store.history()[0]?.label).toBe('Crop video');
+
+    store.undo();
+    video = store.slide!.elements.find((element) => element.id === 'video-1')!;
+    expect(video).toMatchObject({ x: 100, y: 300, w: 640, h: 360 });
+    expect(video.type === 'video' ? video.sourceBox : null).toBeNull();
   });
 
   it('finishes mask editing when the user clicks outside the active mask', () => {

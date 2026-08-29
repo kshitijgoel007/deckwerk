@@ -84,6 +84,45 @@ describe('slide layouts', () => {
       button.textContent === 'Apply theme to slide')).toBe(false);
   });
 
+  it('keeps applicable slide controls for a multi-selection and applies them to all slides', () => {
+    const deck = emptyDeck();
+    const second = structuredClone(deck.slides[0]);
+    second.id = 'slide-2';
+    second.layout = 'title';
+    second.background = { color: '#abcdef', image: null };
+    deck.slides.push(second);
+    const store = new EditorStore(deck, '/tmp/layout');
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    new Inspector(host, store);
+
+    store.selectSlide(1, true);
+
+    expect(host.querySelector('.insp-title')?.textContent).toBe('slides');
+    expect([...host.querySelectorAll('.insp-subtitle')].map((heading) => heading.textContent))
+      .toEqual(['Layout', 'Magic Move']);
+    const layout = [...host.querySelectorAll<HTMLSelectElement>('select')].find((select) =>
+      [...select.options].some((option) => option.value === 'standard'))!;
+    expect(layout.value).toBe('__mixed__');
+    expect(host.querySelector('.field-color > span')?.textContent).toBe('Background (mixed)');
+    expect(host.querySelector('.color-picker-trigger')?.getAttribute('aria-label'))
+      .toBe('Background (mixed): mixed');
+
+    layout.value = 'standard';
+    layout.dispatchEvent(new Event('change', { bubbles: true }));
+    expect(store.selectedSlides().map((slide) => slide.layout)).toEqual(['standard', 'standard']);
+
+    host.querySelector<HTMLButtonElement>('.color-picker-trigger')!.click();
+    const color = document.querySelector<HTMLInputElement>('input[aria-label="Hex color"]')!;
+    color.value = '#123456';
+    color.dispatchEvent(new Event('change', { bubbles: true }));
+    expect(store.selectedSlides().map((slide) => slide.background))
+      .toEqual([
+        { color: '#123456', image: null },
+        { color: '#123456', image: null },
+      ]);
+  });
+
   it('gives semantic layout text readable fallback sizes in an imported deck', () => {
     // The player's semantic type rules live in type.css, which the compile
     // page also loads. Vite inlines the @import when it bundles; jsdom does

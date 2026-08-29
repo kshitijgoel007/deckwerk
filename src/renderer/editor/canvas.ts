@@ -104,11 +104,15 @@ function convertTypedListMarker(body: HTMLElement, selection: Selection | null):
   if (parent?.closest('li')) return false; // the browser already continues real lists
   const block = parent?.closest('p, div') as HTMLElement | null;
   const source = block && body.contains(block) ? block : body;
-  const text = (source.textContent ?? '').replace(/\u00a0/g, ' ');
+  const text = (source.textContent ?? '')
+    .replaceAll(TYPING_STYLE_SENTINEL, '')
+    .replace(/\u00a0/g, ' ');
   const beforeCaret = range.cloneRange();
   beforeCaret.selectNodeContents(source);
   beforeCaret.setEnd(range.startContainer, range.startOffset);
-  if (beforeCaret.toString().replace(/\u00a0/g, ' ').length !== text.length) return false;
+  if (beforeCaret.toString()
+    .replaceAll(TYPING_STYLE_SENTINEL, '')
+    .replace(/\u00a0/g, ' ').length !== text.length) return false;
   const bullet = /^\s*[*-]\s+(.+)$/.exec(text);
   const numbered = /^\s*(\d+)[.)]\s+(.+)$/.exec(text);
   if (!bullet && !numbered) return false;
@@ -1356,11 +1360,17 @@ export class EditorCanvas {
     if (handle && target.dataset.elementId) {
       const el = slide.elements.find((e) => e.id === target.dataset.elementId);
       if (el) {
-        this.store.beginTransaction();
+        this.store.beginTransaction(
+          this.maskingId === el.id ? `Crop ${el.type}` : 'Move or resize objects',
+        );
         if (el.type === 'image' || el.type === 'video') {
           // Captured once per drag: mask mode shifts this window, a plain
           // resize scales it with the box.
-          this.maskOrigin = el.sourceBox ? { ...el.sourceBox } : null;
+          this.maskOrigin = el.sourceBox
+            ? { ...el.sourceBox }
+            : this.maskingId === el.id
+              ? { x: 0, y: 0, w: el.w, h: el.h }
+              : null;
         }
         const origins = new Map<string, ResizeOrigin>();
         for (const selected of this.store.selectedElements()) {
@@ -2255,7 +2265,27 @@ export class EditorCanvas {
       if (el.type === 'text' && (el.autoFit || el.noWrap)) scheduleAutoFit(node!);
       if (this.liveTextSync && !liveTimer) liveTimer = window.setTimeout(pushLive, 250);
     };
+    const sealActiveTypingStyle = () => {
+      const range = this.activeTextRange(body);
+      if (!range?.collapsed) return;
+      const container = range.startContainer instanceof Element
+        ? range.startContainer
+        : range.startContainer.parentElement;
+      const marker = container?.closest<HTMLElement>('[data-editor-typing-style]') ?? null;
+      if (!marker || !body.contains(marker)) return;
+      const offsets = this.textOffsetsForRange(body, range);
+      this.clearTypingStyleMarker(marker);
+      if (offsets) this.restoreTextRange(body, offsets);
+    };
     const onBeforeInput = (event: InputEvent) => {
+      if (event.inputType === 'insertParagraph' || event.inputType === 'insertLineBreak') {
+        // A pending collapsed-caret style marker is an inline span containing
+        // an invisible sentinel. Letting Chromium split a paragraph while the
+        // caret is still inside that editor-only run can either swallow Enter
+        // or carry an old bold/italic style into the new paragraph/list item.
+        // Seal the authored run and restore the same flat caret first.
+        sealActiveTypingStyle();
+      }
       const nativeFormat = event.inputType === 'formatBold'
         ? 'bold'
         : event.inputType === 'formatItalic'
@@ -3522,9 +3552,9 @@ export class EditorCanvas {
   /**
    * Turn mask editing on or off for an element.
    *
-   * Entering mask mode seeds a full-frame crop if the element has none, so the
-   * handles have something to grab — the same lesson as the trim window, where
-   * a crop hidden behind a checkbox meant there was nothing on screen to drag.
+   * Entering mask mode is not itself an edit. For uncropped media the first
+   * handle drag uses the full element box as its implicit source box, making
+   * the entire crop one undoable action that restores `sourceBox: null`.
    */
   toggleMaskMode(elementId: string | null): void {
     if (elementId === null || this.maskingId === elementId) {
@@ -3536,19 +3566,6 @@ export class EditorCanvas {
 
     const el = this.store.slide?.elements.find((e) => e.id === elementId);
     if (!el || (el.type !== 'image' && el.type !== 'video')) return;
-
-    if (!el.sourceBox) {
-      this.store.commit((deck) => {
-        const target = deck.slides[this.store.get().slideIndex].elements.find(
-          (e) => e.id === elementId,
-        );
-        if (target && (target.type === 'image' || target.type === 'video')) {
-          // The media currently fills the box exactly, so a full-frame crop is
-          // the identity transform and nothing moves on screen.
-          target.sourceBox = { x: 0, y: 0, w: target.w, h: target.h };
-        }
-      }, { label: 'Edit media mask' });
-    }
 
     this.maskingId = elementId;
     this.store.select([elementId]);
