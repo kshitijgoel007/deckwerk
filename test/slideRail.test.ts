@@ -94,6 +94,33 @@ describe('slide activation', () => {
   });
 });
 
+describe('editing objects with the slide rail visible', () => {
+  it('keeps every thumbnail mounted throughout a drag and refreshes after drop', () => {
+    const { store, host } = setup();
+    store.commit((deck) => {
+      deck.slides[0].elements.push({
+        id: 'drag-me', type: 'text', x: 100, y: 80, w: 800, h: 160,
+        rot: 0, z: 1, opacity: 1, class: ['role-title'], style: {},
+        html: 'Drag me', align: 'left', valign: 'top',
+      });
+    }, { history: false });
+    store.select(['drag-me']);
+
+    const before = [...host.querySelectorAll<HTMLElement>('.rail-thumb')];
+    store.beginTransaction();
+    store.updateSelected((element) => { element.x = 140; });
+    expect([...host.querySelectorAll('.rail-thumb')]).toEqual(before);
+    store.updateSelected((element) => { element.x = 180; });
+    expect([...host.querySelectorAll('.rail-thumb')]).toEqual(before);
+
+    store.endTransaction();
+    const after = [...host.querySelectorAll<HTMLElement>('.rail-thumb')];
+    expect(after[0]).not.toBe(before[0]);
+    expect(after[1]).toBe(before[1]);
+    expect(store.slide?.elements[0].x).toBe(180);
+  });
+});
+
 describe('resizing the slide rail', () => {
   beforeEach(() => document.body.replaceChildren());
 

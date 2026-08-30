@@ -315,6 +315,61 @@ describe('inline text editing', () => {
     expect(bodyOf(host, 'text-1').innerHTML).toBe('Energy: $E=mc^2$');
   });
 
+  it('restores rendered TeX after live inline formatting was already committed', () => {
+    const { store, canvas, host } = setup();
+    store.select(['text-1']);
+    store.updateSelected((el) => {
+      if (el.type === 'text') el.html = 'Energy: $E=mc^2$';
+    });
+    canvas.beginTextEdit('text-1');
+    const body = bodyOf(host, 'text-1');
+    const text = body.firstChild!;
+    const range = document.createRange();
+    range.setStart(text, 0);
+    range.setEnd(text, 'Energy'.length);
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+
+    expect(canvas.toggleTextSelectionFormat('bold')).toBe(true);
+    expect(store.slide!.elements.find((el) => el.id === 'text-1')).toMatchObject({
+      html: expect.stringContaining('font-weight: 700'),
+    });
+    body.dispatchEvent(new FocusEvent('blur', { relatedTarget: null }));
+
+    expect(canvas.isEditing()).toBe(false);
+    expect(bodyOf(host, 'text-1').querySelector('.katex')).not.toBeNull();
+  });
+
+  it('keeps shortcut changes when a font metric is applied to the same range next', () => {
+    const { store, canvas, host } = setup();
+    store.select(['text-1']);
+    store.updateSelected((el) => {
+      if (el.type === 'text') {
+        el.html = '<p>Lorem <span style="font-family: Arial; font-size: 48px; '
+          + 'font-style: italic; font-weight: 850; text-decoration-line: underline">ipsum</span></p>';
+      }
+    });
+    canvas.beginTextEdit('text-1');
+    const body = bodyOf(host, 'text-1');
+    const text = body.querySelector('span')!.firstChild!;
+    const range = document.createRange();
+    range.selectNodeContents(text);
+    window.getSelection()!.removeAllRanges();
+    window.getSelection()!.addRange(range);
+
+    expect(canvas.toggleTextSelectionFormat('bold')).toBe(true);
+    expect(canvas.toggleTextSelectionFormat('italic')).toBe(true);
+    expect(canvas.toggleTextSelectionFormat('underline')).toBe(true);
+    expect(canvas.applyTextSelectionFontSize(28)).toBe(true);
+
+    const style = body.querySelector<HTMLSpanElement>('span')!.style;
+    expect(style.fontWeight).toBe('400');
+    expect(style.fontStyle).toBe('normal');
+    expect(style.textDecorationLine).toBe('none');
+    expect(style.fontSize).toBe('28px');
+  });
+
   it('writes edited content back to the deck', () => {
     const { store, canvas, host } = setup();
     canvas.beginTextEdit('text-1');

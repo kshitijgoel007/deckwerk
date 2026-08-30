@@ -1,5 +1,7 @@
 import type { Deck, Slide, SlideElement } from '@shared/deck.js';
 import { parseDeck } from '@shared/deck.js';
+import { applyAgentOperations, type AgentOperation } from '@shared/agent.js';
+import { diffDecks } from '@shared/deckDiff.js';
 import {
   type ClipboardReadResult,
   type ClipboardWriteRequest,
@@ -10,17 +12,14 @@ import { makeId } from '@shared/geometry.js';
 import { pastedTableData } from '@shared/paragraphs.js';
 import type {
   DeckHistoryDocument,
-  PersistedDeckHistoryEntry,
 } from '@shared/deckHistory.js';
 
 /**
  * Editor state: the deck, the selection, and an undo history.
  *
- * Every mutation goes through `commit`, which snapshots the previous deck onto
- * an undo stack and notifies subscribers. Snapshotting whole decks is
- * unapologetically simple — a deck is a few hundred KB of JSON with media held
- * as file references, so the cost is irrelevant next to the bug surface of
- * hand-written inverse operations.
+ * Mutations become semantic forward/inverse operations for undo and persisted
+ * history. Generic deck edits retain a fully isolated clone, while the hot
+ * selected-element path uses copy-on-write for only the current slide branch.
  */
 
 export interface EditorState {
@@ -55,12 +54,14 @@ export interface RemoteHistoryOptions {
 }
 
 interface DeckHistoryItem extends HistoryItem {
-  deck: Deck;
+  /** Operations from the preceding entry; empty for the base entry. */
+  operations: AgentOperation[];
 }
 
 interface UndoItem {
-  deck: Deck;
   label: string;
+  forward: AgentOperation[];
+  inverse: AgentOperation[];
 }
 
 const HISTORY_LIMIT = 200;
@@ -85,6 +86,10 @@ export class EditorStore {
   private undoStack: UndoItem[] = [];
   private redoStack: UndoItem[] = [];
   private historyLog: DeckHistoryItem[] = [];
+  /** Materialized state represented by historyLog[0]. */
+  private historyBase: Deck | null = null;
+  /** One materialized cache for diffing the next history entry. */
+  private historyTipDeck: Deck | null = null;
   /** The history row represented by `state.deck`, or null for an unrecorded state. */
   private currentHistoryId: number | null = null;
   private nextHistoryId = 1;
@@ -107,6 +112,11 @@ export class EditorStore {
 
   get(): EditorState {
     return this.state;
+  }
+
+  /** Whether pointer-driven edits are currently being grouped into one change. */
+  isTransactionActive(): boolean {
+    return this.txnBase !== null;
   }
 
   get slide(): Slide | undefined {
@@ -136,18 +146,31 @@ export class EditorStore {
   load(
     deck: Deck,
     dir: string,
-    opts: { keepView?: boolean; history?: PersistedDeckHistoryEntry[] } = {},
+    opts: { keepView?: boolean; history?: DeckHistoryDocument } = {},
   ): void {
     this.undoStack = [];
     this.redoStack = [];
-    this.historyLog = (opts.history ?? []).slice(-HISTORY_LIMIT).map((item) => ({
-      ...item,
-      id: this.nextHistoryId++,
-      deck: parseDeck(item.deck),
-      slideIndex: Math.min(item.slideIndex, Math.max(0, item.deck.slides.length - 1)),
-    }));
+    const persisted = opts.history;
+    try {
+      this.historyBase = persisted?.base ? parseDeck(persisted.base) : null;
+      this.historyLog = (persisted?.entries ?? []).slice(-HISTORY_LIMIT).map((item) => ({
+        ...item,
+        id: this.nextHistoryId++,
+        operations: structuredClone(item.operations),
+        slideIndex: Math.max(0, item.slideIndex),
+      }));
+      this.historyTipDeck = this.materializeHistoryIndex(this.historyLog.length - 1);
+    } catch (error) {
+      // A semantically broken sidecar is expendable. It must never prevent the
+      // presentation itself from opening.
+      console.error('Could not hydrate edit history:', error);
+      this.historyBase = null;
+      this.historyLog = [];
+      this.historyTipDeck = null;
+    }
     const persistedTip = this.historyLog[this.historyLog.length - 1];
-    this.currentHistoryId = persistedTip && sameDeck(persistedTip.deck, deck)
+    this.currentHistoryId = persistedTip && this.historyTipDeck
+      && sameDeck(this.historyTipDeck, deck)
       ? persistedTip.id
       : null;
     // An external reload (agent edit, git) must not teleport the editor away
@@ -192,8 +215,8 @@ export class EditorStore {
   replaceWithHistory(deck: Deck, label: string): void {
     const anchor = this.cursorAnchor();
     const previous = this.state.deck;
-    this.pushUndo(previous, label);
     this.state = { ...this.state, deck: parseDeck(deck), dirty: true };
+    this.pushUndo(previous, this.state.deck, label);
     this.restoreCursor(anchor);
     this.recordHistory(label);
     this.onLocalEdit?.(previous, this.state.deck, label);
@@ -287,10 +310,10 @@ export class EditorStore {
   }
 
   /**
-   * Apply a mutation to a structurally-cloned deck.
+   * Apply an arbitrary mutation to a structurally-cloned deck.
    *
-   * The clone is what lets the undo stack hold plain references: no other code
-   * can mutate a deck that history is holding.
+   * Narrow high-frequency operations use copy-on-write helpers instead; this
+   * fallback keeps unconstrained callers isolated from the current state.
    */
   commit(
     fn: (deck: Deck) => void,
@@ -300,12 +323,22 @@ export class EditorStore {
     const next = structuredClone(previous) as Deck;
     fn(next);
     shareUnchangedSlides(previous, next);
+    this.finishCommit(previous, next, opts);
+  }
+
+  private finishCommit(
+    previous: Deck,
+    next: Deck,
+    opts: { history?: boolean; label?: string; transient?: boolean; coalesceKey?: string },
+  ): void {
+    const forward = diffDecks(previous, next);
+    if (forward.length === 0) return;
 
     // Transient commits stream work in progress (live typing) to collaborators
     // without consuming undo slots or history entries; the coalesce key lets
     // the collab undo layer fold the stream into one undoable edit.
     if (opts.history !== false && !this.txnBase && !opts.transient) {
-      this.pushUndo(previous, opts.label ?? 'Edit slide');
+      this.pushUndo(previous, next, opts.label ?? 'Edit slide', forward);
     }
     this.state = { ...this.state, deck: next, dirty: true };
     if (!this.txnBase) {
@@ -339,14 +372,31 @@ export class EditorStore {
     this.txnBase = null;
     // A drag that ended where it started shouldn't consume an undo slot.
     if (base !== this.state.deck) {
-      this.pushUndo(base, this.txnLabel);
-      this.recordHistory(this.txnLabel);
-      this.onLocalEdit?.(base, this.state.deck, this.txnLabel);
+      const forward = diffDecks(base, this.state.deck);
+      if (forward.length > 0) {
+        this.pushUndo(base, this.state.deck, this.txnLabel, forward);
+        this.recordHistory(this.txnLabel);
+        this.onLocalEdit?.(base, this.state.deck, this.txnLabel);
+        // Transaction updates emit while the gesture is in progress. Emit once
+        // more after clearing txnBase so views that deliberately defer costly
+        // work during a drag can catch up to the committed deck.
+        this.emit();
+      }
     }
   }
 
-  private pushUndo(deck: Deck, label: string): void {
-    this.undoStack.push({ deck, label });
+  private pushUndo(
+    previous: Deck,
+    next: Deck,
+    label: string,
+    forward = diffDecks(previous, next),
+  ): void {
+    if (forward.length === 0) return;
+    this.undoStack.push({
+      label,
+      forward,
+      inverse: diffDecks(next, previous),
+    });
     if (this.undoStack.length > HISTORY_LIMIT) this.undoStack.shift();
     this.redoStack = [];
   }
@@ -354,8 +404,12 @@ export class EditorStore {
   undo(): void {
     const prev = this.undoStack.pop();
     if (!prev) return;
-    this.redoStack.push({ deck: this.state.deck, label: prev.label });
-    this.state = { ...this.state, deck: prev.deck, dirty: true };
+    this.redoStack.push(prev);
+    this.state = {
+      ...this.state,
+      deck: applyAgentOperations(this.state.deck, prev.inverse),
+      dirty: true,
+    };
     this.clampCursor();
     this.recordHistory(`Undo: ${prev.label}`);
     this.emit();
@@ -364,8 +418,12 @@ export class EditorStore {
   redo(): void {
     const next = this.redoStack.pop();
     if (!next) return;
-    this.undoStack.push({ deck: this.state.deck, label: next.label });
-    this.state = { ...this.state, deck: next.deck, dirty: true };
+    this.undoStack.push(next);
+    this.state = {
+      ...this.state,
+      deck: applyAgentOperations(this.state.deck, next.forward),
+      dirty: true,
+    };
     this.clampCursor();
     this.recordHistory(`Redo: ${next.label}`);
     this.emit();
@@ -380,7 +438,7 @@ export class EditorStore {
   }
 
   history(): HistoryItem[] {
-    return this.historyLog.map(({ deck: _deck, ...item }) => ({ ...item })).reverse();
+    return this.historyLog.map(({ operations: _operations, ...item }) => ({ ...item })).reverse();
   }
 
   isHistoryCurrent(id: number): boolean {
@@ -389,31 +447,31 @@ export class EditorStore {
 
   persistedHistory(): DeckHistoryDocument {
     return {
-      version: 1,
-      // Deck snapshots are immutable once recorded. IPC/schema validation will
-      // clone them at the process boundary; cloning every prior deck here made
-      // the 108-entry IARPA history block the renderer for ~150 ms per edit.
+      version: 2,
+      base: this.historyBase,
       entries: this.historyLog.map(({ id: _id, ...item }) => ({ ...item })),
     };
   }
 
   restoreHistory(id: number): boolean {
-    const snapshot = this.historyLog.find((item) => item.id === id);
-    if (!snapshot || sameDeck(snapshot.deck, this.state.deck)) return false;
+    const historyIndex = this.historyLog.findIndex((item) => item.id === id);
+    const snapshot = this.historyLog[historyIndex];
+    const snapshotDeck = this.materializeHistoryIndex(historyIndex);
+    if (!snapshot || !snapshotDeck || sameDeck(snapshotDeck, this.state.deck)) return false;
     const previous = this.state.deck;
     const slideIndex = Math.min(
       snapshot.slideIndex,
-      Math.max(0, snapshot.deck.slides.length - 1),
+      Math.max(0, snapshotDeck.slides.length - 1),
     );
     const label = `Reverted to ${snapshot.label}`;
-    this.pushUndo(this.state.deck, label);
+    this.pushUndo(this.state.deck, snapshotDeck, label);
     this.redoStack = [];
     this.state = {
       ...this.state,
-      deck: structuredClone(snapshot.deck),
+      deck: snapshotDeck,
       slideIndex,
-      slideSelection: new Set(snapshot.deck.slides[slideIndex]
-        ? [snapshot.deck.slides[slideIndex].id]
+      slideSelection: new Set(snapshotDeck.slides[slideIndex]
+        ? [snapshotDeck.slides[slideIndex].id]
         : []),
       selection: new Set(),
       dirty: true,
@@ -584,11 +642,23 @@ export class EditorStore {
     const ids = this.state.selection;
     if (ids.size === 0) return;
     const index = this.state.slideIndex;
-    this.commit((deck) => {
-      for (const el of deck.slides[index].elements) {
-        if (ids.has(el.id)) fn(el);
-      }
-    }, opts);
+    const previous = this.state.deck;
+    const previousSlide = previous.slides[index];
+    if (!previousSlide) return;
+
+    // Pointer moves can call this dozens of times per second. The generic
+    // commit path must isolate an arbitrary deck mutator, but this method's
+    // contract is narrower: only selected elements may change. Copy just that
+    // branch so a drag on one object never clones every slide in a large deck.
+    const elements = previousSlide.elements.map((element) => {
+      if (!ids.has(element.id)) return element;
+      const next = structuredClone(element);
+      fn(next);
+      return next;
+    });
+    const slides = previous.slides.slice();
+    slides[index] = { ...previousSlide, elements };
+    this.finishCommit(previous, { ...previous, slides }, opts);
   }
 
   /** Remove the selected elements and any timeline entries that target them. */
@@ -631,16 +701,29 @@ export class EditorStore {
   private recordHistory(label: string, opts: RemoteHistoryOptions = {}): void {
     const last = this.historyLog[this.historyLog.length - 1];
     if (opts.coalesce && last && last.label === label) {
+      const previousTip = this.historyTipDeck;
       last.at = Date.now();
       last.slideIndex = this.state.slideIndex;
-      last.deck = this.state.deck;
+      if (this.historyLog.length === 1) {
+        // Coalescing the base row replaces its materialized state; it can never
+        // carry operations because there is no preceding revision.
+        this.historyBase = this.state.deck;
+        last.operations = [];
+      } else if (previousTip) {
+        last.operations.push(...diffDecks(previousTip, this.state.deck));
+      }
       if (opts.description) last.description = opts.description;
       if (opts.agentChatId) last.agentChatId = opts.agentChatId;
+      this.historyTipDeck = this.state.deck;
       this.currentHistoryId = last.id;
       this.emitHistory();
       this.onHistoryChange?.();
       return;
     }
+    const operations = this.historyTipDeck
+      ? diffDecks(this.historyTipDeck, this.state.deck)
+      : [];
+    if (this.historyLog.length === 0) this.historyBase = this.state.deck;
     this.historyLog.push({
       id: this.nextHistoryId++,
       label,
@@ -648,12 +731,31 @@ export class EditorStore {
       ...(opts.agentChatId ? { agentChatId: opts.agentChatId } : {}),
       at: Date.now(),
       slideIndex: this.state.slideIndex,
-      deck: this.state.deck,
+      operations,
     });
-    if (this.historyLog.length > HISTORY_LIMIT) this.historyLog.shift();
+    this.historyTipDeck = this.state.deck;
+    if (this.historyLog.length > HISTORY_LIMIT) {
+      const nextBase = this.historyLog[1];
+      if (this.historyBase && nextBase) {
+        this.historyBase = applyAgentOperations(this.historyBase, nextBase.operations);
+        nextBase.operations = [];
+      }
+      this.historyLog.shift();
+    }
     this.currentHistoryId = this.historyLog[this.historyLog.length - 1]?.id ?? null;
     this.emitHistory();
     this.onHistoryChange?.();
+  }
+
+  /** Materialize one persisted revision with a single clone/apply boundary. */
+  private materializeHistoryIndex(index: number): Deck | null {
+    if (!this.historyBase || index < 0 || index >= this.historyLog.length) return null;
+    const operations = this.historyLog
+      .slice(1, index + 1)
+      .flatMap((entry) => entry.operations);
+    return operations.length > 0
+      ? applyAgentOperations(this.historyBase, operations)
+      : this.historyBase;
   }
 }
 

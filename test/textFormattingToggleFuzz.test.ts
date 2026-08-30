@@ -17,7 +17,8 @@ import { installCanvasDomShims } from './support/canvasHarness.js';
  */
 
 const TEXT = 'Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor.';
-type Format = 'bold' | 'italic';
+type Format = 'bold' | 'italic' | 'underline';
+const FORMATS: Format[] = ['bold', 'italic', 'underline'];
 
 function textElement(): SlideElement {
   return {
@@ -78,8 +79,9 @@ function selectOffsets(root: HTMLElement, start: number, end: number): void {
 }
 
 function toggleShortcut(content: HTMLElement, format: Format): void {
+  const key = format === 'italic' ? 'i' : format === 'underline' ? 'u' : 'b';
   const event = new KeyboardEvent('keydown', {
-    key: format === 'italic' ? 'i' : 'b', metaKey: true,
+    key, metaKey: true,
     bubbles: true, cancelable: true,
   });
   content.dispatchEvent(event);
@@ -87,7 +89,8 @@ function toggleShortcut(content: HTMLElement, format: Format): void {
 }
 
 function toggleButton(inspectorHost: HTMLElement, format: Format): void {
-  const label = format === 'italic' ? 'Italic (Cmd/Ctrl+I)' : 'Bold (Cmd/Ctrl+B)';
+  const label = format === 'italic' ? 'Italic (Cmd/Ctrl+I)'
+    : format === 'underline' ? 'Underline (Cmd/Ctrl+U)' : 'Bold (Cmd/Ctrl+B)';
   const button = inspectorHost.querySelector<HTMLButtonElement>(
     `button[aria-label="${label}"]`,
   )!;
@@ -118,12 +121,17 @@ function effectiveFormat(node: Text, root: HTMLElement, format: Format): boolean
     if (format === 'italic') {
       if (current.style.fontStyle) return current.style.fontStyle === 'italic';
       if (current.matches('i, em')) return true;
-    } else {
+    } else if (format === 'bold') {
       if (current.style.fontWeight) {
         const weight = Number.parseInt(current.style.fontWeight, 10);
         return current.style.fontWeight === 'bold' || weight >= 600;
       }
       if (current.matches('b, strong')) return true;
+    } else {
+      if (current.style.textDecorationLine) {
+        return current.style.textDecorationLine.includes('underline');
+      }
+      if (current.matches('u')) return true;
     }
   }
   return false;
@@ -239,11 +247,12 @@ describe('stateful inline text formatting fuzzing', () => {
       const expected: Record<Format, boolean[]> = {
         bold: Array(TEXT.length).fill(false),
         italic: Array(TEXT.length).fill(false),
+        underline: Array(TEXT.length).fill(false),
       };
       const random = mulberry32(seed);
 
       for (let step = 0; step < 80; step += 1) {
-        const format: Format = random() < 0.5 ? 'italic' : 'bold';
+        const format = FORMATS[Math.floor(random() * FORMATS.length)];
         const start = Math.floor(random() * (TEXT.length - 1));
         const width = 1 + Math.floor(random() * Math.min(18, TEXT.length - start));
         const end = start + width;
@@ -268,7 +277,7 @@ describe('stateful inline text formatting fuzzing', () => {
     const random = mulberry32(7919);
     const operations = 80;
     for (let step = 0; step < operations; step += 1) {
-      const format: Format = random() < 0.5 ? 'italic' : 'bold';
+      const format = FORMATS[Math.floor(random() * FORMATS.length)];
       const start = Math.floor(random() * (TEXT.length - 1));
       const end = start + 1 + Math.floor(random() * Math.min(18, TEXT.length - start));
       selectOffsets(content, start, end);

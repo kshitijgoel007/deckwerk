@@ -2112,6 +2112,7 @@ function optionalNumberField(
   input.value = value === null ? (inherited === null ? '' : display(inherited)) : display(value);
   input.placeholder = inherited === null ? 'theme' : '';
   input.title = suffix ? `Value in ${suffix}` : label;
+  input.setAttribute('aria-label', label);
   let lastAppliedValue = input.value;
   const applyValue = () => {
     if (input.value === lastAppliedValue) return;

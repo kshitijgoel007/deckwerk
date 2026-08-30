@@ -201,6 +201,13 @@ scanlines, while an adopted decoded bitmap appears atomically. Only the active
 lookahead's decoded images remain resident, so a long deck does not retain a
 deck's worth of 4K/6K frames.
 
+The editor canvas applies the same exact-node rule to still images, with a
+tighter budget: during idle time it decodes images from only the next
+presentable slide. Navigation adopts that in-flight or decoded `<img>` rather
+than starting a second decode on the keypress path. Changing direction drops
+stale lookahead nodes immediately, so an image-heavy editing session never
+accumulates decoded bitmaps from the rest of the deck.
+
 ## Regression guards
 
 - `test/mediaLoading.test.ts` — poster-frame seek and preload behaviour of
@@ -221,6 +228,8 @@ deck's worth of 4K/6K frames.
 - `test/playerVideoReuse.test.ts` — element reuse across navigation: pooling,
   continuity, in-point reset, fetch abort, and that reuse never crosses
   presentations.
+- `test/editorImageWarmup.test.ts` — the editor decodes a next-slide image once
+  and adopts that exact node on navigation.
 - `test/canvasVideoReuseBrowser.test.ts` — the same rule through the real rail
   in a real browser on a throttled link: a slide change must leave no video
   seeking or frameless, which is exactly the window the squish was visible in.

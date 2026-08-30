@@ -9,8 +9,15 @@ import {
   type DeckHistoryDocument,
 } from '@shared/deckHistory.js';
 
-/** Kept separate from deck.json so snapshots never alter the presentation. */
-export const DECK_HISTORY_FILE = 'deck-history.json.gz';
+/**
+ * Kept separate from deck.json so revisions never alter the presentation.
+ *
+ * Version 1 used `deck-history.json.gz` and embedded a complete deck in every
+ * entry. It is deliberately not read or migrated: old decks start a fresh v2
+ * history, while the legacy file remains untouched and recoverable.
+ */
+export const DECK_HISTORY_FILE = 'deck-history-v2.json.gz';
+export const LEGACY_DECK_HISTORY_FILE = 'deck-history.json.gz';
 const gzipAsync = promisify(gzip);
 const gunzipAsync = promisify(gunzip);
 

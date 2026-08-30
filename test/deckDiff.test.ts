@@ -66,6 +66,19 @@ describe('diffDecks round-trips', () => {
     expectRoundTrip(prev, next);
   });
 
+  it('round-trips layout master changes used by persisted and collaborative history', () => {
+    const prev = deckWith(slide('s1'));
+    const next = structuredClone(prev);
+    const blank = { background: { color: null, image: null }, elements: [] };
+    next.layoutMasters = {
+      freeform: structuredClone(blank),
+      standard: structuredClone(blank),
+      title: structuredClone(blank),
+    };
+
+    expectRoundTrip(prev, parseDeck(next));
+  });
+
   it('diffs element edits, inserts, and deletes', () => {
     const prev = deckWith(slide('s1', ['e1', 'e2']), slide('s2', ['e3']));
     const next = structuredClone(prev);

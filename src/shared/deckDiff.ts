@@ -51,7 +51,7 @@ function diffDeckProps(prev: Deck, next: Deck): AgentOperation | null {
       changed = true;
     }
   }
-  for (const key of ['canvas', 'themeStyle'] as const) {
+  for (const key of ['canvas', 'themeStyle', 'layoutMasters'] as const) {
     if (JSON.stringify(prev[key]) !== JSON.stringify(next[key])) {
       op[key] = structuredClone(next[key]);
       changed = true;

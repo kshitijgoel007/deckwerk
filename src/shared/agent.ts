@@ -128,6 +128,7 @@ const UpdateDeckOperation = z.object({
   theme: z.string().optional(),
   themePreset: z.string().nullable().optional(),
   themeStyle: DeckSchema.shape.themeStyle.removeDefault().optional(),
+  layoutMasters: DeckSchema.shape.layoutMasters.removeDefault().optional(),
   magicMoveEasing: z.enum(['ease-in-out', 'ease-out', 'linear']).optional(),
 });
 /**
@@ -228,9 +229,14 @@ export function canonicalDeckJson(deck: Deck): string {
 
 export function applyAgentTransaction(deck: Deck, transaction: AgentTransaction): Deck {
   const tx = AgentTransactionSchema.parse(transaction);
+  return applyAgentOperations(deck, tx.operations);
+}
+
+/** Apply a validated operation batch with one clone/validation boundary. */
+export function applyAgentOperations(deck: Deck, operations: AgentOperation[]): Deck {
   const next = structuredClone(parseDeck(deck));
 
-  for (const operation of tx.operations) applyOperation(next, operation);
+  for (const operation of operations) applyOperation(next, AgentOperationSchema.parse(operation));
   const parsed = DeckSchema.parse(next);
   const errors = validateDeckIntegrity(parsed);
   if (errors.length > 0) throw new Error(errors.join('\n'));
@@ -299,6 +305,9 @@ function applyOperation(deck: Deck, operation: AgentOperation): void {
       if (operation.theme !== undefined) deck.theme = operation.theme;
       if (operation.themePreset !== undefined) deck.themePreset = operation.themePreset;
       if (operation.themeStyle !== undefined) deck.themeStyle = structuredClone(operation.themeStyle);
+      if (operation.layoutMasters !== undefined) {
+        deck.layoutMasters = structuredClone(operation.layoutMasters);
+      }
       if (operation.magicMoveEasing !== undefined) deck.magicMoveEasing = operation.magicMoveEasing;
       return;
     case 'setSlideProperties': {

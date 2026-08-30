@@ -36,7 +36,7 @@ const TITLE_ID = 'fmt-title';
 const BODY_ID = 'fmt-body';
 // A colour from the 'basic' preset palette: the theme panel publishes exactly
 // that palette into the swatch row every colour picker shows.
-const THEME_SWATCH = '#1d7d45';
+const THEME_SWATCH = '#c96442';
 
 let workDir = '';
 let server: RunningCollabServer | null = null;
@@ -243,7 +243,7 @@ describe.skipIf(!electronBinary)('text formatting in the collaboration browser',
       (value) => value === THEME_SWATCH)).toBe(THEME_SWATCH);
     expect(await editor.evaluate<string>(`getComputedStyle(
       document.querySelector('#canvas [data-element-id="${BODY_ID}"] .text-body')
-    ).color`)).toBe('rgb(29, 125, 69)');
+    ).color`)).toBe('rgb(201, 100, 66)');
 
     // Clearing goes back to the colour the stylesheet paints, not to black.
     // This deck's palette lives in theme.css rather than an installed
@@ -345,7 +345,7 @@ describe.skipIf(!electronBinary)('text formatting in the collaboration browser',
       (value) => value !== null && value.items === 2);
     expect(presented).toEqual({
       bodyAlign: 'justify',
-      bodyColor: 'rgb(29, 125, 69)',
+      bodyColor: 'rgb(201, 100, 66)',
       items: 2,
       titleAlign: 'center',
       spacing: '36px',

@@ -7,23 +7,25 @@ import { describe, expect, it } from 'vitest';
 import { emptyDeck } from '../src/shared/deck.js';
 import {
   DECK_HISTORY_FILE,
+  LEGACY_DECK_HISTORY_FILE,
   loadDeckHistory,
   saveDeckHistory,
 } from '../src/main/deckHistoryStore.js';
 
 const document = (label: string) => ({
-  version: 1 as const,
+  version: 2 as const,
+  base: emptyDeck(label),
   entries: [{
     label,
     at: Date.now(),
     slideIndex: 0,
-    deck: emptyDeck(label),
+    operations: [],
   }],
 });
 const gunzipAsync = promisify(gunzip);
 
 describe('deck history persistence', () => {
-  it('round-trips validated snapshots', async () => {
+  it('round-trips a validated checkpoint and delta log', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'deckwerk-history-'));
     const history = document('Saved edit');
 
@@ -36,16 +38,26 @@ describe('deck history persistence', () => {
 
   it('opens safely when the sidecar is absent, truncated, or schema-invalid', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'deckwerk-history-bad-'));
-    expect(await loadDeckHistory(dir)).toEqual({ version: 1, entries: [] });
+    expect(await loadDeckHistory(dir)).toEqual({ version: 2, base: null, entries: [] });
 
-    await writeFile(join(dir, DECK_HISTORY_FILE), '{"version":1,"entries":[', 'utf8');
-    expect(await loadDeckHistory(dir)).toEqual({ version: 1, entries: [] });
+    await writeFile(join(dir, DECK_HISTORY_FILE), '{"version":2,"entries":[', 'utf8');
+    expect(await loadDeckHistory(dir)).toEqual({ version: 2, base: null, entries: [] });
 
     await writeFile(join(dir, DECK_HISTORY_FILE), JSON.stringify({
-      version: 1,
-      entries: [{ label: '', at: -1, slideIndex: -2, deck: {} }],
+      version: 2,
+      base: {},
+      entries: [{ label: '', at: -1, slideIndex: -2, operations: [] }],
     }), 'utf8');
-    expect(await loadDeckHistory(dir)).toEqual({ version: 1, entries: [] });
+    expect(await loadDeckHistory(dir)).toEqual({ version: 2, base: null, entries: [] });
+  });
+
+  it('ignores the legacy full-snapshot sidecar without modifying it', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'deckwerk-history-legacy-'));
+    const legacy = Buffer.from('legacy history remains recoverable');
+    await writeFile(join(dir, LEGACY_DECK_HISTORY_FILE), legacy);
+
+    expect(await loadDeckHistory(dir)).toEqual({ version: 2, base: null, entries: [] });
+    expect(await readFile(join(dir, LEGACY_DECK_HISTORY_FILE))).toEqual(legacy);
   });
 
   it('serializes overlapping writes so the newest invocation wins', async () => {

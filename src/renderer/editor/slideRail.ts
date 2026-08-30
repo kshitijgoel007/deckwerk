@@ -115,6 +115,14 @@ export class SlideRail {
     ) {
       this.collapsedActiveSlideId = null;
     }
+    // Pointer movement replaces the active slide on every frame. Rebuilding
+    // the rail for those transient values detaches every thumbnail, briefly
+    // blanking the whole sidebar. Keep the last committed previews mounted;
+    // endTransaction emits once more after the gesture finishes.
+    if (this.store.isTransactionActive()) {
+      this.highlight(slideIndex, slideSelection);
+      return;
+    }
     if (deck.slides === this.renderedSlides) {
       this.highlight(slideIndex, slideSelection);
       return;

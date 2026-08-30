@@ -67,18 +67,26 @@ const el = <T extends HTMLElement>(id: string): T => {
 
 const store = new EditorStore(emptyDeck());
 let historySaveTimer: ReturnType<typeof setTimeout> | null = null;
+let historyDirty = false;
 
 async function flushHistory(dir = store.get().dir): Promise<void> {
   if (historySaveTimer) {
     clearTimeout(historySaveTimer);
     historySaveTimer = null;
   }
-  if (!dir) return;
-  await window.api.saveDeckHistory(dir, store.persistedHistory());
+  if (!dir || !historyDirty) return;
+  const history = store.persistedHistory();
+  historyDirty = false;
+  try {
+    await window.api.saveDeckHistory(dir, history);
+  } catch (error) {
+    historyDirty = true;
+    throw error;
+  }
 }
 
 function scheduleHistorySave(dir = store.get().dir): void {
-  if (!dir) return;
+  if (!dir || !historyDirty) return;
   if (historySaveTimer) clearTimeout(historySaveTimer);
   // History is a crash-recovery sidecar, not part of the visual feedback for
   // a formatting click. Flush once after a burst instead of cloning and
@@ -92,6 +100,7 @@ function scheduleHistorySave(dir = store.get().dir): void {
 }
 
 store.onHistoryChange = () => {
+  historyDirty = true;
   scheduleHistorySave();
 };
 const initialView = decodeEditorView(new URLSearchParams(location.search).get('view'));
@@ -795,7 +804,7 @@ function addText(): void {
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 
-async function save(): Promise<void> {
+async function save(opts: { flushHistory?: boolean } = {}): Promise<void> {
   const dir = store.get().dir;
   if (!dir) return;
   if (saveTimer) {
@@ -808,7 +817,7 @@ async function save(): Promise<void> {
     // Await the latest snapshot after the deck write. Save As and window close
     // can now rely on history having reached disk rather than racing a fire-
     // and-forget IPC call from the original edit.
-    await flushHistory(dir);
+    if (opts.flushHistory !== false) await flushHistory(dir);
   } catch (error) {
     console.error('Could not flush edit history:', error);
   }
@@ -823,7 +832,7 @@ function scheduleSave(): void {
   if (saveTimer) clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
     saveTimer = null;
-    void save();
+    void save({ flushHistory: false });
   }, 800);
 }
 
@@ -835,11 +844,11 @@ async function adopt(
   operation?: OperationHandle,
 ): Promise<void> {
   const generation = ++adoptGeneration;
-  let history: NonNullable<Parameters<typeof store.load>[2]>['history'] = [];
+  let history: NonNullable<Parameters<typeof store.load>[2]>['history'];
   try {
-    operation?.update(`Reading ${dir.split('/').pop() ?? dir}/deck-history.json.gz`, 0.55);
+    operation?.update(`Reading ${dir.split('/').pop() ?? dir}/deck-history-v2.json.gz`, 0.55);
     const loaded = await window.api.loadDeckHistory(dir);
-    if (loaded.dir === dir) history = loaded.history.entries;
+    if (loaded.dir === dir) history = loaded.history;
   } catch (error) {
     console.error('Could not load edit history:', error);
   }
@@ -851,6 +860,7 @@ async function adopt(
   // indicator a paint opportunity before Chromium starts constructing it.
   await operation?.waitForPaint();
   store.load(deck, dir, { history });
+  historyDirty = false;
   if (initialViewPending) {
     restoreEditorView(store, initialView);
     initialViewPending = false;

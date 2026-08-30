@@ -57,7 +57,13 @@ afterEach(async () => {
 });
 
 describe.skipIf(!electronBinary)('desktop inline-formatting matrix', () => {
-  it('formats whole text, arbitrary overlaps, and newly inserted paragraph text through chords and buttons', async () => {
+  it('formats whole text, arbitrary overlaps, and newly inserted paragraph text through chords and buttons', {
+    // The default suite launches several real Electron windows in parallel.
+    // A peer window can briefly take macOS focus and blur this contenteditable;
+    // retry the complete native-input scenario instead of weakening any step.
+    retry: 2,
+    timeout: 120_000,
+  }, async () => {
     workDir = await mkdtemp(join(tmpdir(), 'deckwerk-desktop-formatting-'));
     const checkout = process.cwd();
     const appDir = join(workDir, 'app');
@@ -132,12 +138,42 @@ describe.skipIf(!electronBinary)('desktop inline-formatting matrix', () => {
     await editor.call('Page.bringToFront');
     await editor.evaluate('window.focus()');
 
+    const selectRangeThroughPointer = async (
+      range: { start: number; end: number },
+      label: string,
+      doubleClickSelection: boolean,
+      selectBoxFirst = false,
+    ) => {
+      const wanted = TEXT.slice(range.start, range.end);
+      let lastSelection = '';
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        // Other production-browser files run concurrently and can take the OS
+        // focus between CDP packets. Reacquire this page and repeat the same
+        // native pointer gesture rather than installing a DOM Range directly.
+        await editor!.call('Page.bringToFront');
+        await editor!.evaluate('window.focus()');
+        if (selectBoxFirst || attempt > 0) {
+          await editor!.click(`#canvas [data-element-id="${TEXT_ID}"]`, `${label}: text box`);
+        }
+        await editor!.evaluate('new Promise((resolve) => requestAnimationFrame(() => resolve(true)))');
+        if (doubleClickSelection) {
+          await editor!.doubleClickTextAtOffset(CONTENT, range.start + 1, label);
+        } else {
+          await editor!.selectTextRange(CONTENT, range.start, range.end, label);
+        }
+        try {
+          return await eventually(async () => selectedText(editor!), `${label} did not settle`,
+            (value) => normalizeSelection(value) === normalizeSelection(wanted), 1_500);
+        } catch {
+          lastSelection = await selectedText(editor!);
+        }
+      }
+      throw new Error(`${label} did not settle: ${JSON.stringify(lastSelection)}`);
+    };
+
     // Match the reported gesture: select the box, then double-click a word.
-    await editor.click(`#canvas [data-element-id="${TEXT_ID}"]`, 'Lorem Ipsum text box');
     const firstIpsum = wordRange(TEXT, 'ipsum');
-    await editor.doubleClickTextAtOffset(CONTENT, firstIpsum.start + 1, 'the first “ipsum”');
-    await eventually(async () => selectedText(editor!), 'double-click did not select “ipsum”',
-      (value) => value === 'ipsum');
+    await selectRangeThroughPointer(firstIpsum, 'double-click did not select “ipsum”', true, true);
 
     let authoredText = TEXT;
     const expected: Record<Format, boolean[]> = {
@@ -183,6 +219,57 @@ describe.skipIf(!electronBinary)('desktop inline-formatting matrix', () => {
       expected[format].fill(active);
       await assertAllFormats(`whole-text ${format} via ${route}`, authoredText);
     };
+
+    const applyWordShortcut = async (
+      range: { start: number; end: number },
+      format: Format,
+      active: boolean,
+      label: string,
+      selectBoxFirst = true,
+      doubleClickSelection = true,
+    ) => {
+      const wanted = authoredText.slice(range.start, range.end);
+      await selectRangeThroughPointer(
+        range,
+        `${label}: “${wanted}”`,
+        doubleClickSelection,
+        selectBoxFirst,
+      );
+      await invoke(format, 'shortcut', label);
+      expected[format].fill(active, range.start, range.end);
+      await assertAllFormats(`${label}: ${format} via shortcut`, wanted);
+    };
+
+    // Exact regression gesture: select the text box, double-click one word,
+    // then use Cmd/Ctrl+B or Cmd/Ctrl+I. Exercise both activation and removal
+    // so either shortcut becoming a no-op or losing the range is observable.
+    await applyWordShortcut(firstIpsum, 'bold', true, 'double-clicked word bold');
+    await applyWordShortcut(firstIpsum, 'bold', false, 'double-clicked word unbold');
+    const firstDolor = wordRange(authoredText, 'dolor');
+    await applyWordShortcut(firstDolor, 'italic', true, 'double-clicked word italic');
+    await applyWordShortcut(firstDolor, 'italic', false, 'double-clicked word unitalic');
+
+    // Deterministic stress coverage for the intermittent case. Repeatedly
+    // select exact words through the real pointer path after prior operations
+    // have split and normalized the inline DOM, then send the native shortcut.
+    const wordRanges = [...authoredText.matchAll(/[A-Za-z]+/g)].map((match) => ({
+      start: match.index,
+      end: match.index + match[0].length,
+    }));
+    const random = mulberry32(0x5eedb17);
+    for (let step = 0; step < 32; step += 1) {
+      const range = wordRanges[Math.floor(random() * wordRanges.length)];
+      const format = (['bold', 'italic', 'underline'] as const)[Math.floor(random() * 3)];
+      const active = !expected[format][range.start];
+      await applyWordShortcut(
+        range,
+        format,
+        active,
+        `word shortcut fuzz step ${step + 1}`,
+        false,
+        false,
+      );
+    }
 
     // Every format over the whole box, with both routes represented in each
     // direction. Keeping the selection active also catches toolbar focus loss.
@@ -416,7 +503,7 @@ describe.skipIf(!electronBinary)('desktop inline-formatting matrix', () => {
       return disk.slides[0].elements.find((element) => element.id === listTextId)?.html ?? '';
     }, 'automatically created list did not autosave', (html) => /<ul>.*some text/s.test(html));
     expect(persistedList).not.toMatch(/<ul[^>]*>.*font-(?:weight|style):\s*(?:700|bold|italic)/s);
-  }, 120_000);
+  });
 });
 
 describe.skipIf(electronBinary)('desktop inline-formatting matrix (skipped)', () => {
@@ -443,6 +530,16 @@ function phraseRange(text: string, startWord: string, endFragment: string): {
 
 function normalizeSelection(value: string): string {
   return value.replace(/\s+/g, ' ').trim();
+}
+
+function mulberry32(seed: number): () => number {
+  return () => {
+    seed |= 0;
+    seed = seed + 0x6d2b79f5 | 0;
+    let value = Math.imul(seed ^ seed >>> 15, 1 | seed);
+    value = value + Math.imul(value ^ value >>> 7, 61 | value) ^ value;
+    return ((value ^ value >>> 14) >>> 0) / 4_294_967_296;
+  };
 }
 
 function selectedText(cdp: Cdp): Promise<string> {

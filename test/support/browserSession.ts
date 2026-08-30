@@ -335,6 +335,10 @@ export class Cdp {
     await this.mouse('mouseMoved', point.x, point.y, 0);
     await this.mouse('mousePressed', point.x, point.y, 1);
     await this.mouse('mouseReleased', point.x, point.y, 1);
+    // Keep the two clicks inside the native double-click interval without
+    // collapsing them into the same event-loop instant. Back-to-back CDP
+    // packets can exercise renderer coalescing that no physical mouse can.
+    await wait(35);
     await this.mouse('mousePressed', point.x, point.y, 2);
     await this.mouse('mouseReleased', point.x, point.y, 2);
   }
@@ -349,6 +353,7 @@ export class Cdp {
     await this.mouse('mouseMoved', point.x, point.y, 0);
     await this.mouse('mousePressed', point.x, point.y, 1);
     await this.mouse('mouseReleased', point.x, point.y, 1);
+    await wait(35);
     await this.mouse('mousePressed', point.x, point.y, 2);
     await this.mouse('mouseReleased', point.x, point.y, 2);
   }
@@ -412,31 +417,47 @@ export class Cdp {
       const root = document.querySelector(${JSON.stringify(selector)});
       if (!root) return { error: 'no element matches' };
       const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-      let remaining = ${JSON.stringify(offset)};
+      const characters = [];
       for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-        const authored = node.data.replaceAll('\u2060', '');
-        if (remaining >= authored.length) {
-          remaining -= authored.length;
-          continue;
+        for (let domOffset = 0; domOffset < node.data.length; domOffset += 1) {
+          if (node.data[domOffset] !== '\u2060') characters.push({ node, domOffset });
         }
-        let domOffset = 0;
-        let authoredOffset = 0;
-        while (domOffset < node.data.length && authoredOffset < remaining) {
-          if (node.data[domOffset] !== '\u2060') authoredOffset += 1;
-          domOffset += 1;
-        }
-        while (node.data[domOffset] === '\u2060') domOffset += 1;
+      }
+      const requested = ${JSON.stringify(offset)};
+      if (requested < 0 || requested >= characters.length) {
+        return { error: 'offset is outside rendered text' };
+      }
+      const rectAt = (index) => {
+        const { node, domOffset } = characters[index];
         const range = document.createRange();
         range.setStart(node, domOffset);
         range.setEnd(node, Math.min(node.data.length, domOffset + 1));
-        const rect = range.getBoundingClientRect();
-        if (rect.width <= 0 || rect.height <= 0) return { error: 'character has no rendered box' };
-        return {
-          x: rect.left + rect.width * ${JSON.stringify(fraction)},
-          y: rect.top + rect.height / 2,
-        };
+        return range.getBoundingClientRect();
+      };
+      let index = requested;
+      let pointFraction = ${JSON.stringify(fraction)};
+      let rect = rectAt(index);
+      if (rect.width <= 0 || rect.height <= 0) {
+        // A TeX delimiter or collapsed formatting boundary can be zero-width.
+        // For a range start, the trailing edge of the previous visible glyph
+        // is the same caret boundary; for an end, use the leading edge of the
+        // following glyph. Selection remains entirely native pointer input.
+        const direction = pointFraction >= 0.5 ? 1 : -1;
+        for (index += direction; index >= 0 && index < characters.length; index += direction) {
+          rect = rectAt(index);
+          if (rect.width > 0 && rect.height > 0) {
+            pointFraction = direction > 0 ? 0.01 : 0.99;
+            break;
+          }
+        }
+        if (rect.width <= 0 || rect.height <= 0) {
+          return { error: 'character and adjacent caret boundary have no rendered box' };
+        }
       }
-      return { error: 'offset is outside rendered text' };
+      return {
+        x: rect.left + rect.width * pointFraction,
+        y: rect.top + rect.height / 2,
+      };
     })()`);
     if ('error' in point) throw new Error(`cannot locate ${label}: ${point.error}`);
     return point;

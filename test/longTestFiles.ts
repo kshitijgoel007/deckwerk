@@ -14,6 +14,11 @@ export const LONG_TESTS = [
     observedSeconds: 12,
     scope: 'Large browser formatting and undo omnibus',
   },
+  {
+    file: 'test/performanceStressBrowser.test.ts',
+    observedSeconds: 120,
+    scope: 'Opt-in 1,000-slide media and 500-slide history performance gates',
+  },
 ] as const;
 
 export const LONG_TEST_FILES = LONG_TESTS.map(({ file }) => file);

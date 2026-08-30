@@ -394,6 +394,7 @@ export function capabilities(): Capability[] {
       notes: [
         'A background image covers the canvas; text on it needs contrast.',
         "layout is a geometry preset — 'freeform' (default), 'standard' (title + body) or 'title' — and themes may decorate it but never own its positions.",
+        'layoutMasterId and layoutPlaceholder are editor-maintained links between fixed layout masters and their title/body placeholders; ordinary authored elements should leave them unset.',
         'skipped: true keeps a slide in the deck and editable but steps over it when presenting. Use it instead of deleting a slide you may want back.',
         'notes is the presenter-view script for the slide; name is the label in the slide rail.',
       ],

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { emptyDeck } from '../src/shared/deck.js';
 import { HistoryPanel } from '../src/renderer/editor/historyPanel.js';
 import { EditorStore } from '../src/renderer/editor/store.js';
@@ -33,7 +33,7 @@ describe('edit history', () => {
 
     const reopened = new EditorStore(emptyDeck());
     reopened.load(first.get().deck, '/tmp/history', {
-      history: first.persistedHistory().entries,
+      history: first.persistedHistory(),
     });
 
     expect(reopened.history().map((item) => item.label)).toEqual([
@@ -49,7 +49,7 @@ describe('edit history', () => {
     const disk = emptyDeck('Changed outside the app');
     const reopened = new EditorStore(emptyDeck());
 
-    reopened.load(disk, '/tmp/history', { history: previous.persistedHistory().entries });
+    reopened.load(disk, '/tmp/history', { history: previous.persistedHistory() });
 
     expect(reopened.history().map((item) => item.label)).toEqual(['Old edit']);
     expect(reopened.isHistoryCurrent(reopened.history()[0].id)).toBe(false);
@@ -57,6 +57,36 @@ describe('edit history', () => {
     const old = reopened.history().find((item) => item.label === 'Old edit')!;
     expect(reopened.restoreHistory(old.id)).toBe(true);
     expect(reopened.get().deck.title).toBe('Persisted tip');
+  });
+
+  it('drops a semantically broken delta log without blocking the deck', () => {
+    const disk = emptyDeck('Still opens');
+    const reopened = new EditorStore(emptyDeck());
+    const report = vi.spyOn(console, 'error').mockImplementation(() => {});
+    reopened.load(disk, '/tmp/history', {
+      history: {
+        version: 2,
+        base: emptyDeck('Old base'),
+        entries: [
+          { label: 'Base', at: 1, slideIndex: 0, operations: [] },
+          {
+            label: 'Broken edit',
+            at: 2,
+            slideIndex: 0,
+            operations: [{
+              op: 'deleteElements',
+              slideId: 'missing-slide',
+              elementIds: ['missing-element'],
+            }],
+          },
+        ],
+      },
+    });
+
+    expect(reopened.get().deck.title).toBe('Still opens');
+    expect(reopened.history()).toEqual([]);
+    expect(report).toHaveBeenCalledWith('Could not hydrate edit history:', expect.anything());
+    report.mockRestore();
   });
 
   it('does not duplicate an optimistic local state when its server echo arrives', () => {
@@ -67,6 +97,26 @@ describe('edit history', () => {
     store.applyRemote(structuredClone(store.get().deck), 'Change title');
 
     expect(store.history()).toEqual(before);
+  });
+
+  it('coalesces remote streams while keeping a replayable base and delta log', () => {
+    const store = new EditorStore(emptyDeck('History'), '/tmp/history');
+    const first = structuredClone(store.get().deck);
+    first.title = 'Typing one';
+    store.applyRemote(first, 'Edit text');
+    const second = structuredClone(first);
+    second.title = 'Typing two';
+    store.applyRemote(second, 'Edit text');
+
+    const persisted = store.persistedHistory();
+    expect(store.history()).toHaveLength(1);
+    expect(persisted.base?.title).toBe('Typing two');
+    expect(persisted.entries[0].operations).toEqual([]);
+
+    const reopened = new EditorStore(emptyDeck());
+    reopened.load(second, '/tmp/history', { history: persisted });
+    expect(reopened.history()).toHaveLength(1);
+    expect(reopened.isHistoryCurrent(reopened.history()[0].id)).toBe(true);
   });
 
   it('treats filesystem replacements as non-historical synchronization boundaries', () => {
@@ -141,15 +191,37 @@ describe('edit history', () => {
     expect(store.get().deck.title).toBe('Revision 6');
   });
 
-  it('keeps persisted immutable snapshots by reference instead of cloning the whole log per read', () => {
+  it('keeps the checkpoint and immutable operation log by reference per read', () => {
     const store = new EditorStore(emptyDeck('History'), '/tmp/history');
     store.commit((deck) => { deck.title = 'One'; }, { label: 'First edit' });
     store.commit((deck) => { deck.title = 'Two'; }, { label: 'Second edit' });
 
     const first = store.persistedHistory();
     const second = store.persistedHistory();
-    expect(second.entries[0].deck).toBe(first.entries[0].deck);
-    expect(second.entries[1].deck).toBe(first.entries[1].deck);
+    expect(second.base).toBe(first.base);
+    expect(second.entries[0].operations).toBe(first.entries[0].operations);
+    expect(second.entries[1].operations).toBe(first.entries[1].operations);
+  });
+
+  it('persists one deck checkpoint instead of repeating it in every revision', () => {
+    const deck = emptyDeck('Compact history');
+    deck.slides = Array.from({ length: 50 }, (_, index) => ({
+      ...structuredClone(deck.slides[0]),
+      id: `slide-${index}`,
+      name: `Slide ${index}`,
+    }));
+    const store = new EditorStore(deck, '/tmp/history');
+    for (let revision = 1; revision <= 50; revision++) {
+      store.commit((next) => { next.title = `Revision ${revision}`; }, {
+        label: `Edit ${revision}`,
+      });
+    }
+
+    const persisted = store.persistedHistory();
+    const oneDeckBytes = JSON.stringify(persisted.base).length;
+    expect(persisted.entries).toHaveLength(50);
+    expect(persisted.entries.every((entry) => !('deck' in entry))).toBe(true);
+    expect(JSON.stringify(persisted).length).toBeLessThan(oneDeckBytes * 2);
   });
 
   it('does not notify history subscribers for ordinary selection changes', () => {

@@ -1,0 +1,454 @@
+import { execFile } from 'node:child_process';
+import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { performance } from 'node:perf_hooks';
+import { promisify } from 'node:util';
+import { afterEach, describe, expect, it } from 'vitest';
+import { loadDeckHistory, saveDeckHistory } from '../src/main/deckHistoryStore.js';
+import { saveDeck } from '../src/main/deckStore.js';
+import { emptyDeck, parseDeck, type Deck, type SlideElement } from '../src/shared/deck.js';
+import { EditorStore } from '../src/renderer/editor/store.js';
+import { startCollabServer, type RunningCollabServer } from '../src/server/collabServer.js';
+import {
+  Cdp,
+  electronBinary,
+  eventually,
+  findTarget,
+  launchBrowser,
+  stopBrowser,
+  type RunningBrowser,
+} from './support/browserSession.js';
+import { collabClientDir } from './support/collabClient.js';
+
+/**
+ * Opt-in, real-runtime performance gates.
+ *
+ * These are deliberately absent from the ordinary correctness suite: they
+ * generate 6K stills and 4K video, launch Electron, bind localhost, force GC,
+ * and exercise the 200-entry history ceiling against hundreds of slides.
+ * Run with `npm run test:performance`; budget environment variables are
+ * documented in docs/performance-testing.md.
+ */
+
+const RUN_PERFORMANCE = process.env.RUN_PERFORMANCE_STRESS === '1';
+const execFileAsync = promisify(execFile);
+const DECK_ID = 'performance-stress';
+const IMAGE_A = 'assets/large-a.11111111.jpeg';
+const IMAGE_B = 'assets/large-b.22222222.jpeg';
+const VIDEO = 'assets/large-video.33333333.mp4';
+
+const ffmpeg = (() => {
+  try {
+    return createRequire(import.meta.url)('ffmpeg-static') as string;
+  } catch {
+    return '';
+  }
+})();
+
+let workDir = '';
+let server: RunningCollabServer | null = null;
+let browser: RunningBrowser | null = null;
+let editor: Cdp | null = null;
+
+afterEach(async () => {
+  editor?.close();
+  editor = null;
+  await stopBrowser(browser?.process ?? null);
+  browser = null;
+  await server?.close();
+  server = null;
+  if (workDir) await rm(workDir, { recursive: true, force: true });
+  workDir = '';
+});
+
+const budget = (name: string, fallback: number): number => {
+  const configured = Number(process.env[name]);
+  return Number.isFinite(configured) && configured > 0 ? configured : fallback;
+};
+
+function percentile(values: number[], quantile: number): number {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((left, right) => left - right);
+  return sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * quantile) - 1)];
+}
+
+function textElement(index: number): SlideElement {
+  return {
+    id: `title-${index}`, type: 'text',
+    x: 80, y: 40, w: 1760, h: 130, rot: 0, z: 3, opacity: 1,
+    class: ['role-title'], style: {}, html: `Synthetic media slide ${index + 1}`,
+    align: 'center', valign: 'middle',
+  } as SlideElement;
+}
+
+function imageElement(index: number): SlideElement {
+  return {
+    id: `image-${index}`, type: 'image',
+    x: 70, y: 210, w: 820, h: 700, rot: 0, z: 1, opacity: 1,
+    class: [], style: {}, src: index % 2 === 0 ? IMAGE_A : IMAGE_B,
+    fit: 'cover', alt: `Synthetic 6000 by 4000 raster ${index % 2 + 1}`,
+    sourceBox: null,
+  } as SlideElement;
+}
+
+function videoElement(index: number): SlideElement {
+  return {
+    id: `video-${index}`, type: 'video',
+    x: 960, y: 210, w: 890, h: 700, rot: 0, z: 2, opacity: 1,
+    class: [], style: {}, src: VIDEO, fit: 'cover',
+    autoplay: false, loop: true, muted: true, controls: false,
+    start: index % 2 === 0 ? 0 : 2, end: null, poster: null, sourceBox: null,
+  } as SlideElement;
+}
+
+function syntheticMediaDeck(slideCount: number): Deck {
+  const deck = emptyDeck('Synthetic performance stress');
+  const base = deck.slides[0];
+  deck.slides = Array.from({ length: slideCount }, (_, index) => ({
+    ...structuredClone(base),
+    id: `perf-slide-${index}`,
+    name: `Performance ${index + 1}`,
+    background: { color: index % 2 === 0 ? '#f8fafc' : '#eef2ff', image: null },
+    elements: [textElement(index), imageElement(index), videoElement(index)],
+  }));
+  return parseDeck(deck);
+}
+
+interface NavigationSample {
+  duration: number;
+  slideIndex: number;
+  imageReady: boolean;
+  videoReady: boolean;
+}
+
+interface RuntimeMemory {
+  usedSize: number;
+  totalSize: number;
+}
+
+interface DomCounters {
+  documents: number;
+  nodes: number;
+  jsEventListeners: number;
+}
+
+describe.skipIf(!RUN_PERFORMANCE)('large-deck performance stress', () => {
+  it.skipIf(!electronBinary || !ffmpeg)(
+    'keeps 1,000 media-heavy slides responsive and resource-bounded in Electron',
+    async () => {
+      workDir = await mkdtemp(join(tmpdir(), 'deckwerk-performance-'));
+      const decksRoot = join(workDir, 'decks');
+      const deckDir = join(decksRoot, DECK_ID);
+      const assetsDir = join(deckDir, 'assets');
+      const profileDir = join(workDir, 'electron-profile');
+      await mkdir(assetsDir, { recursive: true });
+      await mkdir(profileDir, { recursive: true });
+
+      // Two distinct 24 MP JPEGs force real decode/adoption work on every
+      // forward step. The 4K clip alternates between two in-points so the
+      // canvas also has to retain two compatible decoded video presentations.
+      await execFileAsync(ffmpeg, [
+        '-loglevel', 'error', '-y',
+        '-f', 'lavfi', '-i', 'testsrc2=size=6000x4000:rate=1',
+        '-frames:v', '1', '-q:v', '2', join(assetsDir, 'large-a.11111111.jpeg'),
+      ]);
+      await execFileAsync(ffmpeg, [
+        '-loglevel', 'error', '-y',
+        '-f', 'lavfi', '-i', 'smptebars=size=6000x4000:rate=1',
+        '-frames:v', '1', '-q:v', '2', join(assetsDir, 'large-b.22222222.jpeg'),
+      ]);
+      await execFileAsync(ffmpeg, [
+        '-loglevel', 'error', '-y',
+        '-f', 'lavfi', '-i', 'testsrc2=size=3840x2160:rate=30',
+        '-t', '6', '-an', '-pix_fmt', 'yuv420p',
+        '-c:v', 'libx264', '-preset', 'ultrafast', '-b:v', '8M',
+        join(assetsDir, 'large-video.33333333.mp4'),
+      ]);
+
+      const [imageAStat, imageBStat, videoStat] = await Promise.all([
+        stat(join(assetsDir, 'large-a.11111111.jpeg')),
+        stat(join(assetsDir, 'large-b.22222222.jpeg')),
+        stat(join(assetsDir, 'large-video.33333333.mp4')),
+      ]);
+      expect(imageAStat.size).toBeGreaterThan(500_000);
+      expect(imageBStat.size).toBeGreaterThan(100_000);
+      expect(videoStat.size).toBeGreaterThan(2_000_000);
+
+      const deck = syntheticMediaDeck(1_000);
+      await saveDeck(deckDir, deck);
+      await writeFile(join(deckDir, 'theme.css'), [
+        '.slide { color: #111827; }',
+        '.role-title { font: 700 58px/1.1 sans-serif; }',
+        '',
+      ].join('\n'), 'utf8');
+
+      const clientDir = await collabClientDir();
+      server = await startCollabServer({
+        rootDir: decksRoot, clientDir, host: '127.0.0.1', port: 0,
+      });
+      const loadStarted = performance.now();
+      browser = await launchBrowser(
+        `http://127.0.0.1:${server.port}/?deck=${DECK_ID}&name=Performance%20Stress`,
+        profileDir,
+      );
+      const target = await findTarget(
+        browser.debugPort,
+        (candidate) => candidate.url.includes(`deck=${DECK_ID}`),
+        browser.log,
+        30_000,
+      );
+      editor = await Cdp.connect(target.webSocketDebuggerUrl!);
+
+      await eventually(async () => editor!.evaluate<number>(
+        `window.store?.get()?.deck?.slides?.length ?? 0`,
+      ), 'the 1,000-slide fixture did not open', (count) => count === 1_000, 90_000);
+      const loadMs = performance.now() - loadStarted;
+      expect(loadMs).toBeLessThan(budget('PERF_DECK_LOAD_BUDGET_MS', 60_000));
+
+      await editor.evaluate(`(() => {
+        window.store.selectSlide(450);
+        document.getElementById('rail')?.focus({ preventScroll: true });
+        return true;
+      })()`);
+      await eventually(async () => editor!.evaluate<{
+        index: number;
+        imageReady: boolean;
+        imageWidth: number;
+        videoReady: boolean;
+        videoWidth: number;
+      }>(`(() => {
+        const image = document.querySelector('#canvas img');
+        const video = document.querySelector('#canvas video');
+        return {
+          index: window.store.get().slideIndex,
+          imageReady: Boolean(image?.complete && image.naturalWidth > 0),
+          imageWidth: image?.naturalWidth ?? 0,
+          videoReady: Boolean(video && video.readyState >= 2 && !video.seeking),
+          videoWidth: video?.videoWidth ?? 0,
+        };
+      })()`), 'the middle media slide did not settle', (state) =>
+        state.index === 450
+          && state.imageReady && state.imageWidth === 6_000
+          && state.videoReady && state.videoWidth === 3_840, 90_000);
+
+      // Give the editor's one-slide image lookahead an idle period before the
+      // first measured ArrowDown, matching a user reading the current slide.
+      await editor.evaluate(`new Promise((resolve) => {
+        const done = () => setTimeout(resolve, 500);
+        if (typeof requestIdleCallback === 'function') requestIdleCallback(done, { timeout: 1500 });
+        else setTimeout(done, 750);
+      })`);
+      await editor.evaluate(`(() => {
+        window.__navigationPerformance = { samples: [], longTasks: [] };
+        try {
+          const observer = new PerformanceObserver((list) => {
+            for (const entry of list.getEntries()) {
+              window.__navigationPerformance.longTasks.push(entry.duration);
+            }
+          });
+          observer.observe({ entryTypes: ['longtask'] });
+          window.__navigationPerformance.observer = observer;
+        } catch {}
+        document.addEventListener('keydown', (event) => {
+          if (event.key !== 'ArrowDown' || document.activeElement?.id !== 'rail') return;
+          const started = performance.now();
+          requestAnimationFrame(() => requestAnimationFrame(() => {
+            const image = document.querySelector('#canvas img');
+            const video = document.querySelector('#canvas video');
+            window.__navigationPerformance.samples.push({
+              duration: performance.now() - started,
+              slideIndex: window.store.get().slideIndex,
+              imageReady: Boolean(image?.complete && image.naturalWidth > 0),
+              videoReady: Boolean(video && video.readyState >= 2 && !video.seeking),
+            });
+          }));
+        }, true);
+        return true;
+      })()`);
+
+      await editor.call('HeapProfiler.enable');
+      await editor.call('HeapProfiler.collectGarbage');
+      const heapBefore = await editor.call('Runtime.getHeapUsage') as RuntimeMemory;
+      const domBefore = await editor.call('Memory.getDOMCounters') as DomCounters;
+
+      const navigationCount = 60;
+      for (let step = 0; step < navigationCount; step += 1) {
+        await editor.key('ArrowDown', 40);
+        await eventually(async () => editor!.evaluate<number>(
+          `window.__navigationPerformance.samples.length`,
+        ), `navigation sample ${step + 1} did not paint`, (count) => count === step + 1, 10_000);
+      }
+
+      await editor.call('HeapProfiler.collectGarbage');
+      const heapAfter = await editor.call('Runtime.getHeapUsage') as RuntimeMemory;
+      const domAfter = await editor.call('Memory.getDOMCounters') as DomCounters;
+      const navigation = await editor.evaluate<{
+        samples: NavigationSample[];
+        longTasks: number[];
+        railItems: number;
+        mountedThumbs: number;
+      }>(`(() => ({
+        samples: window.__navigationPerformance.samples,
+        longTasks: window.__navigationPerformance.longTasks,
+        railItems: document.querySelectorAll('.rail-item').length,
+        mountedThumbs: document.querySelectorAll('.rail-thumb-inner').length,
+      }))()`);
+
+      expect(navigation.samples).toHaveLength(navigationCount);
+      expect(navigation.samples[0].slideIndex).toBe(451);
+      expect(navigation.samples.at(-1)?.slideIndex).toBe(450 + navigationCount);
+      expect(navigation.samples[0].imageReady, 'the first warmed 24 MP image missed first paint')
+        .toBe(true);
+      expect(navigation.samples.slice(5).every((sample) => sample.imageReady)).toBe(true);
+      expect(navigation.railItems).toBe(1_000);
+      expect(navigation.mountedThumbs).toBeLessThan(60);
+
+      const steady = navigation.samples.slice(5).map((sample) => sample.duration);
+      const firstNavigationMs = navigation.samples[0].duration;
+      const navigationP95Ms = percentile(steady, 0.95);
+      const navigationMaxMs = Math.max(...steady);
+      const longTaskMaxMs = Math.max(0, ...navigation.longTasks);
+      const heapGrowthBytes = Math.max(0, heapAfter.usedSize - heapBefore.usedSize);
+      const domNodeGrowth = Math.max(0, domAfter.nodes - domBefore.nodes);
+
+      expect(firstNavigationMs).toBeLessThan(budget('PERF_FIRST_NAV_BUDGET_MS', 350));
+      expect(navigationP95Ms).toBeLessThan(budget('PERF_NAV_P95_BUDGET_MS', 250));
+      expect(navigationMaxMs).toBeLessThan(budget('PERF_NAV_MAX_BUDGET_MS', 750));
+      expect(longTaskMaxMs).toBeLessThan(budget('PERF_LONG_TASK_MAX_BUDGET_MS', 750));
+      expect(heapGrowthBytes).toBeLessThan(budget('PERF_HEAP_GROWTH_BUDGET_MB', 128) * 1024 * 1024);
+      expect(domNodeGrowth).toBeLessThan(budget('PERF_DOM_GROWTH_BUDGET', 6_000));
+
+      // Hydrate the maximum supported history directly, then measure the real
+      // hidden-panel catch-up path. Persistence and complex delta replay are
+      // covered separately below; this isolates the browser UI cost.
+      const historyUi = await editor.evaluate<{
+        hydrateMs: number;
+        openMs: number;
+        rows: number;
+      }>(`(async () => {
+        const deck = window.store.get().deck;
+        const entries = Array.from({ length: 200 }, (_, index) => ({
+          label: 'Synthetic history ' + (index + 1),
+          at: Date.now() - (200 - index) * 1000,
+          slideIndex: 450,
+          operations: [],
+        }));
+        const hydrateStarted = performance.now();
+        window.store.load(deck, '/synthetic-performance', {
+          keepView: true,
+          history: { version: 2, base: deck, entries },
+        });
+        const hydrateMs = performance.now() - hydrateStarted;
+        const openStarted = performance.now();
+        document.querySelector('#side-tabs button[data-panel="history"]')?.click();
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        return {
+          hydrateMs,
+          openMs: performance.now() - openStarted,
+          rows: document.querySelectorAll('#history .history-item').length,
+        };
+      })()`);
+      expect(historyUi.rows).toBe(200);
+      expect(historyUi.hydrateMs).toBeLessThan(budget('PERF_HISTORY_UI_HYDRATE_BUDGET_MS', 5_000));
+      expect(historyUi.openMs).toBeLessThan(budget('PERF_HISTORY_UI_OPEN_BUDGET_MS', 750));
+
+      console.info('[performance:large-deck]', JSON.stringify({
+        slides: 1_000,
+        imagePixels: 6_000 * 4_000,
+        videoPixels: 3_840 * 2_160,
+        loadMs: Math.round(loadMs),
+        firstNavigationMs: Math.round(firstNavigationMs),
+        navigationP95Ms: Math.round(navigationP95Ms),
+        navigationMaxMs: Math.round(navigationMaxMs),
+        longTaskMaxMs: Math.round(longTaskMaxMs),
+        heapGrowthMb: Math.round(heapGrowthBytes / 1024 / 1024),
+        domNodeGrowth,
+        mountedThumbs: navigation.mountedThumbs,
+        historyUi: {
+          hydrateMs: Math.round(historyUi.hydrateMs),
+          openMs: Math.round(historyUi.openMs),
+        },
+      }));
+    },
+    360_000,
+  );
+
+  it('bounds, persists, reloads, and restores 205 complex revisions of a 500-slide deck', async () => {
+    workDir = await mkdtemp(join(tmpdir(), 'deckwerk-history-performance-'));
+    const store = new EditorStore(syntheticMediaDeck(500), workDir);
+    const commitTimes: number[] = [];
+    const historyStarted = performance.now();
+
+    for (let revision = 1; revision <= 205; revision += 1) {
+      const started = performance.now();
+      store.commit((deck) => {
+        deck.title = `Revision ${revision}`;
+        for (let offset = 0; offset < 8; offset += 1) {
+          const slide = deck.slides[(revision * 13 + offset * 37) % deck.slides.length];
+          slide.name = `Revision ${revision}, branch ${offset}`;
+          const title = slide.elements.find((element) => element.type === 'text');
+          if (title?.type === 'text') title.html = `Revision ${revision} / ${offset}`;
+          const image = slide.elements.find((element) => element.type === 'image');
+          if (image?.type === 'image') image.opacity = 0.7 + (revision % 4) * 0.1;
+          const video = slide.elements.find((element) => element.type === 'video');
+          if (video?.type === 'video') video.start = (revision + offset) % 3;
+        }
+      }, { label: `Edit ${revision}` });
+      commitTimes.push(performance.now() - started);
+    }
+    const historyBuildMs = performance.now() - historyStarted;
+    const persisted = store.persistedHistory();
+    expect(store.history()).toHaveLength(200);
+    expect(persisted.entries).toHaveLength(200);
+    expect(store.history().at(-1)?.label).toBe('Edit 6');
+
+    const saveStarted = performance.now();
+    await saveDeckHistory(workDir, persisted);
+    const saveMs = performance.now() - saveStarted;
+    const sidecar = await stat(join(workDir, 'deck-history-v2.json.gz'));
+
+    const loadStarted = performance.now();
+    const loaded = await loadDeckHistory(workDir);
+    const loadMs = performance.now() - loadStarted;
+    expect(loaded.entries).toHaveLength(200);
+
+    const hydrateStarted = performance.now();
+    const reopened = new EditorStore(emptyDeck());
+    reopened.load(store.get().deck, workDir, { history: loaded });
+    const hydrateMs = performance.now() - hydrateStarted;
+    expect(reopened.history()).toHaveLength(200);
+
+    const middle = reopened.history().find((entry) => entry.label === 'Edit 105');
+    expect(middle).toBeDefined();
+    const restoreStarted = performance.now();
+    expect(reopened.restoreHistory(middle!.id)).toBe(true);
+    const restoreMs = performance.now() - restoreStarted;
+    expect(reopened.get().deck.title).toBe('Revision 105');
+    expect(() => parseDeck(reopened.get().deck)).not.toThrow();
+
+    const oneDeckBytes = Buffer.byteLength(JSON.stringify(persisted.base));
+    expect(sidecar.size).toBeLessThan(Math.max(10_000_000, oneDeckBytes * 3));
+    expect(historyBuildMs).toBeLessThan(budget('PERF_HISTORY_BUILD_BUDGET_MS', 120_000));
+    expect(percentile(commitTimes, 0.95))
+      .toBeLessThan(budget('PERF_HISTORY_COMMIT_P95_BUDGET_MS', 1_000));
+    expect(saveMs).toBeLessThan(budget('PERF_HISTORY_SAVE_BUDGET_MS', 30_000));
+    expect(loadMs).toBeLessThan(budget('PERF_HISTORY_LOAD_BUDGET_MS', 30_000));
+    expect(hydrateMs).toBeLessThan(budget('PERF_HISTORY_HYDRATE_BUDGET_MS', 30_000));
+    expect(restoreMs).toBeLessThan(budget('PERF_HISTORY_RESTORE_BUDGET_MS', 30_000));
+
+    console.info('[performance:history]', JSON.stringify({
+      slides: 500,
+      attemptedRevisions: 205,
+      retainedRevisions: persisted.entries.length,
+      historyBuildMs: Math.round(historyBuildMs),
+      commitP95Ms: Math.round(percentile(commitTimes, 0.95)),
+      sidecarMb: Number((sidecar.size / 1024 / 1024).toFixed(2)),
+      saveMs: Math.round(saveMs),
+      loadMs: Math.round(loadMs),
+      hydrateMs: Math.round(hydrateMs),
+      restoreMs: Math.round(restoreMs),
+    }));
+  }, 360_000);
+});

@@ -13,9 +13,10 @@ import {
   scheduleAutoFit,
   syncMediaFrame,
 } from '../player/render.js';
+import { decodeImage } from '../player/imageDecode.js';
 import { openSlideLinkInNewTab, slideLinkFromEvent } from '../player/links.js';
 import { expandTimeline } from '@shared/timeline.js';
-import { classifyMediaName, makePendingSrc, pendingToken } from '@shared/media.js';
+import { classifyMediaName, isPendingSrc, makePendingSrc, pendingToken } from '@shared/media.js';
 import {
   normalizeParagraphHtml,
   paragraphUnits,
@@ -320,6 +321,13 @@ export class EditorCanvas {
   private videoPool = new Map<string, HTMLVideoElement[]>();
   /** The slide object currently drawn, used to skip needless rebuilds. */
   private renderedSlide: Slide | null = null;
+  /** Position of `renderedSlide`, so lookahead images are adopted only on navigation. */
+  private renderedSlideIndex: number | null = null;
+  /** Decoded images for the next visible slide, bounded to that one slide. */
+  private warmedImages = new Map<string, HTMLImageElement>();
+  private warmingSlide: Slide | null = null;
+  /** Cancels a not-yet-started idle warmup when the navigation target changes. */
+  private cancelImageWarmup: (() => void) | null = null;
   private guides: SnapLine[] = [];
   private marquee: Rect | null = null;
 
@@ -339,8 +347,6 @@ export class EditorCanvas {
   private textEditSession = 0;
   /** Coalesce key for the session's stream of live commits + the final one. */
   private textEditCoalesceKey: string | null = null;
-  /** The element's html when the editing session began (live sync mutates it). */
-  private textEditOriginalHtml: string | null = null;
   /** Last non-collapsed browser selection inside the active text element. */
   private textSelectionRange: Range | null = null;
   /** Rectangular cell range currently targeted in the live table editor. */
@@ -444,6 +450,8 @@ export class EditorCanvas {
       this.slideLayer.replaceChildren();
       this.overlay.replaceChildren();
       this.renderedSlide = null;
+      this.renderedSlideIndex = null;
+      this.scheduleNextSlideImageWarmup(deck, slideIndex);
       return;
     }
 
@@ -451,6 +459,7 @@ export class EditorCanvas {
       this.rescale();
       this.drawOverlay(deck, slide.elements, selection);
       this.scheduleTableHeightSync();
+      this.scheduleNextSlideImageWarmup(deck, slideIndex);
       return;
     }
 
@@ -486,10 +495,13 @@ export class EditorCanvas {
         },
       );
       this.scheduleTableHeightSync();
+      this.scheduleNextSlideImageWarmup(deck, slideIndex);
       return;
     }
 
+    const slideChanged = this.renderedSlideIndex !== slideIndex;
     this.renderedSlide = slide;
+    this.renderedSlideIndex = slideIndex;
 
     // Re-rendering under an active text edit would destroy the node the caret
     // lives in, so the edit is committed first.
@@ -513,9 +525,12 @@ export class EditorCanvas {
     }
 
     this.harvestVideos();
-    this.slideLayer.replaceChildren(
-      renderSlide(slide, { resolveSrc: (src) => window.api.assetUrl(src), mediaPreload: 'metadata' }),
+    const rendered = renderSlide(
+      slide,
+      { resolveSrc: (src) => window.api.assetUrl(src), mediaPreload: 'metadata' },
     );
+    if (slideChanged) this.adoptWarmedImages(rendered);
+    this.slideLayer.replaceChildren(rendered);
     this.adoptVideos(slide);
 
     // Videos hold on their first frame while editing: a wall of looping clips
@@ -542,6 +557,82 @@ export class EditorCanvas {
     this.rescale();
     this.drawOverlay(deck, slide.elements, selection);
     this.scheduleTableHeightSync();
+    this.scheduleNextSlideImageWarmup(deck, slideIndex);
+  }
+
+  /**
+   * Decode stills from only the next presentable slide while the editor is
+   * idle. Keeping the exact decoded node lets navigation adopt it without a
+   * second 4K/6K decode; limiting the horizon to one slide prevents a large
+   * deck from turning lookahead into unbounded memory or background work.
+   */
+  private scheduleNextSlideImageWarmup(deck: Deck, slideIndex: number): void {
+    let next: Slide | null = null;
+    for (let index = slideIndex + 1; index < deck.slides.length; index += 1) {
+      if (deck.slides[index].skipped) continue;
+      next = deck.slides[index];
+      break;
+    }
+    if (next === this.warmingSlide) return;
+    this.warmingSlide = next;
+    this.cancelImageWarmup?.();
+    this.cancelImageWarmup = null;
+
+    const desired = new Set<string>();
+    for (const element of next?.elements ?? []) {
+      if (
+        element.type !== 'image'
+        || isPendingSrc(element.src)
+        || /\.pdf(?:$|[?#])/i.test(element.src)
+      ) continue;
+      desired.add(window.api.assetUrl(element.src));
+    }
+    // Preserve a decoded node when consecutive targets reuse its source, but
+    // release everything else immediately rather than waiting for GC.
+    for (const [src, image] of this.warmedImages) {
+      if (desired.has(src)) continue;
+      image.removeAttribute('src');
+      this.warmedImages.delete(src);
+    }
+    if (!next || desired.size === 0) return;
+
+    const target = next;
+    const warm = () => {
+      this.cancelImageWarmup = null;
+      if (this.warmingSlide !== target) return;
+      for (const src of desired) {
+        if (this.warmedImages.has(src)) continue;
+        const image = document.createElement('img');
+        image.decoding = 'async';
+        image.src = src;
+        this.warmedImages.set(src, image);
+        void decodeImage(image);
+      }
+    };
+
+    if (typeof window.requestIdleCallback === 'function') {
+      const id = window.requestIdleCallback(warm, { timeout: 750 });
+      this.cancelImageWarmup = () => window.cancelIdleCallback(id);
+    } else {
+      const id = window.setTimeout(warm, 0);
+      this.cancelImageWarmup = () => window.clearTimeout(id);
+    }
+  }
+
+  /** Move an in-flight or decoded lookahead image into the live canvas. */
+  private adoptWarmedImages(root: HTMLElement): void {
+    for (const fresh of root.querySelectorAll<HTMLImageElement>('img')) {
+      const src = fresh.getAttribute('src');
+      if (!src) continue;
+      const warmed = this.warmedImages.get(src);
+      if (!warmed || (warmed.complete && warmed.naturalWidth <= 0)) continue;
+      warmed.className = fresh.className;
+      warmed.style.cssText = fresh.style.cssText;
+      warmed.alt = fresh.alt;
+      warmed.draggable = fresh.draggable;
+      fresh.replaceWith(warmed);
+      this.warmedImages.delete(src);
+    }
   }
 
   /** Keep native table frames tight around their laid-out rows. */
@@ -1895,8 +1986,24 @@ export class EditorCanvas {
   private onDoubleClick(ev: PointerEvent | MouseEvent): void {
     // Once editing is active, native browser double-click selection owns this
     // gesture. Calling beginTextEdit again would select the entire text box and
-    // replace the word selection the browser just made.
-    if (this.editingId && (ev.target as HTMLElement).closest('.editing')) return;
+    // replace the word selection the browser just made. Under heavy renderer
+    // load Chromium can deliver dblclick after the first click opened the
+    // contenteditable without having expanded its caret to the word, though;
+    // repair only that collapsed/missing native selection from the click point.
+    if (this.editingId && (ev.target as HTMLElement).closest('.editing')) {
+      const body = this.slideLayer.querySelector<HTMLElement>(
+        `[data-element-id="${CSS.escape(this.editingId)}"] .text-content`,
+      );
+      const selection = window.getSelection();
+      const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
+      if (
+        body &&
+        (!range || range.collapsed || !body.contains(range.commonAncestorContainer))
+      ) {
+        this.selectWordAtPoint(body, { clientX: ev.clientX, clientY: ev.clientY });
+      }
+      return;
+    }
     const slide = this.store.slide;
     if (!slide) return;
     const hit = this.hitTest(this.toCanvas(ev as PointerEvent));
@@ -1982,7 +2089,6 @@ export class EditorCanvas {
       this.textSelectionRange = null;
     }
     this.textEditCoalesceKey = `text:${elementId}:${++this.textEditSession}`;
-    this.textEditOriginalHtml = el.html;
     this.onTextEditModeChange?.(elementId);
 
     // Live sync: stream the box's content to the store (and thus to
@@ -2253,6 +2359,12 @@ export class EditorCanvas {
     };
 
     const onBlur = (event: FocusEvent) => {
+      // Switching applications/windows is not an instruction to finish text
+      // editing. Chromium reports that transition with no related target;
+      // preserving the live surface also keeps its caret ready when DeckWerk
+      // becomes active again. Explicit clicks elsewhere in this document are
+      // committed by the canvas pointer path or have a real related target.
+      if (event.isTrusted && !event.relatedTarget && !document.hasFocus()) return;
       // Native selects need focus in order to open. Keep the live Range while
       // the font picker is used; its change handler restores focus afterward.
       if (event.relatedTarget instanceof Element
@@ -2418,7 +2530,6 @@ export class EditorCanvas {
         }
       }
     };
-
     body.addEventListener('blur', onBlur);
     body.addEventListener('keydown', onKey);
     body.addEventListener('beforeinput', onBeforeInput);
@@ -2452,6 +2563,29 @@ export class EditorCanvas {
     selection?.removeAllRanges();
     selection?.addRange(range);
     return range.cloneRange();
+  }
+
+  /** Fallback for a native double-click that left only a caret under load. */
+  private selectWordAtPoint(
+    body: HTMLElement,
+    point: { clientX: number; clientY: number },
+  ): void {
+    const caret = this.placeCaretAtPoint(body, point);
+    const offsets = caret ? this.textOffsetsForRange(body, caret) : null;
+    const text = body.textContent ?? '';
+    if (!offsets || text.length === 0) return;
+
+    const wordCharacter = (value: string | undefined) =>
+      value !== undefined && /[\p{L}\p{N}_]/u.test(value);
+    let at = Math.min(offsets.start, text.length - 1);
+    if (!wordCharacter(text[at]) && at > 0 && wordCharacter(text[at - 1])) at -= 1;
+    if (!wordCharacter(text[at])) return;
+
+    let start = at;
+    let end = at + 1;
+    while (start > 0 && wordCharacter(text[start - 1])) start -= 1;
+    while (end < text.length && wordCharacter(text[end])) end += 1;
+    this.restoreTextRange(body, { start, end });
   }
 
   private textOffsetsForRange(root: HTMLElement, range: Range): { start: number; end: number } | null {
@@ -2635,9 +2769,7 @@ export class EditorCanvas {
     window.getSelection()?.removeAllRanges();
 
     const coalesceKey = this.textEditCoalesceKey ?? undefined;
-    const originalHtml = this.textEditOriginalHtml;
     this.textEditCoalesceKey = null;
-    this.textEditOriginalHtml = null;
 
     const current = this.store.slide?.elements.find((e) => e.id === elementId);
     if (!current || (current.type !== 'text' && current.type !== 'html')) return;
@@ -2645,14 +2777,13 @@ export class EditorCanvas {
     // counts as an edit (and strips the placeholder class) if the text ends
     // up different from where it started.
     if (current.html === html && !current.class.includes('placeholder')) {
-      if (html === (originalHtml ?? html)) {
-        // Nothing changed, so there is no commit and therefore no re-render --
-        // but the node still holds what `beginTextEdit` swapped in: the authored
-        // source. For anything the renderer transforms, that is the wrong DOM to
-        // leave behind; TeX is the visible case, where the box keeps showing a
-        // literal `$E=mc^2$` where KaTeX output belongs until an unrelated redraw.
-        this.restoreRenderedForm(current, body);
-      }
+      // There is no final commit and therefore no re-render -- either nothing
+      // changed or live formatting/table commits already recorded the final
+      // html. In both cases the node still holds the authored editing source.
+      // Restore renderer transformations such as KaTeX before leaving edit
+      // mode; plain text is left in place because restoreRenderedForm detects
+      // identical markup.
+      this.restoreRenderedForm(current, body);
       // Live formatting/table commits already recorded the authored change.
       // Do not add a second no-op history entry when edit mode finishes; one
       // real Ctrl/Cmd+Z must undo one real formatting click.

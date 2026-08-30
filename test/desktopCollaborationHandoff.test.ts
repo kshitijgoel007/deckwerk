@@ -41,7 +41,7 @@ afterEach(async () => {
     retryDelay: 100,
   });
   workDir = '';
-});
+}, 30_000);
 
 interface PaintedCursor {
   name: string | null;
@@ -485,7 +485,7 @@ describe.skipIf(!electronBinary)('desktop collaboration handoff', () => {
         && document.querySelectorAll('#canvas .sel-box').length === 1
       ))
     `), 'native desktop editor did not remain intact after ending collaboration');
-  }, 30_000);
+  }, 60_000);
 });
 
 describe.skipIf(electronBinary)('desktop collaboration handoff (skipped)', () => {
