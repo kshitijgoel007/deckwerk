@@ -67,4 +67,56 @@ describe('editor image lookahead', () => {
     expect(host.querySelector('img')).toBe(warmed);
     expect(decoded).toHaveLength(1);
   });
+
+  it('decodes a large image wall sequentially only up to the pixel budget', async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const releases: Array<() => void> = [];
+    Object.defineProperty(HTMLImageElement.prototype, 'decode', {
+      configurable: true,
+      value: vi.fn(() => new Promise<void>((resolve) => {
+        inFlight += 1;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        releases.push(() => { inFlight -= 1; resolve(); });
+      })),
+    });
+    Object.defineProperty(HTMLImageElement.prototype, 'naturalWidth', {
+      configurable: true, get: () => 6_000,
+    });
+    Object.defineProperty(HTMLImageElement.prototype, 'naturalHeight', {
+      configurable: true, get: () => 4_000,
+    });
+    vi.stubGlobal('requestIdleCallback', vi.fn((callback: IdleRequestCallback) => {
+      callback({ didTimeout: false, timeRemaining: () => 10 });
+      return 1;
+    }));
+    vi.stubGlobal('cancelIdleCallback', vi.fn());
+
+    const deck = parseDeck({
+      version: 1,
+      slides: [
+        { id: 's1', elements: [] },
+        {
+          id: 's2',
+          elements: Array.from({ length: 10 }, (_, index) => ({
+            id: `photo-${index}`, type: 'image', x: 0, y: 0, w: 640, h: 480,
+            src: `assets/large-${index}.jpeg`,
+          })),
+        },
+      ],
+    });
+    const store = new EditorStore(deck, '/tmp/image-wall');
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    new EditorCanvas(host, store);
+
+    expect(releases).toHaveLength(1);
+    releases.shift()?.();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(releases).toHaveLength(1);
+    releases.shift()?.();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(maxInFlight).toBe(1);
+    expect(HTMLImageElement.prototype.decode).toHaveBeenCalledTimes(2);
+  });
 });

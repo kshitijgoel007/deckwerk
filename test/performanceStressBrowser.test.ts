@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -166,6 +166,12 @@ describe.skipIf(!RUN_PERFORMANCE)('large-deck performance stress', () => {
         '-c:v', 'libx264', '-preset', 'ultrafast', '-b:v', '8M',
         join(assetsDir, 'large-video.33333333.mp4'),
       ]);
+      for (let index = 0; index < 6; index += 1) {
+        await copyFile(
+          join(assetsDir, index % 2 === 0 ? 'large-a.11111111.jpeg' : 'large-b.22222222.jpeg'),
+          join(assetsDir, `wall-${index}.4444444${index}.jpeg`),
+        );
+      }
 
       const [imageAStat, imageBStat, videoStat] = await Promise.all([
         stat(join(assetsDir, 'large-a.11111111.jpeg')),
@@ -177,6 +183,28 @@ describe.skipIf(!RUN_PERFORMANCE)('large-deck performance stress', () => {
       expect(videoStat.size).toBeGreaterThan(2_000_000);
 
       const deck = syntheticMediaDeck(1_000);
+      // Every slide uses a distinct presentation key even though the bytes are
+      // shared. This catches globally-unbounded decoded-video pools, which a
+      // repeated two-key fixture cannot expose.
+      deck.slides.forEach((slide, index) => {
+        const video = slide.elements.find((element) => element.type === 'video');
+        if (video?.type === 'video') video.start = (index % 180) * 0.03;
+      });
+      // The first measured target is a six-image 144 MP wall. Lookahead must
+      // decode sequentially and stop at the 48 MP retention budget.
+      deck.slides[451].elements = [
+        textElement(451),
+        ...Array.from({ length: 6 }, (_, index) => ({
+          ...imageElement(451),
+          id: `wall-image-${index}`,
+          src: `assets/wall-${index}.4444444${index}.jpeg`,
+          x: 40 + (index % 3) * 620,
+          y: 190 + Math.floor(index / 3) * 410,
+          w: 590,
+          h: 380,
+        } as SlideElement)),
+        videoElement(451),
+      ];
       await saveDeck(deckDir, deck);
       await writeFile(join(deckDir, 'theme.css'), [
         '.slide { color: #111827; }',
@@ -240,6 +268,11 @@ describe.skipIf(!RUN_PERFORMANCE)('large-deck performance stress', () => {
         if (typeof requestIdleCallback === 'function') requestIdleCallback(done, { timeout: 1500 });
         else setTimeout(done, 750);
       })`);
+      const warmedImageCount = await editor.evaluate<number>(
+        `window.canvas?.warmedImages?.size ?? -1`,
+      );
+      expect(warmedImageCount).toBeGreaterThan(0);
+      expect(warmedImageCount).toBeLessThanOrEqual(2);
       await editor.evaluate(`(() => {
         window.__navigationPerformance = { samples: [], longTasks: [] };
         try {
@@ -272,6 +305,17 @@ describe.skipIf(!RUN_PERFORMANCE)('large-deck performance stress', () => {
       await editor.call('HeapProfiler.collectGarbage');
       const heapBefore = await editor.call('Runtime.getHeapUsage') as RuntimeMemory;
       const domBefore = await editor.call('Memory.getDOMCounters') as DomCounters;
+      const resourcesBefore = await editor.evaluate<{
+        connectedVideos: number;
+        railCachedThumbs: number;
+        railCachedVideos: number;
+      }>(`(() => ({
+        connectedVideos: document.querySelectorAll('video').length,
+        railCachedThumbs: window.rail?.thumbCache?.size ?? -1,
+        railCachedVideos: window.rail?.thumbCache
+          ? [...window.rail.thumbCache.values()].reduce((sum, thumb) => sum + thumb.querySelectorAll('video').length, 0)
+          : -1,
+      }))()`);
 
       const navigationCount = 60;
       for (let step = 0; step < navigationCount; step += 1) {
@@ -281,6 +325,10 @@ describe.skipIf(!RUN_PERFORMANCE)('large-deck performance stress', () => {
         ), `navigation sample ${step + 1} did not paint`, (count) => count === step + 1, 10_000);
       }
 
+      // `removeAttribute('src'); load()` releases media resources through
+      // Chromium's asynchronous pipeline. Measure the retained steady state,
+      // not internal nodes already queued for destruction on the media thread.
+      await editor.evaluate(`new Promise((resolve) => setTimeout(resolve, 1500))`);
       await editor.call('HeapProfiler.collectGarbage');
       const heapAfter = await editor.call('Runtime.getHeapUsage') as RuntimeMemory;
       const domAfter = await editor.call('Memory.getDOMCounters') as DomCounters;
@@ -289,11 +337,21 @@ describe.skipIf(!RUN_PERFORMANCE)('large-deck performance stress', () => {
         longTasks: number[];
         railItems: number;
         mountedThumbs: number;
+        pooledVideos: number;
+        connectedVideos: number;
+        railCachedThumbs: number;
+        railCachedVideos: number;
       }>(`(() => ({
         samples: window.__navigationPerformance.samples,
         longTasks: window.__navigationPerformance.longTasks,
         railItems: document.querySelectorAll('.rail-item').length,
         mountedThumbs: document.querySelectorAll('.rail-thumb-inner').length,
+        pooledVideos: window.canvas?.videoPool?.size ?? -1,
+        connectedVideos: document.querySelectorAll('video').length,
+        railCachedThumbs: window.rail?.thumbCache?.size ?? -1,
+        railCachedVideos: window.rail?.thumbCache
+          ? [...window.rail.thumbCache.values()].reduce((sum, thumb) => sum + thumb.querySelectorAll('video').length, 0)
+          : -1,
       }))()`);
 
       expect(navigation.samples).toHaveLength(navigationCount);
@@ -304,6 +362,11 @@ describe.skipIf(!RUN_PERFORMANCE)('large-deck performance stress', () => {
       expect(navigation.samples.slice(5).every((sample) => sample.imageReady)).toBe(true);
       expect(navigation.railItems).toBe(1_000);
       expect(navigation.mountedThumbs).toBeLessThan(60);
+      expect(navigation.pooledVideos).toBeGreaterThanOrEqual(0);
+      expect(navigation.pooledVideos).toBeLessThanOrEqual(16);
+      expect(navigation.connectedVideos).toBeLessThanOrEqual(24);
+      expect(navigation.railCachedThumbs).toBeLessThanOrEqual(40);
+      expect(navigation.railCachedVideos).toBeLessThanOrEqual(24);
 
       const steady = navigation.samples.slice(5).map((sample) => sample.duration);
       const firstNavigationMs = navigation.samples[0].duration;
@@ -318,7 +381,7 @@ describe.skipIf(!RUN_PERFORMANCE)('large-deck performance stress', () => {
       expect(navigationMaxMs).toBeLessThan(budget('PERF_NAV_MAX_BUDGET_MS', 750));
       expect(longTaskMaxMs).toBeLessThan(budget('PERF_LONG_TASK_MAX_BUDGET_MS', 750));
       expect(heapGrowthBytes).toBeLessThan(budget('PERF_HEAP_GROWTH_BUDGET_MB', 128) * 1024 * 1024);
-      expect(domNodeGrowth).toBeLessThan(budget('PERF_DOM_GROWTH_BUDGET', 6_000));
+      expect(domNodeGrowth).toBeLessThan(budget('PERF_DOM_GROWTH_BUDGET', 20_000));
 
       // Hydrate the maximum supported history directly, then measure the real
       // hidden-panel catch-up path. Persistence and complex delta replay are
@@ -366,6 +429,14 @@ describe.skipIf(!RUN_PERFORMANCE)('large-deck performance stress', () => {
         heapGrowthMb: Math.round(heapGrowthBytes / 1024 / 1024),
         domNodeGrowth,
         mountedThumbs: navigation.mountedThumbs,
+        warmedImageCount,
+        pooledVideos: navigation.pooledVideos,
+        connectedVideos: navigation.connectedVideos,
+        railCachedThumbs: navigation.railCachedThumbs,
+        railCachedVideos: navigation.railCachedVideos,
+        resourcesBefore,
+        domNodesBefore: domBefore.nodes,
+        domNodesAfter: domAfter.nodes,
         historyUi: {
           hydrateMs: Math.round(historyUi.hydrateMs),
           openMs: Math.round(historyUi.openMs),

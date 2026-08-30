@@ -12,9 +12,12 @@ npm run test:performance
 The suite covers two deliberately expensive scenarios:
 
 - A 1,000-slide deck where every slide contains a 6000×4000 JPEG and a
-  3840×2160 H.264 video. Sixty real ArrowDown events measure key-to-second-
-  paint latency, long tasks, thumbnail virtualization, DOM growth, and JS heap
-  growth. The same browser hydrates and opens the maximum 200-row History UI.
+  3840×2160 H.264 video. Sixty real ArrowDown events traverse distinct video
+  presentation keys and measure key-to-second-paint latency, globally bounded
+  decoder reuse, long tasks, thumbnail virtualization, DOM growth, and JS heap
+  growth. The first target is a six-image 144 MP wall, which verifies that
+  lookahead decoding stays sequential and within its retained-pixel budget.
+  The same browser hydrates and opens the maximum 200-row History UI.
 - A 500-slide deck receives 205 complex revisions touching eight distributed
   slides each. The test measures commit latency, verifies the 200-entry cap,
   writes and reloads the real gzip sidecar, hydrates it into a fresh store, and
@@ -37,7 +40,7 @@ All values are positive numbers. Time budgets are milliseconds.
 | `PERF_NAV_MAX_BUDGET_MS` | 750 | Slowest steady ArrowDown |
 | `PERF_LONG_TASK_MAX_BUDGET_MS` | 750 | Longest renderer long task |
 | `PERF_HEAP_GROWTH_BUDGET_MB` | 128 | Post-GC JS heap growth |
-| `PERF_DOM_GROWTH_BUDGET` | 6000 | Post-GC DOM node growth |
+| `PERF_DOM_GROWTH_BUDGET` | 20000 | Post-GC DOM growth, including Chromium internals for ≤24 live unique-video surfaces |
 | `PERF_HISTORY_UI_HYDRATE_BUDGET_MS` | 5000 | Hydrate 200 rows in-browser |
 | `PERF_HISTORY_UI_OPEN_BUDGET_MS` | 750 | Open and paint the History tab |
 | `PERF_HISTORY_BUILD_BUDGET_MS` | 120000 | Produce 205 complex revisions |

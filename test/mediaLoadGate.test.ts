@@ -14,6 +14,7 @@ import {
 } from '../src/renderer/player/previewFrameRecovery.js';
 import {
   freezePreviewVideos,
+  releasePreviewVideos,
   resetPreviewPostersForTests,
 } from '../src/renderer/player/previewPoster.js';
 
@@ -271,6 +272,30 @@ describe('preview stills', () => {
     // And nothing was thrown away: every element still points at the file, so
     // the capture — or a fallback load — can still happen.
     for (const video of videos) expect(video.getAttribute('src')).toBeTruthy();
+  });
+
+  it('forgets and tears down an evicted surface waiting for a distinct frame', () => {
+    const root = renderSlide(slideWithVideos(1), {
+      resolveSrc: () => '/x/unique-frame.05a38d7a.mp4',
+      mediaPreload: 'metadata',
+    });
+    document.body.appendChild(root);
+    const video = root.querySelector('video')!;
+    freezePreviewVideos(root);
+    expect(isGated(video)).toBe(true);
+
+    releasePreviewVideos(root);
+
+    expect(isGated(video)).toBe(false);
+    expect(video.getAttribute('src')).toBeNull();
+
+    const retry = renderSlide(slideWithVideos(1), {
+      resolveSrc: () => '/x/unique-frame.05a38d7a.mp4',
+      mediaPreload: 'metadata',
+    });
+    document.body.appendChild(retry);
+    freezePreviewVideos(retry);
+    expect(isGated(retry.querySelector('video')!)).toBe(true);
   });
 });
 

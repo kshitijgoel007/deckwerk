@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { saveDeck } from '../src/main/deckStore.js';
 import { startCollabServer, type RunningCollabServer } from '../src/server/collabServer.js';
 import { emptyDeck, type Deck, type SlideElement } from '../src/shared/deck.js';
+import { themeById, themeStyleOf } from '../src/shared/themes.js';
 import {
   Cdp,
   electronBinary,
@@ -62,6 +63,13 @@ describe.skipIf(!electronBinary)('formatting scope and undo in the collaboration
 
     const deck = emptyDeck('Formatting focus and undo');
     deck.themePreset = 'basic';
+    const basicTheme = themeById('basic');
+    if (!basicTheme) throw new Error('basic theme fixture is unavailable');
+    deck.themeStyle = themeStyleOf(basicTheme);
+    // This test exercises a known colour through every formatting scope. Keep
+    // that fixture colour explicit instead of depending on a preset's evolving
+    // product palette.
+    deck.themeStyle.palette[4] = '#1d7d45';
     deck.slides[0].elements.push(
       text(NORMAL_ID, 30, '<p>Normal first</p><p>Normal second</p>', 130),
       text(OL_ID, 190, '<ol><li><span class="keep">Ordered</span> one</li><li>Ordered two</li></ol>', 170),

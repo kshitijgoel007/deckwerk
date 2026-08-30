@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { webcrypto } from 'node:crypto';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   AgentContextSchema,
   authoredScene,
@@ -142,6 +142,24 @@ function harness(deck: Deck): Harness {
 
 describe('agent context publication', () => {
   beforeEach(() => document.body.replaceChildren());
+
+  it('reuses the deck revision across selection-only context publications', async () => {
+    const deck = deckOf(
+      makeSlide('slide-1', [text('a', 'One')]),
+      makeSlide('slide-2', [text('b', 'Two')]),
+    );
+    const digest = vi.spyOn(globalThis.crypto.subtle, 'digest');
+    const h = harness(deck);
+
+    await h.bridge.flush();
+    h.store.selectSlide(1);
+    await h.bridge.flush();
+    h.store.select(['b']);
+    await h.bridge.flush();
+
+    expect(digest).toHaveBeenCalledTimes(1);
+    digest.mockRestore();
+  });
 
   it('publishes the active slide, a rail range and the object selection', async () => {
     const deck = deckOf(

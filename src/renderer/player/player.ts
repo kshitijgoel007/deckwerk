@@ -11,6 +11,7 @@ import {
 } from '@shared/timeline.js';
 import { applyStageScale, fitAutoTextElement, renderSlide } from './render.js';
 import { decodeImage, revealImagesWhenDecoded } from './imageDecode.js';
+import { DecodedVideoPool, releaseDecodedVideo } from './decodedVideoPool.js';
 import { applyStaticSlideState } from './staticState.js';
 import {
   essentialMagicMovePairs,
@@ -50,6 +51,9 @@ const PLAY_RETRY_DELAY_MS = 400;
 
 /** How many presentable slides ahead get their media cache-warmed. */
 const WARM_AHEAD_SLIDES = 2;
+/** Two typical 24 MP images, with a count fallback when dimensions are unavailable. */
+const IMAGE_WARM_PIXEL_LIMIT = 48_000_000;
+const IMAGE_WARM_COUNT_LIMIT = 4;
 
 export class Player {
   private deck: Deck;
@@ -83,13 +87,14 @@ export class Player {
    * re-fetched. Same pattern as the editor canvas's pool (docs/media-loading.md,
    * "DOM churn").
    */
-  private videoPool = new Map<string, HTMLVideoElement[]>();
+  private videoPool = new DecodedVideoPool(24);
   /** Resolved video URLs already warmed into the HTTP cache. */
   private warmedSrcs = new Set<string>();
   private warmQueue: string[] = [];
   private warmInFlight = false;
   /** Fully decoded images for the next presentable slides, kept alive until use. */
   private warmedImages = new Map<string, HTMLImageElement>();
+  private imageWarmGeneration = 0;
 
   constructor(opts: PlayerOptions) {
     this.deck = opts.deck;
@@ -150,14 +155,8 @@ export class Player {
     }
     // Detached media elements keep playing and keep downloading; a destroyed
     // player must leave neither a voice nor an open connection behind.
-    const abandoned = [
-      ...this.stage.querySelectorAll('video'),
-      ...[...this.videoPool.values()].flat(),
-    ];
-    for (const video of abandoned) {
-      video.pause();
-      video.removeAttribute('src');
-      video.load();
+    for (const video of this.stage.querySelectorAll('video')) {
+      releaseDecodedVideo(video);
     }
     this.videoPool.clear();
     for (const image of this.warmedImages.values()) image.removeAttribute('src');
@@ -362,9 +361,12 @@ export class Player {
           match = source.find((c) => !adopted.has(c.video) && !c.playing && c.key === key)?.video;
           if (!usable(match)) continue;
         } else {
-          const pool = this.videoPool.get(key);
-          if (!usable(pool?.[pool.length - 1])) continue;
-          match = pool!.pop();
+          const candidate = this.videoPool.take(key);
+          if (!usable(candidate)) {
+            if (candidate) releaseDecodedVideo(candidate);
+            continue;
+          }
+          match = candidate;
         }
         adopt(video, match!, false);
       }
@@ -378,13 +380,10 @@ export class Player {
     for (const { video, key } of carried) {
       if (adopted.has(video) || video.isConnected) continue;
       video.pause();
-      const list = this.videoPool.get(key) ?? [];
-      if (key && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && list.length < 8) {
-        list.push(video);
-        this.videoPool.set(key, list);
+      if (key && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+        this.videoPool.add(key, video);
       } else {
-        video.removeAttribute('src');
-        video.load();
+        releaseDecodedVideo(video);
       }
     }
 
@@ -446,6 +445,7 @@ export class Player {
    * long image-heavy deck does not accumulate decoded 4K/6K frames in memory.
    */
   private warmUpcomingImages(slides: Slide[]): void {
+    const generation = ++this.imageWarmGeneration;
     const desired = new Set<string>();
     for (const slide of slides) {
       if (slide.background.image && !isPendingSrc(slide.background.image)) {
@@ -462,13 +462,29 @@ export class Player {
       image.removeAttribute('src');
       this.warmedImages.delete(src);
     }
-    for (const src of desired) {
+    void this.warmImageSources([...desired], generation);
+  }
+
+  /** Decode sequentially so two upcoming media-wall slides cannot spike memory. */
+  private async warmImageSources(sources: string[], generation: number): Promise<void> {
+    let retainedPixels = [...this.warmedImages.values()].reduce(
+      (sum, image) => sum + image.naturalWidth * image.naturalHeight,
+      0,
+    );
+    for (const src of sources) {
+      if (
+        generation !== this.imageWarmGeneration
+        || this.warmedImages.size >= IMAGE_WARM_COUNT_LIMIT
+        || retainedPixels >= IMAGE_WARM_PIXEL_LIMIT
+      ) return;
       if (this.warmedImages.has(src)) continue;
       const image = document.createElement('img');
       image.decoding = 'async';
       image.src = src;
       this.warmedImages.set(src, image);
-      void decodeImage(image);
+      await decodeImage(image);
+      if (generation !== this.imageWarmGeneration) return;
+      retainedPixels += image.naturalWidth * image.naturalHeight;
     }
   }
 

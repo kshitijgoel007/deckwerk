@@ -161,10 +161,26 @@ export class AgentBridge {
   }
 }
 
+// Decks are immutable store values: any authored mutation installs a new deck
+// object, while navigation and selection keep the same one. Cache the expensive
+// validate/stringify/SHA work across those view-only updates.
+const deckRevisionCache = new WeakMap<Deck, Promise<string>>();
+
 export async function browserDeckRevision(deck: Deck): Promise<string> {
-  const bytes = new TextEncoder().encode(canonicalDeckJson(deck));
-  const hash = await crypto.subtle.digest('SHA-256', bytes);
-  return [...new Uint8Array(hash)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+  const cached = deckRevisionCache.get(deck);
+  if (cached) return cached;
+  const calculating = (async () => {
+    const bytes = new TextEncoder().encode(canonicalDeckJson(deck));
+    const hash = await crypto.subtle.digest('SHA-256', bytes);
+    return [...new Uint8Array(hash)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+  })();
+  deckRevisionCache.set(deck, calculating);
+  try {
+    return await calculating;
+  } catch (error) {
+    deckRevisionCache.delete(deck);
+    throw error;
+  }
 }
 
 export async function buildComputedScenes(

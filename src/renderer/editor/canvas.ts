@@ -14,6 +14,8 @@ import {
   syncMediaFrame,
 } from '../player/render.js';
 import { decodeImage } from '../player/imageDecode.js';
+import { DecodedVideoPool, releaseDecodedVideo } from '../player/decodedVideoPool.js';
+import { ungateVideoLoad } from '../player/mediaLoadGate.js';
 import { openSlideLinkInNewTab, slideLinkFromEvent } from '../player/links.js';
 import { expandTimeline } from '@shared/timeline.js';
 import { classifyMediaName, isPendingSrc, makePendingSrc, pendingToken } from '@shared/media.js';
@@ -72,6 +74,9 @@ const SNAP_SCREEN_PX = 6;
 const LINE_HIT_SCREEN_PX = 8;
 /** Screen-pixel movement before a press becomes a drag rather than a click. */
 const DRAG_THRESHOLD_PX = 3;
+/** Retain at most two typical 24 MP stills from the next slide. */
+const IMAGE_WARM_PIXEL_LIMIT = 48_000_000;
+const IMAGE_WARM_COUNT_LIMIT = 4;
 
 /** Replace a freshly typed ASCII arrow with the typographic glyph in place. */
 function convertTypedArrow(body: HTMLElement, selection: Selection | null): boolean {
@@ -318,7 +323,7 @@ export class EditorCanvas {
    * whose media this canvas has already decoded, the old element is adopted
    * into the new DOM instead. See docs/media-loading.md, "DOM churn".
    */
-  private videoPool = new Map<string, HTMLVideoElement[]>();
+  private videoPool = new DecodedVideoPool(16);
   /** The slide object currently drawn, used to skip needless rebuilds. */
   private renderedSlide: Slide | null = null;
   /** Position of `renderedSlide`, so lookahead images are adopted only on navigation. */
@@ -326,6 +331,7 @@ export class EditorCanvas {
   /** Decoded images for the next visible slide, bounded to that one slide. */
   private warmedImages = new Map<string, HTMLImageElement>();
   private warmingSlide: Slide | null = null;
+  private imageWarmGeneration = 0;
   /** Cancels a not-yet-started idle warmup when the navigation target changes. */
   private cancelImageWarmup: (() => void) | null = null;
   private guides: SnapLine[] = [];
@@ -575,6 +581,7 @@ export class EditorCanvas {
     }
     if (next === this.warmingSlide) return;
     this.warmingSlide = next;
+    const generation = ++this.imageWarmGeneration;
     this.cancelImageWarmup?.();
     this.cancelImageWarmup = null;
 
@@ -600,14 +607,7 @@ export class EditorCanvas {
     const warm = () => {
       this.cancelImageWarmup = null;
       if (this.warmingSlide !== target) return;
-      for (const src of desired) {
-        if (this.warmedImages.has(src)) continue;
-        const image = document.createElement('img');
-        image.decoding = 'async';
-        image.src = src;
-        this.warmedImages.set(src, image);
-        void decodeImage(image);
-      }
+      void this.warmImageSources([...desired], target, generation);
     };
 
     if (typeof window.requestIdleCallback === 'function') {
@@ -616,6 +616,34 @@ export class EditorCanvas {
     } else {
       const id = window.setTimeout(warm, 0);
       this.cancelImageWarmup = () => window.clearTimeout(id);
+    }
+  }
+
+  /** Decode sequentially so a media-wall slide cannot allocate every bitmap at once. */
+  private async warmImageSources(
+    sources: string[],
+    target: Slide,
+    generation: number,
+  ): Promise<void> {
+    let retainedPixels = [...this.warmedImages.values()].reduce(
+      (sum, image) => sum + image.naturalWidth * image.naturalHeight,
+      0,
+    );
+    for (const src of sources) {
+      if (
+        generation !== this.imageWarmGeneration
+        || this.warmingSlide !== target
+        || this.warmedImages.size >= IMAGE_WARM_COUNT_LIMIT
+        || retainedPixels >= IMAGE_WARM_PIXEL_LIMIT
+      ) return;
+      if (this.warmedImages.has(src)) continue;
+      const image = document.createElement('img');
+      image.decoding = 'async';
+      image.src = src;
+      this.warmedImages.set(src, image);
+      await decodeImage(image);
+      if (generation !== this.imageWarmGeneration || this.warmingSlide !== target) return;
+      retainedPixels += image.naturalWidth * image.naturalHeight;
     }
   }
 
@@ -685,19 +713,26 @@ export class EditorCanvas {
   private harvestVideos(): void {
     for (const video of this.slideLayer.querySelectorAll('video')) {
       // No decoded frame yet → nothing worth keeping alive.
-      if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) continue;
+      if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+        // A detached, still-loading media element keeps both its fetch and its
+        // large Chromium media subtree alive. Rapid navigation can leave one
+        // per slide unless it is removed from the preview gate and torn down
+        // before replaceChildren detaches the old layer.
+        ungateVideoLoad(video);
+        releaseDecodedVideo(video);
+        continue;
+      }
       // Keyed by presentation, not by file: an element is only reusable in a
       // slot that shows the same frame of the same file through the same
       // geometry. See `videoPresentationKey`.
       const key = video.dataset.mediaKey;
-      if (!key) continue;
-      const list = this.videoPool.get(key) ?? [];
-      // Cap per key: enough for the densest realistic slide, without
-      // hoarding decoder resources for media the deck has stopped showing.
-      if (list.length >= 8) continue;
+      if (!key) {
+        ungateVideoLoad(video);
+        releaseDecodedVideo(video);
+        continue;
+      }
       video.pause();
-      list.push(video);
-      this.videoPool.set(key, list);
+      this.videoPool.add(key, video);
     }
   }
 
@@ -715,7 +750,7 @@ export class EditorCanvas {
       if (el.type !== 'video') continue;
       const fresh = this.videoNode(el.id);
       if (!fresh?.dataset.mediaKey) continue;
-      const pooled = this.videoPool.get(fresh.dataset.mediaKey)?.pop();
+      const pooled = this.videoPool.take(fresh.dataset.mediaKey);
       if (!pooled) continue;
       pooled.style.cssText = fresh.style.cssText;
       pooled.preload = fresh.preload;

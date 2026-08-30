@@ -1,7 +1,8 @@
 /**
  * Tests that still take at least ten seconds when run in isolation after the
- * August 2026 speed pass. Isolated time avoids quarantining useful coverage
- * merely because several CPU-heavy workers happened to overlap in a full run.
+ * August 2026 speed pass, plus explicitly opt-in resource stress tests.
+ * Isolated time avoids quarantining useful coverage merely because several
+ * CPU-heavy workers happened to overlap in a full run.
  */
 export const LONG_TESTS = [
   {
@@ -16,8 +17,8 @@ export const LONG_TESTS = [
   },
   {
     file: 'test/performanceStressBrowser.test.ts',
-    observedSeconds: 120,
-    scope: 'Opt-in 1,000-slide media and 500-slide history performance gates',
+    observedSeconds: 13,
+    scope: 'Opt-in 1,000-slide media-wall/unique-video and 500-slide history performance gates',
   },
 ] as const;
 

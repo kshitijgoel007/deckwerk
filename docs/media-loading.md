@@ -180,6 +180,14 @@ honest, painting a distorted frame is not. An element patched in place must
 have its key rewritten (`applyMediaFitStyles` does this) or it will later be
 reused for a crop it no longer has.
 
+Both pools are global LRUs as well as per-key bounded (16 decoded elements in
+the editor, 24 in the Player). A per-key cap alone is not a resource bound: a
+deck with one distinct clip, trim or crop per slide otherwise retains one
+native decoder per navigation. Eviction pauses, de-sources and reloads the
+element so Chromium releases its network and frame state. Undecoded outgoing
+editor videos are never pooled; they are ungated and torn down before the old
+canvas layer is detached.
+
 The Player does the same across navigation (`goTo`): playing videos continue
 in the element they belong to (id first, file second) — continuity is the one
 case allowed to cross shapes, because a continuously decoding element repaints
@@ -197,9 +205,10 @@ strictly one transfer at a time and never a file the current slide is already
 fetching itself. Images are loaded and decoded as `<img>` elements, then the
 decoded element is adopted into the slide when it appears. This distinction
 matters for large JPEGs: cached bytes can still paint as a thin band of decoded
-scanlines, while an adopted decoded bitmap appears atomically. Only the active
+scanlines, while an adopted decoded bitmap appears atomically. Decodes run
+sequentially and stop after four images or 48 megapixels. Only the active
 lookahead's decoded images remain resident, so a long deck does not retain a
-deck's worth of 4K/6K frames.
+deck's worth of 4K/6K frames or decode a whole image wall concurrently.
 
 The editor canvas applies the same exact-node rule to still images, with a
 tighter budget: during idle time it decodes images from only the next

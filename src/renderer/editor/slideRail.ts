@@ -1,6 +1,6 @@
 import { makeId } from '@shared/geometry.js';
 import { recoverPreviewFrames } from '../player/previewFrameRecovery.js';
-import { freezePreviewVideos } from '../player/previewPoster.js';
+import { freezePreviewVideos, releasePreviewVideos } from '../player/previewPoster.js';
 import { renderSlide } from '../player/render.js';
 import { applySlideLayout } from './slideLayouts.js';
 import { newComment, openCommentsPopover, openCount } from './comments.js';
@@ -37,6 +37,10 @@ export class SlideRail {
   private dragImage: HTMLElement | null = null;
   /** The slides array last drawn, so a selection change can skip the rebuild. */
   private renderedSlides: unknown = null;
+  /** Selection chrome last applied to rows; ordinary navigation updates its delta only. */
+  private highlightedSlideIndex = -1;
+  private highlightedSelection = new Set<string>();
+  private rowBySlideId = new Map<string, HTMLElement>();
   /**
    * Thumbnail DOM cached per slide *object*. The store clones the deck on
    * every commit but untouched slides keep their object identity, so only the
@@ -83,12 +87,37 @@ export class SlideRail {
     if (typeof IntersectionObserver !== 'undefined') {
       this.thumbVisibilityObserver = new IntersectionObserver((entries) => {
         for (const entry of entries) {
-          if (!entry.isIntersecting) continue;
-          const placeholder = entry.target as HTMLElement;
-          const pending = this.pendingThumbs.get(placeholder);
-          this.thumbVisibilityObserver?.unobserve(placeholder);
-          if (!pending || !placeholder.isConnected) continue;
-          placeholder.replaceWith(this.thumbFor(pending.deck, pending.slide));
+          const target = entry.target as HTMLElement;
+          const pending = this.pendingThumbs.get(target);
+          if (!pending || !target.isConnected) {
+            this.thumbVisibilityObserver?.unobserve(target);
+            continue;
+          }
+          if (target.classList.contains('rail-thumb-placeholder')) {
+            if (!entry.isIntersecting) continue;
+            this.thumbVisibilityObserver?.unobserve(target);
+            const thumb = this.thumbFor(pending.deck, pending.slide);
+            target.replaceWith(thumb);
+            this.watchMountedThumb(thumb, pending.deck, pending.slide);
+            continue;
+          }
+          if (entry.isIntersecting || target.closest('.rail-item.active')) continue;
+          // IntersectionObserver originally upgraded placeholders but never
+          // demoted surfaces that left its overscan. Walking a long deck could
+          // therefore mount every thumbnail despite the 40-entry cache. Keep
+          // the decoded DOM in that bounded cache, but return the connected row
+          // to a geometry-only shell until it comes near the viewport again.
+          this.thumbVisibilityObserver?.unobserve(target);
+          // An uncaptured preview video is not useful cached state: it retains
+          // Chromium's large internal media subtree and often never reaches a
+          // frame after detachment. Drop that surface entirely; promotion can
+          // build a fresh gated preview if the row comes back.
+          if (target.querySelector('video')) {
+            this.thumbCache.delete(pending.slide);
+            this.thumbResizeObserver?.unobserve(target);
+            releasePreviewVideos(target);
+          }
+          target.replaceWith(this.thumbPlaceholder(pending.deck, pending.slide));
         }
         this.refreshPresence();
       }, { root: this.host, rootMargin: '400px 0px' });
@@ -137,27 +166,54 @@ export class SlideRail {
       this.render();
       return;
     }
-    for (const item of this.host.querySelectorAll<HTMLElement>('.rail-item')) {
+    const changedIds = new Set<string>();
+    for (const id of this.highlightedSelection) {
+      if (!slideSelection.has(id)) changedIds.add(id);
+    }
+    for (const id of slideSelection) {
+      if (!this.highlightedSelection.has(id)) changedIds.add(id);
+    }
+    const rows = new Set<HTMLElement>();
+    for (const index of [this.highlightedSlideIndex, slideIndex]) {
+      if (index < 0) continue;
+      const row = this.host.querySelector<HTMLElement>(`.rail-item[data-index="${index}"]`);
+      if (row) rows.add(row);
+    }
+    for (const id of changedIds) {
+      const row = this.rowBySlideId.get(id);
+      if (row) rows.add(row);
+    }
+    const deck = this.store.get().deck;
+    for (const item of rows) {
       const index = Number(item.dataset.index);
       const active = index === slideIndex;
-      const slide = this.store.get().deck.slides[index];
+      const slide = deck.slides[index];
+      const selected = Boolean(slide && slideSelection.has(slide.id));
       item.classList.toggle('active', active);
-      item.classList.toggle('selected', Boolean(slide && slideSelection.has(slide.id)));
-      item.setAttribute('aria-selected', String(Boolean(slide && slideSelection.has(slide.id))));
+      item.classList.toggle('selected', selected);
+      item.setAttribute('aria-selected', String(selected));
       if (active) item.scrollIntoView({ block: 'nearest' });
     }
+    this.highlightedSlideIndex = slideIndex;
+    this.highlightedSelection = new Set(slideSelection);
   }
 
   render(): void {
     const { deck, slideIndex, slideSelection } = this.store.get();
     this.renderedSlides = deck.slides;
+    this.highlightedSlideIndex = slideIndex;
+    this.highlightedSelection = new Set(slideSelection);
     this.thumbVisibilityObserver?.disconnect();
+    this.rowBySlideId.clear();
     // Drop cache entries for slides that no longer exist in this deck version.
     const live = new Set<unknown>(deck.slides);
     for (const key of this.thumbCache.keys()) {
       if (!live.has(key)) {
         const thumb = this.thumbCache.get(key);
-        if (thumb) this.thumbResizeObserver?.unobserve(thumb);
+        if (thumb) {
+          this.thumbResizeObserver?.unobserve(thumb);
+          releasePreviewVideos(thumb);
+        }
         this.thumbCache.delete(key);
       }
     }
@@ -357,14 +413,30 @@ export class SlideRail {
     slide: Slide,
     eager: boolean,
   ): HTMLElement {
-    if (eager || !this.thumbVisibilityObserver) return this.thumbFor(deck, slide);
+    if (eager || !this.thumbVisibilityObserver) {
+      const thumb = this.thumbFor(deck, slide);
+      this.watchMountedThumb(thumb, deck, slide);
+      return thumb;
+    }
+    return this.thumbPlaceholder(deck, slide);
+  }
+
+  /** Geometry-only shell observed for promotion into a cached slide surface. */
+  private thumbPlaceholder(deck: Deck, slide: Slide): HTMLElement {
     const placeholder = document.createElement('div');
     placeholder.className = 'rail-thumb rail-thumb-placeholder';
     placeholder.dataset.canvasWidth = String(deck.canvas.w);
     placeholder.style.setProperty('--rail-thumb-aspect', `${deck.canvas.w} / ${deck.canvas.h}`);
     this.pendingThumbs.set(placeholder, { deck, slide });
-    this.thumbVisibilityObserver.observe(placeholder);
+    this.thumbVisibilityObserver?.observe(placeholder);
     return placeholder;
+  }
+
+  /** Observe a real surface so it can be demoted after leaving overscan. */
+  private watchMountedThumb(thumb: HTMLElement, deck: Deck, slide: Slide): void {
+    if (!this.thumbVisibilityObserver) return;
+    this.pendingThumbs.set(thumb, { deck, slide });
+    this.thumbVisibilityObserver.observe(thumb);
   }
 
   private trimThumbCache(): void {
@@ -374,6 +446,7 @@ export class SlideRail {
       const [key, thumb] = oldest;
       this.thumbCache.delete(key);
       this.thumbResizeObserver?.unobserve(thumb);
+      releasePreviewVideos(thumb);
     }
   }
 
@@ -468,6 +541,8 @@ export class SlideRail {
       item.setAttribute('aria-selected', String(slideSelection.has(slide.id)));
       item.draggable = true;
       item.dataset.index = String(i);
+      item.dataset.slideId = slide.id;
+      this.rowBySlideId.set(slide.id, item);
       this.bindReorder(item, i);
 
       const num = document.createElement('span');

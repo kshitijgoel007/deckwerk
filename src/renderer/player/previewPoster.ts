@@ -31,6 +31,8 @@ import { ungateVideoLoad } from './mediaLoadGate.js';
 
 /** Longest edge of a captured still. Thumbnails are small; frames need not be. */
 const MAX_CAPTURE_EDGE = 960;
+/** Data-URL stills are convenient but live on the JS heap; keep an LRU only. */
+const MAX_SNAPSHOTS = 64;
 
 /** Captured frames, keyed by source file plus in-point, as data URLs. */
 const snapshots = new Map<string, string>();
@@ -97,13 +99,45 @@ function swapInStill(video: HTMLVideoElement, dataUrl: string): void {
 }
 
 function settle(key: string, dataUrl: string): void {
+  snapshots.delete(key);
   snapshots.set(key, dataUrl);
+  while (snapshots.size > MAX_SNAPSHOTS) {
+    const oldest = snapshots.keys().next().value as string | undefined;
+    if (oldest === undefined) break;
+    snapshots.delete(oldest);
+  }
   const pending = waiting.get(key);
   waiting.delete(key);
   if (!pending) return;
   for (const video of pending) {
     if (!video.isConnected) continue;
     swapInStill(video, dataUrl);
+  }
+}
+
+/**
+ * Release preview videos whose owning thumbnail/surface has left its bounded
+ * cache. The global `waiting` map would otherwise keep evicted DOM subtrees
+ * alive indefinitely when a distinct poster frame never finished decoding.
+ */
+export function releasePreviewVideos(root: ParentNode): void {
+  for (const video of root.querySelectorAll('video')) {
+    for (const [key, pending] of waiting) {
+      const owner = pending.values().next().value as HTMLVideoElement | undefined;
+      if (!pending.delete(video)) continue;
+      // Secondary waiters depended on the owner's capture. If the owner goes
+      // away, forget the group; a still-mounted waiter can retry on recovery.
+      if (owner === video || pending.size === 0) waiting.delete(key);
+    }
+    ungateVideoLoad(video);
+    const src = video.getAttribute('src');
+    if (src) video.dataset.gateAbortedSrc = src;
+    video.removeAttribute('src');
+    try {
+      video.load();
+    } catch {
+      // jsdom stub
+    }
   }
 }
 

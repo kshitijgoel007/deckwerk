@@ -65,4 +65,13 @@ export function installCanvasDomShims(): void {
     value: true,
     writable: true,
   });
+  Object.defineProperty(HTMLMediaElement.prototype, 'load', {
+    configurable: true,
+    value: vi.fn(function (this: HTMLMediaElement) {
+      // Resource teardown completes through `emptied` in a browser. Mirroring
+      // it here both exercises load-gate cleanup and avoids jsdom's noisy
+      // unimplemented native media method.
+      this.dispatchEvent(new Event('emptied'));
+    }),
+  });
 }

@@ -160,6 +160,25 @@ describe('resizing the slide rail', () => {
 });
 
 describe('large-deck thumbnail virtualization', () => {
+  it('updates only the changed rows during ordinary keyboard navigation', () => {
+    const deck = emptyDeck('Large highlight');
+    deck.slides = Array.from({ length: 1_000 }, (_, index) => ({
+      id: `slide-${index + 1}`, name: `Slide ${index + 1}`,
+      background: { color: null, image: null }, notes: '', elements: [], timeline: [],
+    }));
+    const store = new EditorStore(deck, '/tmp/large-highlight');
+    const host = document.createElement('div');
+    document.body.replaceChildren(host);
+    new SlideRail(host, store);
+    const allRows = vi.spyOn(host, 'querySelectorAll');
+
+    store.selectSlide(1);
+
+    expect(host.querySelector<HTMLElement>('[data-index="0"]')?.classList.contains('active')).toBe(false);
+    expect(host.querySelector<HTMLElement>('[data-index="1"]')?.classList.contains('active')).toBe(true);
+    expect(allRows.mock.calls.some(([selector]) => selector === '.rail-item')).toBe(false);
+  });
+
   it('mounts only the active and near-viewport slide surfaces', () => {
     const original = globalThis.IntersectionObserver;
     let callback: IntersectionObserverCallback = () => {
@@ -200,6 +219,13 @@ describe('large-deck thumbnail virtualization', () => {
         target, isIntersecting: true,
       } as unknown as IntersectionObserverEntry)), {} as IntersectionObserver);
       expect(host.querySelectorAll('.rail-thumb-inner')).toHaveLength(4);
+
+      const promoted = host.querySelectorAll<HTMLElement>('.rail-thumb:not(.rail-thumb-placeholder)')[1];
+      callback([{
+        target: promoted, isIntersecting: false,
+      } as unknown as IntersectionObserverEntry], {} as IntersectionObserver);
+      expect(host.querySelectorAll('.rail-thumb-inner')).toHaveLength(3);
+      expect(host.querySelectorAll('.rail-thumb-placeholder')).toHaveLength(77);
     } finally {
       if (original) globalThis.IntersectionObserver = original;
       else delete (globalThis as { IntersectionObserver?: typeof IntersectionObserver }).IntersectionObserver;
