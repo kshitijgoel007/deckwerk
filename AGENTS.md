@@ -499,3 +499,16 @@ guards. These rules keep the seams closed:
 - **Harness recoveries are findings.** Test helpers that repair lost
   selections/sessions must record it (`recordRecovery`) — a silent retry hides
   exactly the bug class these suites exist to catch.
+
+**OS-event input smoke tier** (`npm run test:osinput`,
+`test/osInputSmokeBrowser.test.ts` + `test/support/osInput.ts`): every other
+browser tier injects input via CDP, which exercises Chromium's pipeline but
+nothing above it. This macOS-only, opt-in tier (`RUN_OS_INPUT_SMOKE=1`; never
+runs in CI) launches the real desktop app in a visible frontmost window and
+sends genuine OS keystrokes/clicks through System Events, covering native
+menu/accelerator routing (real Cmd+B/Cmd+Z) and real inter-application focus
+loss — the app-switch blur exemption only OS focus changes can reach. It
+requires Accessibility permission for the terminal app (System Settings >
+Privacy & Security > Accessibility); once opted in, a missing permission is a
+loud actionable failure, never a silent skip. Expect it to steal keyboard and
+focus while it runs.
