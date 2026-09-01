@@ -25,6 +25,7 @@ import {
   EXHAUSTIVE_TEXT,
   EXHAUSTIVE_TEXT_ID,
   runExhaustiveTextFormatting,
+  takeRecoveries,
 } from './support/exhaustiveTextFormatting.js';
 
 /**
@@ -121,6 +122,15 @@ describe.skipIf(!RUN_EXHAUSTIVE || !electronBinary)('exhaustive formatting fuzz 
     )`), 'Chromium exhaustive fixture did not connect');
 
     const cases = await runExhaustiveTextFormatting(editor);
+    // Recoveries are the symptom under test surfacing in the harness itself.
+    // A handful across thousands of real-input steps is machine-load noise; a
+    // pattern is a regression that silent retries used to hide.
+    const recoveries = takeRecoveries();
+    if (recoveries.length > 0) {
+      console.warn(`[harness-recovery] ${recoveries.length} recoveries this run:`, recoveries);
+    }
+    expect(recoveries.length, `harness recoveries: ${recoveries.join('; ')}`)
+      .toBeLessThanOrEqual(Math.max(3, Math.ceil(cases / 100)));
     const persisted = await eventually(async () => {
       const response = await fetch(`http://127.0.0.1:${server!.port}/api/deck?deck=${DECK_ID}`);
       return response.json() as Promise<{
@@ -194,6 +204,15 @@ describe.skipIf(!RUN_EXHAUSTIVE || !electronBinary)('exhaustive formatting fuzz 
     await editor.evaluate('window.focus()');
 
     const cases = await runExhaustiveTextFormatting(editor);
+    // Recoveries are the symptom under test surfacing in the harness itself.
+    // A handful across thousands of real-input steps is machine-load noise; a
+    // pattern is a regression that silent retries used to hide.
+    const recoveries = takeRecoveries();
+    if (recoveries.length > 0) {
+      console.warn(`[harness-recovery] ${recoveries.length} recoveries this run:`, recoveries);
+    }
+    expect(recoveries.length, `harness recoveries: ${recoveries.join('; ')}`)
+      .toBeLessThanOrEqual(Math.max(3, Math.ceil(cases / 100)));
     const html = await eventually(async () => {
       const disk = JSON.parse(await readFile(join(deckDir, 'deck.json'), 'utf8')) as {
         slides: Array<{ elements: Array<{ id: string; html?: string }> }>;

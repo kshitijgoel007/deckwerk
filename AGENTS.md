@@ -458,3 +458,44 @@ npm run export -- path/to/my-talk /tmp/talk-web
 
 `index.html#N` selects slide N (1-based). The export runs the identical player
 the app uses, so what it shows is what the projector shows.
+
+## Reliability rules (from the 2026-09 review — keep the bug classes extinct)
+
+The Sep 2026 reliability review confirmed 23 editing/selection/undo/collab
+bugs, traced them to a handful of architectural seams, fixed them, and left
+guards. These rules keep the seams closed:
+
+- **Comments are not invariants.** A rule another call site can silently
+  violate (coalesce-key ordering, mode exclusivity, teardown symmetry) must be
+  owned by a type/single function or asserted by a checker
+  (`renderInvariants.ts`, `selectionInvariants.ts`) — never enforced only by a
+  comment. If you find yourself writing "must not / must always" in a comment,
+  add the assertion.
+- **New interaction ⟹ new fuzz op.** A change that adds a gesture, panel
+  control, or editing mode adds an operation to the cross-context fuzz
+  alphabet (`test/crossContextFuzzBrowser.test.ts`) or the relevant fuzz walk
+  in the same PR. Single-textbox fixtures hid cross-box selection bugs for
+  months.
+- **Bug fixes land red-to-green.** No fix merges without the failing
+  real-input test that proves it (see the `*Bugs.test.ts` suites for the
+  conventions: real CDP key/pointer input, soundness controls, `// BUG:`
+  markers while red).
+- **Text-edit session rules** (all guarded by tests — breaking one turns a
+  suite red, but know why): commit targets resolve by element id deck-wide,
+  never through `slideIndex` at fire time; a formatting/list/table commit
+  *claims* the coalesce key (`advanceClaimedTextEditKey`); seals never run
+  mid-IME-composition; `authoredTextHtml` must strip every piece of
+  editor-only chrome the session stamps on the DOM; everything
+  `beginTextEdit` sets on a node, `commitTextEdit` removes.
+- **Collab editing rules:** the element being edited adopts remote html when
+  nothing local is unsent (`adoptRemoteEditedHtml`); commits never re-assert
+  a stale DOM over a store that moved past the session's sync point; remote
+  decks landing mid-transaction are rebased, not applied
+  (`applyRemote`/`txnBase`); a rebuild that ends an edit session re-enters it
+  with the caret restored (`processEditReentry`).
+- **Measurement is not an edit.** Renderer observations (auto-height fits)
+  commit with `{ measurement: true }`: no undo slot, no dirty flag, no
+  history churn, no broadcast.
+- **Harness recoveries are findings.** Test helpers that repair lost
+  selections/sessions must record it (`recordRecovery`) — a silent retry hides
+  exactly the bug class these suites exist to catch.

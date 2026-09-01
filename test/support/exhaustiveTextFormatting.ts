@@ -1,6 +1,25 @@
 import { expect } from 'vitest';
 import { Cdp, eventually } from './browserSession.js';
 
+/**
+ * Every time the harness has to repair the state under test — a lost
+ * selection, an edit session that dropped, a toggle that needed a second
+ * attempt — is the exact symptom class these suites exist to catch. Silent
+ * retries turned intermittent regressions green; every recovery is now
+ * recorded and reported, so a run that "passed" with repairs says so.
+ */
+const recoveries: string[] = [];
+
+export function recordRecovery(context: string): void {
+  recoveries.push(context);
+  console.warn(`[harness-recovery] ${context}`);
+}
+
+/** Drain the recovery ledger; suites report (or bound) what it held. */
+export function takeRecoveries(): string[] {
+  return recoveries.splice(0, recoveries.length);
+}
+
 export const EXHAUSTIVE_TEXT_ID = 'exhaustive-format-text';
 export const EXHAUSTIVE_CONTENT = `#canvas [data-element-id="${EXHAUSTIVE_TEXT_ID}"] .text-content`;
 export const EXHAUSTIVE_HTML = [
@@ -124,11 +143,15 @@ async function setToggle(
   const editing = await editor.evaluate<boolean>(
     `document.querySelector(${JSON.stringify(EXHAUSTIVE_CONTENT)})?.isContentEditable === true`,
   );
-  if (!editing && recoverSelection) await recoverSelection();
+  if (!editing && recoverSelection) {
+    recordRecovery(`${label}: edit session was lost before the toggle`);
+    await recoverSelection();
+  }
   await invoke();
   let after = await selectedInlineState(editor);
   let afterActive = formatActive(after);
   if (afterActive !== active && recoverSelection) {
+    recordRecovery(`${label}: toggle missed its state on the first attempt`);
     await recoverSelection();
     current = await selectedInlineState(editor);
     currentActive = formatActive(current);
@@ -207,12 +230,14 @@ async function selectExactRange(
   const wanted = EXHAUSTIVE_TEXT.slice(selected.start, selected.end);
   let lastSelection = '';
   for (let attempt = 0; attempt < 3; attempt += 1) {
+    if (attempt > 0) recordRecovery(`${label}: pointer selection retry #${attempt}`);
     await editor.call('Page.bringToFront');
     await editor.evaluate('window.focus()');
     const editing = await editor.evaluate<boolean>(
       `document.querySelector(${JSON.stringify(EXHAUSTIVE_CONTENT)})?.isContentEditable === true`,
     );
     if (!editing) {
+      if (attempt === 0) recordRecovery(`${label}: edit session was lost before selecting`);
       await editor.click(`#canvas [data-element-id="${EXHAUSTIVE_TEXT_ID}"]`, `${label}: text box`);
       await editor.clickTextAtOffset(EXHAUSTIVE_CONTENT, 2, `${label}: resume text editing`);
       await eventually(async () => editor.evaluate<boolean>(

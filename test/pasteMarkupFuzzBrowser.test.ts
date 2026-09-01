@@ -23,6 +23,7 @@ import {
   PASTE_CONTENT,
   PASTE_MOD as MOD,
   PASTE_PANEL as PANEL,
+  PASTE_CORPUS,
   PASTE_TEXT_ID,
   pasteCases,
   pasteFromClipboard,
@@ -52,7 +53,10 @@ const RUN_EXHAUSTIVE = process.env.RUN_EXHAUSTIVE_PASTE_FUZZ === '1';
 const DECK_ID = 'paste-markup-fuzz';
 const CASES = pasteCases({
   exhaustive: RUN_EXHAUSTIVE,
-  sample: 12,
+  // Cover the WHOLE corpus in the default gate: a sample of 12 walked
+  // payload[index % 16], so the last four corpus entries never ran at all
+  // outside the exhaustive matrix.
+  sample: PASTE_CORPUS.length,
   operationsPerCase: RUN_EXHAUSTIVE ? 8 : 5,
 });
 
