@@ -28,6 +28,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y xvfb ffmpeg libnss3 libgtk-3-0 libasound2t64
       - run: npm ci
+      - name: Configure Electron's SUID sandbox helper
+        # Ubuntu 24.04 restricts unprivileged user namespaces, so Electron
+        # aborts at launch unless its bundled chrome-sandbox is setuid root.
+        # Without this every browser-tier suite times out waiting for a target
+        # (and the collab server's HTML preview/apply endpoints 500, since
+        # they spawn a measuring browser too).
+        run: |
+          sudo chown root:root node_modules/electron/dist/chrome-sandbox
+          sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
       - name: Typecheck
         run: npm run typecheck
       - name: Test (ordinary + serial, real Electron under Xvfb)
