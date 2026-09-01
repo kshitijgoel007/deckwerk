@@ -40,4 +40,16 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
       - name: Test (ordinary + serial, real Electron under Xvfb)
-        run: xvfb-run -a --server-args="-screen 0 1920x1080x24" npm test
+        # 2560x1440: scripts/compare-scratchpad.cjs opens a 1944x1104 window
+        # (deck canvas + the 24px scratchpad chrome). X clamps windows to the
+        # virtual screen, so at 1920x1080 that window renders clipped/rescaled
+        # and the 1:1 parity capture disagrees on 100% of pixels.
+        env:
+          # Bare Xvfb runs without a window manager or compositor, so hidden
+          # Electron windows never produce compositor frames and CDP
+          # Page.captureScreenshot blocks forever. Suites that read pixels
+          # through it (canvasVisibilityBrowser, desktopCollaborationHandoff)
+          # gate on this and report themselves as skipped rather than hanging
+          # to their full test timeout.
+          CI_NO_WINDOW_MANAGER: "1"
+        run: xvfb-run -a --server-args="-screen 0 2560x1440x24" npm test

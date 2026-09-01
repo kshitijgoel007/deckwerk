@@ -29,6 +29,10 @@ jobs:
           sudo chown root:root node_modules/electron/dist/chrome-sandbox
           sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
       - name: Rotate fuzz seeds by date
+        env:
+          # Bare Xvfb has no compositor; suites that read pixels via CDP
+          # Page.captureScreenshot gate on this (see ci.yml for the details).
+          CI_NO_WINDOW_MANAGER: "1"
         run: |
           SEED=$(date -u +%Y%m%d)
           echo "FUZZ_SEED=$SEED" >> "$GITHUB_ENV"
@@ -37,10 +41,18 @@ jobs:
           echo "CROSS_FUZZ_STEPS=40" >> "$GITHUB_ENV"
           echo "Rotated fuzz seed: $SEED"
       - name: Long suites
-        run: xvfb-run -a --server-args="-screen 0 1920x1080x24" npm run test:long
+        env:
+          CI_NO_WINDOW_MANAGER: "1"
+        run: xvfb-run -a --server-args="-screen 0 2560x1440x24" npm run test:long
       - name: Exhaustive formatting matrix
-        run: xvfb-run -a --server-args="-screen 0 1920x1080x24" npm run test:formatting:exhaustive
+        env:
+          CI_NO_WINDOW_MANAGER: "1"
+        run: xvfb-run -a --server-args="-screen 0 2560x1440x24" npm run test:formatting:exhaustive
       - name: Exhaustive text-box interaction soak
-        run: xvfb-run -a --server-args="-screen 0 1920x1080x24" npm run test:interactions:exhaustive
+        env:
+          CI_NO_WINDOW_MANAGER: "1"
+        run: xvfb-run -a --server-args="-screen 0 2560x1440x24" npm run test:interactions:exhaustive
       - name: Exhaustive paste fuzz
-        run: xvfb-run -a --server-args="-screen 0 1920x1080x24" npm run test:paste:exhaustive
+        env:
+          CI_NO_WINDOW_MANAGER: "1"
+        run: xvfb-run -a --server-args="-screen 0 2560x1440x24" npm run test:paste:exhaustive

@@ -138,17 +138,24 @@ describe.skipIf(!electronBinary)('collab drag-and-drop', () => {
       .filter((el) => el.type === 'image' || el.type === 'video')
       .map((el) => ({ id: el.id, type: el.type, src: el.src, x: el.x, y: el.y, w: el.w, h: el.h })))()`;
 
-    // The placeholder pass is what keeps the slide usable during an upload: both
-    // elements exist, sized from the local bytes, before any asset path exists.
-    const placeholders = await eventually(
+    // The placeholder pass is what keeps the slide usable during an upload:
+    // both elements exist, sized from the local bytes, before the hashed asset
+    // path arrives. How long the `pending:` src stays observable depends on
+    // upload speed, though — against a loopback server the swap can beat this
+    // 100ms poll (it did on CI) — so the durable contract asserted here is:
+    // both elements appear with real local-probed sizes, and at every
+    // observation each src is either a `pending:` placeholder or already a
+    // hashed asset path, never anything else. Resolution is asserted next.
+    const firstSeen = await eventually(
       async () => editor!.evaluate<DroppedElement[]>(read),
-      'dropped files did not create placeholder elements',
-      (els) => els.length === 2 && els.every((el) => el.src.startsWith('pending:')),
+      'dropped files did not create elements',
+      (els) => els.length === 2,
     );
-    expect(placeholders.map((el) => el.type)).toEqual(['image', 'video']);
-    for (const el of placeholders) {
+    expect(firstSeen.map((el) => el.type)).toEqual(['image', 'video']);
+    for (const el of firstSeen) {
       expect(el.w).toBeGreaterThan(0);
       expect(el.h).toBeGreaterThan(0);
+      expect(el.src).toMatch(/^(pending:|assets\/)/);
     }
 
     const resolved = await eventually(

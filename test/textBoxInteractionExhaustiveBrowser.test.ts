@@ -57,7 +57,12 @@ afterEach(async () => {
   workDir = '';
 });
 
-describe.skipIf(!RUN_EXHAUSTIVE || !electronBinary)('exhaustive large-deck text-box interactions', () => {
+// Page.captureScreenshot needs a compositor that produces frames for hidden
+// windows; bare Xvfb has none and the call blocks forever (see the same gate
+// in desktopCollaborationHandoff). The nightly workflow sets the env.
+const noWindowManager = process.env.CI_NO_WINDOW_MANAGER === '1';
+
+describe.skipIf(!RUN_EXHAUSTIVE || !electronBinary || noWindowManager)('exhaustive large-deck text-box interactions', () => {
   it('keeps selection, consecutive drags, history flushes, and rail navigation responsive', async () => {
     responsivenessFailures = [];
     workDir = await mkdtemp(join(tmpdir(), 'deckwerk-text-box-fuzz-'));

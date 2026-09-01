@@ -44,7 +44,14 @@ type Format = 'bold' | 'italic';
 type Operation = { start: number; end: number; format: Format; input: 'button' | 'shortcut' };
 
 describe.skipIf(!electronBinary)('stateful inline formatting in Chromium', () => {
-  it('types text, repeatedly toggles words, and clears subsets without stale paint or scope drift', async () => {
+  // ~220 rounds of real pointer selection + toggle + full-state readback:
+  // ~10s on a workstation, but GitHub's 2-core runner executes comparable
+  // real-input browser suites 4-8x slower (this CI run: caretAfterFormatBrowser
+  // 39s, listEditingFuzzBrowser 75s) and this test consumed its entire old 90s
+  // budget mid-workload. 240s covers the observed CI pace with ~2x headroom.
+  it('types text, repeatedly toggles words, and clears subsets without stale paint or scope drift', {
+    timeout: 240_000,
+  }, async () => {
     workDir = await mkdtemp(join(tmpdir(), 'format-toggle-fuzz-'));
     const decksRoot = join(workDir, 'decks');
     const deckDir = join(decksRoot, DECK_ID);
@@ -205,7 +212,7 @@ describe.skipIf(!electronBinary)('stateful inline formatting in Chromium', () =>
     const html = persisted.slides[0].elements.find((element) => element.id === TEXT_ID)!.html!;
     const parsed = html.replace(/<[^>]+>/g, '');
     expect(parsed).toBe(authoredText);
-  }, 90_000);
+  });
 });
 
 describe.skipIf(electronBinary)('stateful inline formatting in Chromium (skipped)', () => {
