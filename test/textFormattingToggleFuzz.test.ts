@@ -6,6 +6,7 @@ import { wireCanvasInspector } from '../src/renderer/editor/shellWiring.js';
 import { EditorStore } from '../src/renderer/editor/store.js';
 import { emptyDeck, type SlideElement } from '../src/shared/deck.js';
 import { installCanvasDomShims } from './support/canvasHarness.js';
+import { extraFuzzSeeds } from './support/fuzzSeeds.js';
 
 /**
  * Stateful inline-format fuzzing.
@@ -241,7 +242,8 @@ describe('stateful inline text formatting fuzzing', () => {
     expect(window.getSelection()!.toString()).toBe('dolor');
   });
 
-  for (const seed of [4103, 7919, 12011, 19301, 27581]) {
+  // The fixed seeds are the regression corpus; FUZZ_SEED walks extras.
+  for (const seed of [...new Set([4103, 7919, 12011, 19301, 27581, ...extraFuzzSeeds()])]) {
     it(`preserves text, scope, and toggle state for seed ${seed}`, () => {
       const { store, content, inspectorHost } = setup();
       const expected: Record<Format, boolean[]> = {

@@ -599,6 +599,9 @@ export class EditorCanvas {
       this.applyGeometry(slide, previous);
       this.rescale();
       this.drawOverlay(deck, slide.elements, selection);
+      // A live cell range's highlight lives on cell nodes a patch can
+      // replace; repaint it (or drop a range whose cells are now gone).
+      this.syncTableSelectionHighlight();
       // In development, verify that patching left the DOM where a full render
       // would have. A property handled by `renderElement` and not by the patch
       // path updates the deck without changing the pixels, and the only symptom
@@ -691,6 +694,9 @@ export class EditorCanvas {
 
     this.rescale();
     this.drawOverlay(deck, slide.elements, selection);
+    // A full rebuild recreated every cell node; repaint a live cell range's
+    // highlight (or drop a range whose table the rebuild removed).
+    this.syncTableSelectionHighlight();
     this.scheduleTableHeightSync();
     this.scheduleNextSlideImageWarmup(deck, slideIndex);
     this.processEditReentry();
@@ -2466,7 +2472,11 @@ export class EditorCanvas {
       const coalesceKey = this.textEditCoalesceKey ?? undefined;
       this.store.commit((deck) => {
         const target = findTextTarget(deck, elementId);
-        if (target) target.html = html;
+        if (target) {
+          target.html = html;
+          // Same placeholder retirement as the seal (see sealTextChunk).
+          target.class = target.class.filter((name) => name !== 'placeholder');
+        }
       }, { label: 'Edit text', transient: true, coalesceKey });
       this.textEditStoreBase = html;
       this.textEditDomBase = html;
@@ -2520,7 +2530,16 @@ export class EditorCanvas {
         const coalesceKey = this.textEditCoalesceKey ?? undefined;
         this.store.commit((deck) => {
           const target = findTextTarget(deck, elementId);
-          if (target) target.html = html;
+          if (target) {
+            target.html = html;
+            // The first real content commit also retires placeholder status,
+            // INSIDE this run's undo entry. Leaving the class for the exit
+            // commit recorded an invisible class-only change under a fresh
+            // coalesce key — undo then popped that instead of the typing,
+            // re-entered editing, re-stripped the class, and no number of
+            // Ctrl/Cmd+Z presses ever reached the text.
+            target.class = target.class.filter((name) => name !== 'placeholder');
+          }
         }, { label: 'Edit text', coalesceKey, historyGroup: `text:${elementId}` });
         this.textEditStoreBase = html;
         this.textEditDomBase = html;
@@ -3528,10 +3547,12 @@ export class EditorCanvas {
       this.restoreRenderedForm(current, body);
       return;
     }
-    // Live sync may have already streamed the final html; the session still
-    // counts as an edit (and strips the placeholder class) if the text ends
-    // up different from where it started.
-    if (current.html === html && !current.class.includes('placeholder')) {
+    // Live sync may have already streamed the final html. A session that
+    // changed nothing commits nothing — including for a placeholder box:
+    // content commits own the placeholder-class strip, and stripping it here
+    // recorded an invisible class-only undo entry (which jammed undo, and
+    // after an undo restored the class, cleared the redo stack on exit).
+    if (current.html === html) {
       // There is no final commit and therefore no re-render -- either nothing
       // changed or live formatting/table commits already recorded the final
       // html. In both cases the node still holds the authored editing source.
@@ -4190,7 +4211,12 @@ export class EditorCanvas {
     const coalesceKey = this.textEditCoalesceKey ?? undefined;
     this.store.commit((deck) => {
       const target = findTextTarget(deck, elementId);
-      if (target) target.html = html;
+      if (target) {
+        target.html = html;
+        // A formatting click is a real edit too: retire placeholder status
+        // inside this entry (see sealTextChunk for the undo-jam this avoids).
+        target.class = target.class.filter((name) => name !== 'placeholder');
+      }
     }, { label, coalesceKey, historyGroup: `text:${elementId}` });
     this.textEditStoreBase = html;
     this.textEditDomBase = html;
@@ -4423,12 +4449,30 @@ export class EditorCanvas {
   }
 
   private syncTableSelectionHighlight(): void {
+    // A cell range whose table or cells no longer exist is dead, not merely
+    // unpainted: whole-box surgery (a normalize pass, a peer's row deletion)
+    // can rebuild or remove the nodes the range points at, and keeping the
+    // range alive with no highlight left a zombie the next table operation
+    // acted on invisibly.
+    const clearDeadSelection = (): void => {
+      if (!this.tableSelection) return;
+      this.tableSelection = null;
+      this.onTableSelectionChange?.();
+    };
     const table = this.activeTable();
-    if (!table) return;
+    if (!table) {
+      clearDeadSelection();
+      return;
+    }
     table.querySelectorAll('.editor-table-selected').forEach((cell) => {
       cell.classList.remove('editor-table-selected');
     });
-    this.selectedTableCells().forEach((cell) => cell.classList.add('editor-table-selected'));
+    const cells = this.selectedTableCells();
+    if (cells.length === 0) {
+      clearDeadSelection();
+      return;
+    }
+    cells.forEach((cell) => cell.classList.add('editor-table-selected'));
   }
 
   private commitTableDom(

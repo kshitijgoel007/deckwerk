@@ -1,11 +1,22 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { electronBinary } from './support/browserSession.js';
+import { electronBinary, eventually, wait } from './support/browserSession.js';
+import { extraFuzzSeeds } from './support/fuzzSeeds.js';
 import {
   CONTENT,
   MOD,
+  OTHER_CONTENT,
   startListEditingSession,
   type ListEditingSession,
 } from './support/listEditingSession.js';
+import {
+  deckSnapshotEventually,
+  diffDeckSnapshots,
+  markupProblems,
+  sameDeckSnapshot,
+  SEAL_MS,
+  selectionProblems,
+  settledDeckSnapshot,
+} from './support/pasteMarkupCorpus.js';
 
 /**
  * A sweep and a random walk over list editing, all of it real input.
@@ -30,6 +41,11 @@ import {
 const RUN_EXHAUSTIVE = process.env.RUN_EXHAUSTIVE_LIST_FUZZ === '1';
 /** `LIST_FUZZ_SEED=<n>` walks a different order through the same vocabulary. */
 const SEED = Number.parseInt(process.env.LIST_FUZZ_SEED ?? '', 10) || 9012026;
+/**
+ * The LIST_FUZZ_SEED walk (or the fixed default) is the regression corpus;
+ * FUZZ_SEED (CI's nightly exports the current date) walks extra seeds too.
+ */
+const WALK_SEEDS = [...new Set([SEED, ...extraFuzzSeeds()])];
 const DECK_ID = 'list-editing-fuzz';
 const WORDS = ['alpha', 'beta', 'gamma', 'delta', 'epsilon', 'zeta'];
 
@@ -110,6 +126,10 @@ async function expectSound(label: string): Promise<void> {
     .toEqual([]);
   const stored = await session.persistedProblems();
   expect(stored, `${label}: stored markup`).toEqual([]);
+  expect(await markupProblems(session.cdp, OTHER_CONTENT), `${label}: the other box's markup`)
+    .toEqual([]);
+  expect(await selectionProblems(session.cdp), `${label}: selection/editing invariants`)
+    .toEqual([]);
 }
 
 const compact = (value: string) => value.replace(/\s+/g, '');
@@ -125,95 +145,184 @@ describe.skipIf(!electronBinary)('list editing under a sweep of real edits', () 
     }
   });
 
-  it('survives a seeded walk through the list vocabulary', {
-    timeout: RUN_EXHAUSTIVE ? 60 * 60_000 : 600_000,
-  }, async () => {
-    const steps = RUN_EXHAUSTIVE ? 200 : 40;
-    console.log(`walking ${steps} steps from seed ${SEED}`);
-    const next = random(SEED);
-    const actions = [
-      'bullet all', 'number all', 'free all', 'caret', 'return', 'empty bullet',
-      'backspace at start', 'type', 'indent', 'outdent', 'undo',
-    ] as const;
+  for (const walkSeed of WALK_SEEDS) {
+    it(`survives a seeded walk through the list vocabulary (seed ${walkSeed})`, {
+      timeout: RUN_EXHAUSTIVE ? 60 * 60_000 : 600_000,
+    }, async () => {
+      await runWalk(walkSeed);
+    });
+  }
+});
 
-    await session.reset('<p>alpha</p><p>beta</p><p>gamma</p><p>delta</p>');
-    await session.edit();
-    let typed = 0;
-    for (let step = 0; step < steps; step++) {
-      const action = actions[Math.floor(next() * actions.length)];
-      const label = `step ${step + 1} (${action})`;
-      const before = compact(await session.text());
-      if (process.env.LIST_FUZZ_TRACE === '1') {
-        console.log(label, 'BEFORE', await session.markup());
+async function runWalk(seed: number): Promise<void> {
+  const steps = RUN_EXHAUSTIVE ? 200 : 40;
+  console.log(`walking ${steps} steps from seed ${seed}`);
+  const next = random(seed);
+  const actions = [
+    'bullet all', 'number all', 'free all', 'caret', 'return', 'empty bullet',
+    'backspace at start', 'type', 'indent', 'outdent', 'undo',
+    'other box', 'escape and re-enter',
+  ] as const;
+
+  await session.reset('<p>alpha</p><p>beta</p><p>gamma</p><p>delta</p>');
+  await session.edit();
+  let typed = 0;
+  for (let step = 0; step < steps; step++) {
+    const action = actions[Math.floor(next() * actions.length)];
+    const label = `seed ${seed}, step ${step + 1} (${action})`;
+    const before = compact(await session.text());
+    if (process.env.LIST_FUZZ_TRACE === '1') {
+      console.log(label, 'BEFORE', await session.markup());
+    }
+    switch (action) {
+      case 'bullet all':
+        await session.cdp.chord('a', 'KeyA', 65, MOD, ['selectAll']);
+        await session.chooseList('Bulleted');
+        break;
+      case 'number all':
+        await session.cdp.chord('a', 'KeyA', 65, MOD, ['selectAll']);
+        await session.chooseList('Numbered');
+        break;
+      case 'free all':
+        await session.cdp.chord('a', 'KeyA', 65, MOD, ['selectAll']);
+        await session.chooseList('None');
+        break;
+      case 'caret':
+        await moveCaret(next);
+        break;
+      case 'return':
+        await moveCaret(next);
+        await session.cdp.key('Enter', 13);
+        break;
+      case 'empty bullet':
+        await moveCaret(next, 'end');
+        await session.cdp.key('Enter', 13);
+        await session.cdp.key('Enter', 13);
+        break;
+      case 'backspace at start':
+        await moveCaret(next, 'start');
+        await session.cdp.key('Backspace', 8);
+        break;
+      case 'type': {
+        const word = `w${step}`;
+        await moveCaret(next, 'end');
+        await session.cdp.typeKeys(word);
+        typed += 1;
+        const after = compact(await session.text());
+        expect(after.length, `${label}: characters inserted`)
+          .toBe(before.length + word.length);
+        break;
       }
-      switch (action) {
-        case 'bullet all':
-          await session.cdp.chord('a', 'KeyA', 65, MOD, ['selectAll']);
-          await session.chooseList('Bulleted');
-          break;
-        case 'number all':
-          await session.cdp.chord('a', 'KeyA', 65, MOD, ['selectAll']);
-          await session.chooseList('Numbered');
-          break;
-        case 'free all':
-          await session.cdp.chord('a', 'KeyA', 65, MOD, ['selectAll']);
-          await session.chooseList('None');
-          break;
-        case 'caret':
-          await moveCaret(next);
-          break;
-        case 'return':
-          await moveCaret(next);
-          await session.cdp.key('Enter', 13);
-          break;
-        case 'empty bullet':
-          await moveCaret(next, 'end');
-          await session.cdp.key('Enter', 13);
-          await session.cdp.key('Enter', 13);
-          break;
-        case 'backspace at start':
-          await moveCaret(next, 'start');
-          await session.cdp.key('Backspace', 8);
-          break;
-        case 'type': {
-          const word = `w${step}`;
-          await moveCaret(next, 'end');
-          await session.cdp.typeKeys(word);
-          typed += 1;
-          const after = compact(await session.text());
-          expect(after.length, `${label}: characters inserted`)
-            .toBe(before.length + word.length);
-          break;
-        }
-        case 'indent':
-          await moveCaret(next);
-          await session.cdp.key('Tab', 9);
-          break;
-        case 'outdent':
-          await moveCaret(next);
-          await session.cdp.chord('Tab', 'Tab', 9, 8);
-          break;
-        case 'undo':
-          await session.cdp.click(CONTENT, 'the text box before undoing');
-          await session.undo();
-          break;
+      case 'indent':
+        await moveCaret(next);
+        await session.cdp.key('Tab', 9);
+        break;
+      case 'outdent':
+        await moveCaret(next);
+        await session.cdp.chord('Tab', 'Tab', 9, 8);
+        break;
+      case 'undo':
+        // The restoration oracle: undo must actually restore the previous
+        // persisted state, and redo must re-reach the undone state.
+        await runUndoCheckpoint(next, label);
+        break;
+      case 'other box': {
+        // Straight into the other box — no Escape first — type a nonce that
+        // must land ONLY there, then back into the list box via the same
+        // caret-placement helper the walk always uses, so the OUTLINE model
+        // stays deterministic and the list box's content stays untouched.
+        if ((await session.text()).length === 0) break;
+        const nonce = nextNonce();
+        await session.cdp.doubleClickText(OTHER_CONTENT, 'the other text box');
+        await eventually(async () => session.cdp.evaluate<boolean>(
+          `document.querySelector('${OTHER_CONTENT}')?.isContentEditable === true`,
+        ), `${label}: the other box did not enter editing`);
+        await session.cdp.key('End', 35);
+        await session.cdp.typeKeys(nonce);
+        const otherText = await session.cdp.evaluate<string>(
+          `document.querySelector('${OTHER_CONTENT}')?.textContent ?? ''`);
+        expect(otherText, `${label}: the nonce landed in the other box`).toContain(nonce);
+        expect(await session.text(), `${label}: the nonce stayed out of the list box`)
+          .not.toContain(nonce);
+        await session.edit();
+        await moveCaret(next);
+        expect(compact(await session.text()), `${label}: the excursion left the list box unchanged`)
+          .toBe(before);
+        break;
       }
-      await expectSound(label);
-      const outline = await session.outline();
-      expect(outline.length, `${label}: the box still has blocks`).toBeGreaterThan(0);
-      for (const line of outline) {
-        // `?ul`/`?ol` is the sibling sub-list Chromium's indent writes, which
-        // the editor repairs on the way to the deck. Anything else with a
-        // question mark is a node inside a list with no business being there.
-        if (line.trim().startsWith('?')) {
-          expect(['?ul', '?ol'], `${label}: unexpected node inside a list`)
-            .toContain(line.trim());
-        }
+      case 'escape and re-enter': {
+        if ((await session.text()).length === 0) break;
+        // Focus may sit in the inspector, where Escape means something else.
+        await session.cdp.click(CONTENT, 'the text box before Escape');
+        await session.cdp.key('Escape', 27);
+        await eventually(async () => session.cdp.evaluate<boolean>(
+          `document.querySelector('${CONTENT}')?.isContentEditable !== true`,
+        ), `${label}: Escape did not leave text editing`);
+        await session.edit();
+        await moveCaret(next);
+        expect(compact(await session.text()), `${label}: the round trip changed the list box`)
+          .toBe(before);
+        break;
       }
     }
-    expect(typed, 'the walk typed at least once').toBeGreaterThan(0);
-  });
-});
+    await expectSound(label);
+    const outline = await session.outline();
+    expect(outline.length, `${label}: the box still has blocks`).toBeGreaterThan(0);
+    for (const line of outline) {
+      // `?ul`/`?ol` is the sibling sub-list Chromium's indent writes, which
+      // the editor repairs on the way to the deck. Anything else with a
+      // question mark is a node inside a list with no business being there.
+      if (line.trim().startsWith('?')) {
+        expect(['?ul', '?ol'], `${label}: unexpected node inside a list`)
+          .toContain(line.trim());
+      }
+    }
+  }
+  expect(typed, 'the walk typed at least once').toBeGreaterThan(0);
+}
+
+/** A nonce no other step has typed anywhere, so "landed only there" is exact. */
+let nonceCounter = 0;
+function nextNonce(): string {
+  nonceCounter += 1;
+  return `n${nonceCounter}q`;
+}
+
+/**
+ * The undo-restoration oracle, at a sealed boundary: pause past the idle seal,
+ * settle the persisted deck, run one sealed typing run (a documented single
+ * undo step), settle again, then demand that one Cmd/Ctrl+Z restores the whole
+ * pre-op deck exactly and one Cmd/Ctrl+Shift+Z re-reaches the post-op deck.
+ */
+async function runUndoCheckpoint(next: () => number, label: string): Promise<void> {
+  const { cdp, port } = session;
+  await wait(SEAL_MS);
+  const before = await settledDeckSnapshot(cdp, port, DECK_ID, `${label}: pre-op`);
+  const nonce = nextNonce();
+  await moveCaret(next, 'end');
+  await cdp.typeKeys(nonce);
+  await wait(SEAL_MS);
+  const after = await settledDeckSnapshot(cdp, port, DECK_ID, `${label}: post-op`);
+  if (sameDeckSnapshot(before, after)) {
+    // Typing landed nowhere persistable (an emptied box gives the caret
+    // nothing to hold); there is no entry to undo, so nothing to check.
+    return;
+  }
+  await cdp.click(CONTENT, 'the text box before undoing');
+  await session.undo();
+  const undone = await deckSnapshotEventually(cdp, port, DECK_ID, before);
+  if (!sameDeckSnapshot(undone, before)) {
+    expect.fail(`${label}: one undo after typing ${JSON.stringify(nonce)} did not restore `
+      + `the pre-op deck\n${diffDeckSnapshots(before, undone)}`);
+  }
+  await cdp.chord('z', 'KeyZ', 90, MOD | 8);
+  await wait(200);
+  const redone = await deckSnapshotEventually(cdp, port, DECK_ID, after);
+  if (!sameDeckSnapshot(redone, after)) {
+    expect.fail(`${label}: redo after the undo did not re-reach the post-op deck\n`
+      + diffDeckSnapshots(after, redone));
+  }
+}
 
 describe.skipIf(electronBinary)('list editing under a sweep of real edits (skipped)', () => {
   it('needs Electron', () => expect(electronBinary).toBe(''));

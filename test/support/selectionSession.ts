@@ -184,8 +184,10 @@ const INVARIANTS = `() => {
     }
     const element = (slide ? slide.elements : []).find((el) => el.id === table.elementId);
     if (!element) problems.push('cells are selected in ' + table.elementId + ', which is gone');
-    else if (element.type !== 'text' || !element.table) {
-      problems.push('cells are selected in ' + table.elementId + ', which is not a table');
+    else if (element.type !== 'text' || (!element.table && !element.html.includes('<table'))) {
+      // Native tables and tables embedded in ordinary text boxes (the paste
+      // path inserts <table> blocks) both take cell selections legitimately.
+      problems.push('cells are selected in ' + table.elementId + ', which holds no table');
     }
     if (highlightOwners.length > 1 || (highlightOwners[0] && highlightOwners[0] !== table.elementId)) {
       problems.push('highlighted cells are in ' + show(highlightOwners)

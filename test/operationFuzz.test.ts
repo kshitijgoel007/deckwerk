@@ -5,6 +5,7 @@ import { EditorCanvas } from '../src/renderer/editor/canvas.js';
 import { EditorStore } from '../src/renderer/editor/store.js';
 import { findRenderDivergences, formatDivergence } from '../src/renderer/editor/renderInvariants.js';
 import { installCanvasDomShims } from './support/canvasHarness.js';
+import { extraFuzzSeeds } from './support/fuzzSeeds.js';
 
 /**
  * Randomised operation sequences against the real editor.
@@ -382,8 +383,12 @@ function runSequence(seed: number, steps: number): Violation[] {
 
 describe('editor operation fuzzing', () => {
   // Fixed seeds rather than a random one per run: a failure has to be
-  // reproducible in CI and on the machine that reports it.
-  const seeds = Array.from({ length: 40 }, (_, i) => 1000 + i * 7);
+  // reproducible in CI and on the machine that reports it. FUZZ_SEED adds
+  // date-rotated extras on top (CI's nightly exports the current date).
+  const seeds = [...new Set([
+    ...Array.from({ length: 40 }, (_, i) => 1000 + i * 7),
+    ...extraFuzzSeeds(),
+  ])];
 
   for (const seed of seeds) {
     it(`holds its invariants for seed ${seed}`, () => {

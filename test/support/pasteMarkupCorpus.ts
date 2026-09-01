@@ -1,5 +1,5 @@
 import { expect } from 'vitest';
-import { Cdp, eventually } from './browserSession.js';
+import { Cdp, eventually, wait } from './browserSession.js';
 
 /**
  * Clipboard payloads authors really paste into a slide, and the machinery to
@@ -16,8 +16,14 @@ import { Cdp, eventually } from './browserSession.js';
 
 export const PASTE_TEXT_ID = 'paste-fuzz-text';
 export const PASTE_CONTENT = `#canvas [data-element-id="${PASTE_TEXT_ID}"] .text-content`;
+/** A second committed textbox: single-textbox fixtures hid cross-box bugs. */
+export const PASTE_OTHER_ID = 'paste-fuzz-other';
+export const PASTE_OTHER_CONTENT = `#canvas [data-element-id="${PASTE_OTHER_ID}"] .text-content`;
+export const PASTE_OTHER_HTML = '<p>other box</p>';
 export const PASTE_PANEL = '#inspector';
 export const PASTE_MOD = process.platform === 'darwin' ? 4 : 2;
+/** The typing run seals after 600 ms of idle; wait comfortably past that. */
+export const SEAL_MS = 900;
 
 export interface ClipboardPayload {
   name: string;
@@ -215,7 +221,17 @@ export type PasteOperation =
   | { kind: 'delete'; characters: number }
   | { kind: 'delete-word' }
   | { kind: 'split'; text: string }
-  | { kind: 'undo' };
+  /**
+   * Undo/redo restoration checkpoint: seal, snapshot the persisted deck, run
+   * one sealed typing run (a documented single undo step), seal again, then
+   * demand that one Ctrl/Cmd+Z restores the pre-op deck exactly and one
+   * Ctrl/Cmd+Shift+Z re-reaches the post-op deck exactly.
+   */
+  | { kind: 'undo' }
+  /** Double-click into the other box (no Escape first), type a nonce, return. */
+  | { kind: 'cross-box' }
+  /** Escape out of editing, then re-enter the main box. */
+  | { kind: 'escape-reenter' };
 
 export const PASTE_OPERATIONS: PasteOperation[] = [
   { kind: 'list', style: 'Bulleted' },
@@ -237,6 +253,8 @@ export const PASTE_OPERATIONS: PasteOperation[] = [
   { kind: 'delete-word' },
   { kind: 'split', text: 'new line' },
   { kind: 'undo' },
+  { kind: 'cross-box' },
+  { kind: 'escape-reenter' },
 ];
 
 export function describeOperation(operation: PasteOperation): string {
@@ -248,7 +266,9 @@ export function describeOperation(operation: PasteOperation): string {
     case 'delete': return `backspace \u00d7${operation.characters}`;
     case 'delete-word': return 'delete a selected word';
     case 'split': return `Enter then type ${JSON.stringify(operation.text)}`;
-    case 'undo': return 'undo';
+    case 'undo': return 'undo/redo restoration checkpoint';
+    case 'cross-box': return 'a trip into the other box and back';
+    case 'escape-reenter': return 'Escape then re-enter the box';
   }
 }
 
@@ -419,6 +439,263 @@ export async function enterEditing(cdp: Cdp, selector: string): Promise<void> {
   await eventually(async () => cdp.evaluate<boolean>(
     `document.querySelector(${JSON.stringify(selector)})?.isContentEditable === true`,
   ), 'the text box did not enter editing');
+}
+
+/* ------------------------------------------------------------------------ *
+ * The undo-restoration oracle's state: the whole persisted deck, element by
+ * element, with html normalised the way test/support/undoRestorationSession.ts
+ * normalises it (word joiners stripped, markup round-tripped through the
+ * browser's parser so attribute order and entity encoding are canonical).
+ * ------------------------------------------------------------------------ */
+
+export type DeckSnapshot = Record<string, string>;
+
+const NORMALIZE_HTMLS = `(htmls) => htmls.map((html) => {
+  const template = document.createElement('template');
+  template.innerHTML = String(html).replaceAll('\\u2060', '');
+  return template.innerHTML;
+})`;
+
+export async function deckSnapshot(cdp: Cdp, port: number, deckId: string): Promise<DeckSnapshot> {
+  const response = await fetch(`http://127.0.0.1:${port}/api/deck?deck=${deckId}`);
+  const deck = await response.json() as {
+    slides: Array<{ elements: Array<Record<string, unknown>> }>;
+  };
+  const elements = deck.slides.flatMap((slide, index) =>
+    slide.elements.map((element) => ({ slide: index, element })));
+  const htmls = elements.map(({ element }) =>
+    'html' in element ? String(element.html) : '');
+  const normalized = await cdp.evaluate<string[]>(
+    `(${NORMALIZE_HTMLS})(${JSON.stringify(htmls)})`);
+  const snapshot: DeckSnapshot = { '#slides': String(deck.slides.length) };
+  elements.forEach(({ slide, element }, index) => {
+    snapshot[`${slide}:${String(element.id)}`] = JSON.stringify({ ...element, html: normalized[index] });
+  });
+  return snapshot;
+}
+
+export function sameDeckSnapshot(a: DeckSnapshot, b: DeckSnapshot): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+/** A readable element-by-element diff of two snapshots, for failure messages. */
+export function diffDeckSnapshots(expected: DeckSnapshot, observed: DeckSnapshot): string {
+  const keys = [...new Set([...Object.keys(expected), ...Object.keys(observed)])].sort();
+  const lines: string[] = [];
+  for (const key of keys) {
+    if (expected[key] === observed[key]) continue;
+    lines.push(`  ${key}:`);
+    lines.push(`    expected: ${expected[key] ?? '(absent)'}`);
+    lines.push(`    observed: ${observed[key] ?? '(absent)'}`);
+  }
+  return lines.length > 0 ? lines.join('\n') : '  (identical)';
+}
+
+/** Poll until two consecutive persisted snapshots agree, then return one. */
+export async function settledDeckSnapshot(
+  cdp: Cdp,
+  port: number,
+  deckId: string,
+  label: string,
+): Promise<DeckSnapshot> {
+  const deadline = Date.now() + 12_000;
+  let previous = await deckSnapshot(cdp, port, deckId);
+  while (Date.now() < deadline) {
+    await wait(300);
+    const current = await deckSnapshot(cdp, port, deckId);
+    if (sameDeckSnapshot(current, previous)) return current;
+    previous = current;
+  }
+  throw new Error(`${label}: the persisted deck never settled`);
+}
+
+/** Poll the persisted deck until it matches `expected` or the timeout passes. */
+export async function deckSnapshotEventually(
+  cdp: Cdp,
+  port: number,
+  deckId: string,
+  expected: DeckSnapshot,
+  timeoutMs = 8_000,
+): Promise<DeckSnapshot> {
+  const deadline = Date.now() + timeoutMs;
+  let observed = await deckSnapshot(cdp, port, deckId);
+  while (!sameDeckSnapshot(observed, expected) && Date.now() < deadline) {
+    await wait(250);
+    observed = await deckSnapshot(cdp, port, deckId);
+  }
+  return observed;
+}
+
+/**
+ * The selection/focus/editing invariants, evaluated inside the page.
+ *
+ * Sync by copy from test/support/selectionSession.ts (that module does not
+ * export the string; test/support/crossContextSession.ts carries the same
+ * copy under the same convention). Each returned string is one violation,
+ * phrased as the thing an author would see.
+ */
+export const SELECTION_INVARIANTS = `() => {
+  const problems = [];
+  const store = window.store;
+  const canvas = window.canvas;
+  const state = store.get();
+  const selection = [...state.selection];
+  const editing = canvas.editingElementId();
+  const table = canvas.tableSelectionInfo();
+  const slide = state.deck.slides[state.slideIndex];
+  const ids = new Set((slide ? slide.elements : []).map((el) => el.id));
+  const layer = document.querySelector('.slide-layer');
+  const overlay = document.querySelector('.overlay-layer');
+  const show = (list) => '[' + list.join(', ') + ']';
+  if (!layer || !overlay) return ['the canvas layers are missing'];
+
+  // --- the selection itself -------------------------------------------------
+  for (const id of selection) {
+    if (!ids.has(id)) problems.push('selected ' + id + ' is not on the current slide');
+  }
+  if (new Set(selection).size !== selection.length) {
+    problems.push('the selection lists an object twice: ' + show(selection));
+  }
+
+  // --- editing implies being the selection ---------------------------------
+  if (editing !== null) {
+    if (!ids.has(editing)) {
+      problems.push('editing ' + editing + ', which is not on the current slide');
+    }
+    if (selection.length !== 1 || selection[0] !== editing) {
+      problems.push('editing ' + editing + ' while the selection is ' + show(selection));
+    }
+  }
+
+  // --- one editable node, and it is the one being edited --------------------
+  const editingNodes = [...layer.querySelectorAll('.editing')]
+    .map((node) => node.getAttribute('data-element-id') || '(unnamed)');
+  const expectedEditing = editing === null ? [] : [editing];
+  if (editingNodes.join('|') !== expectedEditing.join('|')) {
+    problems.push('the edit outline is on ' + show(editingNodes)
+      + ' but the edit session is on ' + show(expectedEditing));
+  }
+  const editable = [...layer.querySelectorAll('.text-content')]
+    .filter((node) => node.isContentEditable)
+    .map((node) => node.closest('[data-element-id]')?.getAttribute('data-element-id')
+      || '(unnamed)');
+  if (editable.join('|') !== expectedEditing.join('|')) {
+    problems.push('typing would reach ' + show(editable)
+      + ' but the edit session is on ' + show(expectedEditing));
+  }
+
+  // --- where the keyboard points -------------------------------------------
+  const active = document.activeElement;
+  const activeElementId = active && active.closest
+    ? active.closest('[data-element-id]')?.getAttribute('data-element-id') ?? null
+    : null;
+  if (editing !== null && active && layer.contains(active) && activeElementId !== editing) {
+    problems.push('focus sits in ' + (activeElementId ?? 'the canvas')
+      + ' while ' + editing + ' is being edited');
+  }
+
+  // --- the caret / text highlight ------------------------------------------
+  const nativeSelection = window.getSelection();
+  const anchor = nativeSelection && nativeSelection.anchorNode;
+  const anchorElement = anchor
+    ? (anchor.nodeType === 1 ? anchor : anchor.parentElement)
+    : null;
+  if (anchorElement && layer.contains(anchorElement)) {
+    const owner = anchorElement.closest('[data-element-id]')?.getAttribute('data-element-id')
+      ?? '(unnamed)';
+    if (editing === null && !nativeSelection.isCollapsed) {
+      problems.push('a text highlight survives in ' + owner + ' with no edit session');
+    } else if (editing !== null && owner !== editing) {
+      problems.push('the caret is in ' + owner + ' while ' + editing + ' is being edited');
+    }
+  }
+
+  // --- the table cell range -------------------------------------------------
+  const highlighted = [...layer.querySelectorAll('.editor-table-selected')];
+  const highlightOwners = [...new Set(highlighted.map((cell) =>
+    cell.closest('[data-element-id]')?.getAttribute('data-element-id') ?? '(unnamed)'))];
+  if (table === null) {
+    if (highlighted.length > 0) {
+      problems.push(highlighted.length + ' table cells stay highlighted in '
+        + show(highlightOwners) + ' with no cell range selected');
+    }
+  } else {
+    if (table.elementId !== editing) {
+      problems.push('a table cell range is live in ' + table.elementId
+        + ' while the edit session is on ' + (editing ?? 'nothing'));
+    }
+    if (!selection.includes(table.elementId)) {
+      problems.push('cells of ' + table.elementId + ' are selected but the table is not: '
+        + 'the selection is ' + show(selection));
+    }
+    const element = (slide ? slide.elements : []).find((el) => el.id === table.elementId);
+    if (!element) problems.push('cells are selected in ' + table.elementId + ', which is gone');
+    else if (element.type !== 'text' || (!element.table && !element.html.includes('<table'))) {
+      // Native tables and tables embedded in ordinary text boxes (the paste
+      // path inserts <table> blocks) both take cell selections legitimately.
+      problems.push('cells are selected in ' + table.elementId + ', which holds no table');
+    }
+    if (highlightOwners.length > 1 || (highlightOwners[0] && highlightOwners[0] !== table.elementId)) {
+      problems.push('highlighted cells are in ' + show(highlightOwners)
+        + ' but the cell range belongs to ' + table.elementId);
+    }
+    const expectedCells = (Math.abs(table.rowEnd - table.row) + 1)
+      * (Math.abs(table.columnEnd - table.column) + 1);
+    if (highlighted.length !== expectedCells) {
+      problems.push('the cell range covers ' + expectedCells + ' cells but '
+        + highlighted.length + ' are highlighted');
+    }
+  }
+
+  // --- overlay chrome matches the selection --------------------------------
+  const expectedOutlines = (slide ? slide.elements : [])
+    .filter((el) => state.selection.has(el.id) && !el.layoutMasterId).length;
+  const outlines = overlay.querySelectorAll('.sel-box').length;
+  if (outlines !== expectedOutlines) {
+    problems.push('the overlay draws ' + outlines + ' selection outlines for '
+      + expectedOutlines + ' selected objects');
+  }
+
+  // --- slides and objects are exclusive selections --------------------------
+  const slideSelection = [...state.slideSelection];
+  if (slide && !state.slideSelection.has(slide.id)) {
+    problems.push('the current slide is not part of the slide selection '
+      + show(slideSelection));
+  }
+  if (selection.length > 0 && slideSelection.length > 1) {
+    problems.push(selection.length + ' objects are selected alongside '
+      + slideSelection.length + ' slides');
+  }
+  const railSelected = [...document.querySelectorAll('.rail-item')]
+    .filter((row) => row.classList.contains('selected'))
+    .map((row) => Number(row.dataset.index));
+  const expectedRail = state.deck.slides
+    .map((candidate, index) => (state.slideSelection.has(candidate.id) ? index : -1))
+    .filter((index) => index >= 0);
+  if (railSelected.join(',') !== expectedRail.join(',')) {
+    problems.push('the rail highlights slides ' + show(railSelected)
+      + ' but ' + show(expectedRail) + ' are selected');
+  }
+  const railActive = [...document.querySelectorAll('.rail-item.active')]
+    .map((row) => Number(row.dataset.index));
+  if (railActive.join(',') !== String(state.slideIndex)) {
+    problems.push('the rail marks ' + show(railActive) + ' as the current slide, not '
+      + state.slideIndex);
+  }
+  return problems;
+}`;
+
+/**
+ * Invariant violations that survive a short settle window: the rail and the
+ * overlay redraw from store events, so reading one frame too early would
+ * report a repaint in progress as a broken invariant.
+ */
+export async function selectionProblems(cdp: Cdp): Promise<string[]> {
+  const first = await cdp.evaluate<string[]>(`(${SELECTION_INVARIANTS})()`);
+  if (first.length === 0) return first;
+  await wait(200);
+  const second = await cdp.evaluate<string[]>(`(${SELECTION_INVARIANTS})()`);
+  return second.filter((problem) => first.includes(problem));
 }
 
 export async function tagListField(cdp: Cdp): Promise<string> {

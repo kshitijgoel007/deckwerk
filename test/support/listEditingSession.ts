@@ -30,6 +30,10 @@ import { MARKUP_INVARIANTS } from './pasteMarkupCorpus.js';
 
 export const TEXT_ID = 'list-editing-text';
 export const CONTENT = `#canvas [data-element-id="${TEXT_ID}"] .text-content`;
+/** A second committed textbox: single-textbox fixtures hid cross-box bugs. */
+export const OTHER_TEXT_ID = 'list-editing-other';
+export const OTHER_CONTENT = `#canvas [data-element-id="${OTHER_TEXT_ID}"] .text-content`;
+export const OTHER_HTML = '<p>other box</p>';
 export const MOD = process.platform === 'darwin' ? 4 : 2;
 
 /**
@@ -123,6 +127,10 @@ export async function startListEditingSession(deckId: string, name: string): Pro
     id: TEXT_ID, type: 'text', x: 100, y: 100, w: 1720, h: 860,
     rot: 0, z: 1, opacity: 1, class: ['role-body'], style: {},
     html: '<p>Text</p>', align: 'left', valign: 'top',
+  } as never, {
+    id: OTHER_TEXT_ID, type: 'text', x: 100, y: 975, w: 900, h: 100,
+    rot: 0, z: 2, opacity: 1, class: ['role-body'], style: {},
+    html: OTHER_HTML, align: 'left', valign: 'top',
   } as never);
   await saveDeck(deckDir, deck);
   await writeFile(join(deckDir, 'theme.css'), [

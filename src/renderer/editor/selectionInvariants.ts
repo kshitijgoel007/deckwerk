@@ -139,8 +139,14 @@ export function findSelectionViolations(snap: SelectionSnapshot): string[] {
     const element = elements.find((el) => el.id === tableSelection.elementId);
     if (!element) {
       problems.push(`cells are selected in ${tableSelection.elementId}, which is gone`);
-    } else if (element.type !== 'text' || !element.table) {
-      problems.push(`cells are selected in ${tableSelection.elementId}, which is not a table`);
+    } else if (
+      element.type !== 'text'
+      || (!element.table && !element.html.includes('<table'))
+    ) {
+      // A native table (element.table) or a table embedded in an ordinary
+      // text box (the paste path inserts <table> blocks) both take cell
+      // selections legitimately.
+      problems.push(`cells are selected in ${tableSelection.elementId}, which holds no table`);
     }
     if (highlightOwners.length > 1
       || (highlightOwners[0] && highlightOwners[0] !== tableSelection.elementId)) {
