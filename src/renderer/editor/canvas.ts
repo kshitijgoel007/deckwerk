@@ -2951,8 +2951,9 @@ export class EditorCanvas {
       const marker = container?.closest<HTMLElement>('[data-editor-typing-style]') ?? null;
       if (!marker || !body.contains(marker)) return;
       const offsets = this.textOffsetsForRange(body, range);
-      this.clearTypingStyleMarker(marker);
-      if (offsets) this.restoreTextRange(body, offsets);
+      const anchor = this.clearTypingStyleMarker(marker, range);
+      if (anchor) this.placeCaretAfterSealedRun(marker, anchor);
+      else if (offsets) this.restoreTextRange(body, offsets);
     };
     const onBeforeInput = (event: InputEvent) => {
       if (event.inputType === 'insertParagraph' || event.inputType === 'insertLineBreak') {
@@ -3305,7 +3306,34 @@ export class EditorCanvas {
     return previous;
   }
 
-  private clearTypingStyleMarker(marker: HTMLElement): void {
+  /**
+   * Seal a pending typing-style run, returning where the caret belongs.
+   *
+   * The returned anchor is exact — the caret's own position inside the
+   * marker, mapped onto the surviving text. Callers used to restore the caret
+   * through flat text offsets instead, and a caret at the end of a list item
+   * sits exactly on the offset boundary where a forward-affinity restore
+   * walks into the NEXT item: type, Cmd+B, type, Cmd+B jumped the caret to
+   * the next bullet.
+   */
+  private clearTypingStyleMarker(
+    marker: HTMLElement,
+    caret?: Range | null,
+  ): { node: Text; offset: number } | null {
+    // The caret's visible-character position inside the marker, before the
+    // sentinel is stripped (the sentinel sits after the typed text, so it
+    // never precedes the caret — but count defensively).
+    let within: number | null = null;
+    if (caret?.collapsed && marker.contains(caret.startContainer)) {
+      try {
+        const prefix = document.createRange();
+        prefix.selectNodeContents(marker);
+        prefix.setEnd(caret.startContainer, caret.startOffset);
+        within = prefix.toString().replaceAll(TYPING_STYLE_SENTINEL, '').length;
+      } catch {
+        within = null;
+      }
+    }
     const walker = document.createTreeWalker(marker, NodeFilter.SHOW_TEXT);
     const texts: Text[] = [];
     for (let current = walker.nextNode(); current; current = walker.nextNode()) {
@@ -3313,7 +3341,70 @@ export class EditorCanvas {
     }
     texts.forEach((text) => { text.data = text.data.replaceAll(TYPING_STYLE_SENTINEL, ''); });
     marker.removeAttribute('data-editor-typing-style');
-    if (!(marker.textContent ?? '')) marker.remove();
+    const survivors = texts.filter((text) => text.data.length > 0);
+    if (!(marker.textContent ?? '')) {
+      const previous = marker.previousSibling;
+      marker.remove();
+      return previous instanceof Text
+        ? { node: previous, offset: previous.data.length }
+        : null;
+    }
+    if (survivors.length === 0) return null;
+    let remaining = within ?? survivors.reduce((sum, text) => sum + text.data.length, 0);
+    for (const text of survivors) {
+      // Backward affinity: a caret exactly at a node's end stays in that
+      // node rather than moving to the start of whatever follows.
+      if (remaining <= text.data.length) return { node: text, offset: remaining };
+      remaining -= text.data.length;
+    }
+    const last = survivors[survivors.length - 1];
+    return { node: last, offset: last.data.length };
+  }
+
+  /** Put the live caret (and the session bookmark) at an exact text anchor. */
+  private placeCaretAtAnchor(anchor: { node: Text; offset: number }): void {
+    const range = document.createRange();
+    range.setStart(anchor.node, Math.min(anchor.offset, anchor.node.data.length));
+    range.collapse(true);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    this.textSelectionRange = range.cloneRange();
+  }
+
+  /**
+   * Place the caret after sealing a typing run. Same pixels either way, but
+   * the DOM position matters: a caret left INSIDE the sealed span would nest
+   * the next differently-styled run within it (contradictory layered spans)
+   * and let Enter carry the sealed style into the new paragraph — so a caret
+   * at the sealed run's edge steps just outside it.
+   */
+  private placeCaretAfterSealedRun(
+    sealed: HTMLElement,
+    anchor: { node: Text; offset: number },
+  ): void {
+    if (sealed.isConnected && sealed.contains(anchor.node)) {
+      const boundary = (edge: 'head' | 'tail'): boolean => {
+        const probe = document.createRange();
+        probe.selectNodeContents(sealed);
+        if (edge === 'tail') probe.setStart(anchor.node, anchor.offset);
+        else probe.setEnd(anchor.node, anchor.offset);
+        return probe.toString().length === 0;
+      };
+      const place = (edge: 'tail' | 'head'): void => {
+        const range = document.createRange();
+        if (edge === 'tail') range.setStartAfter(sealed);
+        else range.setStartBefore(sealed);
+        range.collapse(true);
+        const selection = window.getSelection();
+        selection?.removeAllRanges();
+        selection?.addRange(range);
+        this.textSelectionRange = range.cloneRange();
+      };
+      if (boundary('tail')) return place('tail');
+      if (boundary('head')) return place('head');
+    }
+    this.placeCaretAtAnchor(anchor);
   }
 
   /**
@@ -3353,9 +3444,10 @@ export class EditorCanvas {
         return true;
       }
       // The old typing run now contains authored characters. Seal it before
-      // starting a differently styled run at the same logical text offset.
-      this.clearTypingStyleMarker(existing);
-      this.restoreTextRange(content, { start: offsets.start, end: offsets.start });
+      // starting a differently styled run at the caret's exact position.
+      const anchor = this.clearTypingStyleMarker(existing, range);
+      if (anchor) this.placeCaretAfterSealedRun(existing, anchor);
+      else this.restoreTextRange(content, { start: offsets.start, end: offsets.start });
       range = this.activeTextRange(content) ?? range;
     }
 
