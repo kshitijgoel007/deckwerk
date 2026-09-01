@@ -136,7 +136,11 @@ async function observeCursorMotion(
 }
 
 describe.skipIf(!electronBinary)('desktop collaboration handoff', () => {
-  it('keeps the native editor and paints live tagged cursors in both directions', async () => {
+  // Two native Electron windows plus a collab server: comfortably inside the
+  // default 60s on a workstation, but not on a 2-core CI runner under load.
+  it('keeps the native editor and paints live tagged cursors in both directions', {
+    timeout: 180_000,
+  }, async () => {
     workDir = await mkdtemp(join(tmpdir(), 'deckwerk-collaboration-handoff-'));
     const checkout = process.cwd();
     const appDir = join(workDir, 'app');
