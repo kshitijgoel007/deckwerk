@@ -73,7 +73,6 @@ type WalkAction = typeof WALK_ACTIONS[number];
  * Ctrl/Cmd+Z afterwards must land exactly on the pre-op state.
  */
 const CHECKPOINT_ACTIONS = ['type', 'bold', 'backspace', 'paste'] as const;
-type CheckpointAction = typeof CHECKPOINT_ACTIONS[number];
 
 const LIST_FIELD = '#inspector .text-list-style select';
 

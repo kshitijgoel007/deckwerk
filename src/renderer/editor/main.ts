@@ -53,6 +53,7 @@ import { CollabBridge } from '../collab/collabBridge.js';
 import { PresenceOverlay } from '../collab/presenceOverlay.js';
 import { openEndCollaborationPopover } from '../collab/endCollaborationPopover.js';
 import { setRenderInvariantChecks } from './renderInvariants.js';
+import { setSelectionInvariantChecks } from './selectionInvariants.js';
 
 /**
  * Editor shell: wires the panels to one store, owns the toolbar, the keyboard
@@ -109,6 +110,7 @@ let initialViewPending = initialView !== null;
 // still matches a fresh render of the deck, and report any property the two
 // paths disagree about. See renderInvariants.ts.
 setRenderInvariantChecks(import.meta.env.DEV);
+setSelectionInvariantChecks(import.meta.env.DEV);
 const canvas = new EditorCanvas(el('canvas'), store);
 // A presentation window occludes this one, and a hidden page's media buffers
 // are Chromium's to reclaim -- closing Present used to leave canvas, rail and

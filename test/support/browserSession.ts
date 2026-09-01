@@ -265,16 +265,54 @@ export class Cdp {
     await this.mouse('mouseReleased', point.x, point.y, 1);
   }
 
-  private mouse(type: string, x: number, y: number, clickCount: number): Promise<void> {
+  private mouse(
+    type: string,
+    x: number,
+    y: number,
+    clickCount: number,
+    modifiers = 0,
+  ): Promise<void> {
     const pressed = type === 'mousePressed' || (type === 'mouseMoved' && clickCount > 0);
     return this.call('Input.dispatchMouseEvent', {
       type,
       x,
       y,
       clickCount,
+      modifiers,
       button: clickCount ? 'left' : 'none',
       buttons: pressed ? 1 : 0,
     });
+  }
+
+  /**
+   * A real left click with modifier keys held down (the CDP modifier bitmask:
+   * 1 Alt, 2 Ctrl, 4 Meta, 8 Shift).
+   *
+   * Shift-click is how a second object joins a selection, so it has to arrive
+   * as a genuinely modified mouse event rather than as a plain click the test
+   * merely calls "shift-click".
+   */
+  async clickModified(selector: string, modifiers: number, label = selector): Promise<void> {
+    const box = await this.boxOf(selector, label);
+    await this.mouse('mouseMoved', box.x, box.y, 0, modifiers);
+    await this.mouse('mousePressed', box.x, box.y, 1, modifiers);
+    await this.mouse('mouseReleased', box.x, box.y, 1, modifiers);
+  }
+
+  /** A real modified left click at a fractional point inside a visible node. */
+  async clickWithinModified(
+    selector: string,
+    fractionX: number,
+    fractionY: number,
+    modifiers: number,
+    label = selector,
+  ): Promise<void> {
+    const box = await this.boxOf(selector, label);
+    const x = box.x + (fractionX - 0.5) * box.width;
+    const y = box.y + (fractionY - 0.5) * box.height;
+    await this.mouse('mouseMoved', x, y, 0, modifiers);
+    await this.mouse('mousePressed', x, y, 1, modifiers);
+    await this.mouse('mouseReleased', x, y, 1, modifiers);
   }
 
   /**
@@ -641,6 +679,71 @@ export class Cdp {
       return true;
     })()`);
     if (!ok) throw new Error(`cannot choose ${JSON.stringify(value)} in ${label} (${selector})`);
+  }
+
+  /**
+   * Press one character key at a focused `<select>` and report the value it
+   * settles on.
+   *
+   * This is the one keyboard route a native dropdown really implements:
+   * type-ahead, which moves to the next option starting with that letter and
+   * fires `change` for it. Arrow keys, Alt-arrow and clicking all open the
+   * platform popup, a window outside the page that CDP cannot drive, so they
+   * cannot be used to pick an option here. Taking focus is the only
+   * programmatic step; the keystroke itself is the physical-keyboard triple.
+   *
+   * The element is re-resolved on every call, because applying an option
+   * usually redraws the panel it lives in.
+   */
+  async pressOptionKey(selector: string, letter: string, label = selector): Promise<string> {
+    const focused = await this.evaluate<string>(`(() => {
+      const select = document.querySelector(${JSON.stringify(selector)});
+      if (!select) return 'missing';
+      if (select.tagName !== 'SELECT') return 'not a select';
+      if (select.disabled) return 'disabled';
+      select.focus();
+      return document.activeElement === select ? 'ok' : 'will not take focus';
+    })()`);
+    if (focused !== 'ok') throw new Error(`cannot use ${label} (${selector}): ${focused}`);
+    const key = {
+      key: letter,
+      code: `Key${letter.toUpperCase()}`,
+      windowsVirtualKeyCode: letter.toUpperCase().charCodeAt(0),
+      nativeVirtualKeyCode: letter.toUpperCase().charCodeAt(0),
+    };
+    await this.call('Input.dispatchKeyEvent', { type: 'rawKeyDown', ...key });
+    await this.call('Input.dispatchKeyEvent', {
+      type: 'char', text: letter, unmodifiedText: letter, ...key,
+    });
+    await this.call('Input.dispatchKeyEvent', { type: 'keyUp', ...key });
+    await wait(80);
+    return this.evaluate<string>(
+      `document.querySelector(${JSON.stringify(selector)})?.value ?? 'gone'`);
+  }
+
+  /**
+   * Choose a `<select>` option with real key presses, and report every option
+   * it settled on along the way.
+   *
+   * Type-ahead walks the options starting with the same letter one press at a
+   * time, and each stop is a real `change` the page acts on. That is what a
+   * keyboard user gets, so a caller that needs an unambiguous single change
+   * should check the returned walk rather than assume one happened.
+   */
+  async chooseByKeys(selector: string, value: string, label = selector): Promise<string[]> {
+    const options = await this.evaluate<string[]>(`(() => {
+      const select = document.querySelector(${JSON.stringify(selector)});
+      return select ? [...select.options].map((option) => option.value) : [];
+    })()`);
+    if (!options.includes(value)) {
+      throw new Error(`${label} has no option ${JSON.stringify(value)}: ${options.join(', ') || 'none'}`);
+    }
+    const walk: string[] = [];
+    for (let press = 0; press < options.length; press++) {
+      walk.push(await this.pressOptionKey(selector, value[0].toLowerCase(), label));
+      if (walk[walk.length - 1] === value) return walk;
+    }
+    throw new Error(`${label} never reached ${JSON.stringify(value)}: walked ${walk.join(' → ')}`);
   }
 
   close(): void {

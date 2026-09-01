@@ -1,0 +1,281 @@
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { electronBinary } from './support/browserSession.js';
+import {
+  CONTENT,
+  MOD,
+  startListEditingSession,
+  type ListEditingSession,
+} from './support/listEditingSession.js';
+
+/**
+ * The edits authors actually make to bulleted lists, performed the way they
+ * perform them: a real double-click into the box, real clicks on glyphs to put
+ * the caret somewhere, real Return/Backspace/Tab keystrokes, and the List
+ * dropdown changed by type-ahead keys the browser routes into the `<select>`
+ * itself — the only way to pick a native dropdown option without the platform
+ * popup, which is a window outside the page. Type-ahead steps one option per
+ * press and applies each stop, so "None" is two presses away from "Bulleted"
+ * (both it and "Numbered" start with an n) and the tests assert what the
+ * walk did at every stop.
+ *
+ * The behaviour copied here is Keynote's, where a marker belongs to one
+ * paragraph: Return on an empty bullet ends the list, Backspace at the start
+ * of an item takes that item's bullet off, and "None" frees exactly the
+ * paragraphs you are standing in — the items above and below keep theirs. Both
+ * the live box and the markup the collaboration server stored are checked, so
+ * a change that only looks right on screen cannot pass.
+ */
+const DECK_ID = 'list-editing';
+
+let session: ListEditingSession;
+let close: (() => Promise<void>) | null = null;
+
+beforeAll(async () => {
+  if (!electronBinary) return;
+  const started = await startListEditingSession(DECK_ID, 'List Editing');
+  session = started.session;
+  close = started.close;
+}, 120_000);
+
+afterAll(async () => {
+  await close?.();
+  close = null;
+});
+
+const FOUR = '<p>alpha</p><p>beta</p><p>gamma</p><p>delta</p>';
+
+/** Nothing structurally wrong, on screen and in what was stored. */
+async function expectSoundMarkup(label: string): Promise<void> {
+  expect(await session.problems(), `${label}: live markup`).toEqual([]);
+  expect(await session.persistedProblems(), `${label}: stored markup`).toEqual([]);
+}
+
+describe.skipIf(!electronBinary)('editing bulleted lists', () => {
+  it('bullets a box of paragraphs and takes it back to paragraphs', {
+    timeout: 120_000,
+  }, async () => {
+    await session.reset(FOUR);
+    await session.edit();
+    await session.cdp.chord('a', 'KeyA', 65, MOD, ['selectAll']);
+    expect(await session.chooseList('Bulleted'), 'one press reaches Bulleted')
+      .toEqual(['Bulleted']);
+    expect(await session.outline()).toEqual(['ul', '- alpha', '- beta', '- gamma', '- delta']);
+    await session.expectPersisted(
+      (lines) => lines.join('|') === 'ul|- alpha|- beta|- gamma|- delta', 'bulleted');
+
+    await session.cdp.chord('a', 'KeyA', 65, MOD, ['selectAll']);
+    // Walking to None from Bulleted stops on Numbered on the way, and that
+    // stop is applied like any other choice. Every item ends up free either
+    // way, which is what the box is asked for here.
+    expect(await session.chooseList('None')).toEqual(['Numbered', 'None']);
+    expect(await session.outline()).toEqual([
+      'p: alpha', 'p: beta', 'p: gamma', 'p: delta',
+    ]);
+    await session.expectPersisted(
+      (lines) => lines.join('|') === 'p: alpha|p: beta|p: gamma|p: delta', 'un-bulleted');
+    await expectSoundMarkup('after bulleting and un-bulleting the whole box');
+  });
+
+  it('takes the bullet off just the paragraph the caret sits in', {
+    timeout: 120_000,
+  }, async () => {
+    // The reported bug: with a caret and no selection, "None" did nothing at
+    // all. Nothing is selected here — the caret is simply inside one item.
+    await session.reset('<ul><li>alpha</li><li>beta</li><li>gamma</li></ul>');
+    await session.edit();
+    await session.caretIn('beta');
+    expect(await session.shownList(), 'the dropdown reads the caret').toBe('Bulleted');
+
+    // First type-ahead stop: the marker kind changes for the whole list the
+    // caret is in, which is what changing one list's kind means.
+    expect(await session.pressList('n')).toBe('Numbered');
+    expect(await session.outline()).toEqual(['ol', '- alpha', '- beta', '- gamma']);
+
+    // Second stop, "None": only the paragraph the caret is in is freed.
+    expect(await session.pressList('n')).toBe('None');
+    expect(await session.outline()).toEqual(['ol', '- alpha', 'p: beta', 'ol@2', '- gamma']);
+    await session.expectPersisted(
+      (lines) => lines.join('|') === 'ol|- alpha|p: beta|ol@2|- gamma', 'one item freed');
+    await expectSoundMarkup('after freeing one item');
+
+    // What you type there is not part of either list.
+    await session.caretIn('beta', 'end');
+    await session.cdp.typeKeys(' loose');
+    expect(await session.outline())
+      .toEqual(['ol', '- alpha', 'p: beta loose', 'ol@2', '- gamma']);
+    await session.expectPersisted(
+      (lines) => lines.join('|') === 'ol|- alpha|p: beta loose|ol@2|- gamma',
+      'typed into the gap');
+  });
+
+  it('reports the caret style and re-bullets a freed paragraph', {
+    timeout: 120_000,
+  }, async () => {
+    await session.reset('<ul><li>alpha</li></ul><p>beta</p><ul><li>gamma</li></ul>');
+    await session.edit();
+    await session.caretIn('beta');
+    expect(await session.shownList(), 'a loose paragraph reads None').toBe('None');
+
+    expect(await session.chooseList('Bulleted')).toEqual(['Bulleted']);
+    // Re-bulleting the paragraph between two lists closes the gap again.
+    expect(await session.outline()).toEqual(['ul', '- alpha', '- beta', '- gamma']);
+    await session.expectPersisted(
+      (lines) => lines.join('|') === 'ul|- alpha|- beta|- gamma', 're-bulleted');
+    await expectSoundMarkup('after re-bulleting the gap');
+  });
+
+  it('ends the list when Return is pressed on an empty bullet', {
+    timeout: 120_000,
+  }, async () => {
+    await session.reset(FOUR);
+    await session.edit();
+    await session.cdp.chord('a', 'KeyA', 65, MOD, ['selectAll']);
+    expect(await session.chooseList('Bulleted')).toEqual(['Bulleted']);
+
+    await session.caretIn('beta', 'end');
+    await session.cdp.key('Enter', 13);
+    expect(await session.outline(), 'Return opens the next bullet')
+      .toEqual(['ul', '- alpha', '- beta', '- ', '- gamma', '- delta']);
+
+    await session.cdp.key('Enter', 13);
+    expect(await session.outline(), 'Return again leaves the list')
+      .toEqual(['ul', '- alpha', '- beta', 'p: ', 'ul', '- gamma', '- delta']);
+
+    await session.cdp.typeKeys('a note');
+    expect(await session.outline()).toEqual([
+      'ul', '- alpha', '- beta', 'p: a note', 'ul', '- gamma', '- delta',
+    ]);
+    await session.expectPersisted(
+      (lines) => lines.join('|') === 'ul|- alpha|- beta|p: a note|ul|- gamma|- delta',
+      'text typed where the bullet was');
+    await expectSoundMarkup('after ending the list mid-way');
+  });
+
+  it('deletes an empty bullet with Backspace and keeps typing unbulleted', {
+    timeout: 120_000,
+  }, async () => {
+    await session.reset(FOUR);
+    await session.edit();
+    await session.cdp.chord('a', 'KeyA', 65, MOD, ['selectAll']);
+    expect(await session.chooseList('Bulleted')).toEqual(['Bulleted']);
+
+    await session.caretIn('gamma', 'end');
+    await session.cdp.key('Enter', 13);
+    expect(await session.outline())
+      .toEqual(['ul', '- alpha', '- beta', '- gamma', '- ', '- delta']);
+
+    await session.cdp.key('Backspace', 8);
+    expect(await session.outline(), 'Backspace on the empty bullet removes it')
+      .toEqual(['ul', '- alpha', '- beta', '- gamma', 'p: ', 'ul', '- delta']);
+
+    await session.cdp.typeKeys('plain');
+    expect(await session.outline()).toEqual([
+      'ul', '- alpha', '- beta', '- gamma', 'p: plain', 'ul', '- delta',
+    ]);
+    await session.expectPersisted(
+      (lines) => lines.join('|') === 'ul|- alpha|- beta|- gamma|p: plain|ul|- delta',
+      'plain text between the halves');
+    await expectSoundMarkup('after deleting an empty bullet');
+  });
+
+  it('takes the bullet off an item with Backspace at its start', {
+    timeout: 120_000,
+  }, async () => {
+    await session.reset('<ul><li>alpha</li><li>beta</li><li>gamma</li></ul>');
+    await session.edit();
+    await session.caretIn('beta');
+    await session.cdp.key('Backspace', 8);
+    expect(await session.outline(), 'one press, one visible change')
+      .toEqual(['ul', '- alpha', 'p: beta', 'ul', '- gamma']);
+
+    // Pressing it again joins the line to the bullet above, which is what
+    // Backspace at the start of any paragraph does — and the two halves of the
+    // list become one list again.
+    await session.cdp.key('Backspace', 8);
+    expect(await session.outline(), 'the line joined the bullet above')
+      .toEqual(['ul', '- alphabeta', '- gamma']);
+    await session.expectPersisted(
+      (lines) => lines.join('|') === 'ul|- alphabeta|- gamma', 'joined');
+    await expectSoundMarkup('after joining the paragraph back');
+  });
+
+  it('indents and outdents items with Tab, and steps back out one level at a time', {
+    timeout: 120_000,
+  }, async () => {
+    await session.reset('<ul><li>alpha</li><li>beta</li><li>gamma</li></ul>');
+    await session.edit();
+    await session.caretIn('beta');
+    await session.cdp.key('Tab', 9);
+    // Chromium writes the sub-list as a sibling of the item it belongs to; the
+    // editor repairs that on the way to the deck, so the stored markup is
+    // where the nesting can be read.
+    await session.expectPersisted(
+      (lines) => lines.join('|') === 'ul|- alpha|  ul|  - beta|- gamma', 'indented');
+
+    await session.cdp.chord('Tab', 'Tab', 9, 8);
+    await session.expectPersisted(
+      (lines) => lines.join('|') === 'ul|- alpha|- beta|- gamma', 'outdented again');
+
+    await session.cdp.key('Tab', 9);
+    await session.cdp.key('End', 35);
+    await session.cdp.key('Enter', 13);
+    await session.expectPersisted(
+      (lines) => lines.join('|') === 'ul|- alpha|  ul|  - beta|  - |- gamma',
+      'a second sub-bullet');
+
+    // Return on an empty sub-bullet promotes it one level; leaving the list
+    // outright is the last thing that key does, one press further on.
+    await session.cdp.key('Enter', 13);
+    await session.expectPersisted(
+      (lines) => lines.join('|') === 'ul|- alpha|  ul|  - beta|- |- gamma', 'promoted');
+
+    await session.cdp.key('Enter', 13);
+    await session.expectPersisted(
+      (lines) => lines.join('|') === 'ul|- alpha|  ul|  - beta|p: |ul|- gamma', 'left the list');
+    expect(await session.persistedProblems(), 'stored markup after nesting').toEqual([]);
+  });
+
+  it('switches a list between bullets and numbers, and frees one numbered item',
+    { timeout: 120_000 }, async () => {
+      await session.reset('<ul><li>alpha</li><li>beta</li><li>gamma</li><li>delta</li></ul>');
+      await session.edit();
+      await session.caretIn('beta');
+      expect(await session.chooseList('Numbered'), 'one press reaches Numbered')
+        .toEqual(['Numbered']);
+      expect(await session.outline()).toEqual(['ol', '- alpha', '- beta', '- gamma', '- delta']);
+
+      await session.caretIn('gamma');
+      expect(await session.chooseList('None'), 'None is one press from Numbered')
+        .toEqual(['None']);
+      // Numbering runs through the gap: alpha is 1, gamma is loose, and the
+      // items after it continue at 2 rather than restarting.
+      expect(await session.outline()).toEqual([
+        'ol', '- alpha', '- beta', 'p: gamma', 'ol@3', '- delta',
+      ]);
+      await session.expectPersisted(
+        (lines) => lines.join('|') === 'ol|- alpha|- beta|p: gamma|ol@3|- delta',
+        'numbering continued');
+      await expectSoundMarkup('after freeing a numbered item');
+    });
+
+  it('undoes an un-bulleting in one step', { timeout: 120_000 }, async () => {
+    // A numbered fixture so reaching None is a single applied change, and one
+    // Cmd+Z therefore has exactly one thing to take back.
+    await session.reset('<ol><li>alpha</li><li>beta</li><li>gamma</li></ol>');
+    await session.edit();
+    await session.caretIn('beta');
+    expect(await session.chooseList('None')).toEqual(['None']);
+    expect(await session.outline()).toEqual(['ol', '- alpha', 'p: beta', 'ol@2', '- gamma']);
+
+    await session.cdp.click(CONTENT, 'back into the text box');
+    await session.undo();
+    expect(await session.outline(), 'one Cmd+Z puts the marker back')
+      .toEqual(['ol', '- alpha', '- beta', '- gamma']);
+    await session.expectPersisted(
+      (lines) => lines.join('|') === 'ol|- alpha|- beta|- gamma', 'undone');
+  });
+});
+
+describe.skipIf(electronBinary)('editing bulleted lists (skipped)', () => {
+  it('needs Electron', () => expect(electronBinary).toBe(''));
+});

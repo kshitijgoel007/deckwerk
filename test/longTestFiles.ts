@@ -16,6 +16,11 @@ export const LONG_TESTS = [
     scope: 'Large browser formatting and undo omnibus, including real per-keystroke typing around every inline format change',
   },
   {
+    file: 'test/selectionFocusFuzzBrowser.test.ts',
+    observedSeconds: 89,
+    scope: 'Every entry and exit of a text or table edit, plus a seeded random walk, checking the selection/focus invariants after each real input',
+  },
+  {
     file: 'test/performanceStressBrowser.test.ts',
     observedSeconds: 13,
     scope: 'Opt-in 1,000-slide media-wall/unique-video and 500-slide history performance gates',

@@ -32,6 +32,15 @@ import {
   type ListMarkerColorState,
 } from '@shared/paragraphs.js';
 import {
+  caretAtBlockStart,
+  flattenListToParagraphs,
+  isEmptyListItem,
+  isTopLevelListItem,
+  liftItemOutOfItem,
+  mergeParagraphIntoList,
+  unbulletListItems,
+} from './listEditing.js';
+import {
   applyPendingHud,
   clearPending,
   markPendingFailed,
@@ -41,6 +50,7 @@ import {
 } from './pendingUploads.js';
 import { newComment, openCommentsPopover, openCount } from './comments.js';
 import { reportRenderDivergences } from './renderInvariants.js';
+import { reportSelectionViolations } from './selectionInvariants.js';
 import { HANDLES, type SnapLine, snapMove, snapResize } from './snapping.js';
 import type { EditorStore } from './store.js';
 
@@ -140,6 +150,32 @@ function convertTypedListMarker(body: HTMLElement, selection: Selection | null):
   selection.removeAllRanges();
   selection.addRange(caret);
   return true;
+}
+
+/** The blocks a word can never span: paragraphs, list items, table cells. */
+const TEXT_BLOCKS = 'td, th, li, p, h1, h2, h3, h4, h5, h6, blockquote, div';
+
+/**
+ * Whether a range reaches across two blocks of the edited text.
+ *
+ * A double-click selects a word, and a word never crosses a paragraph or a
+ * table cell. Chromium hands back a range spanning everything when the click
+ * that opened the editor replaced the box's DOM between the two presses of
+ * the double-click — reaching a table by clicking it and then clicking into a
+ * cell does exactly that. Such a range is not a word selection, and the next
+ * character typed would replace every cell it covers.
+ */
+function crossesBlocks(range: Range, body: HTMLElement): boolean {
+  const blockOf = (node: Node | null): Element | null => {
+    const element = node === null
+      ? null
+      : node.nodeType === Node.ELEMENT_NODE ? node as Element : node.parentElement;
+    const block = element?.closest(TEXT_BLOCKS) ?? null;
+    return block && body.contains(block) ? block : null;
+  };
+  const start = blockOf(range.startContainer);
+  const end = blockOf(range.endContainer);
+  return start !== null && end !== null && start !== end;
 }
 
 /** Serialize authored text without editor-only table selection chrome. */
@@ -364,6 +400,8 @@ export class EditorCanvas {
   private textEditChunk = 0;
   /** Ends the current run of typing so the next edit is its own undo step. */
   private sealTextChunk: (() => void) | null = null;
+  /** List style last reported to the panel, so the caret only redraws it once. */
+  private caretListStyle: 'None' | 'Bulleted' | 'Numbered' | null = null;
   /** Last non-collapsed browser selection inside the active text element. */
   private textSelectionRange: Range | null = null;
   /** Rectangular cell range currently targeted in the live table editor. */
@@ -1339,6 +1377,24 @@ export class EditorCanvas {
     }
 
     this.overlay.replaceChildren(frag);
+
+    // In development, verify that everything the editor believes about
+    // selection agrees with everything it just drew. The reporter settles
+    // before sampling, so mid-repaint frames are not reported as violations.
+    reportSelectionViolations(() => {
+      const state = this.store.get();
+      return {
+        deck: state.deck,
+        slideIndex: state.slideIndex,
+        selection: state.selection,
+        slideSelection: state.slideSelection,
+        editingId: this.editingId,
+        maskingId: this.maskingId,
+        tableSelection: this.tableSelection,
+        slideLayer: this.slideLayer,
+        overlay: this.overlay,
+      };
+    }, 'an overlay redraw');
   }
 
   /** Screen point -> canvas point. */
@@ -2042,11 +2098,21 @@ export class EditorCanvas {
       );
       const selection = window.getSelection();
       const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
+      const point = { clientX: ev.clientX, clientY: ev.clientY };
       if (
         body &&
-        (!range || range.collapsed || !body.contains(range.commonAncestorContainer))
+        (!range || range.collapsed || !body.contains(range.commonAncestorContainer)
+          || crossesBlocks(range, body))
       ) {
-        this.selectWordAtPoint(body, { clientX: ev.clientX, clientY: ev.clientY });
+        this.selectWordAtPoint(body, point);
+        // There may have been no word under the pointer to take. Leaving the
+        // browser's range in place would then hand the next keystroke a
+        // selection spanning the whole box, and typing one character would
+        // erase the text — a whole table's rows, in the case this repairs.
+        const repaired = selection?.rangeCount ? selection.getRangeAt(0) : null;
+        if (!repaired || crossesBlocks(repaired, body)) {
+          this.textSelectionRange = this.placeCaretAtPoint(body, point);
+        }
       }
       return;
     }
@@ -2116,6 +2182,14 @@ export class EditorCanvas {
 
     this.editingId = elementId;
     this.tableSelection = null;
+    // Typing into a box means that box is what is selected. Entering the edit
+    // from a multiple selection — a shift-click, a select-all, a marquee —
+    // used to leave every other object selected alongside it, so Cmd+B and
+    // the inspector still applied to all of them while the author typed into
+    // one, and the overlay drew handles around objects that were not being
+    // worked on. Narrowing here covers every entry point at once.
+    const selected = this.store.get().selection;
+    if (selected.size !== 1 || !selected.has(elementId)) this.store.select([elementId]);
     node!.classList.add('editing');
     // The player replaces TeX delimiters with KaTeX DOM. Editing must expose
     // the authored source, otherwise a save would persist generated markup.
@@ -2697,11 +2771,27 @@ export class EditorCanvas {
         e.preventDefault();
         finish(true);
       } else if (e.key === 'Enter' && !e.shiftKey && !e.altKey) {
-        if (convertTypedListMarker(body, window.getSelection())) {
+        // Return on an empty bullet ends the list, the way it does in Keynote:
+        // the bullet you are standing on becomes a plain paragraph and you
+        // keep typing there. Chromium would give you another empty bullet.
+        if (this.unbulletCaretItem(body, 'return', sealTextChunk)) {
+          e.preventDefault();
+          pushLive();
+        } else if (convertTypedListMarker(body, window.getSelection())) {
           e.preventDefault();
           onInput();
           // The Props checkboxes should reflect the conversion immediately,
           // even in the desktop shell where ordinary typing syncs on blur.
+          pushLive();
+        }
+      } else if (e.key === 'Backspace' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        // Backspace at the start of an item removes its bullet rather than
+        // merging the item into the one above it — one press, one visible
+        // change. A second press, now at the start of a paragraph, joins the
+        // line to the bullet above it.
+        if (this.unbulletCaretItem(body, 'backspace', sealTextChunk)
+          || this.mergeCaretParagraphIntoList(body, sealTextChunk)) {
+          e.preventDefault();
           pushLive();
         }
       } else if (e.key === 'Tab' && !e.metaKey && !e.ctrlKey && !e.altKey) {
@@ -2709,11 +2799,24 @@ export class EditorCanvas {
         // see type.css); shift-tab unindents. Outside a list, tab keeps its
         // browser default (which would blur the box), so swallow it there too.
         e.preventDefault();
+        // Shift-tab on an item that is already at the outer level has one
+        // level left to give up: the bullet itself. Chromium's outdent leaves
+        // a bare line at the top of the box there, which is not a paragraph
+        // anything can be applied to.
+        if (e.shiftKey && this.unbulletCaretItem(body, 'outdent', sealTextChunk)) {
+          pushLive();
+          return;
+        }
         const anchor = window.getSelection()?.anchorNode;
         const inItem = anchor instanceof Element
           ? anchor.closest('li')
           : anchor?.parentElement?.closest('li');
         if (inItem && body.contains(inItem)) {
+          // Chromium writes the sub-list as a *sibling* of the item it belongs
+          // to. Normalisation repairs that when the markup is saved, and the
+          // list operations here handle the shape in the meantime: rewriting
+          // the live surface would cost the caret, which an offset bookmark
+          // cannot place inside a line that holds no text yet.
           document.execCommand?.(e.shiftKey ? 'outdent' : 'indent');
         }
       }
@@ -3252,22 +3355,20 @@ export class EditorCanvas {
     return true;
   }
 
-  /** The list style containing the live selection, if it has one. */
+  /** The list style at the caret or under the selection, if it has just one. */
   textSelectionListStyle(): 'None' | 'Bulleted' | 'Numbered' | null {
     if (!this.editingId) return null;
     const content = this.slideLayer.querySelector<HTMLElement>(
       `[data-element-id="${CSS.escape(this.editingId)}"] .text-content`,
     );
-    const live = window.getSelection();
-    const range = live && live.rangeCount > 0 && !live.getRangeAt(0).collapsed
-      ? live.getRangeAt(0)
-      : this.textSelectionRange;
-    if (!content || !range || range.collapsed || !content.contains(range.commonAncestorContainer)) {
-      return null;
-    }
+    const range = content ? this.listStyleRange(content) : null;
+    if (!content || !range) return null;
     const styles = [...content.children].flatMap((child) => {
       try {
-        if (!range.intersectsNode(child)) return [];
+        const touches = range.collapsed
+          ? child.contains(range.startContainer) || child === range.startContainer
+          : range.intersectsNode(child);
+        if (!touches) return [];
       } catch {
         return [];
       }
@@ -3278,22 +3379,208 @@ export class EditorCanvas {
     return new Set(styles).size === 1 ? styles[0] ?? null : null;
   }
 
-  /** Change whole touched lists, even when only part of one item is selected. */
+  /**
+   * The Range the List control acts on: the live selection when there is one,
+   * otherwise the caret bookmark taken before focus moved into the panel.
+   *
+   * A bare caret counts. Standing in a bullet and asking for "None" is the
+   * common way to leave a list, and requiring a selection first is why that
+   * appeared to do nothing at all.
+   */
+  private listStyleRange(content: HTMLElement): Range | null {
+    const live = window.getSelection();
+    const current = live && live.rangeCount > 0 ? live.getRangeAt(0) : null;
+    const inside = (range: Range | null) =>
+      range && content.contains(range.commonAncestorContainer) ? range : null;
+    return inside(current && !current.collapsed ? current : null)
+      ?? inside(this.textSelectionRange)
+      ?? inside(current);
+  }
+
+  /** The list items a Range touches, in document order. */
+  private touchedListItems(
+    content: HTMLElement,
+    range: Range,
+    collapsed = range.collapsed,
+  ): HTMLElement[] {
+    const items = [...content.querySelectorAll<HTMLElement>('li')].filter((item) => {
+      try {
+        // A collapsed caret intersects nothing; it is *inside* one item.
+        return collapsed ? item.contains(range.startContainer) : range.intersectsNode(item);
+      } catch {
+        return false;
+      }
+    });
+    // A nested list is inside its parent item, which would then be reported as
+    // touched as well. Keep only the innermost items actually selected.
+    return items.filter((item) => !items.some((other) => other !== item && item.contains(other)));
+  }
+
+  /**
+   * Select what a list-style change produced and record it as one step.
+   *
+   * `collapse` leaves a caret in the first paragraph instead of a selection:
+   * an author who was merely standing in an item gets to keep typing there,
+   * while an author who selected text keeps their selection — undo restores it
+   * from the same text offsets.
+   */
+  private selectInserted(
+    content: HTMLElement,
+    inserted: Node[],
+    live: Selection | null,
+    label: string,
+    collapse = false,
+  ): void {
+    const first = inserted[0];
+    const last = inserted[inserted.length - 1];
+    const span = document.createRange();
+    span.setStartBefore(first);
+    span.setEndAfter(last);
+    // Anchor the selection in the text rather than between the blocks: a Range
+    // whose ends sit outside a single block does not survive focusing the
+    // editable host, and the author would be left with no selection at all.
+    const offsets = collapse ? null : this.textOffsetsForRange(content, span);
+    if (offsets) {
+      this.restoreTextRange(content, offsets);
+    } else {
+      const next = document.createRange();
+      if (first instanceof HTMLElement) {
+        next.selectNodeContents(first);
+        next.collapse(true);
+      } else {
+        next.setStartBefore(first);
+        next.collapse(true);
+      }
+      live?.removeAllRanges();
+      live?.addRange(next);
+      this.textSelectionRange = next.cloneRange();
+      content.focus();
+    }
+    const node = content.closest<HTMLElement>('.element');
+    if (node) scheduleAutoFit(node);
+    this.commitLiveTextDom(label);
+  }
+
+  /**
+   * Keynote's keyboard ways out of a list: Return on an empty bullet,
+   * Backspace at the start of an item, and shift-Tab on an item that is
+   * already at the outer level all take that one paragraph out of the list
+   * rather than adding another empty bullet, merging the item into the one
+   * above it, or handing the whole thing to `execCommand`. An indented item
+   * loses one level of indent first — leaving a list is the *last* thing
+   * those keys do.
+   *
+   * `beforeChange` runs immediately before the DOM is touched, so the caller
+   * can seal the run of typing that came before: the change is a step of its
+   * own in history, not the tail of the word you just wrote.
+   */
+  private unbulletCaretItem(
+    body: HTMLElement,
+    mode: 'return' | 'backspace' | 'outdent',
+    beforeChange?: () => void,
+  ): boolean {
+    const live = window.getSelection();
+    const range = live && live.rangeCount > 0 ? live.getRangeAt(0) : null;
+    if (!range?.collapsed || !body.contains(range.startContainer)) return false;
+    const from = range.startContainer instanceof Element
+      ? range.startContainer
+      : range.startContainer.parentElement;
+    const item = from?.closest('li') ?? null;
+    if (!item || !body.contains(item)) return false;
+    if (mode === 'return' && !isEmptyListItem(item)) return false;
+    if (mode === 'backspace' && !caretAtBlockStart(item, range)) return false;
+    if (!isTopLevelListItem(body, item)) {
+      // One level at a time. An item Chromium left inside another item is
+      // moved up here, node and caret together; a properly nested item is
+      // handed to the browser, whose input event carries the change into
+      // history and live sync like any other edit.
+      if (item.parentElement?.tagName === 'LI') {
+        beforeChange?.();
+        liftItemOutOfItem(item);
+        const node = body.closest<HTMLElement>('.element');
+        if (node) scheduleAutoFit(node);
+        this.commitLiveTextDom('Move the line out one level');
+        return true;
+      }
+      document.execCommand?.('outdent');
+      return true;
+    }
+    beforeChange?.();
+    const paragraphs = unbulletListItems([item]);
+    if (paragraphs.length === 0) return false;
+    this.selectInserted(
+      body, paragraphs, live, mode === 'return' ? 'End list' : 'Remove bullet', true,
+    );
+    return true;
+  }
+
+  /**
+   * Backspace at the start of a paragraph that follows a list joins it to the
+   * bullet above, the way it joins any two paragraphs. Chromium's own merge
+   * moves the text out of the list and leaves it bare at the top level of the
+   * box, where it is no longer a paragraph anything can be applied to.
+   */
+  private mergeCaretParagraphIntoList(body: HTMLElement, beforeChange?: () => void): boolean {
+    const live = window.getSelection();
+    const range = live && live.rangeCount > 0 ? live.getRangeAt(0) : null;
+    if (!range?.collapsed || !body.contains(range.startContainer)) return false;
+    const from = range.startContainer instanceof Element
+      ? range.startContainer
+      : range.startContainer.parentElement;
+    const paragraph = from?.closest('p, div') as HTMLElement | null;
+    if (!paragraph || paragraph.parentElement !== body) return false;
+    const previous = paragraph.previousElementSibling;
+    if (!previous || !/^(?:UL|OL)$/.test(previous.tagName)) return false;
+    if (!caretAtBlockStart(paragraph, range)) return false;
+    beforeChange?.();
+    const caret = mergeParagraphIntoList(paragraph);
+    if (!caret) return false;
+    const next = document.createRange();
+    next.setStart(caret.node, caret.offset);
+    next.collapse(true);
+    live?.removeAllRanges();
+    live?.addRange(next);
+    this.textSelectionRange = next.cloneRange();
+    body.focus();
+    const node = body.closest<HTMLElement>('.element');
+    if (node) scheduleAutoFit(node);
+    this.commitLiveTextDom('Join line to the list above');
+    return true;
+  }
+
+  /**
+   * Apply a list style to what the caret or the selection touches.
+   *
+   * A bare caret is enough: "None" takes the marker off the one paragraph you
+   * are standing in, leaving the items around it as they were. Turning markers
+   * *on* converts the whole touched list, because a list of two kinds is not
+   * something an author asked for.
+   */
   applyTextSelectionListStyle(style: 'None' | 'Bulleted' | 'Numbered'): boolean {
     if (!this.editingId) return false;
     const content = this.slideLayer.querySelector<HTMLElement>(
       `[data-element-id="${CSS.escape(this.editingId)}"] .text-content`,
     );
     const live = window.getSelection();
-    const range = live && live.rangeCount > 0 && !live.getRangeAt(0).collapsed
-      ? live.getRangeAt(0)
-      : this.textSelectionRange;
-    if (!content || !range || range.collapsed || !content.contains(range.commonAncestorContainer)) {
-      return false;
-    }
+    const range = content ? this.listStyleRange(content) : null;
+    if (!content || !range) return false;
+    // Read now, not later: this is a live Range, and replacing the nodes it
+    // points at collapses it. A caret is then left where it was rather than
+    // replaced by a selection of the whole list — the marker changed, the
+    // author's place in the text did not, and the next choice from the
+    // dropdown must act on that one paragraph again rather than on everything
+    // the previous choice touched.
+    const startedCollapsed = range.collapsed;
+    const caretOffsets = startedCollapsed ? this.textOffsetsForRange(content, range) : null;
 
     const selectedBlocks = [...content.children].filter((child) => {
-      try { return range.intersectsNode(child); } catch { return false; }
+      try {
+        return startedCollapsed
+          ? child.contains(range.startContainer) || child === range.startContainer
+          : range.intersectsNode(child);
+      } catch {
+        return false;
+      }
     }) as HTMLElement[];
     if (selectedBlocks.length === 0) return false;
 
@@ -3306,65 +3593,30 @@ export class EditorCanvas {
     let changed = false;
 
     if (style === 'None') {
+      // Keynote takes the marker off the paragraphs you touched, not off the
+      // whole list: the items above and below keep theirs and the freed
+      // paragraph sits between them. Nested items fall through to flattening
+      // the list they belong to, because a paragraph cannot be a list item's
+      // sibling inside a list.
+      const touched = this.touchedListItems(content, range, startedCollapsed);
+      if (touched.length > 0 && touched.every((item) => isTopLevelListItem(content, item))) {
+        const paragraphs = unbulletListItems(touched);
+        if (paragraphs.length === 0) return false;
+        this.selectInserted(
+          content, paragraphs, live, `Change selected list style to ${style.toLowerCase()}`,
+          startedCollapsed,
+        );
+        return true;
+      }
+      // Anything else — a nested item, a selection crossing several lists —
+      // flattens the whole list it belongs to, because a paragraph cannot be
+      // a list item's sibling inside a list.
       for (const block of targets) {
         if (!/^(OL|UL)$/.test(block.tagName)) {
           inserted.push(block);
           continue;
         }
-        const fragment = document.createDocumentFragment();
-        const paragraphs: HTMLElement[] = [];
-        // Walk each item in document order, so a sub-list or a block written
-        // inside the item (Google Docs and Word both do this) becomes its own
-        // paragraph exactly where it was, rather than being appended after the
-        // item it was nested in.
-        const paragraphFrom = (source: HTMLElement): HTMLElement => {
-          const paragraph = document.createElement('p');
-          for (const attr of [...source.attributes]) {
-            if (attr.name !== LIST_MARKER_COLOR_ATTRIBUTE) {
-              paragraph.setAttribute(attr.name, attr.value);
-            }
-          }
-          paragraph.style.removeProperty(LIST_MARKER_COLOR_PROPERTY);
-          paragraph.style.removeProperty('list-style-type');
-          if (!paragraph.getAttribute('style')?.trim()) paragraph.removeAttribute('style');
-          return paragraph;
-        };
-        const flatten = (item: HTMLElement): HTMLElement[] => {
-          const out: HTMLElement[] = [];
-          let current = paragraphFrom(item);
-          const flush = () => {
-            if (current.childNodes.length > 0) out.push(current);
-            current = paragraphFrom(item);
-          };
-          for (const node of [...item.childNodes]) {
-            if (node instanceof HTMLElement && /^(?:UL|OL)$/.test(node.tagName)) {
-              flush();
-              for (const nested of [...node.children] as HTMLElement[]) {
-                if (nested.tagName === 'LI') out.push(...flatten(nested));
-              }
-              continue;
-            }
-            if (node instanceof HTMLElement && /^(?:P|DIV|H[1-6])$/.test(node.tagName)) {
-              flush();
-              const paragraph = paragraphFrom(node);
-              while (node.firstChild) paragraph.appendChild(node.firstChild);
-              out.push(paragraph);
-              continue;
-            }
-            current.appendChild(node);
-          }
-          flush();
-          return out;
-        };
-        for (const item of [...block.children] as HTMLElement[]) {
-          if (item.tagName !== 'LI') continue;
-          for (const paragraph of flatten(item)) {
-            paragraphs.push(paragraph);
-            fragment.appendChild(paragraph);
-          }
-        }
-        block.replaceWith(fragment);
-        inserted.push(...paragraphs);
+        inserted.push(...flattenListToParagraphs(block));
         changed = true;
       }
     } else {
@@ -3421,17 +3673,42 @@ export class EditorCanvas {
         inserted.splice(index, 1);
         index -= 1;
       }
+      // A list beside a list is one list. Converting the paragraph between two
+      // lists would otherwise leave three lists that merely look joined, and
+      // the next whole-list command would reach only part of what you see.
+      for (let index = 0; index < inserted.length; index++) {
+        const current = inserted[index];
+        if (!(current instanceof HTMLElement) || current.tagName !== targetTag) continue;
+        const previous = current.previousElementSibling;
+        if (previous?.tagName === targetTag) {
+          while (current.firstChild) previous.appendChild(current.firstChild);
+          current.remove();
+          inserted[index] = previous;
+        }
+        const survivor = inserted[index] as HTMLElement;
+        const following = survivor.nextElementSibling;
+        if (following?.tagName === targetTag) {
+          while (following.firstChild) survivor.appendChild(following.firstChild);
+          following.remove();
+        }
+      }
     }
     if (!changed) return true;
     if (inserted.length === 0) return false;
 
-    const next = document.createRange();
-    next.setStartBefore(inserted[0]);
-    next.setEndAfter(inserted[inserted.length - 1]);
-    live?.removeAllRanges();
-    live?.addRange(next);
-    this.textSelectionRange = next.cloneRange();
-    content.focus();
+    if (caretOffsets) {
+      // List markers are not text, so the offsets still point at the same
+      // characters they did before the conversion.
+      this.restoreTextRange(content, caretOffsets);
+    } else {
+      const next = document.createRange();
+      next.setStartBefore(inserted[0]);
+      next.setEndAfter(inserted[inserted.length - 1]);
+      live?.removeAllRanges();
+      live?.addRange(next);
+      this.textSelectionRange = next.cloneRange();
+      content.focus();
+    }
     const node = content.closest<HTMLElement>('.element');
     if (node) scheduleAutoFit(node);
     this.commitLiveTextDom(`Change selected list style to ${style.toLowerCase()}`);
@@ -3913,6 +4190,14 @@ export class EditorCanvas {
         if (marker !== activeMarker) this.clearTypingStyleMarker(marker);
       });
       this.textSelectionRange = range.cloneRange();
+      // The List control reads the caret, so moving it between a bullet and a
+      // plain paragraph changes what the panel should show. Only a real change
+      // redraws it: a selection change fires on every arrow key.
+      const listStyle = this.textSelectionListStyle();
+      if (listStyle !== this.caretListStyle) {
+        this.caretListStyle = listStyle;
+        this.onTextFormatStateChange?.();
+      }
     }
   }
 

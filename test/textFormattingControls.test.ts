@@ -441,7 +441,7 @@ describe('text formatting from the inspector controls', () => {
   it.each([
     ['Bulleted', 'ul'],
     ['None', null],
-  ] as const)('changes a whole numbered list to %s when only one word is selected', (style, tag) => {
+  ] as const)('applies %s to a numbered list from a one-word selection', (style, tag) => {
     const original = '<p>Heading</p><ol start="3" class="steps">'
       + '<li><strong>First</strong> item</li>'
       + '<li data-list-marker-color="true" style="--list-marker-color: #ff8800">'
@@ -474,8 +474,13 @@ describe('text formatting from the inspector controls', () => {
       expect(saved.querySelectorAll(`${tag}.steps > li`)).toHaveLength(2);
       expect(saved.querySelector(tag)?.hasAttribute('start')).toBe(false);
     } else {
-      expect(saved.querySelectorAll('ol, ul')).toHaveLength(0);
-      expect(saved.querySelectorAll(':scope > p')).toHaveLength(4);
+      // "None" frees the paragraph the selection is in, the way Keynote does,
+      // rather than the whole list: the item above keeps its marker and its
+      // number, and the freed line sits between it and the footer.
+      expect(saved.querySelectorAll('ol.steps > li')).toHaveLength(1);
+      expect(saved.querySelector('ol')?.getAttribute('start')).toBe('3');
+      expect(saved.querySelectorAll(':scope > p')).toHaveLength(3);
+      expect(saved.children[2].outerHTML).toBe('<p><em>Second</em> item</p>');
       expect(saved.querySelector('[data-list-marker-color]')).toBeNull();
       expect(textOf(store, 'text-1').html).not.toContain('--list-marker-color');
     }

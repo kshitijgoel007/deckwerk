@@ -44,6 +44,7 @@ import { AgentChatPanel } from '../editor/agentChatPanel.js';
 import { startPresenting } from './presentOverlay.js';
 import { rangeForSlideSelection } from '@shared/presentationRange.js';
 import { setRenderInvariantChecks } from '../editor/renderInvariants.js';
+import { setSelectionInvariantChecks } from '../editor/selectionInvariants.js';
 import { trackPreviewFrameRecovery } from '../player/previewFrameRecovery.js';
 import { trackVideoLoading } from '../player/videoLoadingProgress.js';
 import { DelayedOperationProgress } from '../editor/operationProgress.js';
@@ -171,6 +172,7 @@ const store = new EditorStore(emptyDeck('Connecting…'));
 // still matches a fresh render of the deck, and report any property the two
 // paths disagree about. See renderInvariants.ts.
 setRenderInvariantChecks(import.meta.env.DEV);
+setSelectionInvariantChecks(import.meta.env.DEV);
 const canvas = new EditorCanvas(el('canvas'), store);
 // Remote sessions fetch video bytes over the wire; until a frame decodes each
 // video is a black box, so overlay loading progress on the editing canvas.

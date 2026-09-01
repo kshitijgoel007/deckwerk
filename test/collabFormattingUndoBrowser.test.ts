@@ -442,14 +442,16 @@ describe.skipIf(!electronBinary)('formatting scope and undo in the collaboration
       await restore(NORMAL_ID);
     }
 
-    /* Selecting one word changes the whole containing list, preserving markup. */
+    /* Selecting one word changes the marker kind of the whole containing list,
+       preserving markup — while "None" frees just the paragraph the selection
+       is in, the way Keynote does, leaving the items around it bulleted. */
     for (const [id, selectedItem, current, next, expected] of [
       [OL_ID, 'li:first-child', 'Numbered', 'Bulleted',
         '<ul><li><span class="keep">Ordered</span> one</li><li>Ordered two</li></ul>'],
       [UL_ID, 'li:nth-child(2)', 'Bulleted', 'Numbered',
         '<ol><li><span class="keep">Bullet</span> one</li><li>Bullet two</li></ol>'],
       [OL_ID, 'li:nth-child(2)', 'Numbered', 'None',
-        '<p><span class="keep">Ordered</span> one</p><p>Ordered two</p>'],
+        '<ol><li><span class="keep">Ordered</span> one</li></ol><p>Ordered two</p>'],
     ] as const) {
       await beginSelectFirstWord(id, selectedItem);
       const list = await idField('List', `test-list-${id}-${next}`, 'label.field');
