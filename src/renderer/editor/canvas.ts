@@ -787,7 +787,7 @@ export class EditorCanvas {
           const height = heights.get(element.id);
           if (height !== undefined) element.h = height;
         }
-      }, { label: 'Fit table rows', transient: true });
+      }, { label: 'Fit table rows', measurement: true });
     });
   }
 

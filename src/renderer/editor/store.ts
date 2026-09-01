@@ -328,7 +328,7 @@ export class EditorStore {
     fn: (deck: Deck) => void,
     opts: {
       history?: boolean; label?: string; transient?: boolean;
-      coalesceKey?: string; historyGroup?: string;
+      coalesceKey?: string; historyGroup?: string; measurement?: boolean;
     } = {},
   ): void {
     const previous = this.state.deck;
@@ -343,11 +343,25 @@ export class EditorStore {
     next: Deck,
     opts: {
       history?: boolean; label?: string; transient?: boolean;
-      coalesceKey?: string; historyGroup?: string;
+      coalesceKey?: string; historyGroup?: string; measurement?: boolean;
     },
   ): void {
     const forward = diffDecks(previous, next);
     if (forward.length === 0) return;
+
+    // Measurement commits record what the renderer observed (an auto-height
+    // table's fitted height), not something the author did. They must not
+    // consume an undo slot, mark the document dirty, clear the History
+    // panel's current row, or broadcast as an edit — merely opening a deck
+    // used to rewrite it and offer an undo step within seconds, and every
+    // cell edit grew a phantom "Fit table rows" entry in the collab undo
+    // stack. The measured value still lands in the deck, so the next real
+    // edit persists it.
+    if (opts.measurement) {
+      this.state = { ...this.state, deck: next };
+      this.emit();
+      return;
+    }
 
     // Transient commits stream work in progress (live typing) to collaborators
     // without consuming undo slots or history entries; the coalesce key lets
@@ -715,7 +729,18 @@ export class EditorStore {
 
   private recordHistory(label: string, opts: RemoteHistoryOptions = {}): void {
     const last = this.historyLog[this.historyLog.length - 1];
-    if (opts.coalesce && last && last.label === label) {
+    // Coalescing on the label alone folded two peers' edits to *different*
+    // elements into one "Edit text (remote)" row — the panel then offered no
+    // revision between them. A row only absorbs a change aimed at the same
+    // targets it already holds.
+    const incoming = this.historyTipDeck
+      ? diffDecks(this.historyTipDeck, this.state.deck)
+      : [];
+    const sameTargets = last
+      && (this.historyLog.length === 1
+        || last.operations.length === 0
+        || operationTargets(incoming) === operationTargets(last.operations));
+    if (opts.coalesce && last && last.label === label && sameTargets) {
       const previousTip = this.historyTipDeck;
       last.at = Date.now();
       last.slideIndex = this.state.slideIndex;
@@ -725,7 +750,7 @@ export class EditorStore {
         this.historyBase = this.state.deck;
         last.operations = [];
       } else if (previousTip) {
-        last.operations.push(...diffDecks(previousTip, this.state.deck));
+        last.operations.push(...incoming);
       }
       if (opts.description) last.description = opts.description;
       if (opts.agentChatId) last.agentChatId = opts.agentChatId;
@@ -735,9 +760,7 @@ export class EditorStore {
       this.onHistoryChange?.();
       return;
     }
-    const operations = this.historyTipDeck
-      ? diffDecks(this.historyTipDeck, this.state.deck)
-      : [];
+    const operations = incoming;
     if (this.historyLog.length === 0) this.historyBase = this.state.deck;
     this.historyLog.push({
       id: this.nextHistoryId++,
@@ -777,6 +800,18 @@ export class EditorStore {
 
 function sameDeck(left: Deck, right: Deck): boolean {
   return left === right || JSON.stringify(left) === JSON.stringify(right);
+}
+
+/** A stable signature of what a run of operations touches, for coalescing. */
+function operationTargets(operations: AgentOperation[]): string {
+  const ids = new Set<string>();
+  for (const operation of operations) {
+    if ('elementId' in operation) ids.add(operation.elementId);
+    else if ('elementIds' in operation) for (const id of operation.elementIds) ids.add(id);
+    else if ('slideId' in operation) ids.add(`slide:${operation.slideId}`);
+    else ids.add(`deck:${operation.op}`);
+  }
+  return [...ids].sort().join(',');
 }
 
 /**
