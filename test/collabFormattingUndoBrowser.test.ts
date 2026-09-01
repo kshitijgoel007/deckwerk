@@ -181,8 +181,20 @@ describe.skipIf(!electronBinary)('formatting scope and undo in the collaboration
       })()`), `${id} first word was not selected`);
     };
     const undoEditing = async (id: string, preserveTextSelection = true) => {
+      // The selection being formatted: the live one when the text box holds
+      // focus, otherwise the editor's offset bookmark — while a panel field
+      // has the keyboard, Chromium clears the live contenteditable selection
+      // (focusing a text input collapses it), and the bookmark is what the
+      // panel's commits actually format.
       const selectedText = preserveTextSelection
-        ? await editor!.evaluate<string>(`window.getSelection()?.toString() ?? ''`)
+        ? await editor!.evaluate<string>(`(() => {
+            const live = window.getSelection()?.toString() ?? '';
+            if (live) return live;
+            const offsets = window.canvas.editingSelectionOffsets?.();
+            const body = document.querySelector('${ON_CANVAS(id)} .text-content');
+            if (!offsets || !body) return '';
+            return (body.textContent ?? '').slice(offsets.start, offsets.end);
+          })()`)
         : '';
       await editor!.chord('z', 'KeyZ', 90, MOD);
       await expectRestored(server!.port, id, original.get(id)!);
@@ -197,7 +209,10 @@ describe.skipIf(!electronBinary)('formatting scope and undo in the collaboration
           selected: window.getSelection()?.toString() ?? '',
         }))()`), `${id} lost its text selection after undo`, (state) =>
           state.editing && !state.collapsed
-            && state.selected.replace(/\s+/g, ' ').trim() === selectedText.replace(/\s+/g, ' ').trim());
+            // Whitespace-insensitive: Selection.toString() renders block
+            // boundaries as newlines, while the offset-bookmark capture above
+            // reads textContent, which has none.
+            && state.selected.replace(/\s+/g, '') === selectedText.replace(/\s+/g, ''));
       }
     };
     const undoChrome = async (id: string) => {

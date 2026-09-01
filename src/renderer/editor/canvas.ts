@@ -153,6 +153,31 @@ function convertTypedListMarker(body: HTMLElement, selection: Selection | null):
 }
 
 /** The blocks a word can never span: paragraphs, list items, table cells. */
+/**
+ * The text/html element with this id, wherever in the deck it now lives.
+ *
+ * Text commits fire from timers, blur handlers, and render teardown — code
+ * that can outlive a slide switch. Resolving the target through
+ * `slides[slideIndex]` at fire time silently dropped the typed run whenever
+ * the author had already navigated (the slide rail selects on pointerdown,
+ * before the contenteditable blurs), so the target is resolved by id across
+ * the whole deck instead.
+ */
+function findTextTarget(
+  deck: Deck,
+  elementId: string,
+): (SlideElement & { type: 'text' | 'html' }) | null {
+  for (const slide of deck.slides) {
+    const el = slide.elements.find((candidate) => candidate.id === elementId);
+    if (el) {
+      return el.type === 'text' || el.type === 'html'
+        ? (el as SlideElement & { type: 'text' | 'html' })
+        : null;
+    }
+  }
+  return null;
+}
+
 const TEXT_BLOCKS = 'td, th, li, p, h1, h2, h3, h4, h5, h6, blockquote, div';
 
 /**
@@ -191,6 +216,13 @@ function authoredTextHtml(body: HTMLElement): string {
     marker.removeAttribute('data-editor-typing-style');
     if (!(marker.textContent ?? '')) marker.remove();
   });
+  // The border-drawing mode class is editor chrome on the live table; letting
+  // it into the committed markup made the drawing-mode toggle-off register as
+  // a content change of its own, splitting the table session's undo entry.
+  clone.querySelectorAll('.editor-table-border-drawing').forEach((table) => {
+    table.classList.remove('editor-table-border-drawing');
+    if (table.getAttribute('class') === '') table.removeAttribute('class');
+  });
   clone.querySelectorAll('.editor-table-selected, [class*="editor-table-border-preview-"]').forEach((cell) => {
     cell.classList.remove(
       'editor-table-selected',
@@ -202,8 +234,12 @@ function authoredTextHtml(body: HTMLElement): string {
     (cell as HTMLElement).style.removeProperty('--table-border-preview-color');
     (cell as HTMLElement).style.removeProperty('--table-border-preview-width');
     if (cell.getAttribute('style') === '') cell.removeAttribute('style');
-    if (cell.getAttribute('class') === '') cell.removeAttribute('class');
   });
+  // classList.remove leaves `class=""` behind, and which nodes carry that
+  // residue depends on click history — the same content then serializes
+  // differently across commits, and every spurious byte of difference becomes
+  // a phantom "Edit text" undo entry.
+  clone.querySelectorAll('[class=""]').forEach((node) => node.removeAttribute('class'));
   return normalizeParagraphHtml(clone.innerHTML);
 }
 
@@ -398,6 +434,15 @@ export class EditorCanvas {
   /** Coalesce key for the session's stream of live commits + the final one. */
   private textEditCoalesceKey: string | null = null;
   private textEditChunk = 0;
+  /**
+   * True once a formatting/list/table commit has recorded an undo entry under
+   * the current coalesce key. The key itself stays put so that leaving edit
+   * mode folds its re-commit of the same html into that entry — but the next
+   * commit that carries *new typed content* must not: committing it under the
+   * claimed key folded the typing into the formatting's undo step, so one
+   * Ctrl/Cmd+Z took back both the word and the bold before it.
+   */
+  private textEditKeyClaimed = false;
   /** Ends the current run of typing so the next edit is its own undo step. */
   private sealTextChunk: (() => void) | null = null;
   /** List style last reported to the panel, so the caret only redraws it once. */
@@ -559,9 +604,14 @@ export class EditorCanvas {
     this.renderedSlideIndex = slideIndex;
 
     // Re-rendering under an active text edit would destroy the node the caret
-    // lives in, so the edit is committed first.
+    // lives in, so the edit is ended first — through the session's own finish
+    // so its listeners and timers come down with it. Committing directly used
+    // to leave the session's teardown half-done: listeners on a node about to
+    // be replaced, and a finish closure armed for an element no longer being
+    // edited.
     if (this.editingId) {
-      this.commitTextEdit();
+      if (this.finishTextEdit) this.finishTextEdit(true);
+      else this.commitTextEdit();
       // Committing re-enters the store, which notifies this canvas and runs a
       // nested render that has already painted the post-commit slide. Carrying
       // on here would paint the slide as it was *before* that commit, throwing
@@ -1468,7 +1518,9 @@ export class EditorCanvas {
     // Clicks inside an active text edit belong to the caret, not to dragging.
     if (this.editingId) {
       if (target.closest('.editing')) return;
-      this.commitTextEdit();
+      // End the session through its own finish so listeners come down too.
+      if (this.finishTextEdit) this.finishTextEdit(true);
+      else this.commitTextEdit();
     }
     const point = this.toCanvas(ev);
     // A click is also an authoritative cursor sample. This makes the remote
@@ -2147,6 +2199,66 @@ export class EditorCanvas {
     return elementId;
   }
 
+  /**
+   * Return focus to the editing surface after a programmatic text mutation —
+   * unless the author is working in a panel text field. Formatting handlers
+   * used to call content.focus() unconditionally, so committing a number
+   * field with Enter yanked focus back into the box, and the Tab meant for
+   * the next field indented the caret's list item instead.
+   */
+  private panelFieldHasFocus(content: HTMLElement): boolean {
+    const active = document.activeElement;
+    return active instanceof HTMLElement
+      && active !== content && !content.contains(active)
+      && active.matches('input, select, textarea')
+      && Boolean(active.closest(
+        '.editor-inspector, .font-family-field, .text-table-options,'
+        + ' .text-list-toggle, .color-picker-popover',
+      ));
+  }
+
+  private focusTextSurface(content: HTMLElement): void {
+    if (this.panelFieldHasFocus(content)) return;
+    content.focus();
+  }
+
+  /**
+   * The active text selection as flat character offsets, for callers that end
+   * the session, run an undo, and reopen it (shellWiring's Ctrl/Cmd+Z from a
+   * panel control). A live Range dies with the session's DOM; offsets don't.
+   */
+  editingSelectionOffsets(): { start: number; end: number } | null {
+    if (!this.editingId) return null;
+    const body = this.slideLayer.querySelector<HTMLElement>(
+      `[data-element-id="${CSS.escape(this.editingId)}"] .text-content`,
+    );
+    if (!body) return null;
+    const range = this.activeTextRange(body);
+    if (!range) return null;
+    return this.textOffsetsForRange(body, range);
+  }
+
+  /** Re-select the given offsets inside the element being edited. */
+  restoreEditingSelection(offsets: { start: number; end: number } | null): void {
+    if (!this.editingId || !offsets) return;
+    const body = this.slideLayer.querySelector<HTMLElement>(
+      `[data-element-id="${CSS.escape(this.editingId)}"] .text-content`,
+    );
+    if (body) this.restoreTextRange(body, offsets);
+  }
+
+  /**
+   * Give the next content commit its own undo step when the current coalesce
+   * key was claimed by a formatting/list/table commit. Called before every
+   * commit that can carry new typed content; a no-op otherwise.
+   */
+  private advanceClaimedTextEditKey(): void {
+    if (!this.textEditKeyClaimed || !this.editingId) return;
+    this.textEditKeyClaimed = false;
+    this.textEditCoalesceKey =
+      `text:${this.editingId}:${this.textEditSession}:${++this.textEditChunk}`;
+  }
+
   beginTextEdit(
     elementId: string,
     caretPoint?: { clientX: number; clientY: number },
@@ -2182,6 +2294,12 @@ export class EditorCanvas {
 
     this.editingId = elementId;
     this.tableSelection = null;
+    // Editing text and cropping media are exclusive modes. Entering the edit
+    // used to leave `maskingId` dangling when the double-clicked text box sat
+    // inside the crop window (the click-away exit only fires for clicks
+    // outside it), so the editor was in both modes at once and the image's
+    // next handle drag cropped instead of moving.
+    if (this.maskingId) this.toggleMaskMode(null);
     // Typing into a box means that box is what is selected. Entering the edit
     // from a multiple selection — a shift-click, a select-all, a marquee —
     // used to leave every other object selected alongside it, so Cmd+B and
@@ -2228,6 +2346,7 @@ export class EditorCanvas {
       this.textSelectionRange = null;
     }
     this.textEditChunk = 0;
+    this.textEditKeyClaimed = false;
     this.textEditCoalesceKey = `text:${elementId}:${++this.textEditSession}:0`;
     this.onTextEditModeChange?.(elementId);
 
@@ -2237,19 +2356,23 @@ export class EditorCanvas {
     // session's coalesce key so the collab undo layer folds the whole stream
     // into one undoable "Edit text".
     let liveTimer = 0;
+    // While an IME composition is open the DOM holds uncommitted preedit text
+    // (the pinyin "ni" under the candidate window). Streaming or sealing it
+    // would persist — and make undoable — text the author never committed.
+    let composing = false;
     const pushLive = () => {
       liveTimer = 0;
       if (this.editingId !== elementId) return;
+      if (composing) return;
       const html = authoredTextHtml(body);
-      const current = this.store.slide?.elements.find((e) => e.id === elementId);
-      if (!current || (current.type !== 'text' && current.type !== 'html')) return;
+      const current = findTextTarget(this.store.get().deck, elementId);
+      if (!current) return;
       if (current.html === html) return;
+      this.advanceClaimedTextEditKey();
       const coalesceKey = this.textEditCoalesceKey ?? undefined;
       this.store.commit((deck) => {
-        const target = deck.slides[this.store.get().slideIndex]?.elements.find(
-          (e) => e.id === elementId,
-        );
-        if (target && (target.type === 'text' || target.type === 'html')) target.html = html;
+        const target = findTextTarget(deck, elementId);
+        if (target) target.html = html;
       }, { label: 'Edit text', transient: true, coalesceKey });
     };
 
@@ -2277,33 +2400,98 @@ export class EditorCanvas {
         liveTimer = 0;
       }
       if (this.editingId !== elementId) return;
-      // Only seal what the author typed here. If focus has moved to a panel
-      // control, the change being made is that control's, and it records its
-      // own history entry; committing underneath it would add a second one.
-      if (document.activeElement !== body) return;
+      // Mid-composition the DOM holds uncommitted preedit; sealing it would
+      // commit (and make undoable) text that never existed as authored
+      // content. The run is not over either — no key bump. Try again after
+      // the composition commits.
+      if (composing) {
+        scheduleIdleSeal();
+        return;
+      }
       lastEditKind = null;
       const html = authoredTextHtml(body);
-      const current = this.store.slide?.elements.find((e) => e.id === elementId);
-      if (!current || (current.type !== 'text' && current.type !== 'html')) return;
+      const current = findTextTarget(this.store.get().deck, elementId);
+      if (!current) return;
       // Live sync may already have streamed this exact html under the current
       // key. There is then nothing to commit — but the run is still over, so
       // the key must move on either way, or the next word would join this
       // undo step.
       if (current.html !== html) {
+        this.advanceClaimedTextEditKey();
         const coalesceKey = this.textEditCoalesceKey ?? undefined;
         this.store.commit((deck) => {
-          const target = deck.slides[this.store.get().slideIndex]?.elements.find(
-            (e) => e.id === elementId,
-          );
-          if (target && (target.type === 'text' || target.type === 'html')) target.html = html;
+          const target = findTextTarget(deck, elementId);
+          if (target) target.html = html;
         }, { label: 'Edit text', coalesceKey, historyGroup: `text:${elementId}` });
       }
+      this.textEditKeyClaimed = false;
       this.textEditCoalesceKey = `text:${elementId}:${this.textEditSession}:${++this.textEditChunk}`;
     };
     this.sealTextChunk = sealTextChunk;
     const scheduleIdleSeal = () => {
       if (idleSeal) window.clearTimeout(idleSeal);
       idleSeal = window.setTimeout(sealTextChunk, CHUNK_IDLE_MS);
+    };
+
+    // The style a collapsed-caret Cmd+B/Cmd+I promised the next typed text,
+    // captured when a composition opens. The marker span holding that promise
+    // does not survive the composition (the selectionchange cleaner unwraps it
+    // once Chromium's preedit moves the caret out), so the style itself is
+    // carried across and applied to the composed text on commit.
+    let compositionPendingStyle: string | null = null;
+    const onCompositionStart = () => {
+      composing = true;
+      const range = this.activeTextRange(body);
+      const container = range?.startContainer instanceof Element
+        ? range.startContainer
+        : range?.startContainer.parentElement ?? null;
+      const marker = container?.closest<HTMLElement>('[data-editor-typing-style]') ?? null;
+      const markerText = marker
+        ? (marker.textContent ?? '').replace(new RegExp(TYPING_STYLE_SENTINEL, 'g'), '')
+        : null;
+      compositionPendingStyle = marker && markerText === ''
+        ? marker.getAttribute('style')
+        : null;
+    };
+    /**
+     * Per-key typing lands inside the pending-style marker; a committed
+     * composition does not (the `onBeforeInput` insertion path deliberately
+     * stands back while `isComposing`), so the pending style was silently
+     * dropped for IME input. The caret sits immediately after the composed
+     * text on commit — split it out of its text node and wrap it in the same
+     * style-only span the per-key path would have produced.
+     */
+    const adoptComposedText = (data: string, style: string) => {
+      const range = this.activeTextRange(body);
+      if (!range?.collapsed || !(range.startContainer instanceof Text)) return;
+      const node = range.startContainer;
+      const end = range.startOffset;
+      // Already styled (e.g. the marker survived and the text landed in it)?
+      const host = node.parentElement;
+      if (host?.closest('[data-editor-typing-style]')) return;
+      if (end < data.length || node.data.slice(end - data.length, end) !== data) return;
+      const composed = node.splitText(end - data.length);
+      composed.splitText(data.length);
+      const span = document.createElement('span');
+      span.setAttribute('style', style);
+      composed.replaceWith(span);
+      span.appendChild(composed);
+      const caret = document.createRange();
+      caret.setStart(composed, composed.data.length);
+      caret.collapse(true);
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(caret);
+      this.textSelectionRange = caret.cloneRange();
+    };
+    const onCompositionEnd = (event: CompositionEvent) => {
+      composing = false;
+      if (event.data && compositionPendingStyle) {
+        adoptComposedText(event.data, compositionPendingStyle);
+      }
+      compositionPendingStyle = null;
+      if (this.liveTextSync && !liveTimer) liveTimer = window.setTimeout(pushLive, 250);
+      scheduleIdleSeal();
     };
 
     const onPaste = (event: ClipboardEvent) => {
@@ -2530,6 +2718,8 @@ export class EditorCanvas {
       body.removeEventListener('beforeinput', onBeforeInput);
       body.removeEventListener('input', onInput);
       body.removeEventListener('paste', onPaste);
+      body.removeEventListener('compositionstart', onCompositionStart);
+      body.removeEventListener('compositionend', onCompositionEnd);
       body.removeEventListener('pointerdown', onTablePointerDown);
       body.removeEventListener('pointermove', onTablePointerMove);
       body.removeEventListener('mousemove', onTableMouseMove);
@@ -2547,26 +2737,30 @@ export class EditorCanvas {
         this.tableSelection = null;
         this.textSelectionRange = null;
         window.getSelection()?.removeAllRanges();
+        // The re-render below can take the identity early-out when the deck
+        // object is unchanged, so the editing chrome must be removed here —
+        // a leftover `.editing` class would swallow every later click on the
+        // box (the pointerdown guard keys off the DOM class), and leftover
+        // outline/cursor styles read as stale DOM to the render invariant.
+        body.contentEditable = 'false';
+        body.removeAttribute('spellcheck');
+        body.style.removeProperty('outline');
+        body.style.removeProperty('cursor');
+        node!.classList.remove('editing');
         this.onTextEditModeChange?.(null);
         // Escape means discard — including anything live sync already
         // streamed. The revert shares the session's coalesce key, so in the
         // collab undo layer stream + revert fold into one net no-op.
-        const streamed = this.store.slide?.elements.find((e) => e.id === elementId);
-        if (
-          streamed && (streamed.type === 'text' || streamed.type === 'html')
-          && streamed.html !== el.html
-        ) {
+        const streamed = findTextTarget(this.store.get().deck, elementId);
+        if (streamed && streamed.html !== el.html) {
           const coalesceKey = this.textEditCoalesceKey ?? undefined;
           this.store.commit((deck) => {
-            const target = deck.slides[this.store.get().slideIndex]?.elements.find(
-              (e) => e.id === elementId,
-            );
-            if (target && (target.type === 'text' || target.type === 'html')) {
-              target.html = el.html;
-            }
+            const target = findTextTarget(deck, elementId);
+            if (target) target.html = el.html;
           }, { label: 'Edit text', transient: true, coalesceKey });
         }
         this.textEditCoalesceKey = null;
+        this.textEditKeyClaimed = false;
         this.render();
       }
     };
@@ -2776,7 +2970,11 @@ export class EditorCanvas {
         // keep typing there. Chromium would give you another empty bullet.
         if (this.unbulletCaretItem(body, 'return', sealTextChunk)) {
           e.preventDefault();
-          pushLive();
+          // The un-bullet is a structural change with no input event behind
+          // it: nothing schedules a seal, and a transient push would leave it
+          // with no undo entry of its own — the next typed run would then
+          // absorb it, and one Ctrl/Cmd+Z would take back both.
+          this.commitLiveTextDom('Edit list');
         } else if (convertTypedListMarker(body, window.getSelection())) {
           e.preventDefault();
           onInput();
@@ -2792,7 +2990,9 @@ export class EditorCanvas {
         if (this.unbulletCaretItem(body, 'backspace', sealTextChunk)
           || this.mergeCaretParagraphIntoList(body, sealTextChunk)) {
           e.preventDefault();
-          pushLive();
+          // Structural change with no input event: commit it as its own undo
+          // step (see the Return route above).
+          this.commitLiveTextDom('Edit list');
         }
       } else if (e.key === 'Tab' && !e.metaKey && !e.ctrlKey && !e.altKey) {
         // Tab indents a bullet one level (nested lists render a "-" marker,
@@ -2804,7 +3004,9 @@ export class EditorCanvas {
         // a bare line at the top of the box there, which is not a paragraph
         // anything can be applied to.
         if (e.shiftKey && this.unbulletCaretItem(body, 'outdent', sealTextChunk)) {
-          pushLive();
+          // Structural change with no input event: commit it as its own undo
+          // step (see the Return route above).
+          this.commitLiveTextDom('Edit list');
           return;
         }
         const anchor = window.getSelection()?.anchorNode;
@@ -2827,6 +3029,8 @@ export class EditorCanvas {
     body.addEventListener('beforeinput', onBeforeInput);
     body.addEventListener('input', onInput);
     body.addEventListener('paste', onPaste);
+    body.addEventListener('compositionstart', onCompositionStart);
+    body.addEventListener('compositionend', onCompositionEnd);
     body.addEventListener('pointerdown', onTablePointerDown);
     body.addEventListener('pointermove', onTablePointerMove);
     body.addEventListener('mousemove', onTableMouseMove);
@@ -2925,11 +3129,42 @@ export class EditorCanvas {
     const range = document.createRange();
     range.setStart(start.node, start.offset);
     range.setEnd(end.node, end.offset);
+    this.textSelectionRange = range.cloneRange();
+    // Asserting a live range inside a contenteditable MOVES FOCUS to it in
+    // Chromium — no focus() call involved. While the author is in a panel
+    // field, the selection must still be re-asserted (the highlight shows
+    // what the field is formatting, and the next commit reads it), but the
+    // keyboard has to go straight back to the field: yanking focus out of it
+    // sent their next Tab into the text box, where it indented a list.
+    const field = this.panelFieldHasFocus(root)
+      ? document.activeElement as HTMLInputElement
+      : null;
+    let fieldSelection: [number, number] | null = null;
+    if (field) {
+      try {
+        if (typeof field.selectionStart === 'number') {
+          fieldSelection = [field.selectionStart, field.selectionEnd ?? field.selectionStart];
+        }
+      } catch {
+        // Some input types refuse selection access; focus alone is enough.
+      }
+    }
     const selection = window.getSelection();
     selection?.removeAllRanges();
     selection?.addRange(range);
-    this.textSelectionRange = range.cloneRange();
-    root.focus();
+    if (field) {
+      field.focus({ preventScroll: true });
+      if (fieldSelection) {
+        try {
+          field.setSelectionRange(fieldSelection[0], fieldSelection[1]);
+        } catch {
+          // Number inputs refuse setSelectionRange; the caret position is a
+          // nicety there.
+        }
+      }
+    } else {
+      this.focusTextSurface(root);
+    }
   }
 
   /**
@@ -3006,7 +3241,7 @@ export class EditorCanvas {
           selection?.addRange(caret);
           this.textSelectionRange = caret.cloneRange();
         }
-        content.focus();
+        this.focusTextSurface(content);
         this.onTextFormatStateChange?.();
         return true;
       }
@@ -3030,7 +3265,7 @@ export class EditorCanvas {
     selection?.removeAllRanges();
     selection?.addRange(caret);
     this.textSelectionRange = caret.cloneRange();
-    content.focus();
+    this.focusTextSurface(content);
     this.onTextFormatStateChange?.();
     return true;
   }
@@ -3039,6 +3274,11 @@ export class EditorCanvas {
   private commitTextEdit(): void {
     const elementId = this.editingId;
     if (!elementId) return;
+    // New typed content leaving with the session must not fold into a
+    // formatting entry that claimed the current key; the no-change early
+    // return below never commits, so the claimed key still folds the exit of
+    // an unchanged session into its formatting entry as intended.
+    this.advanceClaimedTextEditKey();
     this.editingId = null;
     this.tableSelection = null;
     this.textSelectionRange = null;
@@ -3054,6 +3294,13 @@ export class EditorCanvas {
     // inside its paragraph, not a new one.
     const html = authoredTextHtml(body);
     body.contentEditable = 'false';
+    // Everything beginTextEdit stamped on the node comes off with the
+    // session. The outline/cursor styles used to be left behind, giving the
+    // box a permanent text cursor and tripping the render invariant on the
+    // next in-place patch.
+    body.removeAttribute('spellcheck');
+    body.style.removeProperty('outline');
+    body.style.removeProperty('cursor');
     node!.classList.remove('editing');
     // contenteditable selections survive blur in Chromium. Clear that native
     // highlight when edit mode ends; the object selection outline remains the
@@ -3062,9 +3309,10 @@ export class EditorCanvas {
 
     const coalesceKey = this.textEditCoalesceKey ?? undefined;
     this.textEditCoalesceKey = null;
+    this.textEditKeyClaimed = false;
 
-    const current = this.store.slide?.elements.find((e) => e.id === elementId);
-    if (!current || (current.type !== 'text' && current.type !== 'html')) return;
+    const current = findTextTarget(this.store.get().deck, elementId);
+    if (!current) return;
     // Live sync may have already streamed the final html; the session still
     // counts as an edit (and strips the placeholder class) if the text ends
     // up different from where it started.
@@ -3083,10 +3331,8 @@ export class EditorCanvas {
     }
 
     this.store.commit((deck) => {
-      const el = deck.slides[this.store.get().slideIndex].elements.find(
-        (e) => e.id === elementId,
-      );
-      if (el && (el.type === 'text' || el.type === 'html')) {
+      const el = findTextTarget(deck, elementId);
+      if (el) {
         el.html = html;
         el.class = el.class.filter((name) => name !== 'placeholder');
       }
@@ -3196,7 +3442,7 @@ export class EditorCanvas {
     live?.removeAllRanges();
     live?.addRange(next);
     this.textSelectionRange = next.cloneRange();
-    content.focus();
+    this.focusTextSurface(content);
     const node = content.closest<HTMLElement>('.element');
     if (node) scheduleAutoFit(node);
     this.commitLiveTextDom(
@@ -3269,7 +3515,7 @@ export class EditorCanvas {
       }
     }
     if (offsets) this.restoreTextRange(content, offsets);
-    content.focus();
+    this.focusTextSurface(content);
     this.commitLiveTextDom(value ? 'Change list marker colour' : 'Make list markers follow text colour');
     return true;
   }
@@ -3350,7 +3596,7 @@ export class EditorCanvas {
     live?.removeAllRanges();
     live?.addRange(next);
     this.textSelectionRange = next.cloneRange();
-    content.focus();
+    this.focusTextSurface(content);
     this.commitLiveTextDom('Align selected paragraphs');
     return true;
   }
@@ -3454,7 +3700,7 @@ export class EditorCanvas {
       live?.removeAllRanges();
       live?.addRange(next);
       this.textSelectionRange = next.cloneRange();
-      content.focus();
+      this.focusTextSurface(content);
     }
     const node = content.closest<HTMLElement>('.element');
     if (node) scheduleAutoFit(node);
@@ -3707,7 +3953,7 @@ export class EditorCanvas {
       live?.removeAllRanges();
       live?.addRange(next);
       this.textSelectionRange = next.cloneRange();
-      content.focus();
+      this.focusTextSurface(content);
     }
     const node = content.closest<HTMLElement>('.element');
     if (node) scheduleAutoFit(node);
@@ -3723,18 +3969,21 @@ export class EditorCanvas {
     );
     if (!body) return;
     const html = authoredTextHtml(body);
+    // A second formatting click must not fold into the first's undo entry:
+    // when the current key is already claimed, move to a fresh one first.
+    this.advanceClaimedTextEditKey();
     const coalesceKey = this.textEditCoalesceKey ?? undefined;
     this.store.commit((deck) => {
-      const target = deck.slides[this.store.get().slideIndex]?.elements.find(
-        (element) => element.id === elementId,
-      );
-      if (target && (target.type === 'text' || target.type === 'html')) target.html = html;
+      const target = findTextTarget(deck, elementId);
+      if (target) target.html = html;
     }, { label, coalesceKey, historyGroup: `text:${elementId}` });
     // The key deliberately stays put: leaving edit mode commits this same html
     // again, and that commit has to fold into this entry so one Ctrl/Cmd+Z
     // takes back the formatting change rather than an invisible re-commit of
-    // it. Typing that follows is separated from it by its own word or pause
-    // seal, like any other run.
+    // it. But the key is now *claimed*: any commit that carries new typed
+    // content advances to a fresh key first (advanceClaimedTextEditKey), so
+    // the next word never joins this entry.
+    this.textEditKeyClaimed = true;
   }
 
   /** Positive-width text slices covered by flat character offsets. */
@@ -3824,7 +4073,7 @@ export class EditorCanvas {
     }
     normalizeInlineStyleSpans(content);
     this.restoreTextRange(content, offsets);
-    content.focus();
+    this.focusTextSurface(content);
     const label = property === 'fontFamily' ? 'Change selected text font'
       : property === 'fontSize' ? 'Change selected text size'
         : property === 'color' ? 'Change selected text colour'
@@ -3976,11 +4225,14 @@ export class EditorCanvas {
     );
     if (!body) return;
     const html = authoredTextHtml(body);
+    // Table commits deliberately do NOT advance a claimed key: a run of table
+    // operations (border presets, cell styling, drawing strokes) is one
+    // sitting and folds into one undo entry — the contract the collab
+    // formatting-undo suite pins. Claiming the key below still separates any
+    // typing that follows into its own entry.
     const coalesceKey = this.textEditCoalesceKey ?? undefined;
     this.store.commit((deck) => {
-      const target = deck.slides[this.store.get().slideIndex]?.elements.find(
-        (element) => element.id === selected.elementId,
-      );
+      const target = findTextTarget(deck, selected.elementId);
       if (target && target.type === 'text') {
         if (target.table && updateWidths) {
           target.table.columnWidths = updateWidths([...target.table.columnWidths]);
@@ -3990,6 +4242,7 @@ export class EditorCanvas {
           : html;
       }
     }, { label, coalesceKey, historyGroup: `text:${selected.elementId}` });
+    this.textEditKeyClaimed = true;
     this.syncTableSelectionHighlight();
   }
 
@@ -4503,6 +4756,12 @@ export class EditorCanvas {
  * can be repositioned rather than rebuilt.
  */
 function sameStructure(a: Slide, b: Slide, ignoreHtml = false): boolean {
+  // Two different slides can be element-wise identical (a new slide, a
+  // duplicated one, twins after deletions). Patching across a slide change
+  // reuses the previous slide's DOM wholesale — the canvas keeps the old
+  // slide's identity, background paint, and per-slide attributes.
+  if (a.id !== b.id) return false;
+  if (JSON.stringify(a.background) !== JSON.stringify(b.background)) return false;
   if (a.elements.length !== b.elements.length) return false;
   for (let i = 0; i < a.elements.length; i++) {
     const x = a.elements[i];

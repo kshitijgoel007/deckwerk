@@ -262,6 +262,9 @@ export function bindEditorKeys(deps: ShellDeps, clipboard: ClipboardActions): vo
       && !t?.closest('.cm-editor')
     ) {
       e.preventDefault();
+      // The selection the author was formatting must survive the undo, the
+      // way it does when Ctrl/Cmd+Z is pressed inside the text itself.
+      const offsets = canvas.editingSelectionOffsets();
       const edited = canvas.endTextEditing(true);
       if (e.shiftKey) (deps.redo ?? (() => store.redo()))();
       else (deps.undo ?? (() => store.undo()))();
@@ -269,6 +272,7 @@ export function bindEditorKeys(deps: ShellDeps, clipboard: ClipboardActions): vo
       // Ctrl/Cmd+Z inside the text does.
       if (edited && store.slide?.elements.some((element) => element.id === edited)) {
         canvas.beginTextEdit(edited);
+        canvas.restoreEditingSelection(offsets);
       }
       return;
     }

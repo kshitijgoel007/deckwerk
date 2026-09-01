@@ -201,6 +201,67 @@ export class Inspector {
   }
 
   render(): void {
+    // Rebuilding the panel destroys whatever control holds the keyboard. When
+    // that control is a form field, Chromium hands focus to the element that
+    // owns the document selection — during a text edit, the contenteditable —
+    // so the Tab meant for the next panel field indented a list instead.
+    // Remember the focused control and give the rebuilt panel's equivalent
+    // control the keyboard back.
+    const focused = this.captureFocusedControl();
+    this.renderPanel();
+    this.restoreFocusedControl(focused);
+  }
+
+  private static controlKey(node: Element): string {
+    const label = node.closest('label, .field-number, .field')?.querySelector('span')
+      ?.textContent
+      ?? node.getAttribute('aria-label')
+      ?? '';
+    return `${node.tagName}|${label}`;
+  }
+
+  private captureFocusedControl(): {
+    key: string;
+    index: number;
+    selection: [number, number] | null;
+  } | null {
+    const active = document.activeElement;
+    if (!(active instanceof HTMLElement) || !this.host.contains(active)) return null;
+    if (!active.matches('input, select, textarea')) return null;
+    const key = Inspector.controlKey(active);
+    const peers = [...this.host.querySelectorAll('input, select, textarea')]
+      .filter((node) => Inspector.controlKey(node) === key);
+    let selection: [number, number] | null = null;
+    try {
+      const field = active as HTMLInputElement;
+      if (typeof field.selectionStart === 'number' && typeof field.selectionEnd === 'number') {
+        selection = [field.selectionStart, field.selectionEnd];
+      }
+    } catch {
+      // Some input types refuse selection access; focus alone is enough there.
+    }
+    return { key, index: Math.max(0, peers.indexOf(active)), selection };
+  }
+
+  private restoreFocusedControl(
+    memo: { key: string; index: number; selection: [number, number] | null } | null,
+  ): void {
+    if (!memo) return;
+    const peers = [...this.host.querySelectorAll<HTMLElement>('input, select, textarea')]
+      .filter((node) => Inspector.controlKey(node) === memo.key);
+    const control = peers[memo.index] ?? peers[0];
+    if (!control) return;
+    control.focus({ preventScroll: true });
+    if (memo.selection) {
+      try {
+        (control as HTMLInputElement).setSelectionRange(memo.selection[0], memo.selection[1]);
+      } catch {
+        // Selection restore is a nicety; number inputs refuse it.
+      }
+    }
+  }
+
+  private renderPanel(): void {
     const { deck, selection, slideIndex, slideSelection } = this.store.get();
     this.lastDeck = deck;
     this.lastSelection = [...selection].sort().join(',');
