@@ -1,4 +1,36 @@
 const net = require('node:net');
+const { existsSync } = require('node:fs');
+
+/**
+ * The real-input browser suites `describe.skipIf(!electronBinary)`, so on a
+ * machine where Electron's binary was never downloaded the entire tier
+ * silently skips and `npm test` passes while proving nothing. A missing
+ * binary is an install problem, not a reason to skip coverage — fail loudly.
+ * `SKIP_ELECTRON_CHECK=1` remains for deliberately unit-only environments.
+ */
+if (process.env.SKIP_ELECTRON_CHECK !== '1') {
+  let electronBinary = '';
+  try {
+    const resolved = require('electron');
+    electronBinary = typeof resolved === 'string' && existsSync(resolved) ? resolved : '';
+  } catch {
+    electronBinary = '';
+  }
+  if (!electronBinary) {
+    console.error(`
+The Electron binary is missing, so every real-input browser suite would be
+silently skipped and this run would pass without testing the editor at all.
+
+Fix: reinstall dependencies so Electron downloads its binary:
+  npm ci
+(or: node node_modules/electron/install.js)
+
+To knowingly run only the pure unit tier without Electron, set:
+  SKIP_ELECTRON_CHECK=1
+`);
+    process.exit(1);
+  }
+}
 
 /**
  * The full integration suite starts localhost collaboration servers and real

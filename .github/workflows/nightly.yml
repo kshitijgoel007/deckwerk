@@ -1,0 +1,42 @@
+# Nightly deep gate: the long/quarantined suites plus the exhaustive fuzz
+# matrices, with date-rotated seeds so every night explores new paths while
+# the fixed in-repo seeds remain the reproducible regression corpus.
+# Failures here are minimized into directed tests in the per-push gate.
+name: Nightly
+
+on:
+  schedule:
+    - cron: '30 6 * * *'
+  workflow_dispatch:
+
+jobs:
+  long-and-exhaustive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install system dependencies (Electron + ffmpeg)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb ffmpeg libnss3 libgtk-3-0 libasound2t64
+      - run: npm ci
+      - name: Rotate fuzz seeds by date
+        run: |
+          SEED=$(date -u +%Y%m%d)
+          echo "FUZZ_SEED=$SEED" >> "$GITHUB_ENV"
+          echo "LIST_FUZZ_SEED=$SEED" >> "$GITHUB_ENV"
+          echo "CROSS_FUZZ_SEEDS=12" >> "$GITHUB_ENV"
+          echo "CROSS_FUZZ_STEPS=40" >> "$GITHUB_ENV"
+          echo "Rotated fuzz seed: $SEED"
+      - name: Long suites
+        run: xvfb-run -a --server-args="-screen 0 1920x1080x24" npm run test:long
+      - name: Exhaustive formatting matrix
+        run: xvfb-run -a --server-args="-screen 0 1920x1080x24" npm run test:formatting:exhaustive
+      - name: Exhaustive text-box interaction soak
+        run: xvfb-run -a --server-args="-screen 0 1920x1080x24" npm run test:interactions:exhaustive
+      - name: Exhaustive paste fuzz
+        run: xvfb-run -a --server-args="-screen 0 1920x1080x24" npm run test:paste:exhaustive

@@ -1,0 +1,34 @@
+# Per-push correctness gate: typecheck + the ordinary and serial suites.
+# The browser tier launches real Electron under Xvfb; the preflight in
+# scripts/check-test-environment.cjs fails the job if the Electron binary is
+# missing rather than letting those suites skip silently green.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install system dependencies (Electron + ffmpeg)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb ffmpeg libnss3 libgtk-3-0 libasound2t64
+      - run: npm ci
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Test (ordinary + serial, real Electron under Xvfb)
+        run: xvfb-run -a --server-args="-screen 0 1920x1080x24" npm test
