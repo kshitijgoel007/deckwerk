@@ -2,6 +2,7 @@ import type { Deck, Slide, SlideElement } from '@shared/deck.js';
 import { parseDeck } from '@shared/deck.js';
 import { applyAgentOperations, type AgentOperation } from '@shared/agent.js';
 import { diffDecks } from '@shared/deckDiff.js';
+import { applyOpsLenient } from '@shared/collabApply.js';
 import {
   type ClipboardReadResult,
   type ClipboardWriteRequest,
@@ -244,11 +245,23 @@ export class EditorStore {
     opts: RemoteHistoryOptions = {},
   ): void {
     const anchor = this.cursorAnchor();
-    const next = parseDeck(deck);
+    let next = parseDeck(deck);
     // Server acknowledgements normally contain the optimistic state already
     // on screen. Recording them again creates duplicate/misattributed rows and
     // makes the apparent current revision depend on network timing.
     if (sameDeck(this.state.deck, next)) return;
+    // A remote transaction landing mid-drag used to overwrite the dragged
+    // element (a visible snap-back on every incoming txn), and the drag's
+    // endTransaction then diffed across the absorbed remote edit — so the
+    // peer's work entered this client's undo entry, and undoing the drag
+    // undid the peer too. Rebase instead: replay the in-flight local ops on
+    // top of the remote deck, and move the transaction's base to the remote
+    // deck so the eventual diff contains only the drag.
+    if (this.txnBase) {
+      const inFlight = diffDecks(this.txnBase, this.state.deck);
+      this.txnBase = next;
+      if (inFlight.length > 0) next = applyOpsLenient(next, inFlight).deck;
+    }
     shareUnchangedSlides(this.state.deck, next);
     this.state = { ...this.state, deck: next };
     this.restoreCursor(anchor);

@@ -443,6 +443,26 @@ export class EditorCanvas {
    * Ctrl/Cmd+Z took back both the word and the bold before it.
    */
   private textEditKeyClaimed = false;
+  /**
+   * The session's sync point with the store: the element's store html and the
+   * live DOM's authored html as of the last load or local commit. When the
+   * store moves past `storeBase` (a collaborator edited this box) while the
+   * DOM still equals `domBase` (nothing unsent here), the session adopts the
+   * remote content instead of re-asserting a stale copy over it.
+   */
+  private textEditStoreBase: string | null = null;
+  private textEditDomBase: string | null = null;
+  /** Re-enter this edit after a rebuild that was forced mid-session. */
+  private pendingEditReentry: {
+    elementId: string;
+    offsets: { start: number; end: number } | null;
+  } | null = null;
+  /**
+   * What a discarded session reverts to: the session-start html, moved
+   * forward by every adopted peer edit — discarding local work must never
+   * also discard a collaborator's.
+   */
+  private textEditRevertHtml: string | null = null;
   /** Ends the current run of typing so the next edit is its own undo step. */
   private sealTextChunk: (() => void) | null = null;
   /** List style last reported to the panel, so the caret only redraws it once. */
@@ -596,6 +616,7 @@ export class EditorCanvas {
       );
       this.scheduleTableHeightSync();
       this.scheduleNextSlideImageWarmup(deck, slideIndex);
+      this.processEditReentry();
       return;
     }
 
@@ -609,7 +630,16 @@ export class EditorCanvas {
     // to leave the session's teardown half-done: listeners on a node about to
     // be replaced, and a finish closure armed for an element no longer being
     // edited.
+    //
+    // Ending the session here is the render's doing, not the author's: a
+    // collaborator inserting an unrelated element used to eject the caret
+    // mid-word with no way back. Remember the session so the rebuilt slide
+    // can re-open it with the caret where it was.
     if (this.editingId) {
+      this.pendingEditReentry = {
+        elementId: this.editingId,
+        offsets: this.editingSelectionOffsets(),
+      };
       if (this.finishTextEdit) this.finishTextEdit(true);
       else this.commitTextEdit();
       // Committing re-enters the store, which notifies this canvas and runs a
@@ -663,6 +693,27 @@ export class EditorCanvas {
     this.drawOverlay(deck, slide.elements, selection);
     this.scheduleTableHeightSync();
     this.scheduleNextSlideImageWarmup(deck, slideIndex);
+    this.processEditReentry();
+  }
+
+  /**
+   * Re-open the edit session a rebuild forcibly ended, caret restored. Runs
+   * at the tail of the rebuild — which may be a nested render pass when the
+   * forced commit re-entered the store — and only when the author has not
+   * already moved on and the element still exists.
+   */
+  private processEditReentry(): void {
+    const pending = this.pendingEditReentry;
+    if (!pending) return;
+    this.pendingEditReentry = null;
+    if (this.editingId) return;
+    const slide = this.store.slide;
+    const el = slide?.elements.find((candidate) => candidate.id === pending.elementId);
+    if (!el || (el.type !== 'text' && el.type !== 'html')) return;
+    this.beginTextEdit(pending.elementId);
+    if (this.editingId === pending.elementId && pending.offsets) {
+      this.restoreEditingSelection(pending.offsets);
+    }
   }
 
   /**
@@ -881,7 +932,10 @@ export class EditorCanvas {
     const before = new Map(previous.elements.map((e) => [e.id, e]));
     for (const el of slide.elements) {
       if (el.type !== 'text' && el.type !== 'html') continue;
-      if (el.id === this.editingId) continue;
+      if (el.id === this.editingId) {
+        this.adoptRemoteEditedHtml(el);
+        continue;
+      }
       const prev = before.get(el.id);
       if (!prev || !('html' in prev) || prev.html === el.html) continue;
       const node = this.slideLayer.querySelector<HTMLElement>(
@@ -890,6 +944,37 @@ export class EditorCanvas {
       if (!node) continue;
       node.replaceWith(renderElement(el, { resolveSrc: (src) => window.api.assetUrl(src) }));
     }
+  }
+
+  /**
+   * Bring a collaborator's change to the box being edited into the live
+   * contenteditable — when nothing here would be lost. Skipping the edited
+   * element entirely meant the session held a stale copy that its next
+   * whole-box commit re-asserted, silently reverting the peer's edit (a list
+   * conversion, a deleted table row) the moment the local author formatted or
+   * left the box. Adoption happens only while the local DOM matches the last
+   * sync point; unsent local changes still win (whole-box last-writer-wins).
+   */
+  private adoptRemoteEditedHtml(el: SlideElement & { type: 'text' | 'html' }): void {
+    if (this.textEditStoreBase === null || el.html === this.textEditStoreBase) return;
+    const body = this.slideLayer.querySelector<HTMLElement>(
+      `[data-element-id="${CSS.escape(el.id)}"] .text-content`,
+    );
+    if (!body) return;
+    if (this.textEditDomBase === null || authoredTextHtml(body) !== this.textEditDomBase) {
+      // Unsent local work: keep the local DOM authoritative, but move the
+      // store base forward so this remote state is not treated as "ours" by
+      // later comparisons.
+      this.textEditStoreBase = el.html;
+      return;
+    }
+    const range = this.activeTextRange(body);
+    const offsets = range ? this.textOffsetsForRange(body, range) : null;
+    body.innerHTML = normalizeParagraphHtml(el.html, true);
+    if (offsets) this.restoreTextRange(body, offsets);
+    this.textEditStoreBase = el.html;
+    this.textEditDomBase = authoredTextHtml(body);
+    this.textEditRevertHtml = el.html;
   }
 
   /** Reposition and restyle existing nodes for a non-structural change. */
@@ -2348,6 +2433,9 @@ export class EditorCanvas {
     this.textEditChunk = 0;
     this.textEditKeyClaimed = false;
     this.textEditCoalesceKey = `text:${elementId}:${++this.textEditSession}:0`;
+    this.textEditStoreBase = el.html;
+    this.textEditDomBase = authoredTextHtml(body);
+    this.textEditRevertHtml = el.html;
     this.onTextEditModeChange?.(elementId);
 
     // Live sync: stream the box's content to the store (and thus to
@@ -2368,12 +2456,20 @@ export class EditorCanvas {
       const current = findTextTarget(this.store.get().deck, elementId);
       if (!current) return;
       if (current.html === html) return;
+      // A peer moved the store past this session's sync point and nothing is
+      // unsent here: streaming the stale DOM would revert their edit.
+      if (
+        this.textEditStoreBase !== null && current.html !== this.textEditStoreBase
+        && html === this.textEditDomBase
+      ) return;
       this.advanceClaimedTextEditKey();
       const coalesceKey = this.textEditCoalesceKey ?? undefined;
       this.store.commit((deck) => {
         const target = findTextTarget(deck, elementId);
         if (target) target.html = html;
       }, { label: 'Edit text', transient: true, coalesceKey });
+      this.textEditStoreBase = html;
+      this.textEditDomBase = html;
     };
 
     /**
@@ -2416,13 +2512,18 @@ export class EditorCanvas {
       // key. There is then nothing to commit — but the run is still over, so
       // the key must move on either way, or the next word would join this
       // undo step.
-      if (current.html !== html) {
+      const staleAgainstPeer = this.textEditStoreBase !== null
+        && current.html !== this.textEditStoreBase
+        && html === this.textEditDomBase;
+      if (current.html !== html && !staleAgainstPeer) {
         this.advanceClaimedTextEditKey();
         const coalesceKey = this.textEditCoalesceKey ?? undefined;
         this.store.commit((deck) => {
           const target = findTextTarget(deck, elementId);
           if (target) target.html = html;
         }, { label: 'Edit text', coalesceKey, historyGroup: `text:${elementId}` });
+        this.textEditStoreBase = html;
+        this.textEditDomBase = html;
       }
       this.textEditKeyClaimed = false;
       this.textEditCoalesceKey = `text:${elementId}:${this.textEditSession}:${++this.textEditChunk}`;
@@ -2750,17 +2851,23 @@ export class EditorCanvas {
         this.onTextEditModeChange?.(null);
         // Escape means discard — including anything live sync already
         // streamed. The revert shares the session's coalesce key, so in the
-        // collab undo layer stream + revert fold into one net no-op.
+        // collab undo layer stream + revert fold into one net no-op. It
+        // targets the last peer-aware baseline, not the session start, so
+        // discarding local work never also discards a collaborator's edit.
+        const revertHtml = this.textEditRevertHtml ?? el.html;
         const streamed = findTextTarget(this.store.get().deck, elementId);
-        if (streamed && streamed.html !== el.html) {
+        if (streamed && streamed.html !== revertHtml) {
           const coalesceKey = this.textEditCoalesceKey ?? undefined;
           this.store.commit((deck) => {
             const target = findTextTarget(deck, elementId);
-            if (target) target.html = el.html;
+            if (target) target.html = revertHtml;
           }, { label: 'Edit text', transient: true, coalesceKey });
         }
         this.textEditCoalesceKey = null;
         this.textEditKeyClaimed = false;
+        this.textEditStoreBase = null;
+        this.textEditDomBase = null;
+        this.textEditRevertHtml = null;
         this.render();
       }
     };
@@ -3310,9 +3417,25 @@ export class EditorCanvas {
     const coalesceKey = this.textEditCoalesceKey ?? undefined;
     this.textEditCoalesceKey = null;
     this.textEditKeyClaimed = false;
+    const storeBase = this.textEditStoreBase;
+    const domBase = this.textEditDomBase;
+    this.textEditStoreBase = null;
+    this.textEditDomBase = null;
+    this.textEditRevertHtml = null;
 
     const current = findTextTarget(this.store.get().deck, elementId);
     if (!current) return;
+    // A peer changed this box while the session idled here (adoption may not
+    // have reached the DOM — desktop has no live patching, and a structural
+    // rebuild bypasses it). Re-asserting the stale DOM would silently revert
+    // their edit; keep theirs and restore the rendered form of it.
+    if (
+      storeBase !== null && current.html !== storeBase
+      && html === domBase
+    ) {
+      this.restoreRenderedForm(current, body);
+      return;
+    }
     // Live sync may have already streamed the final html; the session still
     // counts as an edit (and strips the placeholder class) if the text ends
     // up different from where it started.
@@ -3977,6 +4100,8 @@ export class EditorCanvas {
       const target = findTextTarget(deck, elementId);
       if (target) target.html = html;
     }, { label, coalesceKey, historyGroup: `text:${elementId}` });
+    this.textEditStoreBase = html;
+    this.textEditDomBase = html;
     // The key deliberately stays put: leaving edit mode commits this same html
     // again, and that commit has to fold into this entry so one Ctrl/Cmd+Z
     // takes back the formatting change rather than an invisible re-commit of
@@ -4242,6 +4367,11 @@ export class EditorCanvas {
           : html;
       }
     }, { label, coalesceKey, historyGroup: `text:${selected.elementId}` });
+    // The store value may carry column widths the DOM serialization lacks;
+    // read the sync point back rather than assuming it equals `html`.
+    const committed = findTextTarget(this.store.get().deck, selected.elementId);
+    this.textEditStoreBase = committed?.html ?? html;
+    this.textEditDomBase = html;
     this.textEditKeyClaimed = true;
     this.syncTableSelectionHighlight();
   }
