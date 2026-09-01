@@ -241,3 +241,42 @@ output: Chromium does not print plugin-rendered content, and rasterising the
 page ourselves would mean taking on a PDF rendering dependency. That is a
 deliberate choice to make rather than something to slip in with a bug fix.
 
+
+## Pasted markup (fuzzed, 2026-08-31)
+
+`test/pasteMarkupFuzzBrowser.test.ts` pastes real clipboard payloads — Apple
+Notes, Word, Google Docs, spreadsheets, web pages, plain text, hostile markup —
+through the real clipboard and a real Cmd/Ctrl+V, at six caret positions, then
+runs a seeded sequence of edits on the result (bold/italic/underline, alignment,
+list conversion, typing, deleting, Enter, undo). After every step both the live
+DOM and the markup the collaboration server persisted must satisfy the block
+model: no list nested straight inside a list, no list inside a paragraph, no
+orphan list item, no block inside a block that cannot hold it, nothing unsafe,
+and every top-level node a block. `npm run test:paste:exhaustive` runs the whole
+matrix; the default run is a seeded spread across every payload and target.
+
+These were found by it and are fixed:
+
+- **A pasted list could not be converted to a list.** Apple Notes writes a
+  sub-bullet as a `<ul>` directly inside the outer `<ul>`, so every item rendered
+  with the nested "–" marker, and list conversion only ever retagged the
+  top-level list — the visible items live in the sub-list, so nothing changed on
+  screen. Pasted markup is now repaired on arrival (the same normalisation
+  entering a box performs), and conversion retags nested lists too.
+- **An indented outline pasted as a table.** The tab-separated fallback accepted
+  any text containing a tab, so one indented line ("\t1. Nested detail") was read
+  as a two-column row. It now requires a rectangle — at least two rows and two
+  columns with a consistent column count — and never runs when the clipboard's
+  HTML is plainly a document (list, heading, quote, code).
+- **A pasted table landed inside the paragraph** being edited, where no
+  block-level control could reach it. Tables are now inserted between blocks.
+- **Hostile pasted markup survived**: an `<iframe>` and a remote `<img>` were
+  saved into the deck and refetched on every render. Text-box pastes are now
+  sanitised (`sanitizePastedTextHtml`): active and document-level nodes removed,
+  wrappers unwrapped, event handlers and remote/`javascript:` URLs stripped.
+- **Converting a nested list to "None" reordered the text** — a sub-list mid-item
+  moved to the end. Items are now flattened in document order.
+- **Google Docs items became `<p><p>…</p></p>`**: their `<li><p>…</p></li>` shape
+  was wrapped again instead of using the item's own block.
+- **An orphan `<li>` survived a paste into a table cell.** Runs of orphan list
+  items are now given a list by the shared normaliser.

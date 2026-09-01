@@ -70,3 +70,48 @@ export function sanitizeAuthoredHtml(source: string): {
   const doctype = document.doctype ? '<!doctype html>\n' : '';
   return { html: doctype + document.documentElement.outerHTML, report };
 }
+
+/**
+ * Markup that may live inside a text box, dropped in from another
+ * application's clipboard.
+ *
+ * A text box holds prose: paragraphs, lists, tables, inline runs, links and
+ * embedded images. Everything else on the clipboard is either a document-level
+ * artefact (`<meta>`, `<style>`, Word's conditional comments), a control that
+ * cannot be edited as text, or an active element — and a pasted `<iframe>` or
+ * remote `<img>` would be saved into the deck and fetched again every time the
+ * slide is shown. Nodes that only wrap text are unwrapped so the words stay;
+ * active ones are removed outright.
+ */
+const PASTE_REMOVED = 'script, style, link, meta, base, iframe, object, embed, form, input,'
+  + ' textarea, select, button, noscript, template, audio, source, track, canvas, map, area';
+const PASTE_UNWRAPPED = 'font, marquee, center, header, footer, nav, aside, main, article,'
+  + ' section, figure, figcaption, label, fieldset, legend, video';
+
+export function sanitizePastedTextHtml(html: string): string {
+  const template = document.createElement('template');
+  template.innerHTML = html;
+  const root = template.content;
+  root.querySelectorAll(PASTE_REMOVED).forEach((node) => node.remove());
+  // Innermost first, so nested wrappers all collapse in one pass.
+  [...root.querySelectorAll<HTMLElement>(PASTE_UNWRAPPED)].reverse().forEach((node) => {
+    node.replaceWith(...node.childNodes);
+  });
+  for (const node of root.querySelectorAll<HTMLElement>('*')) {
+    for (const attribute of [...node.attributes]) {
+      const name = attribute.name.toLowerCase();
+      if (name.startsWith('on') || name === 'contenteditable' || name === 'draggable') {
+        node.removeAttribute(attribute.name);
+        continue;
+      }
+      if (!['src', 'href', 'poster', 'xlink:href', 'srcset', 'background'].includes(name)) continue;
+      const value = attribute.value.trim();
+      const inertAnchor = node.tagName === 'A' && name === 'href' && /^https?:/i.test(value);
+      if (/^(?:data|deck|asset):/i.test(value) || inertAnchor) continue;
+      // Anything else would fetch while authoring or presenting.
+      node.removeAttribute(attribute.name);
+      if (node.tagName === 'IMG') node.remove();
+    }
+  }
+  return template.innerHTML;
+}

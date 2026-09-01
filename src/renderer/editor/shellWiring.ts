@@ -249,11 +249,32 @@ export function bindEditorKeys(deps: ShellDeps, clipboard: ClipboardActions): vo
       (t.isContentEditable ||
         /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) ||
         t.closest('.cm-editor') !== null);
+    const mod = e.metaKey || e.ctrlKey;
+    // Undo is the one shortcut that must work wherever focus happens to be.
+    // Clicking an inspector control while editing text leaves focus in that
+    // panel: the canvas's own handler no longer sees the key, and the bail
+    // below would drop it, so Ctrl/Cmd+Z did nothing at all. Finish the edit
+    // and undo the change the author actually made.
+    if (
+      mod && e.key.toLowerCase() === 'z'
+      && canvas.isEditing()
+      && !t?.isContentEditable
+      && !t?.closest('.cm-editor')
+    ) {
+      e.preventDefault();
+      const edited = canvas.endTextEditing(true);
+      if (e.shiftKey) (deps.redo ?? (() => store.redo()))();
+      else (deps.undo ?? (() => store.undo()))();
+      // Undo does not mean "stop editing": go back into the same box, the way
+      // Ctrl/Cmd+Z inside the text does.
+      if (edited && store.slide?.elements.some((element) => element.id === edited)) {
+        canvas.beginTextEdit(edited);
+      }
+      return;
+    }
     // Also bail while a canvas text edit is live, so Delete edits the text
     // rather than deleting the element being typed into.
     if (typing || canvas.isEditing()) return;
-
-    const mod = e.metaKey || e.ctrlKey;
 
     if (mod && e.key.toLowerCase() === 'z') {
       e.preventDefault();

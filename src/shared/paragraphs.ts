@@ -314,11 +314,18 @@ function pastedTsvTable(text: string): HTMLTableElement | null {
     }
   }
   if (cell || row.length > 0 || !source.endsWith('\n')) finishRow();
-  if (rows.length === 0 || Math.max(...rows.map((item) => item.length)) < 2) return null;
+  // A spreadsheet range is a rectangle. One indented line ("\tsub-item" in a
+  // pasted outline) is not a table, and neither is a ragged block of prose
+  // that happens to contain a tab — turning either into a table is far more
+  // destructive than pasting the text as text.
+  const grid = rows.filter((item, index) => index < rows.length - 1 || item.some(Boolean));
+  const columns = grid[0]?.length ?? 0;
+  if (grid.length < 2 || columns < 2) return null;
+  if (grid.some((item) => item.length !== columns)) return null;
 
   const table = document.createElement('table');
   const tbody = document.createElement('tbody');
-  for (const values of rows) {
+  for (const values of grid) {
     const tr = document.createElement('tr');
     for (const value of values) {
       const td = document.createElement('td');
@@ -368,7 +375,12 @@ export function applyTableColumnWidths(html: string, widths: number[]): string {
 export function pastedTableData(html: string, plainText = ''): PastedTableData | null {
   const template = document.createElement('template');
   template.innerHTML = html;
-  const table = template.content.querySelector<HTMLTableElement>('table') ?? pastedTsvTable(plainText);
+  // The tab-separated fallback is for clipboards that carry no HTML table —
+  // never for HTML that is plainly a document: a pasted outline's indentation
+  // must not be read as columns.
+  const authoredBlocks = /<(?:ul|ol|li|h[1-6]|blockquote|pre)\b/i.test(html);
+  const table = template.content.querySelector<HTMLTableElement>('table')
+    ?? (authoredBlocks ? null : pastedTsvTable(plainText));
   if (!table) return null;
   const rows = [...table.rows];
   const columns = Math.max(0, ...rows.map((row) =>
@@ -551,6 +563,27 @@ function nestStrayLists(root: ParentNode & Node): void {
   }
 }
 
+/**
+ * A pasted fragment can carry list items with no list around them (copying
+ * part of a list does exactly that). Give each run of them one, so they are
+ * items of something the editor can convert, indent and render.
+ */
+function adoptOrphanListItems(root: ParentNode & Node): void {
+  const doc = root.ownerDocument ?? document;
+  for (const item of [...root.querySelectorAll('li')]) {
+    const parent = item.parentElement;
+    if (parent && LIST_TAGS.has(parent.tagName)) continue;
+    const previous = item.previousElementSibling;
+    if (previous && LIST_TAGS.has(previous.tagName)) {
+      previous.appendChild(item);
+      continue;
+    }
+    const list = doc.createElement('ul');
+    item.replaceWith(list);
+    list.appendChild(item);
+  }
+}
+
 /** Contenteditable can split one list into adjacent sibling lists on Return. */
 function mergeAdjacentLists(root: ParentNode & Node): void {
   let current = root.firstElementChild;
@@ -576,6 +609,7 @@ function mergeAdjacentLists(root: ParentNode & Node): void {
 export function normalizeParagraphHtml(html: string, splitBreaks = false): string {
   const template = document.createElement('template');
   template.innerHTML = html;
+  adoptOrphanListItems(template.content);
   nestStrayLists(template.content);
   mergeAdjacentLists(template.content);
   const paragraphs: HTMLElement[] = [];

@@ -18,6 +18,7 @@ import { DecodedVideoPool, releaseDecodedVideo } from '../player/decodedVideoPoo
 import { ungateVideoLoad } from '../player/mediaLoadGate.js';
 import { openSlideLinkInNewTab, slideLinkFromEvent } from '../player/links.js';
 import { expandTimeline } from '@shared/timeline.js';
+import { sanitizePastedTextHtml } from '@shared/htmlSafety.js';
 import { classifyMediaName, isPendingSrc, makePendingSrc, pendingToken } from '@shared/media.js';
 import {
   normalizeParagraphHtml,
@@ -360,6 +361,9 @@ export class EditorCanvas {
   private textEditSession = 0;
   /** Coalesce key for the session's stream of live commits + the final one. */
   private textEditCoalesceKey: string | null = null;
+  private textEditChunk = 0;
+  /** Ends the current run of typing so the next edit is its own undo step. */
+  private sealTextChunk: (() => void) | null = null;
   /** Last non-collapsed browser selection inside the active text element. */
   private textSelectionRange: Range | null = null;
   /** Rectangular cell range currently targeted in the live table editor. */
@@ -2065,6 +2069,18 @@ export class EditorCanvas {
    * so the text is styled by theme.css while you type and what you see is what
    * the slide will show.
    */
+  /**
+   * End the live text edit from outside the canvas — used when a shortcut
+   * arrives while focus sits in a panel control rather than in the text.
+   * Returns the element that was being edited, so the caller can put the
+   * author back into it once the shortcut has done its work.
+   */
+  endTextEditing(commit = true): string | null {
+    const elementId = this.editingId;
+    this.finishTextEdit?.(commit);
+    return elementId;
+  }
+
   beginTextEdit(
     elementId: string,
     caretPoint?: { clientX: number; clientY: number },
@@ -2137,7 +2153,8 @@ export class EditorCanvas {
     } else {
       this.textSelectionRange = null;
     }
-    this.textEditCoalesceKey = `text:${elementId}:${++this.textEditSession}`;
+    this.textEditChunk = 0;
+    this.textEditCoalesceKey = `text:${elementId}:${++this.textEditSession}:0`;
     this.onTextEditModeChange?.(elementId);
 
     // Live sync: stream the box's content to the store (and thus to
@@ -2160,6 +2177,59 @@ export class EditorCanvas {
         );
         if (target && (target.type === 'text' || target.type === 'html')) target.html = html;
       }, { label: 'Edit text', transient: true, coalesceKey });
+    };
+
+    /**
+     * Undo works in the steps an author took, not in whole editing sessions.
+     * A run of typing is one step until something ends it: a word boundary, a
+     * pause, Return, a paste, or switching between typing and deleting. Each
+     * sealed run is committed under its own coalesce key, so it becomes one
+     * entry in the editor's history and one entry in the collaboration undo
+     * stack — and one Ctrl/Cmd+Z takes back exactly that much.
+     */
+    const CHUNK_IDLE_MS = 600;
+    let idleSeal = 0;
+    let lastEditKind: 'insert' | 'delete' | null = null;
+    const sealTextChunk = () => {
+      if (idleSeal) {
+        window.clearTimeout(idleSeal);
+        idleSeal = 0;
+      }
+      // This commit is the authoritative one for the run being sealed. A live
+      // sync still pending would otherwise land under the *next* run's key and
+      // fold this run's text into the following undo step.
+      if (liveTimer) {
+        window.clearTimeout(liveTimer);
+        liveTimer = 0;
+      }
+      if (this.editingId !== elementId) return;
+      // Only seal what the author typed here. If focus has moved to a panel
+      // control, the change being made is that control's, and it records its
+      // own history entry; committing underneath it would add a second one.
+      if (document.activeElement !== body) return;
+      lastEditKind = null;
+      const html = authoredTextHtml(body);
+      const current = this.store.slide?.elements.find((e) => e.id === elementId);
+      if (!current || (current.type !== 'text' && current.type !== 'html')) return;
+      // Live sync may already have streamed this exact html under the current
+      // key. There is then nothing to commit — but the run is still over, so
+      // the key must move on either way, or the next word would join this
+      // undo step.
+      if (current.html !== html) {
+        const coalesceKey = this.textEditCoalesceKey ?? undefined;
+        this.store.commit((deck) => {
+          const target = deck.slides[this.store.get().slideIndex]?.elements.find(
+            (e) => e.id === elementId,
+          );
+          if (target && (target.type === 'text' || target.type === 'html')) target.html = html;
+        }, { label: 'Edit text', coalesceKey });
+      }
+      this.textEditCoalesceKey = `text:${elementId}:${this.textEditSession}:${++this.textEditChunk}`;
+    };
+    this.sealTextChunk = sealTextChunk;
+    const scheduleIdleSeal = () => {
+      if (idleSeal) window.clearTimeout(idleSeal);
+      idleSeal = window.setTimeout(sealTextChunk, CHUNK_IDLE_MS);
     };
 
     const onPaste = (event: ClipboardEvent) => {
@@ -2217,11 +2287,25 @@ export class EditorCanvas {
       const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
       if (range && body.contains(range.commonAncestorContainer)) {
         range.deleteContents();
-        range.insertNode(table);
-        range.setStartAfter(table);
-        range.collapse(true);
+        // A table is a block. Dropping it at the caret would nest it inside
+        // the paragraph or list item being edited, which no block-level
+        // control can then reach; put it between blocks instead, replacing
+        // the block the caret was in when nothing is left of it.
+        let block: Node | null = range.startContainer;
+        while (block && block.parentNode !== body) block = block.parentNode;
+        if (block instanceof HTMLElement && !(block.textContent ?? '').trim()) {
+          block.replaceWith(table);
+        } else if (block instanceof HTMLElement) {
+          block.after(table);
+        } else {
+          body.appendChild(table);
+        }
+        const caret = document.createRange();
+        caret.setStartAfter(table);
+        caret.collapse(true);
         selection!.removeAllRanges();
-        selection!.addRange(range);
+        selection!.addRange(caret);
+        this.textSelectionRange = caret.cloneRange();
       } else {
         body.appendChild(table);
       }
@@ -2362,6 +2446,11 @@ export class EditorCanvas {
 
     const finish = (commit: boolean) => {
       if (this.finishTextEdit === finish) this.finishTextEdit = null;
+      if (this.sealTextChunk === sealTextChunk) this.sealTextChunk = null;
+      if (idleSeal) {
+        window.clearTimeout(idleSeal);
+        idleSeal = 0;
+      }
       body.removeEventListener('blur', onBlur);
       body.removeEventListener('keydown', onKey);
       body.removeEventListener('beforeinput', onBeforeInput);
@@ -2428,8 +2517,32 @@ export class EditorCanvas {
         && event.relatedTarget.closest('.editor-inspector')) return;
       finish(true);
     };
+    /**
+     * Pasted markup is other applications' HTML, and it is routinely malformed
+     * in ways the block model cannot express: Apple Notes nests a whole `<ul>`
+     * directly inside another `<ul>` (so every item renders as a sub-bullet),
+     * and a plain-text paste arrives as `<br>`-separated runs rather than
+     * blocks. Repair it to the same shape entering the box would have
+     * produced, so what you can do with a paragraph does not depend on where
+     * the text came from — list conversion in particular needs real blocks.
+     */
+    const repairPastedMarkup = () => {
+      const range = this.activeTextRange(body);
+      const offsets = range ? this.textOffsetsForRange(body, range) : null;
+      const normalized = normalizeParagraphHtml(sanitizePastedTextHtml(body.innerHTML), true);
+      if (!normalized || normalized === body.innerHTML) return;
+      body.innerHTML = normalized;
+      if (offsets) this.restoreTextRange(body, offsets);
+    };
     const onInput = (event?: Event) => {
       const typed = event instanceof InputEvent ? event : null;
+      if (
+        typed?.inputType === 'insertFromPaste'
+        || typed?.inputType === 'insertFromPasteAsQuotation'
+        || typed?.inputType === 'insertFromDrop'
+      ) {
+        repairPastedMarkup();
+      }
       if (
         typed?.inputType === 'insertText'
         && typed.data === '>'
@@ -2439,6 +2552,20 @@ export class EditorCanvas {
       }
       if (el.type === 'text' && (el.autoFit || el.noWrap)) scheduleAutoFit(node!);
       if (this.liveTextSync && !liveTimer) liveTimer = window.setTimeout(pushLive, 250);
+
+      const inputType = typed?.inputType ?? '';
+      const kind: 'insert' | 'delete' | null = inputType.startsWith('delete')
+        ? 'delete'
+        : inputType.startsWith('insert') ? 'insert' : null;
+      // Switching between typing and deleting ends the run that was going.
+      if (kind && lastEditKind && kind !== lastEditKind) sealTextChunk();
+      if (kind) lastEditKind = kind;
+      const endsRun = inputType === 'insertParagraph'
+        || inputType === 'insertLineBreak'
+        || inputType.startsWith('insertFrom')
+        || (inputType === 'insertText' && /^[\s\u00a0]+$/.test(typed?.data ?? ''));
+      if (endsRun) sealTextChunk();
+      else scheduleIdleSeal();
     };
     const sealActiveTypingStyle = () => {
       const range = this.activeTextRange(body);
@@ -3186,19 +3313,55 @@ export class EditorCanvas {
         }
         const fragment = document.createDocumentFragment();
         const paragraphs: HTMLElement[] = [];
-        for (const item of [...block.children] as HTMLElement[]) {
-          if (item.tagName !== 'LI') continue;
+        // Walk each item in document order, so a sub-list or a block written
+        // inside the item (Google Docs and Word both do this) becomes its own
+        // paragraph exactly where it was, rather than being appended after the
+        // item it was nested in.
+        const paragraphFrom = (source: HTMLElement): HTMLElement => {
           const paragraph = document.createElement('p');
-          for (const attr of [...item.attributes]) {
+          for (const attr of [...source.attributes]) {
             if (attr.name !== LIST_MARKER_COLOR_ATTRIBUTE) {
               paragraph.setAttribute(attr.name, attr.value);
             }
           }
           paragraph.style.removeProperty(LIST_MARKER_COLOR_PROPERTY);
+          paragraph.style.removeProperty('list-style-type');
           if (!paragraph.getAttribute('style')?.trim()) paragraph.removeAttribute('style');
-          while (item.firstChild) paragraph.appendChild(item.firstChild);
-          paragraphs.push(paragraph);
-          fragment.appendChild(paragraph);
+          return paragraph;
+        };
+        const flatten = (item: HTMLElement): HTMLElement[] => {
+          const out: HTMLElement[] = [];
+          let current = paragraphFrom(item);
+          const flush = () => {
+            if (current.childNodes.length > 0) out.push(current);
+            current = paragraphFrom(item);
+          };
+          for (const node of [...item.childNodes]) {
+            if (node instanceof HTMLElement && /^(?:UL|OL)$/.test(node.tagName)) {
+              flush();
+              for (const nested of [...node.children] as HTMLElement[]) {
+                if (nested.tagName === 'LI') out.push(...flatten(nested));
+              }
+              continue;
+            }
+            if (node instanceof HTMLElement && /^(?:P|DIV|H[1-6])$/.test(node.tagName)) {
+              flush();
+              const paragraph = paragraphFrom(node);
+              while (node.firstChild) paragraph.appendChild(node.firstChild);
+              out.push(paragraph);
+              continue;
+            }
+            current.appendChild(node);
+          }
+          flush();
+          return out;
+        };
+        for (const item of [...block.children] as HTMLElement[]) {
+          if (item.tagName !== 'LI') continue;
+          for (const paragraph of flatten(item)) {
+            paragraphs.push(paragraph);
+            fragment.appendChild(paragraph);
+          }
         }
         block.replaceWith(fragment);
         inserted.push(...paragraphs);
@@ -3224,23 +3387,28 @@ export class EditorCanvas {
         inserted.push(...replacements);
         changed = true;
       }
-      for (const block of selectedLists) {
-        if (/^(OL|UL)$/.test(block.tagName)) {
-          if (block.tagName === targetTag) {
-            inserted.push(block);
-            continue;
-          }
-          const replacement = document.createElement(targetTag.toLowerCase());
-          for (const attr of [...block.attributes]) {
-            if (targetTag === 'UL' && attr.name === 'start') continue;
-            replacement.setAttribute(attr.name, attr.value);
-          }
-          while (block.firstChild) replacement.appendChild(block.firstChild);
-          block.replaceWith(replacement);
-          inserted.push(replacement);
-          changed = true;
-          continue;
+      const retagList = (list: HTMLElement): HTMLElement => {
+        if (list.tagName === targetTag) return list;
+        const replacement = document.createElement(targetTag.toLowerCase());
+        for (const attr of [...list.attributes]) {
+          if (targetTag === 'UL' && attr.name === 'start') continue;
+          replacement.setAttribute(attr.name, attr.value);
         }
+        while (list.firstChild) replacement.appendChild(list.firstChild);
+        list.replaceWith(replacement);
+        changed = true;
+        return replacement;
+      };
+      for (const block of selectedLists) {
+        if (!/^(OL|UL)$/.test(block.tagName)) continue;
+        // Sub-lists are part of the list you are converting. Leaving them at
+        // their old kind is what made converting a pasted, nested list look
+        // like it did nothing at all: the visible items live in the sub-list.
+        const converted = retagList(block);
+        for (const nested of [...converted.querySelectorAll<HTMLElement>('ul, ol')]) {
+          retagList(nested);
+        }
+        inserted.push(converted);
       }
       // Merge adjacent lists created from a multi-paragraph selection.
       for (let index = 1; index < inserted.length; index++) {
@@ -3285,6 +3453,11 @@ export class EditorCanvas {
       );
       if (target && (target.type === 'text' || target.type === 'html')) target.html = html;
     }, { label, coalesceKey });
+    // The key deliberately stays put: leaving edit mode commits this same html
+    // again, and that commit has to fold into this entry so one Ctrl/Cmd+Z
+    // takes back the formatting change rather than an invisible re-commit of
+    // it. Typing that follows is separated from it by its own word or pause
+    // seal, like any other run.
   }
 
   /** Positive-width text slices covered by flat character offsets. */
