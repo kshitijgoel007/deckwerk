@@ -133,6 +133,43 @@ describe.skipIf(!electronBinary)('undo steps through text edits', () => {
     await undo();
     await expectText(`${START}one`, 'undo takes back only what was typed after the pause');
 
+    /*
+     * The History panel collapses that run of per-word entries into one row,
+     * without changing what undo does: grouping is presentation only, and each
+     * step inside the run is still a state to go back to.
+     */
+    await editor.click('#side-tabs button[data-panel="history"]', 'History tab');
+    const panel = async () => editor!.evaluate<{
+      rows: string[];
+      groups: number;
+      meta: string;
+      toggle: string;
+    }>(`(() => {
+      const host = document.getElementById('history');
+      return {
+        rows: [...host.querySelectorAll('.history-row strong')].map((node) => node.textContent),
+        groups: host.querySelectorAll('.history-group').length,
+        meta: host.querySelector('.history-group .history-item span')?.textContent ?? '',
+        toggle: host.querySelector('.history-group-toggle')?.textContent ?? '',
+      };
+    })()`);
+    await eventually(panel, 'the History panel never grouped the typed run',
+      (state) => state.groups === 1 && state.rows.filter((row) => row === 'Edit text'
+        || row === 'Current · Edit text').length === 1);
+    const grouped = await panel();
+    expect(grouped.meta, 'the grouped row counts its steps').toMatch(/\d+ edits/);
+    expect(grouped.toggle).toMatch(/^Show \d+ steps$/);
+
+    // Opening the run lists every step, and each one is its own restorable state.
+    await editor.click('#history .history-group-toggle', 'Show steps');
+    const steps = await editor.evaluate<number>(
+      `document.querySelectorAll('#history .history-group-steps .history-item').length`);
+    expect(steps, 'every step of the run is listed').toBeGreaterThan(1);
+    expect(steps).toBe(Number.parseInt(grouped.meta, 10));
+    await editor.click('#side-tabs button[data-panel="inspector"]', 'Props tab');
+    await editor.click(CONTENT, 'back into the text');
+    await editor.key('End', 35);
+
     /* Formatting is its own step and never swallows the typing before it. */
     await editor.dragSelectFirstWord(CONTENT, 'first word');
     await editor.click(`${PANEL} button[aria-label="Bold (Cmd/Ctrl+B)"]`, 'Bold');

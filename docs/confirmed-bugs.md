@@ -280,3 +280,18 @@ These were found by it and are fixed:
   was wrapped again instead of using the item's own block.
 - **An orphan `<li>` survived a paste into a table cell.** Runs of orphan list
   items are now given a list by the shared normaliser.
+
+## History panel: runs of edits (2026-08-31)
+
+Undo works per typed run, so a paragraph typed word by word records one history
+entry per word. The panel collapses consecutive entries that share a label *and*
+a group — `HistoryItem.group`, set to `text:<elementId>` by every in-text commit
+— into a single row carrying the step count and the run's time span. The log is
+untouched: each step stays separately restorable behind the row's "Show N steps"
+toggle, and each is still its own undo step. Entries with no group never merge,
+so two drags labelled "Move or resize objects" remain two rows.
+
+Covered by `test/historyPanel.test.ts` (grouping, expansion, restoring a single
+step, no cross-element or cross-label merging, persistence across reopen) and
+end to end in `test/textUndoStepsBrowser.test.ts`, which types real words and
+requires the panel to show one row while Ctrl/Cmd+Z still steps word by word.

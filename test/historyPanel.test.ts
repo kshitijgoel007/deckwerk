@@ -330,4 +330,144 @@ describe('edit history', () => {
       { op: 'deleteElements', slideId: 's1', elementIds: ['e1', 'e2', 'e3'] },
     ])).toBe('Refine the opening. Changed 2 revised slides and 3 removed objects.');
   });
+
+  /*
+   * Undo works per typed run, so a paragraph typed word by word records one
+   * history entry per word. The panel collapses those runs to one row; the
+   * log itself is untouched, and every step in a run stays restorable.
+   */
+  describe('runs of edits on one element', () => {
+    const typeWords = (store: EditorStore, elementId: string, words: string[]) => {
+      let text = '';
+      for (const word of words) {
+        text += word;
+        const html = `<p>${text}</p>`;
+        store.commit((deck) => {
+          const element = deck.slides[0].elements.find((candidate) => candidate.id === elementId);
+          if (element && element.type === 'text') element.html = html;
+        }, { label: 'Edit text', historyGroup: `text:${elementId}` });
+      }
+    };
+    const withText = (...ids: string[]) => {
+      const deck = emptyDeck('History');
+      ids.forEach((id, index) => deck.slides[0].elements.push({
+        id, type: 'text', x: 100, y: 100 + index * 200, w: 800, h: 150,
+        rot: 0, z: 1, opacity: 1, class: ['role-body'], style: {},
+        html: '<p></p>', align: 'left', valign: 'top',
+      } as never));
+      return deck;
+    };
+    const rows = (host: HTMLElement) => [...host.querySelectorAll('.history-row')]
+      .map((row) => row.querySelector('strong')?.textContent ?? '');
+
+    it('shows one row for a run of typing and one per other edit', () => {
+      const store = new EditorStore(withText('t1'), '/tmp/history');
+      typeWords(store, 't1', ['alpha ', 'beta ', 'gamma ']);
+      store.commit((deck) => { deck.slides[0].name = 'Renamed'; }, { label: 'Rename slide' });
+
+      expect(store.history()).toHaveLength(4);
+      const host = document.createElement('div');
+      new HistoryPanel(host, store);
+      expect(rows(host)).toEqual(['Current · Rename slide', 'Edit text']);
+      expect(host.querySelector('.history-group .history-item span')?.textContent)
+        .toContain('3 edits');
+    });
+
+    it('keeps every step of a run reachable and restorable', () => {
+      const store = new EditorStore(withText('t1'), '/tmp/history');
+      typeWords(store, 't1', ['alpha ', 'beta ', 'gamma ']);
+      const host = document.createElement('div');
+      new HistoryPanel(host, store);
+
+      const toggle = host.querySelector<HTMLButtonElement>('.history-group-toggle')!;
+      expect(toggle.textContent).toBe('Show 3 steps');
+      expect(toggle.getAttribute('aria-expanded')).toBe('false');
+      toggle.click();
+
+      const steps = host.querySelectorAll('.history-group-steps .history-item');
+      expect(steps).toHaveLength(3);
+      expect(host.querySelector<HTMLButtonElement>('.history-group-toggle')!.textContent)
+        .toBe('Hide steps');
+
+      // The oldest step of the run is the state after the first word.
+      (steps[2] as HTMLButtonElement).click();
+      const text = store.get().deck.slides[0].elements[0];
+      expect(text.type === 'text' && text.html).toBe('<p>alpha </p>');
+      // Reverting is itself one undoable step, as for any other entry.
+      store.undo();
+      const restored = store.get().deck.slides[0].elements[0];
+      expect(restored.type === 'text' && restored.html).toBe('<p>alpha beta gamma </p>');
+    });
+
+    it('restores the end of the run when the row itself is chosen', () => {
+      const store = new EditorStore(withText('t1'), '/tmp/history');
+      typeWords(store, 't1', ['alpha ', 'beta ', 'gamma ']);
+      store.commit((deck) => { deck.slides[0].name = 'Renamed'; }, { label: 'Rename slide' });
+      const host = document.createElement('div');
+      new HistoryPanel(host, store);
+
+      host.querySelector<HTMLButtonElement>('.history-group .history-item')!.click();
+      const text = store.get().deck.slides[0].elements[0];
+      expect(text.type === 'text' && text.html).toBe('<p>alpha beta gamma </p>');
+      expect(store.get().deck.slides[0].name).not.toBe('Renamed');
+    });
+
+    it('never merges runs on different elements or of different kinds', () => {
+      const store = new EditorStore(withText('t1', 't2'), '/tmp/history');
+      typeWords(store, 't1', ['alpha ', 'beta ']);
+      typeWords(store, 't2', ['gamma ', 'delta ']);
+      store.commit((deck) => {
+        const element = deck.slides[0].elements.find((candidate) => candidate.id === 't2');
+        if (element && element.type === 'text') element.html = '<p><b>gamma delta </b></p>';
+      }, { label: 'Change selected text weight', historyGroup: 'text:t2' });
+      typeWords(store, 't2', ['gamma delta epsilon ']);
+
+      const host = document.createElement('div');
+      new HistoryPanel(host, store);
+      expect(rows(host)).toEqual([
+        'Current · Edit text',
+        'Change selected text weight',
+        'Edit text',
+        'Edit text',
+      ]);
+      expect([...host.querySelectorAll('.history-group')]).toHaveLength(2);
+    });
+
+    it('leaves entries with no group alone even when their labels match', () => {
+      const store = new EditorStore(emptyDeck('History'), '/tmp/history');
+      store.commit((deck) => { deck.slides[0].name = 'One'; }, { label: 'Move or resize objects' });
+      store.commit((deck) => { deck.slides[0].name = 'Two'; }, { label: 'Move or resize objects' });
+
+      const host = document.createElement('div');
+      new HistoryPanel(host, store);
+      expect(rows(host)).toEqual([
+        'Current · Move or resize objects', 'Move or resize objects',
+      ]);
+      expect(host.querySelector('.history-group')).toBeNull();
+    });
+
+    it('marks the run as current while its newest step is the live state', () => {
+      const store = new EditorStore(withText('t1'), '/tmp/history');
+      typeWords(store, 't1', ['alpha ', 'beta ']);
+      const host = document.createElement('div');
+      new HistoryPanel(host, store);
+
+      const row = host.querySelector<HTMLButtonElement>('.history-group .history-item')!;
+      expect(row.textContent).toContain('Current · Edit text');
+      expect(row.disabled).toBe(true);
+    });
+
+    it('carries the grouping hint through save and reopen', () => {
+      const store = new EditorStore(withText('t1'), '/tmp/history');
+      typeWords(store, 't1', ['alpha ', 'beta ']);
+      const reopened = new EditorStore(emptyDeck());
+      reopened.load(store.get().deck, '/tmp/history', { history: store.persistedHistory() });
+
+      const host = document.createElement('div');
+      new HistoryPanel(host, reopened);
+      expect(host.querySelectorAll('.history-group')).toHaveLength(1);
+      expect(host.querySelector('.history-group .history-item span')?.textContent)
+        .toContain('2 edits');
+    });
+  });
 });

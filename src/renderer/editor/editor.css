@@ -1196,6 +1196,28 @@ input[type="range"] { accent-color: var(--accent); padding: 0; background: trans
 }
 .history-chat-link:hover { text-decoration: underline; }
 
+/* A run of edits of the same kind on one element: one row, openable. */
+.history-group { margin: 0 0 6px; }
+.history-group > .history-row { margin-bottom: 0; }
+.history-group-toggle {
+  width: 100%;
+  margin: 2px 0 0;
+  padding: 3px 10px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 10px;
+  text-align: left;
+}
+.history-group-toggle:hover { color: var(--accent); text-decoration: underline; }
+.history-group-steps {
+  margin: 2px 0 0 10px;
+  padding-left: 8px;
+  border-left: 1px solid var(--border);
+}
+.history-group-steps .history-row { margin-bottom: 4px; }
+.history-group-steps .history-item strong { font-weight: 500; }
+
 .agent-history-dialog {
   width: min(760px, calc(100vw - 48px));
   height: min(720px, calc(100vh - 48px));

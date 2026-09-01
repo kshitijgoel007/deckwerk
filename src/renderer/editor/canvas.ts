@@ -2222,7 +2222,7 @@ export class EditorCanvas {
             (e) => e.id === elementId,
           );
           if (target && (target.type === 'text' || target.type === 'html')) target.html = html;
-        }, { label: 'Edit text', coalesceKey });
+        }, { label: 'Edit text', coalesceKey, historyGroup: `text:${elementId}` });
       }
       this.textEditCoalesceKey = `text:${elementId}:${this.textEditSession}:${++this.textEditChunk}`;
     };
@@ -2987,7 +2987,7 @@ export class EditorCanvas {
         el.html = html;
         el.class = el.class.filter((name) => name !== 'placeholder');
       }
-    }, { label: 'Edit text', coalesceKey });
+    }, { label: 'Edit text', coalesceKey, historyGroup: `text:${elementId}` });
   }
 
   /**
@@ -3452,7 +3452,7 @@ export class EditorCanvas {
         (element) => element.id === elementId,
       );
       if (target && (target.type === 'text' || target.type === 'html')) target.html = html;
-    }, { label, coalesceKey });
+    }, { label, coalesceKey, historyGroup: `text:${elementId}` });
     // The key deliberately stays put: leaving edit mode commits this same html
     // again, and that commit has to fold into this entry so one Ctrl/Cmd+Z
     // takes back the formatting change rather than an invisible re-commit of
@@ -3712,7 +3712,7 @@ export class EditorCanvas {
           ? applyTableColumnWidths(html, target.table.columnWidths)
           : html;
       }
-    }, { label, coalesceKey });
+    }, { label, coalesceKey, historyGroup: `text:${selected.elementId}` });
     this.syncTableSelectionHighlight();
   }
 

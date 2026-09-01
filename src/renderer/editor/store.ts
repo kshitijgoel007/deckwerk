@@ -41,12 +41,21 @@ export interface HistoryItem {
   description?: string;
   /** Saved embedded Agent conversation that produced this state. */
   agentChatId?: string;
+  /**
+   * What this entry edited, e.g. `text:<elementId>`. Purely a display hint:
+   * consecutive entries sharing a group and a label are shown as one
+   * collapsible row, while each remains separately restorable and each is
+   * still its own undo step.
+   */
+  group?: string;
   at: number;
   slideIndex: number;
 }
 
 export interface RemoteHistoryOptions {
   coalesce?: boolean;
+  /** Display grouping hint; see `HistoryItem.group`. */
+  group?: string;
   /** False for synchronization events such as filesystem reloads/resyncs. */
   history?: boolean;
   description?: string;
@@ -317,7 +326,10 @@ export class EditorStore {
    */
   commit(
     fn: (deck: Deck) => void,
-    opts: { history?: boolean; label?: string; transient?: boolean; coalesceKey?: string } = {},
+    opts: {
+      history?: boolean; label?: string; transient?: boolean;
+      coalesceKey?: string; historyGroup?: string;
+    } = {},
   ): void {
     const previous = this.state.deck;
     const next = structuredClone(previous) as Deck;
@@ -329,7 +341,10 @@ export class EditorStore {
   private finishCommit(
     previous: Deck,
     next: Deck,
-    opts: { history?: boolean; label?: string; transient?: boolean; coalesceKey?: string },
+    opts: {
+      history?: boolean; label?: string; transient?: boolean;
+      coalesceKey?: string; historyGroup?: string;
+    },
   ): void {
     const forward = diffDecks(previous, next);
     if (forward.length === 0) return;
@@ -343,7 +358,7 @@ export class EditorStore {
     this.state = { ...this.state, deck: next, dirty: true };
     if (!this.txnBase) {
       if (!opts.transient && opts.history !== false) {
-        this.recordHistory(opts.label ?? 'Edit slide');
+        this.recordHistory(opts.label ?? 'Edit slide', { group: opts.historyGroup });
       } else {
         this.currentHistoryId = null;
         this.emitHistory();
@@ -729,6 +744,7 @@ export class EditorStore {
       label,
       ...(opts.description ? { description: opts.description } : {}),
       ...(opts.agentChatId ? { agentChatId: opts.agentChatId } : {}),
+      ...(opts.group ? { group: opts.group } : {}),
       at: Date.now(),
       slideIndex: this.state.slideIndex,
       operations,

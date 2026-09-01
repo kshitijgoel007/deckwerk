@@ -14,6 +14,9 @@ export const PersistedDeckHistoryEntrySchema = z.object({
   label: z.string().min(1).max(500),
   description: z.string().max(10_000).optional(),
   agentChatId: z.string().min(1).max(1_000).optional(),
+  /** What this entry edited, e.g. `text:<elementId>`. Consecutive entries that
+   * share a group and a label are shown as one collapsible row. */
+  group: z.string().min(1).max(200).optional(),
   at: z.number().finite().nonnegative(),
   slideIndex: z.number().int().nonnegative(),
   operations: z.array(AgentOperationSchema),
