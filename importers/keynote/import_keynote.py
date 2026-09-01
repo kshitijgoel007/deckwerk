@@ -53,6 +53,13 @@ except ImportError:  # pragma: no cover - environment problem, not a deck proble
     raise SystemExit(2)
 
 
+# How the reported 0..1 completion is divided between the import's phases.
+# Slide conversion owns most of it because that is where media extraction and
+# transcoding happen; the ratios are wall-clock estimates, not element counts.
+OPEN_SPAN = (0.0, 0.04)
+LOAD_SPAN = (0.04, 0.30)
+SLIDE_SPAN = (0.30, 0.94)
+
 # Chromium cannot decode these, so they are converted to PNG on the way in.
 # Without this, TIFFs pasted into a Keynote deck import as blank rectangles.
 RASTER_CONVERT = {".tiff", ".tif", ".bmp", ".tga", ".heic", ".heif"}
@@ -98,6 +105,77 @@ class Report:
         }
 
 
+class Progress:
+    """Reports the phase the import is currently in, for the host app's UI.
+
+    A .key file this importer is asked to open can be a gigabyte of embedded
+    video, and the work is a long sequence of individually slow steps. Without
+    this the whole run is one opaque wait, which is indistinguishable from a
+    hang. stdout is the machine-readable JSON channel and stderr is the
+    diagnostic one, so progress claims a line protocol on stderr: the Electron
+    side lifts lines carrying the marker out of the diagnostic stream and shows
+    them, and treats everything else as it always did.
+    """
+
+    MARKER = "@progress"
+
+    def __init__(self, stream: Any = None) -> None:
+        # sys.stderr is read at call time, not captured here: `main` installs a
+        # redirect_stdout(sys.stderr) around the whole import.
+        self._stream = stream
+        self._ratio: float | None = None
+
+    def phase(self, message: str, ratio: float | None = None) -> None:
+        """Enter a named phase, optionally moving the overall completion."""
+        if ratio is not None:
+            self._ratio = ratio
+        self.emit(message)
+
+    def step(
+        self, message: str, done: int, total: int, span: tuple[float, float]
+    ) -> None:
+        """Report item `done` of `total` within a phase occupying `span`."""
+        low, high = span
+        self._ratio = low + (high - low) * (done / total) if total else low
+        self.emit(message)
+
+    def stride(self, total: int, updates: int = 120) -> int:
+        """Report every Nth item, so a huge loop does not flood the channel.
+
+        The host redraws a one-line status; a few hundred updates across a run
+        is already more resolution than a reader can use.
+        """
+        return max(1, total // updates)
+
+    def emit(self, message: str) -> None:
+        """Report a step at the phase's current completion.
+
+        Used for work nested inside a phase — extracting or transcoding a movie
+        while converting a slide — where the message is what is worth saying
+        and the ratio must not jump around underneath it.
+        """
+        ratio = "-" if self._ratio is None else f"{min(max(self._ratio, 0.0), 1.0):.4f}"
+        stream = self._stream if self._stream is not None else sys.stderr
+        stream.write(f"{self.MARKER} {ratio} {message}\n")
+        stream.flush()
+
+
+class SilentProgress(Progress):
+    """The default: analysis callers and tests want no reporting at all."""
+
+    def emit(self, message: str) -> None:
+        return
+
+
+def _human_bytes(count: float) -> str:
+    """Size as a reader would say it, so a phase message conveys the wait."""
+    for unit in ("bytes", "KB", "MB", "GB"):
+        if count < 1024 or unit == "GB":
+            return f"{count:.0f} {unit}" if unit == "bytes" else f"{count:.1f} {unit}"
+        count /= 1024
+    raise AssertionError("unreachable: the loop returns on its last unit")
+
+
 class Package:
     """Read-only access to a .key package, whether zipped or a directory."""
 
@@ -122,16 +200,26 @@ class Package:
             self._zip.close()
 
 
-def load_objects(pkg: Package, report: Report) -> dict[int, Any]:
+def load_objects(
+    pkg: Package, report: Report, progress: Progress | None = None
+) -> dict[int, Any]:
     """Decode every .iwa stream into a flat `object id -> message` table.
 
     A damaged stream costs us that stream's objects and nothing else; the rest
     of the deck still imports.
     """
+    progress = progress or SilentProgress()
     objects: dict[int, Any] = {}
-    for name in pkg.names:
-        if not name.endswith(".iwa"):
-            continue
+    streams = [name for name in pkg.names if name.endswith(".iwa")]
+    stride = progress.stride(len(streams))
+    for done, name in enumerate(streams, start=1):
+        if done % stride == 0 or done == len(streams):
+            progress.step(
+                f"Decoding {Path(name).name} ({done} of {len(streams)})",
+                done,
+                len(streams),
+                LOAD_SPAN,
+            )
         try:
             iwa = IWAFile.from_buffer(pkg.read(name), name)
         except Exception as exc:
@@ -880,6 +968,7 @@ class Importer:
     canvas: tuple[float, float] = DEFAULT_CANVAS
     #  --report analyses coverage without touching the filesystem.
     dry_run: bool = False
+    progress: Progress = field(default_factory=SilentProgress)
     _asset_cache: dict[int, str | None] = field(default_factory=dict)
     _counter: int = 0
 
@@ -933,12 +1022,16 @@ class Importer:
             self.report.warnings.append(f"Could not read {source}: {exc}")
             return None
 
+        size = _human_bytes(len(raw))
+
         if ext in PDF_EXTS:
+            self.progress.emit(f"Rendering {file_name} ({size})")
             converted = self._rasterise_pdf(raw, file_name, assets)
             self._asset_cache[data_id] = converted
             return converted
 
         if ext in RASTER_CONVERT:
+            self.progress.emit(f"Converting {file_name} to PNG ({size})")
             converted = self._convert_image(raw, file_name, assets)
             self._asset_cache[data_id] = converted
             return converted
@@ -951,6 +1044,7 @@ class Importer:
         if ext not in WEB_SAFE_IMAGE and ext not in VIDEO_EXTS:
             self.report.warnings.append(f"Unrecognised media type kept as-is: {file_name}")
 
+        self.progress.emit(f"Extracting {file_name} ({size})")
         dest = assets / _safe_name(file_name)
         if not dest.exists():
             dest.write_bytes(raw)
@@ -973,6 +1067,7 @@ class Importer:
         trimming stay non-destructive and CSS-based.
         """
         dest = assets / _safe_name(file_name)
+        self.progress.emit(f"Extracting {file_name} ({_human_bytes(len(raw))})")
         if not dest.exists():
             dest.write_bytes(raw)
 
@@ -993,6 +1088,7 @@ class Importer:
             self.report.unsupported[f"video codec {codec}"] += 1
             return f"assets/{dest.name}"
 
+        self.progress.emit(f"Transcoding {file_name} from {codec} to H.264")
         try:
             subprocess.run(
                 [
@@ -2374,11 +2470,23 @@ THEME_CSS = """/*
 """
 
 
-def import_key(path: Path, out_dir: Path, write: bool) -> tuple[dict[str, Any], Report]:
+def import_key(
+    path: Path,
+    out_dir: Path,
+    write: bool,
+    progress: Progress | None = None,
+) -> tuple[dict[str, Any], Report]:
     report = Report()
+    progress = progress or SilentProgress()
+    size = path.stat().st_size if path.is_file() else 0
+    progress.phase(
+        f"Opening {path.name}" + (f" ({_human_bytes(size)})" if size else ""),
+        OPEN_SPAN[0],
+    )
     pkg = Package(path)
     try:
-        objects = load_objects(pkg, report)
+        progress.phase(f"Decoding {path.name}", OPEN_SPAN[1])
+        objects = load_objects(pkg, report, progress)
         if not objects:
             raise SystemExit(f"No readable .iwa streams in {path}")
 
@@ -2403,10 +2511,20 @@ def import_key(path: Path, out_dir: Path, write: bool) -> tuple[dict[str, Any], 
             report=report,
             canvas=(canvas_w, canvas_h),
             dry_run=not write,
+            progress=progress,
         )
 
         slides: list[dict[str, Any]] = []
-        for index, node_ref in enumerate(show.slideTree.slides):
+        slide_refs = list(show.slideTree.slides)
+        slide_stride = progress.stride(len(slide_refs))
+        for index, node_ref in enumerate(slide_refs):
+            if index % slide_stride == 0:
+                progress.step(
+                    f"Converting slide {index + 1} of {len(slide_refs)}",
+                    index,
+                    len(slide_refs),
+                    SLIDE_SPAN,
+                )
             try:
                 node = objects[int(node_ref.identifier)]
                 slide_obj = objects[int(node.slide.identifier)]
@@ -2427,6 +2545,7 @@ def import_key(path: Path, out_dir: Path, write: bool) -> tuple[dict[str, Any], 
                     }
                 )
 
+        progress.phase("Classifying text roles", SLIDE_SPAN[1])
         _classify_text_roles(slides)
 
         report.slides = len(slides)
@@ -2441,6 +2560,7 @@ def import_key(path: Path, out_dir: Path, write: bool) -> tuple[dict[str, Any], 
         }
 
         if write:
+            progress.phase(f"Writing {out_dir.name}/deck.json", 0.97)
             out_dir.mkdir(parents=True, exist_ok=True)
             (out_dir / "assets").mkdir(exist_ok=True)
             (out_dir / "edit").mkdir(exist_ok=True)
@@ -2449,6 +2569,7 @@ def import_key(path: Path, out_dir: Path, write: bool) -> tuple[dict[str, Any], 
             )
             theme_path = out_dir / "theme.css"
             if not theme_path.exists():
+                progress.phase(f"Writing {out_dir.name}/theme.css", 0.99)
                 theme_path.write_text(THEME_CSS, encoding="utf8")
 
         return deck, report
@@ -2481,7 +2602,14 @@ def main(argv: list[str]) -> int:
         # print warnings straight to stdout, which would corrupt it, so
         # everything the import emits is diverted to stderr.
         with redirect_stdout(sys.stderr):
-            deck, report = import_key(args.input, out_dir, write=not args.report)
+            deck, report = import_key(
+                args.input,
+                out_dir,
+                write=not args.report,
+                # Only the real import reports: --report is an analysis tool
+                # whose caller reads stdout and wants a quiet stderr.
+                progress=SilentProgress() if args.report else Progress(),
+            )
     except SystemExit as exc:
         sys.stderr.write(f"{exc}\n")
         return 1

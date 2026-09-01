@@ -101,9 +101,25 @@ describe.skipIf(!ready)('keynote importer', () => {
     async () => {
       const out = await mkdtemp(join(tmpdir(), 'kn-open-smoke-'));
       try {
-        const imported = await importKeynote(join(LOCAL_FIXTURES, 'team_slide.key'), out);
+        const phases: { message: string; ratio: number | null }[] = [];
+        const imported = await importKeynote(
+          join(LOCAL_FIXTURES, 'team_slide.key'),
+          out,
+          (message, ratio) => phases.push({ message, ratio }),
+        );
         expect(imported.dir).toBe(out);
         expect(imported.deck.slides.length).toBeGreaterThan(0);
+
+        // A .key file is often a gigabyte of embedded video, so the import must
+        // say what it is doing rather than look like a hang. Assert the phases
+        // actually stream out of the sidecar, name the work, and only advance.
+        expect(phases.length).toBeGreaterThan(3);
+        expect(phases.some((p) => /^Decoding .+\.iwa \(\d+ of \d+\)$/.test(p.message))).toBe(true);
+        expect(phases.some((p) => /^Converting slide \d+ of \d+$/.test(p.message))).toBe(true);
+        expect(phases.some((p) => p.message.includes('deck.json'))).toBe(true);
+        const ratios = phases.map((p) => p.ratio).filter((r): r is number => r !== null);
+        expect(ratios).toEqual([...ratios].sort((a, b) => a - b));
+        expect(ratios.at(-1)).toBe(1);
 
         // Reopen from disk instead of trusting the in-memory importer result.
         // This is the same boundary used by Open and by a fresh app launch.

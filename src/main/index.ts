@@ -1029,10 +1029,14 @@ function registerHandlers(): void {
       });
       if (target.canceled || !target.filePath) return null;
 
+      // The sidecar reports 0..1 across its own work, and the renderer's
+      // `adopt` then reports the rest of the way. Compress the conversion into
+      // the first half so the operation's completion only ever moves forward.
+      const conversionShare = 0.5;
       const result = await importKeynote(keyPath, deckFolderPath(target.filePath), (message, ratio) => {
-        reportOperation(event, operationId, message, ratio);
+        reportOperation(event, operationId, message, ratio === null ? null : ratio * conversionShare);
       });
-      reportOperation(event, operationId, 'Opening the imported presentation', 1);
+      reportOperation(event, operationId, 'Opening the imported presentation', conversionShare);
       setSession(result.dir, result.deck);
       broadcastDeck(BrowserWindow.fromWebContents(event.sender));
       return result;
