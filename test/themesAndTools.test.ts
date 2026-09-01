@@ -43,19 +43,29 @@ function sampleDeck() {
 }
 
 describe('theme presets', () => {
-  it('offers five light themes', () => {
-    expect(THEMES).toHaveLength(5);
+  it('offers legible light and dark themes', () => {
+    expect(THEMES).toHaveLength(10);
+    const luminance = (hex: string) => [1, 3, 5]
+      .map((i) => Number.parseInt(hex.slice(i, i + 2), 16))
+      .reduce((sum, channel) => sum + channel, 0) / 3;
     for (const t of THEMES) {
-      // All light by decision: dark grounds would mean re-editing every figure.
-      const bg = t.colors.background;
-      const [r, g, b] = [1, 3, 5].map((i) => Number.parseInt(bg.slice(i, i + 2), 16));
-      expect((r + g + b) / 3, `${t.name} background is not light`).toBeGreaterThan(200);
+      // Light or dark is the theme's decision; what every theme owes the room
+      // is contrast — text must stand far from its ground.
+      const bg = luminance(t.colors.background);
+      const text = luminance(t.colors.text);
+      expect(Math.abs(text - bg), `${t.name} text has too little contrast`).toBeGreaterThan(150);
+      expect(bg > 200 || bg < 64, `${t.name} background is neither light nor dark`).toBe(true);
       expect(t.palette.length).toBeGreaterThanOrEqual(6);
       expect(t.fonts.title.size).toBeGreaterThan(t.fonts.caption.size);
       expect(t.fonts.body.size, `${t.name} body is too small for projection`).toBeGreaterThanOrEqual(46);
       expect(t.fonts.caption.size, `${t.name} caption is too small for projection`).toBeGreaterThanOrEqual(28);
-      expect(t.fonts.title.family, `${t.name} uses one face for title and body`)
-        .not.toBe(t.fonts.body.family);
+      // Title and body carry distinct roles: a different face, or (in a
+      // deliberately single-face system like a terminal theme) a weight gap.
+      expect(
+        t.fonts.title.family !== t.fonts.body.family
+          || t.fonts.title.weight >= t.fonts.body.weight + 200,
+        `${t.name} cannot tell its title from its body`,
+      ).toBe(true);
     }
   });
 

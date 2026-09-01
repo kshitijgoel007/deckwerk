@@ -18,7 +18,8 @@ import { type AlignMode, alignElements } from './align.js';
 import type { EditorStore } from './store.js';
 import { LAYOUT_LABELS, applySlideLayout, type SlideLayout } from './slideLayouts.js';
 import { MagicMovePanel } from './magicMovePanel.js';
-import { fontFamilyField } from './fontPicker.js';
+import { fontFamilyField, primaryFamily } from './fontPicker.js';
+import { themeById } from '@shared/themes.js';
 import { colorField, colorForInput } from './colorPicker.js';
 import {
   cssMediaBorder,
@@ -129,6 +130,7 @@ export class Inspector {
     fontSizeExplicit: boolean;
     fontWeightExplicit: boolean;
     fittedFontSize: number | null;
+    paragraphSpacing: number | null;
   };
   onInsertTableColumn?: (after: boolean) => void;
   onDeleteTableColumn?: () => void;
@@ -218,6 +220,15 @@ export class Inspector {
       ?? node.getAttribute('aria-label')
       ?? '';
     return `${node.tagName}|${label}`;
+  }
+
+  /** The deck theme's font families (title→base order), primary names only. */
+  private deckThemeFamilies(): string[] {
+    const deck = this.store.get().deck;
+    const fonts = deck.themeStyle?.fonts ?? themeById(deck.themePreset)?.fonts;
+    if (!fonts) return [];
+    const roles = [fonts.title, fonts.heading, fonts.body, fonts.caption, fonts.base];
+    return [...new Set(roles.map((role) => primaryFamily(role.family)).filter(Boolean))];
   }
 
   private captureFocusedControl(): {
@@ -817,6 +828,7 @@ export class Inspector {
         themeValue: families === '' && !themeFamilies.mixed
           ? themeFamilies.value ?? undefined
           : undefined,
+        themeFamilies: this.deckThemeFamilies(),
       },
     ));
 
@@ -950,6 +962,9 @@ export class Inspector {
       }),
     ));
     const spacings = sharedValue(texts.map((text) => text.paragraphSpacing ?? null));
+    const themeSpacings = sharedValue(
+      computedTypography.map((value) => value?.paragraphSpacing ?? null),
+    );
     const spacingField = optionalNumberField(
       'Paragraph spacing', spacings.mixed ? null : spacings.value,
       (value) => this.store.updateSelected((element) => {
@@ -959,7 +974,12 @@ export class Inspector {
         if (element.type === 'text') setWholeTextParagraphSpacing(element, null);
       }),
       'px',
-      { min: 0 },
+      {
+        min: 0,
+        themeValue: !spacings.mixed && spacings.value === null && !themeSpacings.mixed
+          ? themeSpacings.value
+          : null,
+      },
     );
     if (spacings.mixed) spacingField.querySelector('input')!.placeholder = 'Mixed';
     wrap.appendChild(spacingField);
@@ -1206,6 +1226,7 @@ export class Inspector {
           },
           {
             themeValue: displayedFamily ? undefined : computedTypography?.fontFamily ?? undefined,
+            themeFamilies: this.deckThemeFamilies(),
           },
         ));
 
@@ -1521,7 +1542,12 @@ export class Inspector {
             }, { label: 'Use theme paragraph spacing' });
           },
           'px',
-          { min: 0 },
+          {
+            min: 0,
+            themeValue: (selectedParagraphSpacing ?? el.paragraphSpacing ?? null) === null
+              ? computedTypography?.paragraphSpacing ?? null
+              : null,
+          },
         ));
         wrap.append(typography.section, layout.section);
         return wrap;

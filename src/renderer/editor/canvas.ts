@@ -4527,6 +4527,7 @@ export class EditorCanvas {
     fontSizeExplicit: boolean;
     fontWeightExplicit: boolean;
     fittedFontSize: number | null;
+    paragraphSpacing: number | null;
   } {
     const element = this.slideLayer.querySelector<HTMLElement>(
       `[data-element-id="${CSS.escape(elementId)}"]`,
@@ -4555,6 +4556,7 @@ export class EditorCanvas {
         fontSizeExplicit: false,
         fontWeightExplicit: false,
         fittedFontSize: null,
+        paragraphSpacing: null,
       };
     }
     const style = getComputedStyle(target);
@@ -4587,6 +4589,13 @@ export class EditorCanvas {
       unfittedFontSize = Number.parseFloat(getComputedStyle(element).fontSize);
     }
     const fontSize = fontSizeExplicit ? measuredFontSize : unfittedFontSize;
+    // The gap between paragraphs, resolved the way the player resolves it:
+    // the --paragraph-spacing custom property through the cascade (authored
+    // value inline on the element, else whatever the theme declares), and 0
+    // where nothing declares it — paragraphs otherwise have no margins.
+    const spacingDeclaration = getComputedStyle(node)
+      .getPropertyValue('--paragraph-spacing').trim();
+    const paragraphSpacing = Number.parseFloat(spacingDeclaration);
     return {
       fontFamily: style.fontFamily || null,
       fontSize: Number.isFinite(fontSize) ? fontSize : null,
@@ -4595,6 +4604,7 @@ export class EditorCanvas {
       fontSizeExplicit,
       fontWeightExplicit: explicit('fontWeight'),
       fittedFontSize: Number.isFinite(fittedFontSize) ? fittedFontSize : null,
+      paragraphSpacing: Number.isFinite(paragraphSpacing) ? paragraphSpacing : 0,
     };
   }
 

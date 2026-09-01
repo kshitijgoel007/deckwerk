@@ -1250,8 +1250,13 @@ describe('text formatting from the inspector controls', () => {
     ]);
     const spacing = () => field(inspectorHost, 'Paragraph spacing');
     const input = () => spacing().querySelector<HTMLInputElement>('input')!;
-    expect(input().value).toBe('');
-    expect(input().placeholder).toBe('theme');
+    // Like Font size and Font weight, an unset spacing shows the number the
+    // theme resolves to (0 here — nothing declares --paragraph-spacing) with
+    // the (theme) indicator, not a blank field.
+    expect(input().value).toBe('0');
+    expect(
+      spacing().querySelector('.theme-value-indicator')?.textContent?.toLowerCase(),
+    ).toBe('(theme)');
 
     type(input(), '28');
     expect(textOf(store, 'text-1').paragraphSpacing).toBe(28);

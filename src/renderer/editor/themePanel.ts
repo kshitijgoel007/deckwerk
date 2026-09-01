@@ -18,6 +18,38 @@ import {
   type ThemeGallery,
 } from './themeGallery.js';
 import { fontFamilyField } from './fontPicker.js';
+
+/**
+ * Whether one of the stack's characterful leading families is installed.
+ *
+ * Only the first three families count: every stack ends in faces almost any
+ * machine has plus a generic keyword, so checking the whole stack would call
+ * everything available — while the point of filtering is to hide a theme
+ * whose actual voice (Didot, Futura, Optima…) this machine cannot render.
+ */
+function stackAvailable(stack: string): boolean {
+  if (typeof document === 'undefined' || !document.fonts?.check) return true;
+  const leading = stack.split(',').slice(0, 3)
+    .map((family) => family.trim().replace(/^["']|["']$/g, ''))
+    .filter(Boolean);
+  for (const family of leading) {
+    if (/^(system-ui|ui-monospace|ui-serif|ui-sans-serif|sans-serif|serif|monospace)$/i
+      .test(family)) return true;
+    try {
+      if (document.fonts.check(`16px "${family}"`)) return true;
+    } catch {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** Themes whose display and body voices this machine can actually show. */
+function availableThemes(currentPresetId: string | null): ThemePreset[] {
+  return THEMES.filter((theme) =>
+    theme.id === currentPresetId
+    || (stackAvailable(theme.fonts.title.family) && stackAvailable(theme.fonts.body.family)));
+}
 import { colorField } from './colorPicker.js';
 
 /**
@@ -181,7 +213,7 @@ export function createThemePanel(deps: ThemePanelDeps): ThemePanel {
     wrap.className = 'theme-browser';
 
     const preset = store.get().deck.themePreset;
-    themeGallery = createThemeGallery(THEMES, preset, (theme) => {
+    themeGallery = createThemeGallery(availableThemes(preset), preset, (theme) => {
       selectedThemeId = theme.id;
       if (chooser) chooser.hidden = true;
       notifyThemePreview();

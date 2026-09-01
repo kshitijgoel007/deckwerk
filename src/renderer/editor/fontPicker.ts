@@ -98,7 +98,17 @@ export function fontFamilyField(
   label: string,
   value: string,
   onChange: (cssValue: string) => void,
-  options: { mixed?: boolean; emptyLabel?: string; themeValue?: string } = {},
+  options: {
+    mixed?: boolean;
+    emptyLabel?: string;
+    themeValue?: string;
+    /**
+     * The deck theme's families. They are pinned at the top of the list AND
+     * appear at their alphabetical place, both suffixed "(theme)", so the
+     * theme's own voices are one flick away wherever the author is scrolled.
+     */
+    themeFamilies?: string[];
+  } = {},
 ): HTMLElement {
   const wrap = document.createElement('div');
   wrap.className = 'font-family-field';
@@ -138,6 +148,14 @@ export function fontFamilyField(
   if (options.mixed) addOption('__mixed__', 'Mixed', true);
   const themeFamily = primaryFamily(options.themeValue ?? '');
   addOption('', options.emptyLabel ?? (themeFamily ? `${themeFamily} (Theme)` : 'Theme font'));
+  // The theme's families, pinned. Duplicate values are fine in a <select>:
+  // choosing either copy selects the pinned one, and both mean the family.
+  const pinned = [...new Set(
+    (options.themeFamilies ?? []).map((family) => primaryFamily(family)).filter(Boolean),
+  )];
+  const pinnedKeys = new Set(pinned.map((family) => family.toLowerCase()));
+  for (const family of pinned) addOption(family, `${family} (theme)`);
+  if (pinned.length > 0) addOption('__divider__', '────────', true);
   const placeholder = addOption('__loading__', 'Loading fonts…', true);
 
   select.value = options.mixed ? '__mixed__' : '';
@@ -148,9 +166,23 @@ export function fontFamilyField(
     const seen = new Set<string>();
     for (const family of families) {
       seen.add(family.toLowerCase());
-      addOption(family, family);
+      addOption(family, pinnedKeys.has(family.toLowerCase()) ? `${family} (theme)` : family);
     }
-    if (current && !seen.has(current.toLowerCase())) {
+    // A theme family that isn't installed still deserves its alphabetical
+    // slot — the deck renders it through its fallback stack either way.
+    for (const family of pinned) {
+      if (seen.has(family.toLowerCase())) continue;
+      seen.add(family.toLowerCase());
+      const at = [...select.options].findIndex((option) =>
+        !option.disabled && option.value && !pinnedKeys.has(option.value.toLowerCase())
+        && option.value.localeCompare(family) > 0);
+      const option = document.createElement('option');
+      option.value = family;
+      option.textContent = `${family} (theme)`;
+      if (at === -1) select.appendChild(option);
+      else select.insertBefore(option, select.options[at]);
+    }
+    if (current && !seen.has(current.toLowerCase()) && !pinnedKeys.has(current.toLowerCase())) {
       addOption(current, `${current} (not installed)`);
     }
     if (!options.mixed) select.value = current || '';
@@ -158,7 +190,7 @@ export function fontFamilyField(
   });
 
   select.addEventListener('change', () => {
-    if (select.value === '__mixed__' || select.value === '__loading__') return;
+    if (['__mixed__', '__loading__', '__divider__'].includes(select.value)) return;
     const family = select.value;
     showFallback(family || null);
     onChange(family ? fontFamilyValue(family) : '');

@@ -57,6 +57,12 @@ const INTER = 'Inter, "Avenir Next", "Helvetica Neue", "Segoe UI", system-ui, sa
 const MONO = '"JetBrains Mono", "IBM Plex Mono", "SF Mono", ui-monospace, Menlo, monospace';
 const EDITORIAL_SERIF = 'Charter, "Iowan Old Style", "New York", Palatino, Georgia, serif';
 const HUMANIST = '"Gill Sans", "Gill Sans MT", Seravek, "Segoe UI", Verdana, sans-serif';
+const DIDONE = 'Didot, "Bodoni 72", "Playfair Display", "Times New Roman", serif';
+const OPTIMA = 'Optima, Seravek, Candara, "Gill Sans", "Segoe UI", sans-serif';
+const BASKERVILLE = 'Baskerville, "Libre Baskerville", "Hoefler Text", Georgia, serif';
+const BOOK_SERIF = 'Palatino, "Palatino Linotype", "Iowan Old Style", "Book Antiqua", Georgia, serif';
+const FUTURA = 'Futura, "Century Gothic", "Avenir Next", "Trebuchet MS", sans-serif';
+const TERMINAL = '"SF Mono", Menlo, "JetBrains Mono", Consolas, ui-monospace, monospace';
 
 export const THEMES: ThemePreset[] = [
   {
@@ -128,6 +134,76 @@ export const THEMES: ThemePreset[] = [
     },
     palette: ['#383431', '#82766e', '#c96f52', '#6f8f78', '#6688a3', '#d1a34b', '#eee7dc', '#fffaf2'],
     colors: { background: '#fffaf2', text: '#383431', muted: '#82766e', accent: '#c96f52' },
+  },
+  {
+    id: 'noir',
+    name: 'Noir',
+    description: 'Warm near-black ground, tight grotesk display, and a brass accent for dark rooms.',
+    fonts: {
+      title: { family: HELVETICA, size: 108, weight: 700, lineHeight: 0.98, letterSpacing: '-0.04em' },
+      heading: { family: HELVETICA, size: 62, weight: 650, lineHeight: 1.06, letterSpacing: '-0.02em' },
+      body: { family: INTER, size: 46, weight: 400, lineHeight: 1.34, letterSpacing: '0' },
+      caption: { family: MONO, size: 29, weight: 500, lineHeight: 1.3, letterSpacing: '0.04em', color: '#97918a' },
+      base: { family: INTER, size: 42, weight: 400, lineHeight: 1.34, letterSpacing: '0' },
+    },
+    palette: ['#ece6dc', '#97918a', '#d4a955', '#7fa8c9', '#8fae8b', '#c9705e', '#2a2724', '#141210'],
+    colors: { background: '#141210', text: '#ece6dc', muted: '#97918a', accent: '#d4a955' },
+  },
+  {
+    id: 'salon',
+    name: 'Salon',
+    description: 'High-contrast Didone display over calm Optima prose, cream paper, oxblood accent.',
+    fonts: {
+      title: { family: DIDONE, size: 116, weight: 700, lineHeight: 1.0, letterSpacing: '-0.01em' },
+      heading: { family: DIDONE, size: 68, weight: 600, lineHeight: 1.08, letterSpacing: '0' },
+      body: { family: OPTIMA, size: 47, weight: 400, lineHeight: 1.36, letterSpacing: '0.005em' },
+      caption: { family: OPTIMA, size: 30, weight: 500, lineHeight: 1.3, letterSpacing: '0.06em', color: '#7d7468' },
+      base: { family: OPTIMA, size: 42, weight: 400, lineHeight: 1.36, letterSpacing: '0.005em' },
+    },
+    palette: ['#232019', '#7d7468', '#8e3b3b', '#3f5e63', '#a3803c', '#5d6b47', '#efe8da', '#f7f2e9'],
+    colors: { background: '#f7f2e9', text: '#232019', muted: '#7d7468', accent: '#8e3b3b' },
+  },
+  {
+    id: 'essay',
+    name: 'Essay',
+    description: 'Bookish Baskerville headings and Palatino prose with a deep-green accent.',
+    fonts: {
+      title: { family: BASKERVILLE, size: 104, weight: 700, lineHeight: 1.04, letterSpacing: '-0.01em' },
+      heading: { family: BASKERVILLE, size: 62, weight: 600, lineHeight: 1.12, letterSpacing: '0' },
+      body: { family: BOOK_SERIF, size: 46, weight: 400, lineHeight: 1.4, letterSpacing: '0' },
+      caption: { family: HUMANIST, size: 29, weight: 500, lineHeight: 1.32, letterSpacing: '0.03em', color: '#847b6d' },
+      base: { family: BOOK_SERIF, size: 42, weight: 400, lineHeight: 1.4, letterSpacing: '0' },
+    },
+    palette: ['#2b271f', '#847b6d', '#2e5e4e', '#7c4a33', '#5a6b8c', '#a88b3d', '#f0ead9', '#fbf7ef'],
+    colors: { background: '#fbf7ef', text: '#2b271f', muted: '#847b6d', accent: '#2e5e4e' },
+  },
+  {
+    id: 'poster',
+    name: 'Poster',
+    description: 'Geometric Futura display, warm poster paper, and primary Bauhaus colour.',
+    fonts: {
+      title: { family: FUTURA, size: 114, weight: 700, lineHeight: 0.98, letterSpacing: '-0.015em' },
+      heading: { family: FUTURA, size: 64, weight: 600, lineHeight: 1.06, letterSpacing: '0' },
+      body: { family: AVENIR, size: 46, weight: 400, lineHeight: 1.32, letterSpacing: '0' },
+      caption: { family: FUTURA, size: 29, weight: 500, lineHeight: 1.28, letterSpacing: '0.09em', color: '#6d675c' },
+      base: { family: AVENIR, size: 42, weight: 400, lineHeight: 1.32, letterSpacing: '0' },
+    },
+    palette: ['#14151a', '#6d675c', '#d1342c', '#23579c', '#e8a713', '#2c6e49', '#ebe4d5', '#f5f0e6'],
+    colors: { background: '#f5f0e6', text: '#14151a', muted: '#6d675c', accent: '#d1342c' },
+  },
+  {
+    id: 'phosphor',
+    name: 'Phosphor',
+    description: 'Terminal monospace on a green-black CRT ground; amber highlights.',
+    fonts: {
+      title: { family: TERMINAL, size: 92, weight: 700, lineHeight: 1.04, letterSpacing: '-0.02em' },
+      heading: { family: TERMINAL, size: 56, weight: 600, lineHeight: 1.1, letterSpacing: '-0.01em' },
+      body: { family: TERMINAL, size: 46, weight: 400, lineHeight: 1.4, letterSpacing: '0' },
+      caption: { family: TERMINAL, size: 28, weight: 500, lineHeight: 1.34, letterSpacing: '0.05em', color: '#7d9486' },
+      base: { family: TERMINAL, size: 40, weight: 400, lineHeight: 1.42, letterSpacing: '0' },
+    },
+    palette: ['#d7e4dc', '#7d9486', '#4ade80', '#e8b04b', '#6bb2d6', '#d67676', '#1a231e', '#0d1210'],
+    colors: { background: '#0d1210', text: '#d7e4dc', muted: '#7d9486', accent: '#4ade80' },
   },
 ];
 
