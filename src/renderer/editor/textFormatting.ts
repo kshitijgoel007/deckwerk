@@ -149,13 +149,60 @@ export function setWholeTextParagraphSpacing(element: TextElement, value: number
   if (changed) element.html = serialized(template.content);
 }
 
-export function wholeTextFormatState(element: TextElement, format: TextFormat): boolean {
-  if (format === 'bold') {
-    const weight = Number.parseInt(element.style['font-weight'] ?? '', 10);
-    return element.style['font-weight'] === 'bold' || weight >= 600;
+/** One text node's effective toggle state, resolved from the inside out. */
+function textNodeState(text: Text, format: TextFormat): boolean {
+  for (let node = text.parentElement; node; node = node.parentElement) {
+    if (format === 'bold') {
+      if (node.style.fontWeight) {
+        const weight = Number.parseInt(node.style.fontWeight, 10);
+        return node.style.fontWeight === 'bold' || weight >= 600;
+      }
+      if (/^(B|STRONG)$/.test(node.tagName)) return true;
+    } else if (format === 'italic') {
+      if (node.style.fontStyle) return node.style.fontStyle === 'italic';
+      if (/^(I|EM)$/.test(node.tagName)) return true;
+    } else {
+      const declared = node.style.textDecorationLine || node.style.textDecoration;
+      if (declared) return declared.includes('underline');
+      if (node.tagName === 'U') return true;
+    }
   }
-  if (format === 'italic') return element.style['font-style'] === 'italic';
-  return (element.style['text-decoration'] ?? '').includes('underline');
+  return false;
+}
+
+/** Whether every character of authored markup renders with the format. */
+function htmlFormatState(html: string, format: TextFormat): boolean | null {
+  const template = document.createElement('template');
+  template.innerHTML = html;
+  const walker = document.createTreeWalker(template.content, NodeFilter.SHOW_TEXT);
+  let sawText = false;
+  for (let current = walker.nextNode(); current; current = walker.nextNode()) {
+    const text = current as Text;
+    if (!text.data.trim()) continue;
+    sawText = true;
+    if (!textNodeState(text, format)) return false;
+  }
+  return sawText ? true : null;
+}
+
+export function wholeTextFormatState(element: TextElement, format: TextFormat): boolean {
+  // An explicit box-level declaration wins; otherwise the state is what the
+  // authored markup actually renders. Reading only `element.style` made
+  // Cmd/Ctrl+B on a box of pasted-bold text toggle the wrong way: the box
+  // read as "not bold", so the shortcut double-bolded instead of unbolding.
+  if (format === 'bold') {
+    const declared = element.style['font-weight'];
+    if (declared) {
+      return declared === 'bold' || Number.parseInt(declared, 10) >= 600;
+    }
+  } else if (format === 'italic') {
+    const declared = element.style['font-style'];
+    if (declared) return declared === 'italic';
+  } else {
+    const declared = element.style['text-decoration'];
+    if (declared) return declared.includes('underline');
+  }
+  return htmlFormatState(element.html, format) ?? false;
 }
 
 export function setWholeTextFormat(
