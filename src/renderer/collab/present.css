@@ -1,0 +1,13 @@
+/*
+ * Presentation-page chrome. Imported after appChrome.css so the black stage
+ * wins over the editor's panel background regardless of how the bundler
+ * orders its injected stylesheets.
+ */
+html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+#stage { position: absolute; inset: 0; }
+#stage[hidden] { display: none; }
+.element-text { cursor: text; }
+
+/* The Speaker View surface: app chrome, not stage black. */
+#speaker { position: absolute; inset: 0; overflow: hidden; background: var(--bg); }
+#speaker[hidden] { display: none; }

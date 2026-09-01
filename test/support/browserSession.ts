@@ -42,6 +42,7 @@ interface ElementBox {
 
 export class Cdp {
   private nextId = 1;
+  private clickTargets = 0;
   private pending = new Map<number, {
     resolve: (value: any) => void;
     reject: (error: Error) => void;
@@ -133,6 +134,44 @@ export class Cdp {
     await this.mouse('mouseMoved', box.x, box.y, 0);
     await this.mouse('mousePressed', box.x, box.y, 1);
     await this.mouse('mouseReleased', box.x, box.y, 1);
+  }
+
+  /**
+   * Real left click on the first node matching `selector` whose trimmed text
+   * is `text`. Controls are usually identified by their label rather than by
+   * a selector; this keeps that lookup while still delivering a real click
+   * instead of calling `.click()` on the node.
+   */
+  async clickByText(selector: string, text: string, label = text): Promise<void> {
+    const handle = `test-click-target-${this.clickTargets++}`;
+    const found = await this.evaluate<boolean>(`(() => {
+      const node = [...document.querySelectorAll(${JSON.stringify(selector)})]
+        .find((candidate) => candidate.textContent?.trim() === ${JSON.stringify(text)});
+      if (!node) return false;
+      node.id = ${JSON.stringify(handle)};
+      return true;
+    })()`);
+    if (!found) throw new Error(`no ${selector} is labelled ${JSON.stringify(text)} (${label})`);
+    await this.click(`#${handle}`, label);
+  }
+
+  /** A real right click at the centre of a visible node, opening its menu. */
+  async rightClick(selector: string, label = selector): Promise<void> {
+    const box = await this.boxOf(selector, label);
+    await this.mouse('mouseMoved', box.x, box.y, 0);
+    await this.call('Input.dispatchMouseEvent', {
+      type: 'mousePressed', x: box.x, y: box.y, button: 'right', buttons: 2, clickCount: 1,
+    });
+    await this.call('Input.dispatchMouseEvent', {
+      type: 'mouseReleased', x: box.x, y: box.y, button: 'right', buttons: 0, clickCount: 1,
+    });
+  }
+
+  /** A real left click at an absolute viewport coordinate. */
+  async clickAt(x: number, y: number): Promise<void> {
+    await this.mouse('mouseMoved', x, y, 0);
+    await this.mouse('mousePressed', x, y, 1);
+    await this.mouse('mouseReleased', x, y, 1);
   }
 
   /** A real left click at a point inside the matching node, given as 0..1. */
@@ -242,10 +281,9 @@ export class Cdp {
    * Focus a text field by clicking it, replace what is there, and commit with
    * Enter — the keypress an editor number or hex field waits for.
    *
-   * The text itself goes in through `Input.insertText` rather than synthesised
-   * key codes: it is the browser's own IME insertion path, so the field gets a
-   * real `input` event on a really focused node, and no per-character key code
-   * table stands between the test and the control.
+   * The text itself is typed key by key through `typeKeys`, the same physical
+   * keyboard path an author uses. `Input.insertText` would insert the whole
+   * string in one event and hide per-keystroke faults.
    */
   async typeInto(selector: string, value: string, label = selector): Promise<void> {
     await this.click(selector, label);
@@ -257,7 +295,7 @@ export class Cdp {
     })()`);
     if (!focused) throw new Error(`clicking ${label} did not focus it (${selector})`);
     if (value === '') await this.key('Delete', 46);
-    else await this.call('Input.insertText', { text: value });
+    else await this.typeKeys(value);
     const typed = await this.evaluate<string>(
       `document.querySelector(${JSON.stringify(selector)}).value`);
     if (typed !== value) {
@@ -280,6 +318,37 @@ export class Cdp {
         windowsVirtualKeyCode,
         nativeVirtualKeyCode: windowsVirtualKeyCode,
       });
+    }
+  }
+
+  /**
+   * Type text the way a person does: the exact event sequence Chromium
+   * receives from a physical keyboard — `rawKeyDown`, then the `char` event
+   * that carries the character, then `keyUp` — one triple per character.
+   *
+   * This is deliberately not `Input.insertText`: that is the IME/paste path
+   * and inserts a whole string in a single `beforeinput`, so it cannot
+   * reproduce a per-keystroke fault such as a character being inserted twice.
+   * A synthesised `keyDown` carrying `text` is not the real path either.
+   */
+  async typeKeys(value: string, delayMs = 0): Promise<void> {
+    for (const character of value) {
+      if (delayMs > 0) await wait(delayMs);
+      const upper = character.toUpperCase();
+      const code = character === ' '
+        ? 'Space'
+        : /[a-z]/i.test(character) ? `Key${upper}`
+          : /[0-9]/.test(character) ? `Digit${character}` : '';
+      // Punctuation is reached through a modifier on a layout-specific key, so
+      // there is no honest virtual key code for it: send the character event
+      // that actually carries the text and leave the code out.
+      const windowsVirtualKeyCode = character === ' ' ? 32 : code ? upper.charCodeAt(0) : 0;
+      const key = { key: character, code, windowsVirtualKeyCode, nativeVirtualKeyCode: windowsVirtualKeyCode };
+      await this.call('Input.dispatchKeyEvent', { type: 'rawKeyDown', ...key });
+      await this.call('Input.dispatchKeyEvent', {
+        type: 'char', text: character, unmodifiedText: character, ...key,
+      });
+      await this.call('Input.dispatchKeyEvent', { type: 'keyUp', ...key });
     }
   }
 

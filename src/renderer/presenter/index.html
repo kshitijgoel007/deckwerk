@@ -6,26 +6,7 @@
     <title>Speaker View</title>
   </head>
   <body>
-    <main>
-      <section class="speaker-layout">
-        <div class="preview-panel current-panel">
-          <div class="panel-heading"><h2>Current slide</h2><div id="position">Slide 1</div></div>
-          <div id="current" class="preview"></div>
-        </div>
-        <aside class="speaker-sidebar">
-          <div class="preview-panel next-panel">
-            <h2>Next slide</h2>
-            <div id="next" class="preview"></div>
-          </div>
-          <section class="timers" aria-label="Presentation timing">
-            <div class="presenter-clock presentation-clock"><span>Presentation elapsed</span><strong id="presentation-timer">00:00</strong></div>
-            <div class="presenter-clock slide-clock"><span>Current slide</span><strong id="slide-timer">00:00</strong></div>
-            <div class="presenter-clock wall-clock"><span>Local time</span><strong id="wall-clock">--:--</strong></div>
-          </section>
-        </aside>
-      </section>
-      <footer><button id="prev">← Previous</button><button id="blank">Blank</button><button id="nextButton" class="primary">Next →</button><button id="switchDisplays" title="Swap the audience and speaker displays">Switch displays</button><button id="end" class="danger">End show</button></footer>
-    </main>
+    <main id="root"></main>
     <script type="module" src="./main.ts"></script>
   </body>
 </html>

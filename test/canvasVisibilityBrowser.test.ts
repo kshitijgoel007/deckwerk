@@ -192,14 +192,9 @@ describe.skipIf(!electronBinary)('canvas visibility and hit-testing', () => {
     expect(painted.contentBottom).toBeGreaterThan(painted.boxBottom + 20);
 
     const click = toScreen(300, 800 + painted.boxBottom + 20);
-    const selected = await editor.evaluate<string[]>(`(() => {
-      const host = document.getElementById('canvas');
-      host.dispatchEvent(new PointerEvent('pointerdown', {
-        bubbles: true, cancelable: true, pointerId: 1, button: 0,
-        clientX: ${click.x}, clientY: ${click.y},
-      }));
-      return [...window.store.get().selection];
-    })()`);
+    await editor.clickAt(click.x, click.y);
+    const selected = await editor.evaluate<string[]>(
+      `[...window.store.get().selection]`);
     expect(selected).toEqual(['spilltext']);
   }, 180_000);
 });

@@ -189,13 +189,7 @@ describe.skipIf(!electronBinary || !ffmpeg)('presenting over a slow network', ()
 
     /* --- Present paints while video bytes are still in flight ------------- */
 
-    const clicked = await editor.evaluate<boolean>(`(() => {
-      const button = [...document.querySelectorAll('#toolbar button')]
-        .find((candidate) => candidate.textContent?.trim() === 'Present');
-      button?.click();
-      return Boolean(button);
-    })()`);
-    expect(clicked).toBe(true);
+    await editor!.clickByText('#toolbar button', 'Present', 'Present');
     const clickedAt = Date.now();
 
     await eventually(async () => editor!.evaluate<boolean>(`(() => {

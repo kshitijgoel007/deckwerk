@@ -30,8 +30,10 @@ describe('shared application chrome', () => {
   });
 
   it('uses the same semantic action variants in Speaker View', () => {
-    const html = source('src/renderer/presenter/index.html');
-    expect(html).toContain('id="nextButton" class="primary"');
-    expect(html).toContain('id="end" class="danger"');
+    // The markup moved into the component the desktop window and the browser
+    // collaboration client now share, so both get the same button variants.
+    const view = source('src/renderer/presenter/speakerView.ts');
+    expect(view).toContain('class="speaker-next-button primary"');
+    expect(view).toContain('class="speaker-end danger"');
   });
 });

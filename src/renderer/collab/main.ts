@@ -8,7 +8,7 @@ import { EditorCanvas } from '../editor/canvas.js';
 import { createDeckWerkButton } from '../editor/aboutDialog.js';
 import { installAgentApi, setAgentName } from './agentApi.js';
 import { CssEditor } from '../editor/cssEditor.js';
-import { createToolbarPicker } from '../editor/exportPicker.js';
+import { createToolbarPicker, createToolbarSplitButton } from '../editor/exportPicker.js';
 import { showPdfExportDialog } from '../editor/pdfExportDialog.js';
 import { HistoryPanel } from '../editor/historyPanel.js';
 import {
@@ -42,6 +42,7 @@ import { openEndCollaborationPopover } from './endCollaborationPopover.js';
 import { decodeEditorView, restoreEditorView } from '@shared/editorView.js';
 import { AgentChatPanel } from '../editor/agentChatPanel.js';
 import { startPresenting } from './presentOverlay.js';
+import { rangeForSlideSelection } from '@shared/presentationRange.js';
 import { setRenderInvariantChecks } from '../editor/renderInvariants.js';
 import { trackPreviewFrameRecovery } from '../player/previewFrameRecovery.js';
 import { trackVideoLoading } from '../player/videoLoadingProgress.js';
@@ -477,6 +478,61 @@ async function exportPdf(): Promise<void> {
   setStatusMessage('Preparing the PDF in a new tab…');
 }
 
+/**
+ * Present the deck, honouring a multi-slide rail selection as a bounded run
+ * exactly as the desktop app does: a selection of two or more slides starts at
+ * the first and ends the show after the last.
+ */
+function startPresentation(speakerView = false): void {
+  // present.html and its bundle are served by the collab server; with the
+  // server gone the iframe would load nothing — a white overlay with no
+  // explanation. Refuse with the reason instead.
+  if (!connected) {
+    setStatusMessage(PRESENT_NEEDS_SERVER);
+    connectionNotice.showDisconnected();
+    return;
+  }
+  const { deck, slideIndex, slideSelection } = store.get();
+  const range = rangeForSlideSelection(deck.slides, slideSelection);
+  startPresenting(
+    deckId!,
+    range?.start ?? slideIndex,
+    () => ({ deck: store.get().deck, themeCss: cssEditor.getValue() }),
+    { endSlideIndex: range?.end, speakerView, onStatus: setStatusMessage },
+  );
+}
+
+/**
+ * The desktop app's self-contained web bundle, built by the server from the
+ * live session and delivered as a zip.
+ *
+ * The bundle is streamed rather than buffered — a deck's video is most of its
+ * bytes — so the browser cannot report a failure once the download starts.
+ * Hence the probe: the one thing that can go wrong (a server without the built
+ * export player) is settled before any bytes move.
+ */
+async function exportWeb(): Promise<void> {
+  const query = `deck=${encodeURIComponent(deckId!)}`;
+  const refusal = await runOperation('Checking the web export…', async () => {
+    const probe = await fetch(`/api/export/web?${query}&probe=1`);
+    if (probe.ok) return null;
+    const body = await probe.json().catch(() => null) as { error?: string } | null;
+    return body?.error ?? `HTTP ${probe.status}`;
+  });
+  if (refusal !== null) {
+    setStatusMessage(`Web export unavailable: ${refusal}`);
+    return;
+  }
+  const link = document.createElement('a');
+  link.href = `/api/export/web?${query}`;
+  link.download = `${deckId}-web.zip`;
+  link.click();
+  // A browser download reports its own progress and completion, and nothing
+  // here is told when it finishes — so say what is happening and stop there
+  // rather than leaving a spinner that could never be cleared.
+  setStatusMessage('Building the web export — the download starts when the server is done.');
+}
+
 function buildToolbar(): void {
   const bar = el('toolbar');
   bar.replaceChildren();
@@ -513,7 +569,13 @@ function buildToolbar(): void {
           link.click();
         },
       },
-      { label: 'PDF…', action: () => void exportPdf() },
+      {
+        label: 'Lossy export',
+        options: [
+          { label: 'PDF…', action: () => void exportPdf() },
+          { label: 'Web…', action: () => void exportWeb() },
+        ],
+      },
     ], { deckOnly: true }),
   );
 
@@ -567,20 +629,12 @@ function buildToolbar(): void {
     right.append(endCollaboration);
   }
   right.append(
-    barButton('Present', () => {
-      // present.html and its bundle are served by the collab server; with the
-      // server gone the iframe would load nothing — a white overlay with no
-      // explanation. Refuse with the reason instead.
-      if (!connected) {
-        setStatusMessage(PRESENT_NEEDS_SERVER);
-        connectionNotice.showDisconnected();
-        return;
-      }
-      startPresenting(deckId!, store.get().slideIndex, () => ({
-        deck: store.get().deck,
-        themeCss: cssEditor.getValue(),
-      }));
-    }, 'primary'),
+    createToolbarSplitButton(
+      'Present',
+      () => startPresentation(),
+      [{ label: 'Present in Speaker View', action: () => startPresentation(true) }],
+      { variant: 'primary', menuLabel: 'Presentation options' },
+    ),
   );
 
   bar.append(left, mid, right);

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import WebSocket from 'ws';
@@ -1101,6 +1102,68 @@ describe('collab server', () => {
     server = await startCollabServer({ rootDir, port: 0, host: '127.0.0.1' });
   }, 20_000);
 
+  /* --- self-contained web export ----------------------------------------- */
+
+  // The exported player is a build artefact (`npm run build:export`), so the
+  // full download is gated on it; the guard rails around it are not.
+  const webExportBundle = existsSync(join(process.cwd(), 'out', 'export', 'player.js'));
+
+  const exportUrl = (query: string) =>
+    `http://127.0.0.1:${server.port}/api/export/web?${query}`;
+
+  it('refuses a web export of a deck outside the served directory', async () => {
+    const response = await fetch(exportUrl('deck=..%2F..%2Fetc'));
+    expect(response.status).toBe(403);
+  });
+
+  it('reports a missing deck rather than exporting an empty bundle', async () => {
+    const response = await fetch(exportUrl('deck=nope'));
+    expect(response.status).toBe(404);
+  });
+
+  it('requires a deck', async () => {
+    expect((await fetch(exportUrl('probe=1'))).status).toBe(400);
+  });
+
+  it.skipIf(!webExportBundle)('answers the probe before any bytes move', async () => {
+    const response = await fetch(exportUrl(`deck=${DECK_ID}&probe=1`));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true });
+  });
+
+  it.skipIf(!webExportBundle)('exports the live session as a self-contained web bundle', async () => {
+    // An edit that has not been written to disk still belongs in the export:
+    // the bundle is what everyone currently sees, not what was last saved.
+    const { client, welcome } = await connect('Exporter');
+    const element = structuredClone(welcome.deck.slides[0].elements[0]);
+    if (element.type !== 'text') throw new Error('expected the seeded text element');
+    element.html = 'LIVE-EXPORT-MARKER';
+    client.send({
+      kind: 'txn', txnId: 'export-1', baseSeq: 0, label: 'Edit',
+      ops: [{ op: 'replaceElement', slideId: 's1', elementId: element.id, element }],
+    });
+    await client.nextOfKind('txn');
+
+    const response = await fetch(exportUrl(`deck=${DECK_ID}`));
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toBe('application/zip');
+    expect(response.headers.get('content-disposition')).toContain(`${DECK_ID}-web.zip`);
+
+    const archive = Buffer.from(await response.arrayBuffer());
+    expect(archive.readUInt32LE(0)).toBe(0x04034b50);
+    const names = zipEntryNames(archive);
+    // The four things that make the bundle open in any browser on its own.
+    expect(names).toEqual(expect.arrayContaining([
+      `${DECK_ID}/index.html`,
+      `${DECK_ID}/player.js`,
+      `${DECK_ID}/player.css`,
+      `${DECK_ID}/theme.css`,
+    ]));
+    // A web export is a player bundle, not a copy of the deck folder.
+    expect(names).not.toContain(`${DECK_ID}/deck.json`);
+    expect(archive.toString('utf8')).toContain('LIVE-EXPORT-MARKER');
+  }, 20_000);
+
   it('saves and relays theme edits', async () => {
     const a = await connect('A');
     const b = await connect('B');
@@ -1116,3 +1179,18 @@ describe('collab server', () => {
     expect(await http.text()).toContain('red');
   });
 });
+
+/**
+ * Entry names from a stored ZIP, read off its local file headers. Enough to
+ * assert what an archive holds without pulling in an unzip dependency.
+ */
+function zipEntryNames(archive: Buffer): string[] {
+  const names: string[] = [];
+  for (let at = 0; at + 30 <= archive.length; at++) {
+    if (archive.readUInt32LE(at) !== 0x04034b50) continue;
+    const nameLength = archive.readUInt16LE(at + 26);
+    if (at + 30 + nameLength > archive.length) continue;
+    names.push(archive.subarray(at + 30, at + 30 + nameLength).toString('utf8'));
+  }
+  return names;
+}

@@ -203,16 +203,16 @@ export function capabilities(): Capability[] {
     },
     {
       id: 'media-frame',
-      what: 'Borders, rounded corners and visual effects on text and media.',
+      what: 'Borders, rounded corners and visual effects on images and video.',
       when: 'Setting a figure off from the background, or de-emphasising it.',
       notes: [
         'effects apply in array order: blur (radius px), posterize (levels), grayscale (amount 0–1), and gaussianNoise (amount 0–1, frequencyCutoff 0.001–1).',
+        'effects are a media control: images and video only. Do not filter text — style type through theme.css instead.',
         'borderWidth/borderColor/borderRadius work on both images and video.',
       ],
       elements: [
         text('cap-frame-title', 'Framed and filtered media', TITLE, {
           class: ['role-title'],
-          effects: [{ type: 'gaussianNoise', amount: 0.2, frequencyCutoff: 0.12 }],
         }),
         {
           id: 'cap-frame-plain', type: 'image', x: 200, y: 320, w: 700, h: 440, rot: 0, z: 2,

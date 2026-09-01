@@ -187,12 +187,9 @@ describe.skipIf(!electronBinary || !ffmpeg)('browsing slides in the rail', () =>
         };
       });
     })()`);
-    // Rail selection happens on pointerdown, like a real click.
-    const openSlide = (index: number) => editor!.evaluate(`(() => {
-      const item = document.querySelectorAll('.rail-item')[${index}];
-      item.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, pointerId: 1 }));
-      item.click();
-    })()`);
+    // A real pointer press on the rail thumbnail, the way a deck is browsed.
+    const openSlide = (index: number) => editor!.click(
+      `.rail-item[data-index="${index}"]`, `slide ${index + 1} in the rail`);
 
     // Settle the first video slide so the pool is populated with one element
     // per presentation — the state a user browsing the deck is really in.

@@ -16,6 +16,8 @@ import {
   type ServerWelcomeMessage,
 } from '../src/shared/collab.js';
 import { emptyDeck } from '../src/shared/deck.js';
+// The production-input harness: real pointer and key events, not `.click()`.
+import { Cdp } from './support/browserSession.js';
 
 /**
  * Regression for the embedded-Agent presentation hand-off.
@@ -50,71 +52,6 @@ const requiredBuildOutputs = [
 ];
 const runnable = Boolean(electron)
   && requiredBuildOutputs.every((path) => existsSync(join(process.cwd(), path)));
-
-class Cdp {
-  private nextId = 1;
-  private pending = new Map<number, {
-    resolve: (value: any) => void;
-    reject: (error: Error) => void;
-  }>();
-
-  private constructor(private socket: WebSocket) {
-    socket.on('message', (raw) => {
-      const message = JSON.parse(String(raw));
-      if (typeof message.id !== 'number') return;
-      const pending = this.pending.get(message.id);
-      if (!pending) return;
-      this.pending.delete(message.id);
-      if (message.error) pending.reject(new Error(message.error.message));
-      else pending.resolve(message.result);
-    });
-    socket.on('close', () => {
-      for (const pending of this.pending.values()) {
-        pending.reject(new Error('Electron DevTools connection closed'));
-      }
-      this.pending.clear();
-    });
-  }
-
-  static async connect(webSocketDebuggerUrl: string): Promise<Cdp> {
-    const socket = new WebSocket(webSocketDebuggerUrl);
-    await new Promise<void>((resolve, reject) => {
-      socket.once('open', resolve);
-      socket.once('error', reject);
-    });
-    const cdp = new Cdp(socket);
-    await cdp.call('Runtime.enable');
-    return cdp;
-  }
-
-  call(method: string, params: Record<string, unknown> = {}): Promise<any> {
-    const id = this.nextId++;
-    return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
-      this.socket.send(JSON.stringify({ id, method, params }));
-    });
-  }
-
-  async evaluate<T>(expression: string): Promise<T> {
-    const result = await this.call('Runtime.evaluate', {
-      expression,
-      awaitPromise: true,
-      returnByValue: true,
-      userGesture: true,
-    });
-    if (result.exceptionDetails) {
-      const detail = result.exceptionDetails.exception?.description
-        ?? result.exceptionDetails.text
-        ?? 'renderer evaluation failed';
-      throw new Error(detail);
-    }
-    return result.result?.value as T;
-  }
-
-  close(): void {
-    this.socket.close();
-  }
-}
 
 class FakeAgent {
   private queue: ServerMessage[] = [];
@@ -289,13 +226,7 @@ describe.skipIf(!runnable)('embedded Agent presentation synchronization', () => 
         ?.some((element) => element.id === 'fake-agent-marker') === true)
     `), 'main process did not receive the authoritative Agent-session snapshot');
 
-    const clicked = await editor.evaluate<boolean>(`(() => {
-      const button = [...document.querySelectorAll('button')]
-        .find((candidate) => candidate.textContent?.trim() === 'Present');
-      button?.click();
-      return Boolean(button);
-    })()`);
-    expect(clicked).toBe(true);
+    await editor!.clickByText('button', 'Present', 'Present');
 
     const audienceTarget = await findTarget(
       debugPort,

@@ -12,8 +12,8 @@ export const LONG_TESTS = [
   },
   {
     file: 'test/collabFormattingUndoBrowser.test.ts',
-    observedSeconds: 12,
-    scope: 'Large browser formatting and undo omnibus',
+    observedSeconds: 28,
+    scope: 'Large browser formatting and undo omnibus, including real per-keystroke typing around every inline format change',
   },
   {
     file: 'test/performanceStressBrowser.test.ts',

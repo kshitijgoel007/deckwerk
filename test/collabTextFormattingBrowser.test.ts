@@ -279,7 +279,8 @@ describe.skipIf(!electronBinary)('text formatting in the collaboration browser',
     await editor.click(ALIGN_BUTTON(1), 'centre alignment button');
     await editor.click(COLOR_TRIGGER, 'title colour swatch');
     await editor.typeInto(HEX_INPUT, '#b3261e', 'hex colour box');
-    await editor.evaluate(`document.body.click()`); // dismiss the popover
+    // A real click on the status bar, the way an author dismisses the popover.
+    await editor.click('#status', 'status bar to dismiss the colour popover');
 
     const formatted = await eventually(async () => editor!.evaluate<{
       titleAlign: string; titleColor: string | null; bodyAlign: string; bodyColor: string | null;
@@ -319,8 +320,7 @@ describe.skipIf(!electronBinary)('text formatting in the collaboration browser',
 
     /* --- and the audience sees the same formatting ------------------------ */
 
-    await editor.evaluate(`[...document.querySelectorAll('#toolbar button')]
-      .find((button) => button.textContent.trim() === 'Present')?.click()`);
+    await editor.clickByText('#toolbar button', 'Present', 'Present');
     // The present view is mounted in a same-origin iframe over the editor, not
     // in a second window, so it has no DevTools target of its own and is read
     // through the editor's document.

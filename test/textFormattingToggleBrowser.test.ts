@@ -84,27 +84,21 @@ describe.skipIf(!electronBinary)('stateful inline formatting in Chromium', () =>
     await editor.doubleClickText(CONTENT, 'editable text');
     await editor.chord('a', 'KeyA', 65, MOD, ['selectAll']);
     const suffixStart = TEXT.indexOf(', consectetur');
-    await editor.call('Input.insertText', { text: TEXT.slice(0, suffixStart) });
+    await editor.typeKeys(TEXT.slice(0, suffixStart));
     const earlyIpsum = { start: TEXT.indexOf('ipsum'), end: TEXT.indexOf('ipsum') + 'ipsum'.length };
     await selectRange(editor, earlyIpsum.start, earlyIpsum.end, true);
     await editor.chord('i', 'KeyI', 73, MOD);
-    await editor.evaluate(`(() => {
-      const root = document.querySelector('${CONTENT}');
-      const range = document.createRange();
-      range.selectNodeContents(root);
-      range.collapse(false);
-      const selection = getSelection();
-      selection.removeAllRanges();
-      selection.addRange(range);
-      root.focus();
-    })()`);
-    await editor.call('Input.insertText', { text: TEXT.slice(suffixStart) });
+    // Put the caret after the last character the way an author does: click the
+    // final glyph, then End.
+    await editor.clickTextAtOffset(CONTENT, suffixStart - 1, 'last typed character');
+    await editor.key('End', 35);
+    await editor.typeKeys(TEXT.slice(suffixStart));
     // A collapsed-caret shortcut is an explicit style for text typed next,
     // independent of Chromium's deprecated execCommand typing state.
     await editor.chord('b', 'KeyB', 66, MOD);
-    await editor.call('Input.insertText', { text: 'B' });
+    await editor.typeKeys('B');
     await editor.chord('b', 'KeyB', 66, MOD);
-    await editor.call('Input.insertText', { text: 'P' });
+    await editor.typeKeys('P');
     const authoredText = `${TEXT}BP`;
     await eventually(async () => editor!.evaluate<string>(
       `window.store.get().deck.slides[0].elements.find((element) => element.id === '${TEXT_ID}').html`,
@@ -218,39 +212,20 @@ describe.skipIf(electronBinary)('stateful inline formatting in Chromium (skipped
   it('needs Electron', () => expect(electronBinary).toBe(''));
 });
 
+/**
+ * Select a flat character range with the real pointer gesture (click the first
+ * glyph, shift-click the last), rather than installing a Range through
+ * Runtime.evaluate — the selection the app sees must be one Chromium built
+ * from hit testing, like an author's.
+ */
 async function selectRange(
   cdp: Cdp,
   start: number,
   end: number,
-  preferNextStart: boolean,
+  _preferNextStart: boolean,
 ): Promise<void> {
-  const selected = await cdp.evaluate<string>(`(() => {
-    const root = document.querySelector('${CONTENT}');
-    const locate = (target, preferNext) => {
-      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-      let remaining = target;
-      let previous = null;
-      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-        if (remaining < node.data.length || (remaining === node.data.length && !preferNext)) {
-          return { node, offset: remaining };
-        }
-        remaining -= node.data.length;
-        previous = node;
-      }
-      return { node: previous, offset: previous.data.length };
-    };
-    const a = locate(${start}, ${preferNextStart});
-    const b = locate(${end}, false);
-    const range = document.createRange();
-    range.setStart(a.node, a.offset);
-    range.setEnd(b.node, b.offset);
-    const selection = getSelection();
-    selection.removeAllRanges();
-    selection.addRange(range);
-    root.focus();
-    document.dispatchEvent(new Event('selectionchange'));
-    return selection.toString();
-  })()`);
+  await cdp.selectTextRange(CONTENT, start, end, `text ${start}-${end}`);
+  const selected = await cdp.evaluate<string>(`getSelection()?.toString() ?? ''`);
   expect(selected).toBe(TEXT.slice(start, end));
 }
 

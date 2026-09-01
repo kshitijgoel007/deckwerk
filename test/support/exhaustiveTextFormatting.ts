@@ -149,7 +149,7 @@ async function typeNumber(editor: Cdp, label: string, value: number): Promise<vo
     return true;
   })()`);
   if (!selected) throw new Error(`${label} did not focus for exhaustive typing`);
-  await editor.call('Input.insertText', { text: String(value) });
+  await editor.typeKeys(String(value));
   // Native number fields commit on blur. Trigger that browser transition
   // directly after genuine focus + text insertion; the control's change
   // handler restores the bookmarked canvas Range. Sending Enter/Tab here can

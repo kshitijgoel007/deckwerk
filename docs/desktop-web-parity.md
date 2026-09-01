@@ -8,28 +8,39 @@ are intentionally omitted.
 
 ## Presentation
 
-- [ ] **P0 — Speaker View.** Add a browser controller view with current and
-  next-slide previews, build position, presentation and slide timers, wall
-  clock, previous/next, blank-screen, and end controls. Keep an audience tab in
-  sync through the collaboration session. Browser security means display
-  placement may remain user-driven, but the two-view workflow should work.
-- [ ] **P0 — Display-role controls.** Let a browser presenter identify the
-  audience and controller windows and swap their roles. The desktop app can
-  place them on enumerated displays automatically; document the browser's
-  manual placement fallback where automatic placement is unavailable.
-- [ ] **P1 — Present a selected slide range.** Desktop Present honors a
-  contiguous multi-slide selection and stops at its end. Browser Present only
-  accepts the starting slide today.
+- [x] **P0 — Speaker View.** The browser presents in a pair of surfaces:
+  `present.html` plays either the audience or the speaker role, and
+  `src/renderer/presenter/speakerView.ts` is one component shared with the
+  desktop window — current and next slide previews, build position,
+  presentation and slide timers, wall clock, previous/next/blank/end. The two
+  surfaces talk over `src/renderer/collab/presentationBus.ts`
+  (`BroadcastChannel`, with a `storage`-event fallback), not over the
+  collaboration socket: presenter commands are private to the presenter and
+  must keep working when the network does not. Display *placement* stays
+  user-driven, as browser security requires — "Present in Speaker View" opens
+  the audience in a second window for the presenter to move to the projector.
+- [x] **P0 — Display-role controls.** The desktop moves its two windows
+  between enumerated displays; a browser cannot place a window at all. So the
+  browser's **Switch views** trades the roles of the two surfaces in place,
+  handing the cursor over, which unsticks the presenter who put the wrong
+  window on the projector without re-navigating either one (a reload would
+  drop the audience out of fullscreen mid-talk).
+- [x] **P1 — Present a selected slide range.** Both clients read the rail
+  selection through `rangeForSlideSelection`. The browser carries the bounds
+  as `slide`/`endSlide` on the presentation URL, clamps *previous* at the
+  start, and ends the show when *next* would leave the end.
 
 ## Media editing
 
 - [ ] **P0 — Video trim and crop.** Expose the desktop Trim & Crop workflow in
   the browser, backed by a deck-scoped server job with the same progress,
-  cancellation, codec validation, and derived-asset behavior.
+  cancellation, codec validation, and derived-asset behavior. The inspector
+  already gates the control on `onTrimRequest`, which only the desktop shell
+  sets; a browser implementation sets the same hook.
 - [ ] **P1 — Rasterize and paint images.** Port the desktop raster paint
   workflow to the browser and upload the derived image through the existing
-  content-hash asset importer. Preserve the PDF exclusion and destructive-edit
-  warning.
+  content-hash asset importer. Same shape as above: `onRasterRequest` is the
+  seam. Preserve the PDF exclusion and destructive-edit warning.
 
 ## Agents and authoring workflows
 
@@ -45,9 +56,12 @@ are intentionally omitted.
 
 ## Export and local files
 
-- [ ] **P1 — Standalone Web export.** Add the desktop's self-contained web
-  bundle export to the browser Save As menu, generated from the server's live
-  deck snapshot.
+- [x] **P1 — Standalone Web export.** **Save As… → Lossy export → Web…**
+  builds the self-contained bundle with the same `exportDeck` the desktop app
+  runs, from the server's flushed live snapshot, and delivers it as a zip that
+  unpacks into a deck-named folder. The archive is streamed rather than
+  buffered, so the one thing that can fail — a server without the built export
+  player — is settled by a probe request before any bytes move.
 - [ ] **P2 — Direct PDF download.** Browser PDF export currently opens a print
   document and relies on the browser's print dialog. Add a one-click generated
   PDF download where the deployment has a rendering service; retain print as
@@ -61,6 +75,19 @@ are intentionally omitted.
 
 Both clients already share slide and element editing, text/shape/table
 insertion, Props, Theme, Build, History, comments, undo/redo, live presence,
-asset upload/drop, Keynote import, deck archive export, PDF-by-print, and
-fullscreen audience presentation. These should stay on shared components so
-new controls do not create a second parity backlog.
+asset upload/drop, Keynote import, deck archive export, PDF-by-print, web
+export, fullscreen audience presentation, Speaker View, and range presenting.
+These should stay on shared components so new controls do not create a second
+parity backlog.
+
+## Coverage
+
+| Surface | Tests |
+| --- | --- |
+| Speaker View component (both clients) | `test/speakerView.test.ts` |
+| Presenter transport, both fallbacks | `test/presentationBus.test.ts` |
+| Which surface opens where, and the range URL | `test/presentOverlay.test.ts` |
+| Two real windows: drive, blank, clamp, swap roles | `test/collabPresentationBrowser.test.ts` |
+| Web export route, probe, and archive contents | `test/collabServer.test.ts` |
+| Range arithmetic shared with the desktop | `test/presentationRange.test.ts` |
+| Presenting-pair latency and leak budgets | `test/performanceStressBrowser.test.ts` (opt-in) |

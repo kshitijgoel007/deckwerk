@@ -320,7 +320,7 @@ describe.skipIf(!electronBinary)('desktop inline-formatting matrix', () => {
     const insertAt = authoredText.indexOf('tempor');
     await editor.clickTextAtOffset(CONTENT, insertAt, 'insertion point before “tempor”');
     await editor.key('Enter', 13);
-    await editor.call('Input.insertText', { text: 'NOVUM ' });
+    await editor.typeKeys('NOVUM ');
     const inserted = await eventually(async () => editor!.evaluate<{
       text: string;
       paragraphs: number;
@@ -382,15 +382,15 @@ describe.skipIf(!electronBinary)('desktop inline-formatting matrix', () => {
       `document.querySelector(${JSON.stringify(listContent)})?.isContentEditable === true`,
     ), 'new text placeholder did not enter editing');
     await editor.chord('a', 'KeyA', 65, MOD, ['selectAll']);
-    await editor.call('Input.insertText', { text: 'Lorem plain ' });
+    await editor.typeKeys('Lorem plain ');
     await editor.chord('b', 'KeyB', 66, MOD);
-    await editor.call('Input.insertText', { text: 'bold words' });
+    await editor.typeKeys('bold words');
     await editor.chord('b', 'KeyB', 66, MOD);
-    await editor.call('Input.insertText', { text: ' plain ' });
+    await editor.typeKeys(' plain ');
     await editor.chord('i', 'KeyI', 73, MOD);
-    await editor.call('Input.insertText', { text: 'italic words' });
+    await editor.typeKeys('italic words');
     await editor.chord('i', 'KeyI', 73, MOD);
-    await editor.call('Input.insertText', { text: ' plain ending.' });
+    await editor.typeKeys(' plain ending.');
     const listParagraph = 'Lorem plain bold words plain italic words plain ending.';
     await eventually(async () => editor!.evaluate<string>(
       `document.querySelector(${JSON.stringify(listContent)})?.textContent?.replaceAll('\u2060', '') ?? ''`,
@@ -430,7 +430,7 @@ describe.skipIf(!electronBinary)('desktop inline-formatting matrix', () => {
         && getSelection()?.isCollapsed === true
         && root.children.length >= 2;
     })()`), 'Enter did not create a second editable paragraph');
-    await editor.call('Input.insertText', { text: '- some text' });
+    await editor.typeKeys('- some text');
     await editor.key('Enter', 13);
 
     const listState = await eventually(async () => editor!.evaluate<{
@@ -473,6 +473,44 @@ describe.skipIf(!electronBinary)('desktop inline-formatting matrix', () => {
     expect(listState.items.every((item) => item.style === 'normal')).toBe(true);
     expect(listState.items.every((item) => Number.parseInt(item.markerWeight, 10) < 600)).toBe(true);
     expect(listState.items.every((item) => item.markerStyle === 'normal')).toBe(true);
+
+    /*
+     * Re-entering text editing on a box that is already being edited — the
+     * context menu's "Edit text", which stays offered while the caret is in
+     * the box — must replace that session rather than stack a second one on
+     * it. Two sessions means two beforeinput handlers, and a pending
+     * collapsed-caret Cmd+I run is inserted by that handler, so every
+     * keystroke after the shortcut used to arrive twice ("not" as "nnoott").
+     */
+    await editor.click(`#canvas [data-element-id="${listTextId}"]`, 'text box for re-entry');
+    await editor.doubleClickTextAtOffset(listContent, 1, 'text for re-entry');
+    await eventually(async () => editor!.evaluate<boolean>(
+      `document.querySelector(${JSON.stringify(listContent)})?.isContentEditable === true`,
+    ), 're-entry fixture did not enter text editing');
+    await editor.rightClick(`#canvas [data-element-id="${listTextId}"]`, 'context menu while editing');
+    await editor.clickByText('#ctx-menu button', 'Edit text', 'Edit text menu item');
+    await eventually(async () => editor!.evaluate<boolean>(
+      `document.querySelector(${JSON.stringify(listContent)})?.isContentEditable === true`,
+    ), 'Edit text did not re-open the editor');
+    const reentryText = async () => editor!.evaluate<string>(
+      `document.querySelector(${JSON.stringify(listContent)})?.textContent?.replaceAll('\u2060', '') ?? ''`,
+    );
+    await editor.key('End', 35);
+    // Doubling shows up as extra characters wherever the caret is: assert the
+    // text grows by exactly what was typed, and that the run appears once.
+    const typeAfterReentry = async (typed: string, label: string) => {
+      const before = await reentryText();
+      await editor!.typeKeys(typed);
+      const after = await reentryText();
+      expect(after.length - before.length, `${label}: characters inserted`).toBe(typed.length);
+      expect(after.split(typed).length - 1, `${label}: occurrences of the typed run`)
+        .toBe((before.split(typed).length - 1) + 1);
+    };
+    await typeAfterReentry(' plain', 'plain typing after re-entry');
+    await editor.chord('i', 'KeyI', 73, MOD);
+    await typeAfterReentry('not', 'typing inside a pending italic run after re-entry');
+    await editor.chord('b', 'KeyB', 66, MOD);
+    await typeAfterReentry('bold', 'typing inside a pending bold run after re-entry');
 
     const liveHtml = await editor.evaluate<string>(
       `document.querySelector(${JSON.stringify(CONTENT)})?.innerHTML ?? ''`,

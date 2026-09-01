@@ -108,13 +108,7 @@ describe.skipIf(!electronBinary)('killing the collab server mid-session', () => 
 
     /* --- present, then pull the server out from under everything ---------- */
 
-    const clicked = await editor.evaluate<boolean>(`(() => {
-      const button = [...document.querySelectorAll('#toolbar button')]
-        .find((candidate) => candidate.textContent?.trim() === 'Present');
-      button?.click();
-      return Boolean(button);
-    })()`);
-    expect(clicked).toBe(true);
+    await editor!.clickByText('#toolbar button', 'Present', 'Present');
 
     await eventually(async () => editor!.evaluate<boolean>(`(() => {
       const doc = ${PRESENT_DOC}?.contentDocument;
@@ -169,12 +163,7 @@ describe.skipIf(!electronBinary)('killing the collab server mid-session', () => 
       frame?.remove();
       return true;
     })()`);
-    await editor.evaluate(`(() => {
-      const button = [...document.querySelectorAll('#toolbar button')]
-        .find((candidate) => candidate.textContent?.trim() === 'Present');
-      button?.click();
-      return true;
-    })()`);
+    await editor.clickByText('#toolbar button', 'Present', 'Present again while disconnected');
     const refused = await editor.evaluate<{ mounted: boolean; status: string }>(`(() => ({
       mounted: Boolean(document.querySelector('iframe[src*="present.html"]')),
       status: document.getElementById('status')?.textContent ?? '',

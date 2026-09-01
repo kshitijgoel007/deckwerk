@@ -152,7 +152,15 @@ Do not expose it to an untrusted network.
   the whole deck folder (`deck.json`, `theme.css`, `assets/`). The server
   flushes the live session first, so the archive is exactly what everyone
   currently sees; unzip it and open the folder in the desktop app.
-- **Save As… → PDF…** — opens a print tab (`print.html?deck=…&mode=…`) that
+- **Save As… → Lossy export → Web…** — the self-contained web bundle, built
+  by the server with the same exporter the desktop app runs and downloaded as
+  a zip that unpacks into a deck-named folder: `index.html`, `player.js`,
+  `player.css`, `theme.css` and only the assets the deck references. Open the
+  folder's `index.html` in any browser, with or without DeckWerk installed.
+  The live session is flushed first, so the bundle is what everyone currently
+  sees. A server started without the built export player
+  (`npm run build:export`) says so instead of downloading a broken archive.
+- **Save As… → Lossy export → PDF…** — opens a print tab (`print.html?deck=…&mode=…`) that
   builds the same `.pdf-page` document the desktop exporter renders — one page
   per slide, or per build stage when "Include each stage of builds" is ticked —
   at the deck's native pixel canvas, then opens the browser's print dialog:
@@ -163,10 +171,26 @@ Do not expose it to an untrusted network.
   the live session. Because the readiness wait needs painted frames and
   browsers suspend those in a background tab, the tab asks to be brought
   forward, and offers the pages anyway after 20s rather than hanging.
-- **Present** — opens the real Player in a new browser tab, fed by the same
-  WebSocket session: edits made while presenting land on the presentation
-  live, exactly like the desktop projector window. Arrow keys/space/click
-  advance, double-click toggles fullscreen.
+- **Present** — mounts the real Player fullscreen over the editor tab, fed by
+  the same WebSocket session: edits made while presenting land on the
+  presentation live, exactly like the desktop projector window. Arrow
+  keys/space/click advance, double-click exits. Selecting two or more slides
+  in the rail first presents just that range, ending the show after the last
+  one — the same `rangeForSlideSelection` rule as the desktop app.
+- **Present → Present in Speaker View** — opens the audience in a second
+  browser window and turns this tab into Speaker View: current and next slide,
+  build position, presentation and slide timers, wall clock, and
+  previous/blank/next/end. Move the audience window to the projector and press
+  `F` there for fullscreen. The two surfaces are the same page in different
+  roles, and they talk over a `BroadcastChannel` scoped to the deck rather than
+  through the server — presenter commands stay private to the presenter and
+  keep working across a network hiccup. **Switch views** trades the roles of
+  the two windows in place, for when the wrong one ended up on the projector; a
+  browser cannot move a window between displays, so swapping roles is the
+  equivalent of the desktop's "Switch displays". Closing or ending either
+  surface ends the show on both. Speaker View needs pop-ups allowed for the
+  site; if the second window is refused, Present falls back to presenting in
+  this tab and says why.
 - **Sidebar tabs** — Props, Theme (the full preset gallery + adoption
   controls, shared code with the desktop app), Build, History. Restoring a
   history snapshot broadcasts as an ordinary transaction.
@@ -222,14 +246,17 @@ ffprobe. Videos stream with HTTP Range support, so playback and seeking work
 in every tab. The inspector's non-destructive in/out trim sliders work
 unchanged — they write `start`/`end` on the element and sync like any edit.
 
-The one desktop-only media feature is the destructive "Edit w/ ffmpeg…"
-trim-and-crop window; its button is hidden in the browser.
+The desktop-only media features are the two destructive editors — "Edit w/
+ffmpeg…" trim-and-crop and "Rasterize & paint…" — whose buttons are hidden in
+the browser because nothing sets the inspector hooks that reveal them.
 
 ## Not in the browser client (v1)
 
-Agent workflow launching, web export, and the presenter (notes/timer) view.
-Like the desktop app, there is no raw-CSS sidebar tab; theme.css is edited on
-disk (the server watcher broadcasts it) or through theme adoption.
+Agent workflow launching, and the destructive "Edit w/ ffmpeg…" trim-and-crop
+and "Rasterize & paint…" media editors. Like the desktop app, there is no
+raw-CSS sidebar tab; theme.css is edited on disk (the server watcher
+broadcasts it) or through theme adoption. The full list, with what each one
+would take, is in [Desktop → web feature parity](desktop-web-parity.md).
 
 ## Known limits
 

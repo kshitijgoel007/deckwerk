@@ -649,7 +649,7 @@ describe('inline text editing', () => {
     expect(inspectorHost.querySelector('.insp-title')?.textContent).toBe('text');
     expect([...inspectorHost.querySelectorAll('.insp-type-sections .insp-subtitle')]
       .map((heading) => heading.textContent))
-      .toEqual(['Typography', 'Layout', 'Effects']);
+      .toEqual(['Typography', 'Layout']);
     expect(headings).not.toContain('Style');
     expect(inspectorHost.textContent).not.toContain('CSS classes');
     expect(inspectorHost.textContent).not.toContain('Inline style');

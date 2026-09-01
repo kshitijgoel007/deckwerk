@@ -75,17 +75,18 @@ describe('stackable media effects', () => {
       .toBe('SourceAlpha');
   });
 
-  it('exposes amount and frequency cutoff controls for text', () => {
-    const deck = emptyDeck('Text effects');
+  it('exposes amount and frequency cutoff controls on media', () => {
+    const deck = emptyDeck('Noise');
     deck.slides[0].elements.push({
-      id: 'title', type: 'text', html: 'Signal', align: 'left', valign: 'top',
-      x: 0, y: 0, w: 640, h: 120, rot: 0, z: 1, opacity: 1, class: [], style: {},
+      id: 'photo', type: 'image', src: 'photo.png', fit: 'contain', alt: '',
+      x: 0, y: 0, w: 640, h: 480, rot: 0, z: 1, opacity: 1, class: [], style: {},
+      sourceBox: null,
     });
-    const store = new EditorStore(deck, '/tmp/text-effects');
+    const store = new EditorStore(deck, '/tmp/media-noise');
     const host = document.createElement('div');
     document.body.appendChild(host);
     new Inspector(host, store);
-    store.select(['title']);
+    store.select(['photo']);
 
     const picker = host.querySelector<HTMLSelectElement>('.effect-add')!;
     expect([...picker.options].map((option) => option.textContent))
@@ -104,11 +105,42 @@ describe('stackable media effects', () => {
     host.querySelector<HTMLInputElement>('[aria-label="Frequency cutoff"]')!
       .dispatchEvent(new Event('change', { bubbles: true }));
 
-    const text = store.selectedElements()[0];
-    if (text.type !== 'text') throw new Error('expected text');
-    expect(text.effects).toEqual([{
+    const image = store.selectedElements()[0];
+    if (image.type !== 'image') throw new Error('expected image');
+    expect(image.effects).toEqual([{
       type: 'gaussianNoise', amount: 0.7, frequencyCutoff: 0.3,
     }]);
+  });
+
+  it('offers no visual-effect controls on text, alone or in a multi-selection', () => {
+    const deck = emptyDeck('Text effects');
+    deck.slides[0].elements.push({
+      id: 'title', type: 'text', html: 'Signal', align: 'left', valign: 'top',
+      x: 0, y: 0, w: 640, h: 120, rot: 0, z: 1, opacity: 1, class: [], style: {},
+    }, {
+      id: 'subtitle', type: 'text', html: 'Noise', align: 'left', valign: 'top',
+      x: 0, y: 200, w: 640, h: 120, rot: 0, z: 2, opacity: 1, class: [], style: {},
+      // A deck authored before the controls were withdrawn still carries this,
+      // and still renders it; the editor simply no longer offers to edit it.
+      effects: [{ type: 'blur', radius: 6 }],
+    });
+    const store = new EditorStore(deck, '/tmp/text-effects');
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    new Inspector(host, store);
+
+    for (const selection of [['title'], ['subtitle'], ['title', 'subtitle']]) {
+      store.select(selection);
+      expect(host.querySelector('.effect-add')).toBeNull();
+      expect(host.querySelector('.media-effect-row')).toBeNull();
+      expect([...host.querySelectorAll('h4')].map((heading) => heading.textContent))
+        .not.toContain('Effects');
+    }
+
+    // Withdrawing the controls must not rewrite what the deck already holds.
+    const subtitle = deck.slides[0].elements[1];
+    if (subtitle.type !== 'text') throw new Error('expected text');
+    expect(subtitle.effects).toEqual([{ type: 'blur', radius: 6 }]);
   });
 
   it('adds, configures, reorders, and removes effects from the inspector', () => {

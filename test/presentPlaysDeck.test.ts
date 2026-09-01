@@ -163,13 +163,7 @@ describe.skipIf(!electronBinary || !ffmpeg)('presenting the deck', () => {
 
     /* --- press the real Present control ---------------------------------- */
 
-    const clicked = await editor.evaluate<boolean>(`(() => {
-      const button = [...document.querySelectorAll('#toolbar button')]
-        .find((candidate) => candidate.textContent?.trim() === 'Present');
-      button?.click();
-      return Boolean(button);
-    })()`);
-    expect(clicked).toBe(true);
+    await editor!.clickByText('#toolbar button', 'Present', 'Present');
 
     /* --- the audience sees the slide ------------------------------------- */
 

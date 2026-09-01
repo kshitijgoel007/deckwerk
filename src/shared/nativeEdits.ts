@@ -94,7 +94,6 @@ const ELEMENT_PROPERTIES: Record<SlideElement['type'], PropertyDoc[]> = {
     { path: 'noWrap', type: 'boolean', description: 'Break only where authored and fit long lines.', example: true, unset: 'Unset to restore normal wrapping.' },
     { path: 'noWrapMode', type: 'enum', values: ['shrink', 'condense'], description: 'How a no-wrap line is fitted.', example: 'shrink' },
     { path: 'paragraphSpacing', type: 'number >= 0', description: 'Gap in pixels between paragraphs and list items.', example: 12, unset: 'Unset to use theme spacing.' },
-    { path: 'effects', type: 'effect[]', description: 'Ordered visual effects, including Gaussian noise with amount and frequencyCutoff.', example: [{ type: 'gaussianNoise', amount: 0.35, frequencyCutoff: 0.12 }] },
   ],
   image: [
     { path: 'src', type: 'deck-relative asset path', description: 'Image asset path. Import assets before setting it.', example: 'assets/figure.png' },

@@ -10,6 +10,7 @@ import { isIP } from 'node:net';
 import { pathToFileURL } from 'node:url';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { createDeck, importAsset, loadTheme, resolveAsset } from '../main/deckStore.js';
+import { exportDeck, webExportUnavailableReason } from '../main/exportDeck.js';
 import { AGENT_BRIEF, agentClipboardPrompt } from './agentBrief.js';
 import { capabilities } from '../shared/capabilities.js';
 import { probeMedia } from '../main/ffmpeg.js';
@@ -638,6 +639,59 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
       });
       await writeZip(response, files);
       response.end();
+      return;
+    }
+
+    // The deck as a self-contained web page, zipped. Same exporter the desktop
+    // app runs, so the bundle presents identically whether it came from the
+    // app or from a browser on the other side of the network; the live session
+    // is flushed first, so it holds exactly what everyone currently sees.
+    if (path === '/api/export/web' && request.method === 'GET') {
+      if (!deckParam) return respondJson(response, 400, { error: 'missing deck' });
+      let deckDir: string;
+      try {
+        deckDir = deckDirOf(deckParam);
+      } catch {
+        return respondJson(response, 403, { error: 'forbidden' });
+      }
+      if (!existsSync(join(deckDir, 'deck.json'))) {
+        return respondJson(response, 404, { error: 'no such deck' });
+      }
+      // A browser download cannot show an error once the bytes start, so the
+      // client asks first and the answer decides whether it starts one at all.
+      const unavailable = webExportUnavailableReason();
+      if (url.searchParams.get('probe') === '1') {
+        return unavailable
+          ? respondJson(response, 501, { error: unavailable })
+          : respondJson(response, 200, { ok: true });
+      }
+      if (unavailable) return respondJson(response, 501, { error: unavailable });
+      const room = await getRoom(deckParam);
+      await room.session.flush();
+      const staging = await mkdtemp(join(tmpdir(), 'deckwerk-web-'));
+      const outDir = join(staging, sanitizeFilename(deckParam));
+      try {
+        await exportDeck(deckDir, room.session.deck, outDir);
+        // Collected from the staging root, so the archive unpacks into a
+        // folder named after the deck rather than scattering player.js and
+        // index.html into wherever the recipient double-clicked it.
+        const files = await collectDeckFiles(staging);
+        response.writeHead(200, {
+          'content-type': 'application/zip',
+          'cache-control': 'no-store',
+          'content-disposition': `attachment; filename="${sanitizeFilename(deckParam)}-web.zip"`,
+        });
+        await writeZip(response, files);
+        response.end();
+      } catch (error) {
+        // The export player bundle is a build artefact; a server started
+        // without it must say so rather than serve a broken archive.
+        respondJson(response, 500, {
+          error: String(error instanceof Error ? error.message : error),
+        });
+      } finally {
+        await rm(staging, { recursive: true, force: true });
+      }
       return;
     }
 

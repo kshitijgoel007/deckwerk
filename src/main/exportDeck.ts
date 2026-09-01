@@ -23,19 +23,31 @@ function playerBundleDir(): string {
   return candidates.find((dir) => existsSync(join(dir, 'player.js'))) ?? candidates[0];
 }
 
+/**
+ * Why a web export cannot run right now, or null when it can.
+ *
+ * The export player is a build artefact rather than source, so a checkout that
+ * has not run `npm run build:export` — or a server deployed without it — can
+ * only find out by trying. Callers that hand the result straight to a browser
+ * download need to know before they start writing bytes.
+ */
+export function webExportUnavailableReason(): string | null {
+  const playerJs = join(playerBundleDir(), 'player.js');
+  return existsSync(playerJs)
+    ? null
+    : `Export player bundle not found at ${playerJs}. Run: npm run build:export`;
+}
+
 export async function exportDeck(
   deckDir: string,
   deck: Deck,
   outDir: string,
   onProgress?: (message: string, ratio: number | null) => void,
 ): Promise<void> {
+  const unavailable = webExportUnavailableReason();
+  if (unavailable) throw new Error(unavailable);
   const bundleDir = playerBundleDir();
   const playerJs = join(bundleDir, 'player.js');
-  if (!existsSync(playerJs)) {
-    throw new Error(
-      `Export player bundle not found at ${playerJs}. Run: npm run build:export`,
-    );
-  }
 
   const wanted = referencedAssets(deck);
   const total = 5 + wanted.size;

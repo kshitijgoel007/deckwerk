@@ -9,7 +9,7 @@ before/after resource measurements:
 npm run test:performance
 ```
 
-The suite covers two deliberately expensive scenarios:
+The suite covers three deliberately expensive scenarios:
 
 - A 1,000-slide deck where every slide contains a 6000×4000 JPEG and a
   3840×2160 H.264 video. Sixty real ArrowDown events traverse distinct video
@@ -22,9 +22,18 @@ The suite covers two deliberately expensive scenarios:
   slides each. The test measures commit latency, verifies the 200-entry cap,
   writes and reloads the real gzip sidecar, hydrates it into a fresh store, and
   restores a middle revision.
+- A presenting pair on a 60-slide media deck: the browser audience window plus
+  a Speaker View in a second window, driven over the presentation bus. Forty
+  advances are timed inside Speaker View, from the click that sends the command
+  to the render that answers it — the whole loop the presenter feels, including
+  the audience's own work. Presenting renders three full stages per step rather
+  than one, and Speaker View rebuilds both of its previews each time, so the
+  gate also checks that neither the discarded DOM nor the frozen video stills
+  accumulate.
 
 Each run prints compact JSON reports prefixed with
-`[performance:large-deck]` and `[performance:history]`. The assertions use
+`[performance:large-deck]`, `[performance:history]`, and
+`[performance:presentation]`. The assertions use
 generous regression budgets rather than pretending to be a microbenchmark;
 they are intended to catch order-of-magnitude regressions across CI machines.
 
@@ -49,6 +58,10 @@ All values are positive numbers. Time budgets are milliseconds.
 | `PERF_HISTORY_LOAD_BUDGET_MS` | 30000 | Read, unzip, and validate history |
 | `PERF_HISTORY_HYDRATE_BUDGET_MS` | 30000 | Hydrate a fresh store |
 | `PERF_HISTORY_RESTORE_BUDGET_MS` | 30000 | Replay to a middle revision |
+| `PERF_SPEAKER_FOLLOW_P95_BUDGET_MS` | 600 | Speaker View click-to-render p95 |
+| `PERF_SPEAKER_FOLLOW_MAX_BUDGET_MS` | 2000 | Slowest Speaker View follow |
+| `PERF_SPEAKER_DOM_GROWTH_BUDGET` | 3500 | Post-GC DOM growth over 40 advances |
+| `PERF_SPEAKER_HEAP_GROWTH_BUDGET_MB` | 128 | Post-GC Speaker View heap growth |
 
 For example:
 

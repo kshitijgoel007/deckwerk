@@ -902,15 +902,6 @@ export class Inspector {
     );
     if (spacings.mixed) spacingField.querySelector('input')!.placeholder = 'Mixed';
     wrap.appendChild(spacingField);
-    if (commonValue(texts.map((element) => JSON.stringify(editableVisualEffects(element)))) !== null) {
-      wrap.appendChild(this.mediaEffectsControls());
-    } else {
-      const effects = optionSection('Effects', 'media-effects-controls');
-      effects.content.appendChild(
-        hint('Effects differ across the selection. Clear or align them individually first.'),
-      );
-      wrap.appendChild(effects.section);
-    }
     return wrap;
   }
 
@@ -1471,7 +1462,7 @@ export class Inspector {
           'px',
           { min: 0 },
         ));
-        wrap.append(typography.section, layout.section, this.mediaEffectsControls());
+        wrap.append(typography.section, layout.section);
         return wrap;
       }
 
@@ -1885,10 +1876,16 @@ function effectValue(effect: MediaEffect): number {
   return effect.amount;
 }
 
+/**
+ * Visual effects are a media control. Text elements still carry `effects` in
+ * the schema (and existing decks still render theirs), but the editor no
+ * longer offers them: blur, posterize, greyscale and Gaussian noise on type
+ * were never a good idea, and the controls are gone from every surface.
+ */
 function supportsVisualEffects(
   element: SlideElement,
-): element is Extract<SlideElement, { type: 'text' | 'image' | 'video' }> {
-  return element.type === 'text' || element.type === 'image' || element.type === 'video';
+): element is Extract<SlideElement, { type: 'image' | 'video' }> {
+  return element.type === 'image' || element.type === 'video';
 }
 
 function clearLegacyMediaBorder(

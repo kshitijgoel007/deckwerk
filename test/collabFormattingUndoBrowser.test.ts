@@ -13,6 +13,7 @@ import {
   findTarget,
   launchBrowser,
   stopBrowser,
+  wait,
   type RunningBrowser,
 } from './support/browserSession.js';
 import { collabClientDir } from './support/collabClient.js';
@@ -34,6 +35,9 @@ const ON_CANVAS = (id: string) => `#canvas [data-element-id="${id}"]`;
 // CDP modifier mask: Control=2, Meta=4. Native contenteditable follows the
 // platform convention (Cmd+A/Z on macOS, Ctrl+A/Z elsewhere).
 const MOD = process.platform === 'darwin' ? 4 : 2;
+// The invisible word joiner an unsealed collapsed-caret style run carries.
+const TYPING_SENTINEL = '\u2060';
+const FORMAT_COMMANDS = { b: 'bold', i: 'italic', u: 'underline' } as const;
 
 let workDir = '';
 let server: RunningCollabServer | null = null;
@@ -201,6 +205,67 @@ describe.skipIf(!electronBinary)('formatting scope and undo in the collaboration
       await editor!.chord('z', 'KeyZ', 90, MOD);
       await expectRestored(server!.port, id, original.get(id)!);
     };
+    /**
+     * Real per-keystroke typing at the very end of a text box, asserted both
+     * in the live DOM and on the collaboration server.
+     *
+     * Formatting is not the end of an author's sentence: they keep typing.
+     * A pending collapsed-caret style run, or a duplicated editing listener
+     * left behind by a formatting path, only shows up as wrong characters —
+     * `Input.insertText` inserts a whole string in one `beforeinput` and would
+     * hide a per-key fault such as "not" arriving as "nnoott".
+     */
+    const plainTextOf = (value: string) => value
+      .replace(/<[^>]+>/g, '')
+      .replaceAll('&nbsp;', ' ')
+      .replaceAll('\u00a0', ' ')
+      .replaceAll(TYPING_SENTINEL, '');
+    const domText = async (id: string) => plainTextOf(await editor!.evaluate<string>(
+      `document.querySelector('${ON_CANVAS(id)} .text-content')?.textContent ?? ''`,
+    ));
+    const placeCaretAtEnd = async (id: string) => {
+      // Click the last character that actually paints (a pending typing-style
+      // run ends in an invisible word joiner), then End to reach the very end
+      // of that line — the caret an author leaves before typing on.
+      const offset = await editor!.evaluate<number>(`(() => {
+        const text = document.querySelector('${ON_CANVAS(id)} .text-content')?.textContent ?? '';
+        for (let index = text.length - 1; index >= 0; index -= 1) {
+          if (!/[\s\u2060]/.test(text[index])) return index;
+        }
+        return 0;
+      })()`);
+      await editor!.clickTextAtOffset(
+        `${ON_CANVAS(id)} .text-content`, offset, `${id} last character`,
+      );
+      await editor!.key('End', 35);
+    };
+    /* Type where the caret already is: a click would discard a pending
+       collapsed-caret style run before the keystrokes could inherit it. */
+    const typeHere = async (id: string, typed: string, label: string) => {
+      const before = await domText(id);
+      await editor!.typeKeys(typed);
+      const expected = before + typed;
+      await eventually(async () => domText(id), `${label}: typed characters are wrong on screen`,
+        (text) => text === expected);
+      await eventually(async () => {
+        const element = await liveElement(server!.port, id);
+        return element.type === 'text' ? plainTextOf(element.html) : '';
+      }, `${label}: typed characters are wrong on the server`, (text) => text === expected);
+    };
+    const typeAtEnd = async (id: string, typed: string, label: string) => {
+      await placeCaretAtEnd(id);
+      await typeHere(id, typed, label);
+    };
+    /* Typing adds its own history entries, so undo until the fixture returns. */
+    const restore = async (id: string) => {
+      for (let attempt = 0; attempt < 12; attempt += 1) {
+        const element = await liveElement(server!.port, id);
+        if (JSON.stringify(element) === JSON.stringify(original.get(id)!)) return;
+        await editor!.chord('z', 'KeyZ', 90, MOD);
+        await wait(150);
+      }
+      await expectRestored(server!.port, id, original.get(id)!);
+    };
     const idField = async (label: string, id: string, selector: string) => {
       const found = await editor!.evaluate<boolean>(`(() => {
         const field = [...document.querySelectorAll('${PANEL} ${selector}')]
@@ -265,11 +330,14 @@ describe.skipIf(!electronBinary)('formatting scope and undo in the collaboration
         ['Underline (Cmd/Ctrl+U)', /<u\b|text-decoration/i],
       ] as const) {
         await beginSelectFirstWord(id);
+        await typeAtEnd(id, ' pre', `${id} ${label} typing before the change`);
+        await beginSelectFirstWord(id);
         await editor.click(`${PANEL} button[aria-label="${label}"]`, `${id} ${label}`);
         await expectHtml(server.port, id, (html) => marker.test(html)
           && hasOriginalStructure(id, html, tag, amount));
         await expectFormatButtonPressed(label);
-        await undoEditing(id);
+        await typeAtEnd(id, ' post', `${id} ${label} typing after the change`);
+        await restore(id);
       }
 
       await beginSelectAll(id);
@@ -322,12 +390,56 @@ describe.skipIf(!electronBinary)('formatting scope and undo in the collaboration
       ['i', 'Italic (Cmd/Ctrl+I)', /<(i|em)\b|font-style/i],
       ['u', 'Underline (Cmd/Ctrl+U)', /<u\b|text-decoration/i],
     ] as const) {
-      await beginSelectFirstWord(UL_ID);
-      await editor.chord(key, `Key${key.toUpperCase()}`, key.toUpperCase().charCodeAt(0), MOD);
-      await expectHtml(server.port, UL_ID, (html) => marker.test(html)
-        && count(html, '<ul') === 1 && count(html, '<li') === 2);
-      await expectFormatButtonPressed(label);
-      await undoEditing(UL_ID);
+      // Both routings of the shortcut: the plain chord, and the same chord
+      // carrying the macOS editing command Chromium delivers through
+      // `beforeinput` (formatBold/formatItalic/formatUnderline).
+      for (const commands of [undefined, [FORMAT_COMMANDS[key]]] as const) {
+        await beginSelectFirstWord(UL_ID);
+        await typeAtEnd(UL_ID, ' pre', `${UL_ID} ${label} typing before the shortcut`);
+        await beginSelectFirstWord(UL_ID);
+        await editor.chord(
+          key, `Key${key.toUpperCase()}`, key.toUpperCase().charCodeAt(0), MOD,
+          commands ? [...commands] : undefined,
+        );
+        await expectHtml(server.port, UL_ID, (html) => marker.test(html)
+          && count(html, '<ul') === 1 && count(html, '<li') === 2);
+        await expectFormatButtonPressed(label);
+        await typeAtEnd(UL_ID, ' post', `${UL_ID} ${label} typing after the shortcut`);
+        await restore(UL_ID);
+      }
+    }
+
+    /* The reported flow: a collapsed-caret shortcut, then ordinary typing.
+       Each keystroke must place exactly one character ("not", never
+       "nnoott"), and the run typed between the two toggles must be the only
+       styled text. */
+    for (const [key, declaration, commands] of [
+      ['i', /font-style:\s*italic/i, undefined],
+      ['i', /font-style:\s*italic/i, ['italic']],
+      ['b', /font-weight:\s*(?:700|bold)/i, undefined],
+      ['u', /text-decoration(?:-line)?:\s*underline/i, undefined],
+    ] as const) {
+      await beginSelectFirstWord(NORMAL_ID);
+      await placeCaretAtEnd(NORMAL_ID);
+      await typeHere(NORMAL_ID, ' plain', `caret ${key} typing before the shortcut`);
+      await editor.chord(
+        key, `Key${key.toUpperCase()}`, key.toUpperCase().charCodeAt(0), MOD,
+        commands ? [...commands] : undefined,
+      );
+      await typeHere(NORMAL_ID, ' not', `caret ${key} typing while the style is pending`);
+      await editor.chord(
+        key, `Key${key.toUpperCase()}`, key.toUpperCase().charCodeAt(0), MOD,
+        commands ? [...commands] : undefined,
+      );
+      await typeHere(NORMAL_ID, ' again', `caret ${key} typing after the style ended`);
+      await expectHtml(server.port, NORMAL_ID, (html) => {
+        const styled = [...html.matchAll(/<span[^>]*style="([^"]*)"[^>]*>([^<]*)<\/span>/g)]
+          .filter(([, style]) => declaration.test(style));
+        return count(html, '<p') === 2
+          && styled.length === 1
+          && plainTextOf(styled[0][2]) === ' not';
+      });
+      await restore(NORMAL_ID);
     }
 
     /* Selecting one word changes the whole containing list, preserving markup. */

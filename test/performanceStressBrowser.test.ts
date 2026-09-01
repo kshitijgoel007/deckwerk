@@ -51,8 +51,11 @@ let workDir = '';
 let server: RunningCollabServer | null = null;
 let browser: RunningBrowser | null = null;
 let editor: Cdp | null = null;
+let speaker: Cdp | null = null;
 
 afterEach(async () => {
+  speaker?.close();
+  speaker = null;
   editor?.close();
   editor = null;
   await stopBrowser(browser?.process ?? null);
@@ -386,11 +389,7 @@ describe.skipIf(!RUN_PERFORMANCE)('large-deck performance stress', () => {
       // Hydrate the maximum supported history directly, then measure the real
       // hidden-panel catch-up path. Persistence and complex delta replay are
       // covered separately below; this isolates the browser UI cost.
-      const historyUi = await editor.evaluate<{
-        hydrateMs: number;
-        openMs: number;
-        rows: number;
-      }>(`(async () => {
+      const hydrateMs = await editor.evaluate<number>(`(() => {
         const deck = window.store.get().deck;
         const entries = Array.from({ length: 200 }, (_, index) => ({
           label: 'Synthetic history ' + (index + 1),
@@ -403,16 +402,28 @@ describe.skipIf(!RUN_PERFORMANCE)('large-deck performance stress', () => {
           keepView: true,
           history: { version: 2, base: deck, entries },
         });
-        const hydrateMs = performance.now() - hydrateStarted;
-        const openStarted = performance.now();
-        document.querySelector('#side-tabs button[data-panel="history"]')?.click();
-        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-        return {
-          hydrateMs,
-          openMs: performance.now() - openStarted,
-          rows: document.querySelectorAll('#history .history-item').length,
-        };
+        return performance.now() - hydrateStarted;
       })()`);
+      // The panel is opened by a real click on the tab. The stopwatch starts
+      // inside the page on that click's own pointerdown, so the measurement
+      // covers the app's work and not the test's round trip.
+      await editor.evaluate(`(() => {
+        const tab = document.querySelector('#side-tabs button[data-panel="history"]');
+        window.__historyOpen = new Promise((resolve) => {
+          tab.addEventListener('pointerdown', () => {
+            const started = performance.now();
+            requestAnimationFrame(() => requestAnimationFrame(() => resolve({
+              openMs: performance.now() - started,
+              rows: document.querySelectorAll('#history .history-item').length,
+            })));
+          }, { once: true });
+        });
+        return true;
+      })()`);
+      await editor.click('#side-tabs button[data-panel="history"]', 'History tab');
+      const opened = await editor.evaluate<{ openMs: number; rows: number }>(
+        `window.__historyOpen`);
+      const historyUi = { hydrateMs, openMs: opened.openMs, rows: opened.rows };
       expect(historyUi.rows).toBe(200);
       expect(historyUi.hydrateMs).toBeLessThan(budget('PERF_HISTORY_UI_HYDRATE_BUDGET_MS', 5_000));
       expect(historyUi.openMs).toBeLessThan(budget('PERF_HISTORY_UI_OPEN_BUDGET_MS', 750));
@@ -522,4 +533,177 @@ describe.skipIf(!RUN_PERFORMANCE)('large-deck performance stress', () => {
       restoreMs: Math.round(restoreMs),
     }));
   }, 360_000);
+});
+
+/**
+ * Presenting costs twice what it looks like: every advance renders the
+ * audience slide *and* two more full stages in Speaker View, on a second
+ * window fed over the presentation bus. A regression there is invisible until
+ * someone is on stage, so it gets its own gate — how long the Speaker View
+ * takes to follow the audience, and whether rebuilding those previews on every
+ * step leaks DOM or heap.
+ */
+describe.skipIf(!RUN_PERFORMANCE)('presentation pair performance stress', () => {
+  it.skipIf(!electronBinary || !ffmpeg)(
+    'keeps Speaker View following a media-heavy audience window',
+    async () => {
+      workDir = await mkdtemp(join(tmpdir(), 'deckwerk-present-performance-'));
+      const decksRoot = join(workDir, 'decks');
+      const deckDir = join(decksRoot, DECK_ID);
+      const assetsDir = join(deckDir, 'assets');
+      const profileDir = join(workDir, 'electron-profile');
+      await mkdir(assetsDir, { recursive: true });
+      await mkdir(profileDir, { recursive: true });
+
+      await execFileAsync(ffmpeg, [
+        '-loglevel', 'error', '-y',
+        '-f', 'lavfi', '-i', 'testsrc2=size=6000x4000:rate=1',
+        '-frames:v', '1', '-q:v', '2', join(assetsDir, 'large-a.11111111.jpeg'),
+      ]);
+      await execFileAsync(ffmpeg, [
+        '-loglevel', 'error', '-y',
+        '-f', 'lavfi', '-i', 'smptebars=size=6000x4000:rate=1',
+        '-frames:v', '1', '-q:v', '2', join(assetsDir, 'large-b.22222222.jpeg'),
+      ]);
+      await execFileAsync(ffmpeg, [
+        '-loglevel', 'error', '-y',
+        '-f', 'lavfi', '-i', 'testsrc2=size=3840x2160:rate=30',
+        '-t', '6', '-an', '-pix_fmt', 'yuv420p',
+        '-c:v', 'libx264', '-preset', 'ultrafast', '-b:v', '8M',
+        join(assetsDir, 'large-video.33333333.mp4'),
+      ]);
+
+      const ADVANCES = 40;
+      await saveDeck(deckDir, syntheticMediaDeck(ADVANCES + 20));
+      await writeFile(join(deckDir, 'theme.css'), [
+        '.slide { color: #111827; }',
+        '.role-title { font: 700 58px/1.1 sans-serif; }',
+        '',
+      ].join('\n'), 'utf8');
+
+      const clientDir = await collabClientDir();
+      server = await startCollabServer({
+        rootDir: decksRoot, clientDir, host: '127.0.0.1', port: 0,
+      });
+
+      const present = `http://127.0.0.1:${server.port}/present.html?deck=${DECK_ID}`;
+      browser = await launchBrowser(`${present}&slide=1`, profileDir);
+      const audienceTarget = await findTarget(
+        browser.debugPort,
+        (candidate) => candidate.url.includes('present.html') && !candidate.url.includes('role='),
+        browser.log,
+        30_000,
+      );
+      editor = await Cdp.connect(audienceTarget.webSocketDebuggerUrl!);
+      await eventually(
+        async () => editor!.evaluate<boolean>(`Boolean(document.querySelector('#stage .slide'))`),
+        'the audience window never painted a slide',
+        Boolean,
+        60_000,
+      );
+
+      await editor.evaluate(
+        `Boolean(window.open(${JSON.stringify(`${present}&slide=1&role=speaker`)}, 'speaker'))`,
+      );
+      const speakerTarget = await findTarget(
+        browser.debugPort, (candidate) => candidate.url.includes('role=speaker'), browser.log, 30_000,
+      );
+      speaker = await Cdp.connect(speakerTarget.webSocketDebuggerUrl!);
+      await eventually(
+        async () => speaker!.evaluate<boolean>(
+          `Boolean(document.querySelector('.speaker-current .slide'))`,
+        ),
+        'Speaker View never painted its first preview',
+        Boolean,
+        60_000,
+      );
+
+      await speaker.call('HeapProfiler.collectGarbage');
+      const beforeMemory = (await speaker.call('Runtime.getHeapUsage')) as RuntimeMemory;
+      const beforeDom = (await speaker.call('Memory.getDOMCounters')) as DomCounters;
+
+      /**
+       * One advance, timed inside the Speaker View: from the click that sends
+       * the command to the render that answers it. The audience does the work
+       * in between — command over the bus, player advance, state back — so
+       * this is the whole loop the presenter actually feels.
+       */
+      const follow: number[] = [];
+      const domCheckpoints: number[] = [];
+      for (let step = 0; step < ADVANCES; step += 1) {
+        if (step % 10 === 0) {
+          await speaker.call('HeapProfiler.collectGarbage');
+          domCheckpoints.push(((await speaker.call('Memory.getDOMCounters')) as DomCounters).nodes);
+        }
+        // Arm the stopwatch in the page, advance with a real click on the
+        // speaker control, then collect what that click cost.
+        await speaker.evaluate(`(() => {
+          const position = document.querySelector('.speaker-position');
+          const before = position.textContent;
+          window.__advance = new Promise((resolve) => {
+            let started = null;
+            document.querySelector('.speaker-next-button').addEventListener(
+              'pointerdown', () => { started = performance.now(); }, { once: true });
+            const observer = new MutationObserver(() => {
+              if (position.textContent === before) return;
+              observer.disconnect();
+              resolve(performance.now() - (started ?? performance.now()));
+            });
+            observer.observe(position, { childList: true, characterData: true, subtree: true });
+            setTimeout(() => { observer.disconnect(); resolve(10000); }, 10000);
+          });
+          return true;
+        })()`);
+        await speaker.click('.speaker-next-button', 'speaker next');
+        follow.push(await speaker.evaluate<number>(`window.__advance`));
+      }
+
+      const followed = await speaker.evaluate<string | null>(
+        `document.querySelector('.speaker-position')?.textContent ?? null`,
+      );
+      expect(followed).toBe(`Slide ${ADVANCES + 1} / ${ADVANCES + 20} · Build 1 / 1`);
+      // The audience is where the show actually is; the two must not drift.
+      const audienceSlide = await editor.evaluate<string | null>(
+        `document.querySelector('#stage .role-title')?.textContent ?? null`,
+      );
+      expect(audienceSlide).toBe(`Synthetic media slide ${ADVANCES + 1}`);
+
+      await speaker.call('HeapProfiler.collectGarbage');
+      const afterMemory = (await speaker.call('Runtime.getHeapUsage')) as RuntimeMemory;
+      const afterDom = (await speaker.call('Memory.getDOMCounters')) as DomCounters;
+
+      const followP95Ms = percentile(follow, 0.95);
+      const followMaxMs = Math.max(...follow);
+      const heapGrowthBytes = afterMemory.usedSize - beforeMemory.usedSize;
+      const domNodeGrowth = afterDom.nodes - beforeDom.nodes;
+
+      console.info('[performance:presentation]', JSON.stringify({
+        slides: ADVANCES + 20,
+        advances: ADVANCES,
+        followP95Ms: Math.round(followP95Ms),
+        followMaxMs: Math.round(followMaxMs),
+        speakerHeapGrowthMb: Number((heapGrowthBytes / 1024 / 1024).toFixed(1)),
+        speakerDomNodeGrowth: domNodeGrowth,
+        speakerDomCheckpoints: domCheckpoints,
+      }));
+
+      expect(followP95Ms).toBeLessThan(budget('PERF_SPEAKER_FOLLOW_P95_BUDGET_MS', 600));
+      expect(followMaxMs).toBeLessThan(budget('PERF_SPEAKER_FOLLOW_MAX_BUDGET_MS', 2_000));
+      // Speaker View throws away and rebuilds two stages per advance. Neither
+      // the discarded DOM nor the frozen video stills may accumulate: forty
+      // advances must cost about two live stages, not forty of them. The
+      // checkpoints above are diagnostics for when this trips — a leak shows as
+      // steady climb, a bounded cache as the sawtooth GC leaves behind.
+      //
+      // The budget sits between the two states this has actually been observed
+      // in: ~1300–2300 nodes healthy, ~5300 while every discarded preview was
+      // still pinned by the poster-capture map. It is a narrower margin than
+      // the other gates here because the failure it guards is a slow leak
+      // rather than an order-of-magnitude blow-up.
+      expect(domNodeGrowth).toBeLessThan(budget('PERF_SPEAKER_DOM_GROWTH_BUDGET', 3_500));
+      expect(heapGrowthBytes)
+        .toBeLessThan(budget('PERF_SPEAKER_HEAP_GROWTH_BUDGET_MB', 128) * 1024 * 1024);
+    },
+    360_000,
+  );
 });

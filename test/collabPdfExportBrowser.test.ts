@@ -119,11 +119,16 @@ describe.skipIf(!electronBinary)('collaboration PDF export', () => {
     const menu = await editor.evaluate<string[]>(
       `[...document.querySelectorAll('#toolbar .shape-menu-item')].map((item) => item.textContent)`);
     expect(menu).toContain('PDF…');
-    const pdfIndex = menu.findIndex((label) => label?.trim() === 'PDF…');
-    await editor.click(
-      `#toolbar .shape-menu-item:nth-of-type(${pdfIndex + 1})`,
-      'PDF… menu item',
-    );
+    // Lossy exports sit in a labelled group, so the item is not a positional
+    // child of the menu. Tag it the same way the trigger was tagged.
+    const taggedPdf = await editor.evaluate<boolean>(`(() => {
+      const item = [...document.querySelectorAll('#toolbar .shape-menu-item')]
+        .find((candidate) => candidate.textContent?.trim() === 'PDF…');
+      item?.setAttribute('data-test', 'export-pdf');
+      return Boolean(item);
+    })()`);
+    expect(taggedPdf).toBe(true);
+    await editor.click('#toolbar [data-test="export-pdf"]', 'PDF… menu item');
     await editor.click('.pdf-export-dialog input[type="checkbox"]', 'include-builds checkbox');
 
     // Capture the URL the real export action asks the browser to open. Letting

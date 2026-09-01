@@ -183,13 +183,7 @@ describe.skipIf(!electronBinary || !ffmpeg)('preview surfaces show stills', () =
 
     /* --- present, then come back ----------------------------------------- */
 
-    const clicked = await editor.evaluate<boolean>(`(() => {
-      const button = [...document.querySelectorAll('#toolbar button')]
-        .find((candidate) => candidate.textContent?.trim() === 'Present');
-      button?.click();
-      return Boolean(button);
-    })()`);
-    expect(clicked).toBe(true);
+    await editor!.clickByText('#toolbar button', 'Present', 'Present');
     await eventually(async () => editor!.evaluate<boolean>(`(() => {
       const doc = document.querySelector('iframe')?.contentDocument;
       return Boolean(doc?.querySelector('.slide'));

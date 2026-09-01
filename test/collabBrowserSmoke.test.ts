@@ -181,11 +181,8 @@ describe.skipIf(!electronBinary)('standalone collaboration browser', () => {
 
     // Use the real toolbar to create the object, then finish the same edit
     // through the exposed store just as canvas/inspector controls do.
+    await editor.clickByText('#toolbar button', 'Text', 'Text toolbar button');
     const textId = await editor.evaluate<string>(`(() => {
-      const textButton = [...document.querySelectorAll('#toolbar button')]
-        .find((button) => button.textContent?.trim() === 'Text');
-      if (!textButton) throw new Error('Text toolbar button is missing');
-      textButton.click();
       const id = [...window.store.get().selection][0];
       window.store.updateSelected((element) => {
         if (element.type !== 'text') throw new Error('Text button did not select text');
@@ -241,13 +238,7 @@ describe.skipIf(!electronBinary)('standalone collaboration browser', () => {
       await fetch(`http://127.0.0.1:${server!.port}/api/theme?deck=${DECK_ID}`)
     ).text(), 'theme edit did not reach the server', (css) => css.includes(THEME_MARKER));
 
-    const presentClicked = await editor.evaluate<boolean>(`(() => {
-      const button = [...document.querySelectorAll('#toolbar button')]
-        .find((candidate) => candidate.textContent?.trim() === 'Present');
-      button?.click();
-      return Boolean(button);
-    })()`);
-    expect(presentClicked).toBe(true);
+    await editor!.clickByText('#toolbar button', 'Present', 'Present');
 
     // Presenting mounts the present view in a same-origin iframe over the
     // editor rather than opening a second window: fullscreen is only granted

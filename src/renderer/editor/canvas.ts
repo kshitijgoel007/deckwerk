@@ -349,6 +349,13 @@ export class EditorCanvas {
 
   /** Id of the text element currently being edited in place, if any. */
   private editingId: string | null = null;
+  /**
+   * Ends the live text-editing session, if there is one. Every entry point
+   * into text editing goes through `beginTextEdit`, and several of them (the
+   * context menu's "Edit text", the inspector's, a re-entry after undo) can
+   * fire while a session is already open on the same element.
+   */
+  private finishTextEdit: ((commit: boolean) => void) | null = null;
   /** Distinguishes editing sessions, so undo coalescing never spans two. */
   private textEditSession = 0;
   /** Coalesce key for the session's stream of live commits + the final one. */
@@ -2062,6 +2069,13 @@ export class EditorCanvas {
     elementId: string,
     caretPoint?: { clientX: number; clientY: number },
   ): void {
+    // Re-entering text editing must replace the open session, not stack on it.
+    // Each session installs its own beforeinput/keydown/input listeners on the
+    // contenteditable; a second set makes every keystroke typed inside a
+    // pending Cmd+B/Cmd+I style run insert its character twice ("not" arriving
+    // as "nnoott"), because that path owns the insertion itself.
+    if (this.editingId) this.finishTextEdit?.(true);
+
     const slide = this.store.slide;
     const el = slide?.elements.find((e) => e.id === elementId);
     if (!el || (el.type !== 'text' && el.type !== 'html')) return;
@@ -2347,6 +2361,7 @@ export class EditorCanvas {
     };
 
     const finish = (commit: boolean) => {
+      if (this.finishTextEdit === finish) this.finishTextEdit = null;
       body.removeEventListener('blur', onBlur);
       body.removeEventListener('keydown', onKey);
       body.removeEventListener('beforeinput', onBeforeInput);
@@ -2481,9 +2496,20 @@ export class EditorCanvas {
       // narrow case so pending Cmd+B/Cmd+I state has identical semantics for
       // physical typing, automation, and collaboration clients.
       event.preventDefault();
-      const inserted = document.createTextNode(event.data);
-      range.insertNode(inserted);
-      range.setStartAfter(inserted);
+      // Extend the text node the caret is already in rather than inserting a
+      // new one. A person types one character per event, so a fresh node per
+      // keystroke would shred a typed word into one text node per letter —
+      // the same word inserted in one go stays a single run.
+      if (range.startContainer instanceof Text) {
+        const host = range.startContainer;
+        const offset = range.startOffset;
+        host.insertData(offset, event.data);
+        range.setStart(host, offset + event.data.length);
+      } else {
+        const inserted = document.createTextNode(event.data);
+        range.insertNode(inserted);
+        range.setStartAfter(inserted);
+      }
       range.collapse(true);
       const selection = window.getSelection();
       selection?.removeAllRanges();
@@ -2567,6 +2593,7 @@ export class EditorCanvas {
     };
     body.addEventListener('blur', onBlur);
     body.addEventListener('keydown', onKey);
+    this.finishTextEdit = finish;
     body.addEventListener('beforeinput', onBeforeInput);
     body.addEventListener('input', onInput);
     body.addEventListener('paste', onPaste);
