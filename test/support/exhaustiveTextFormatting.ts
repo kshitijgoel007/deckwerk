@@ -121,8 +121,14 @@ async function setToggle(
   const selector = `${PANEL} button[aria-label="${label}"]`;
   const format = label.startsWith('Italic')
     ? 'italic' : label.startsWith('Underline') ? 'underline' : 'bold';
-  const formatActive = (state: Awaited<ReturnType<typeof selectedInlineState>>) => format === 'bold'
-    ? state.weight >= 600 : format === 'italic' ? state.italic : state.underline;
+  // 'mixed' means the format holds on part of the range only — never a
+  // satisfied toggle in either direction.
+  const formatActive = (state: SelectedRangeState): boolean | 'mixed' => {
+    const value = format === 'bold' ? state.weight
+      : format === 'italic' ? state.italic : state.underline;
+    if (value === 'mixed') return 'mixed';
+    return format === 'bold' ? (value as number) >= 600 : value === true;
+  };
   let current = await selectedInlineState(editor);
   let currentActive = formatActive(current);
   if (currentActive === active) return;
@@ -159,7 +165,12 @@ async function setToggle(
     after = await selectedInlineState(editor);
     afterActive = formatActive(after);
   }
-  expect(afterActive, `${label}: toggle did not reach requested state; ${after.html}`).toBe(active);
+  expect(
+    afterActive,
+    afterActive === 'mixed'
+      ? `${label}: format is not uniform across the selected range (applied to only part of it); ${after.html}`
+      : `${label}: toggle did not reach requested state; ${after.html}`,
+  ).toBe(active);
 }
 
 async function typeNumber(editor: Cdp, label: string, value: number): Promise<void> {
@@ -202,24 +213,107 @@ function weightValue(mode: WeightMode): number {
   return mode === 'numeric-350' ? 350 : 850;
 }
 
-function selectedInlineState(editor: Cdp): Promise<{
-  weight: number;
-  italic: boolean;
-  underline: boolean;
+/** A format value that was not uniform across the whole selected range. */
+type Sampled<T> = T | 'mixed';
+
+type SelectedRangeState = {
+  weight: Sampled<number>;
+  italic: Sampled<boolean>;
+  underline: Sampled<boolean>;
+  size: Sampled<number>;
+  family: Sampled<string>;
+  alignment: Sampled<string>;
+  list: Sampled<string>;
   html: string;
-}> {
-  return editor.evaluate(`(() => {
-    const range = getSelection()?.rangeCount ? getSelection().getRangeAt(0) : null;
-    const parent = range?.startContainer instanceof Text
-      ? range.startContainer.parentElement : range?.startContainer;
-    const style = parent instanceof Element ? getComputedStyle(parent) : null;
+};
+
+/**
+ * In-page sampler for the computed format state of the WHOLE selected range.
+ *
+ * Reading only the selection's start container let a format applied to half
+ * the range pass: every text node the range touches is sampled, and a field
+ * is reported as its value only when it is uniform across all of them —
+ * otherwise as the 'mixed' marker, which no toggle assertion accepts.
+ * Underline is resolved through the ancestor chain because
+ * `text-decoration-line` does not inherit into computed style, while its
+ * rendered effect propagates.
+ */
+const SELECTED_RANGE_STATE_JS = `(() => {
+  const content = document.querySelector(${JSON.stringify(EXHAUSTIVE_CONTENT)});
+  const html = content?.innerHTML ?? '';
+  const selection = getSelection();
+  const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
+  const parents = [];
+  if (range && range.collapsed) {
+    const parent = range.startContainer instanceof Text
+      ? range.startContainer.parentElement : range.startContainer;
+    if (parent instanceof Element) parents.push(parent);
+  } else if (range) {
+    const root = range.commonAncestorContainer;
+    const walkRoot = root.nodeType === Node.TEXT_NODE ? root.parentNode : root;
+    const walker = document.createTreeWalker(walkRoot, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      if (!range.intersectsNode(node)) continue;
+      const start = node === range.startContainer ? range.startOffset : 0;
+      const end = node === range.endContainer ? range.endOffset : node.data.length;
+      if (end <= start) continue;
+      // A slice holding only the invisible typing sentinel carries no
+      // author-visible formatting to enforce.
+      if (!node.data.slice(start, end).replaceAll('\\u2060', '')) continue;
+      if (node.parentElement) parents.push(node.parentElement);
+    }
+  }
+  if (!parents.length) {
+    // The shape a missing selection produced before whole-range sampling:
+    // "no format read" rather than 'mixed', so transient lost selections
+    // keep flowing into the same recovery paths.
     return {
-      weight: Number.parseInt(style?.fontWeight ?? '', 10),
-      italic: style?.fontStyle === 'italic',
-      underline: style?.textDecorationLine.includes('underline') === true,
-      html: document.querySelector(${JSON.stringify(EXHAUSTIVE_CONTENT)})?.innerHTML ?? '',
+      weight: Number.parseInt('', 10),
+      italic: false,
+      underline: false,
+      size: Number.parseFloat(''),
+      family: '',
+      alignment: '',
+      list: 'None',
+      html,
     };
-  })()`);
+  }
+  const underlineOf = (element) => {
+    for (let node = element; node instanceof Element; node = node.parentElement) {
+      if (getComputedStyle(node).textDecorationLine.includes('underline')) return true;
+      if (node === content) break;
+    }
+    return false;
+  };
+  const samples = parents.map((parent) => {
+    const style = getComputedStyle(parent);
+    const block = parent.closest('p, li');
+    return {
+      weight: Number.parseInt(style.fontWeight, 10),
+      italic: style.fontStyle === 'italic',
+      underline: underlineOf(parent),
+      size: Number.parseFloat(style.fontSize),
+      family: style.fontFamily,
+      alignment: block instanceof HTMLElement ? getComputedStyle(block).textAlign : '',
+      list: block?.closest('ol') ? 'Numbered' : block?.closest('ul') ? 'Bulleted' : 'None',
+    };
+  });
+  const uniform = (key) => samples.every((sample) => Object.is(sample[key], samples[0][key]))
+    ? samples[0][key] : 'mixed';
+  return {
+    weight: uniform('weight'),
+    italic: uniform('italic'),
+    underline: uniform('underline'),
+    size: uniform('size'),
+    family: uniform('family'),
+    alignment: uniform('alignment'),
+    list: uniform('list'),
+    html,
+  };
+})()`;
+
+function selectedInlineState(editor: Cdp): Promise<SelectedRangeState> {
+  return editor.evaluate(SELECTED_RANGE_STATE_JS);
 }
 
 async function selectExactRange(
@@ -360,7 +454,8 @@ export async function runExhaustiveTextFormatting(editor: Cdp): Promise<number> 
         .toBe(state.underline);
       await typeNumber(editor, 'Font size', state.size);
       const postSize = await selectedInlineState(editor);
-      expect(postSize.weight >= 600,
+      const postBold = postSize.weight === 'mixed' ? 'mixed' : postSize.weight >= 600;
+      expect(postBold,
         `${label}: font size restored bold; before=${preSize.html}; after=${postSize.html}`)
         .toBe(expectedWeight >= 600);
       expect(postSize.italic, `${label}: font size restored italic; ${postSize.html}`)
@@ -378,40 +473,21 @@ export async function runExhaustiveTextFormatting(editor: Cdp): Promise<number> 
       await recoverSelection();
     }
 
+    // Whole-range sampling: every asserted format field is the value only if
+    // it is uniform across every text node the selection touches, and the
+    // 'mixed' marker otherwise \u2014 a format applied to half the range fails.
     const observed = await editor.evaluate<{
       text: string;
       selected: string;
-      weight: number;
-      italic: boolean;
-      underline: boolean;
-      size: number;
-      family: string;
-      alignment: string;
-      list: string;
       nested: boolean;
-      html: string;
-    }>(`(() => {
+    } & SelectedRangeState>(`(() => {
       const root = document.querySelector(${JSON.stringify(EXHAUSTIVE_CONTENT)});
       const selection = getSelection();
-      const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
-      const node = range?.startContainer?.nodeType === Node.TEXT_NODE
-        ? range.startContainer : range?.startContainer?.firstChild;
-      const parent = node?.parentElement ?? range?.startContainer;
-      const style = parent instanceof Element ? getComputedStyle(parent) : null;
-      const block = parent instanceof Element ? parent.closest('p, li') : null;
-      const list = block?.closest('ol') ? 'Numbered' : block?.closest('ul') ? 'Bulleted' : 'None';
       return {
+        ...${SELECTED_RANGE_STATE_JS},
         text: root?.textContent?.replaceAll('\u2060', '') ?? '',
         selected: selection?.toString() ?? '',
-        weight: Number.parseInt(style?.fontWeight ?? '', 10),
-        italic: style?.fontStyle === 'italic',
-        underline: style?.textDecorationLine.includes('underline') === true,
-        size: Number.parseFloat(style?.fontSize ?? ''),
-        family: style?.fontFamily ?? '',
-        alignment: block instanceof HTMLElement ? getComputedStyle(block).textAlign : '',
-        list,
         nested: Boolean(root?.querySelector('ol ol, ol ul, ul ol, ul ul')),
-        html: root?.innerHTML ?? '',
       };
     })()`);
     expect(observed.text, `${label}: visible/source text`).toBe(EXHAUSTIVE_TEXT);

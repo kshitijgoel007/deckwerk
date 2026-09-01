@@ -95,14 +95,46 @@ describe.skipIf(!electronBinary)('undo steps through text edits', () => {
       // The undo lands on the collaboration server, then echoes back.
       await wait(150);
     };
+    const committedHtml = async () => {
+      const response = await fetch(`http://127.0.0.1:${server!.port}/api/deck?deck=${DECK_ID}`);
+      const live = await response.json() as Deck;
+      const element = live.slides[0].elements.find((candidate) => candidate.id === TEXT_ID);
+      return element && element.type === 'text' ? element.html : '';
+    };
+    // Chromium's own parse/serialize round trip, so equality is about markup
+    // (structure, styles, entity encoding), never accidental string identity.
+    const normalizeHtml = async (html: string) => editor!.evaluate<string>(`(() => {
+      const template = document.createElement('template');
+      template.innerHTML = ${JSON.stringify(html)};
+      return template.innerHTML;
+    })()`);
+    const strippedText = (html: string) => html
+      .replace(/<[^>]+>/g, '')
+      .replaceAll('&nbsp;', ' ')
+      .replaceAll(' ', ' ')
+      .replaceAll('⁠', '');
     const expectText = async (expected: string, label: string) => {
       await eventually(text, `${label}: text on screen`, (value) => value === expected);
-      await eventually(async () => {
-        const response = await fetch(`http://127.0.0.1:${server!.port}/api/deck?deck=${DECK_ID}`);
-        const live = await response.json() as Deck;
-        const element = live.slides[0].elements.find((candidate) => candidate.id === TEXT_ID);
-        return element && element.type === 'text' ? element.html.replace(/<[^>]+>/g, '') : '';
-      }, `${label}: text on the server`, (value) => value === expected);
+      await eventually(committedHtml, `${label}: text on the server`,
+        (value) => strippedText(value) === expected);
+    };
+    /**
+     * The committed markup of the step boundary the next undo must return to,
+     * read from the collaboration server once it holds `expected`. Each run
+     * seals exactly here (a word boundary or a pause), so the html captured
+     * now is the whole element an undo of the following step must restore.
+     */
+    const captureCommitted = async (expected: string, label: string) => {
+      return eventually(committedHtml, `${label}: committed markup never settled`,
+        (value) => strippedText(value) === expected);
+    };
+    /* Undo must bring back the exact markup that was committed before the
+       step — not merely the same tag-stripped text. */
+    const expectRestoredMarkup = async (expectedHtml: string, label: string) => {
+      const want = await normalizeHtml(expectedHtml);
+      await eventually(async () => normalizeHtml(await committedHtml()),
+        `${label}: undo did not restore the exact committed markup`,
+        (value) => value === want);
     };
 
     await editor.doubleClickText(CONTENT, 'text box');
@@ -110,28 +142,46 @@ describe.skipIf(!electronBinary)('undo steps through text edits', () => {
       `document.querySelector('${CONTENT}')?.isContentEditable === true`), 'no editing');
     await editor.key('End', 35);
 
-    /* Three words typed as one run: three undo steps, in reverse order. */
-    await editor.typeKeys(' alpha beta gamma');
+    /* Three words typed as one run: three undo steps, in reverse order.
+       A run seals at each word boundary the moment the space lands, so the
+       committed markup of every step boundary is captured as it is created —
+       the reads between keystrokes add no input and no idle pause long
+       enough to seal anything (and an idle seal over unchanged html adds no
+       step anyway), so the run granularity is exactly the omnibus's. */
+    const htmlStart = await captureCommitted(START, 'before typing');
+    await editor.typeKeys(' ');
+    const htmlSpace = await captureCommitted(`${START} `, 'after the leading space');
+    await editor.typeKeys('alpha ');
+    const htmlAlpha = await captureCommitted(`${START} alpha `, 'after the first word');
+    await editor.typeKeys('beta ');
+    const htmlBeta = await captureCommitted(`${START} alpha beta `, 'after the second word');
+    await editor.typeKeys('gamma');
     await expectText(`${START} alpha beta gamma`, 'after typing three words');
     await undo();
     await expectText(`${START} alpha beta `, 'first undo takes back the last word');
+    await expectRestoredMarkup(htmlBeta, 'first undo');
     await undo();
     await expectText(`${START} alpha `, 'second undo takes back the word before it');
+    await expectRestoredMarkup(htmlAlpha, 'second undo');
     await undo();
     await expectText(`${START} `, 'third undo takes back the first word');
+    await expectRestoredMarkup(htmlSpace, 'third undo');
     await undo();
     await expectText(START, 'the fourth undo reaches the text it started from');
+    await expectRestoredMarkup(htmlStart, 'fourth undo');
 
     /* A pause ends a run even without a word boundary. */
     await editor.click(CONTENT, 'back into the text');
     await editor.key('End', 35);
     await editor.typeKeys('one');
     await wait(900);
+    const htmlOne = await captureCommitted(`${START}one`, 'after the pause sealed the run');
     await editor.typeKeys('two');
     await wait(400);
     await expectText(`${START}onetwo`, 'after typing either side of a pause');
     await undo();
     await expectText(`${START}one`, 'undo takes back only what was typed after the pause');
+    await expectRestoredMarkup(htmlOne, 'undo across the pause boundary');
 
     /*
      * The History panel collapses that run of per-word entries into one row,
@@ -171,6 +221,7 @@ describe.skipIf(!electronBinary)('undo steps through text edits', () => {
     await editor.key('End', 35);
 
     /* Formatting is its own step and never swallows the typing before it. */
+    const htmlBeforeBold = await captureCommitted(`${START}one`, 'before the bold step');
     await editor.dragSelectFirstWord(CONTENT, 'first word');
     await editor.click(`${PANEL} button[aria-label="Bold (Cmd/Ctrl+B)"]`, 'Bold');
     await eventually(async () => editor!.evaluate<string>(
@@ -179,7 +230,8 @@ describe.skipIf(!electronBinary)('undo steps through text edits', () => {
     await undo();
     await eventually(async () => editor!.evaluate<string>(
       `document.querySelector('${CONTENT}')?.innerHTML ?? ''`),
-      'undo did not take back the bold', (html) => !/font-weight/.test(html));
+      'undo did not take back the bold on screen', (html) => !/font-weight/.test(html));
+    await expectRestoredMarkup(htmlBeforeBold, 'undoing the format');
     await expectText(`${START}one`, 'undoing the format kept the words');
   });
 });

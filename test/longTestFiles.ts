@@ -11,11 +11,6 @@ export const LONG_TESTS = [
     scope: 'Rendered export fidelity across representative slides',
   },
   {
-    file: 'test/collabFormattingUndoBrowser.test.ts',
-    observedSeconds: 28,
-    scope: 'Large browser formatting and undo omnibus, including real per-keystroke typing around every inline format change',
-  },
-  {
     file: 'test/selectionFocusFuzzBrowser.test.ts',
     observedSeconds: 89,
     scope: 'Every entry and exit of a text or table edit, plus a seeded random walk, checking the selection/focus invariants after each real input',

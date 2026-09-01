@@ -104,8 +104,10 @@ describe.skipIf(!electronBinary || !ffmpeg)('presenting the deck', () => {
     await mkdir(profileDir, { recursive: true });
 
     // An audio-less clip: the shape Chromium suspends as background media.
+    // demo-deck's copy is the tracked fixture (byte-identical to the
+    // agent-reference one, which stays local-only).
     await copyFile(
-      join(process.cwd(), 'decks/agent-reference/assets/testclip.mp4'),
+      join(process.cwd(), 'decks/demo-deck/assets/testclip.mp4'),
       join(workDir, 'source.mp4'),
     );
     await execFileAsync(ffmpeg, [
