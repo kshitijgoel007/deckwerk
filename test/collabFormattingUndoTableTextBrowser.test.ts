@@ -166,8 +166,8 @@ describe.skipIf(!electronBinary)('table text formatting and borders in the colla
       await session.buttonId('No borders', 'test-no-borders-again'),
       'clear borders before drawing',
     );
-    await editor.click(
     console.log('DBG-SECTION border-draw');
+    await editor.click(
       await session.buttonId('Draw borders', 'test-draw-borders'),
       'enable border drawing',
     );
