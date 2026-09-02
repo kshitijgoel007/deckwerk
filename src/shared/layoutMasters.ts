@@ -77,10 +77,17 @@ function copyPlaceholderPresentation(target: TextEl, source: TextEl): void {
   target.noWrap = source.noWrap;
   target.noWrapMode = source.noWrapMode;
   target.paragraphSpacing = source.paragraphSpacing;
+  // `placeholder` means "prompt copy the author has not replaced", and the
+  // player, exports and rail thumbnails all hide such text (type.css). The
+  // first real content commit retires it (see canvas.ts), so a master update
+  // must never put it back: doing so blanked every authored title and body on
+  // every slide the moment a layout was edited -- visibly, in the slide
+  // picker, and on the projector.
+  const stillPrompting = target.class.includes('placeholder');
   target.class = [
-    ...source.class.filter((name) => name !== 'layout-master-element'),
+    ...source.class.filter((name) => name !== 'layout-master-element' && name !== 'placeholder'),
     roleClass(source.layoutPlaceholder ?? target.layoutPlaceholder ?? 'body'),
-    'placeholder',
+    ...(stillPrompting ? ['placeholder'] : []),
   ].filter((name, index, names) => names.indexOf(name) === index);
   target.layoutPlaceholder = source.layoutPlaceholder;
 }
@@ -112,6 +119,9 @@ export function syncSlideWithLayoutMaster(
   options: { forceBackground?: boolean } = {},
 ): void {
   slide.layout = layout;
+  const retiredCopies = new Set(slide.elements
+    .filter((element) => element.layoutMasterId)
+    .map((element) => element.id));
   slide.elements = slide.elements.filter((element) => !element.layoutMasterId);
 
   for (const source of master.elements) {
@@ -130,6 +140,18 @@ export function syncSlideWithLayoutMaster(
     element.type !== 'text' || !element.layoutPlaceholder
   ));
   slide.elements.unshift(...decorations.map((element, index) => decorationCopy(slide.id, element, index)));
+
+  // A decoration the author removed from the master takes its per-slide copies
+  // with it, so any build step aimed at one of them must go the same way --
+  // every other deletion path prunes the timeline, and a step whose target no
+  // longer exists is a click that does nothing during the talk.
+  for (const element of slide.elements) retiredCopies.delete(element.id);
+  if (retiredCopies.size > 0) {
+    slide.timeline = slide.timeline.filter((entry) => (
+      !retiredCopies.has(entry.action.target)
+      && !(entry.trigger.ref && retiredCopies.has(entry.trigger.ref))
+    ));
+  }
 
   const inheritedAlready = slide.layoutBackgroundInherited === true;
   const hasNoExplicitBackground = slide.background.color === null && slide.background.image === null;

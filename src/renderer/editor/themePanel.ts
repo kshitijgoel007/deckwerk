@@ -4,6 +4,9 @@ import {
   type ThemeAdoption,
   type ThemePreset,
   adoptThemeStyles,
+  deckTheme,
+  fullThemeSelection,
+  presetFromStyle,
   themeById,
   themeStyleOf,
   themeStyleCss,
@@ -42,6 +45,11 @@ function stackAvailable(stack: string): boolean {
     }
   }
   return false;
+}
+
+/** The preset the deck is wearing: what was chosen, else what is installed. */
+function chosenPresetId(deck: Deck): string | null {
+  return deck.themeSelection?.preset ?? deck.themePreset;
 }
 
 /** Themes whose display and body voices this machine can actually show. */
@@ -93,9 +101,13 @@ export function createThemePanel(deps: ThemePanelDeps): ThemePanel {
 
   const themeAdoption: ThemeAdoption = {
     scope: 'slides',
-    roles: ['title', 'body', 'caption'],
+    roles: ['title', 'heading', 'body', 'caption'],
     fontFamily: true,
-    fontWeight: false,
+    // A family and the weight it is set in are one decision. With this off by
+    // default, switching a deck from a bold grotesk to Colloquium's condensed
+    // medium left every title at 700: the new face, the old weight, and a
+    // theme card that no longer described the slides it had just restyled.
+    fontWeight: true,
     typeScale: false,
     textColor: false,
     background: false,
@@ -118,9 +130,9 @@ export function createThemePanel(deps: ThemePanelDeps): ThemePanel {
 
   function currentTheme(): ThemePreset | null {
     const deck = store.get().deck;
-    const preset = themeById(selectedThemeId) ?? themeById(deck.themePreset);
-    if (!preset) return null;
-    if (selectedThemeId === deck.themePreset && deck.themeStyle) {
+    const preset = themeById(selectedThemeId);
+    if (!preset) return deckTheme(deck);
+    if (preset.id === deck.themePreset && deck.themeStyle) {
       return presetFromStyle(deck.themeStyle, preset);
     }
     return preset;
@@ -165,6 +177,25 @@ export function createThemePanel(deps: ThemePanelDeps): ThemePanel {
     const css = withThemeBlock(cssEditor.getValue(), themeStyleCss(style, label));
     cssEditor.setValue(css);
     deps.saveThemeCss(css);
+  }
+
+  /**
+   * Record the chosen theme as the deck's current one.
+   *
+   * Existing slides are left exactly as they are — restyling them is what the
+   * Apply control above is for — but slides created from here on are born
+   * wearing this theme, so the choice has to outlive the panel and the session.
+   */
+  function chooseTheme(theme: ThemePreset): void {
+    if (store.get().deck.themeSelection?.preset === theme.id) return;
+    store.commit((deck) => {
+      deck.themeSelection = fullThemeSelection(theme.id);
+    }, { label: `Choose ${theme.name}` });
+    void save();
+    setStatusMessage(
+      `New slides will use “${theme.name}”. Existing slides keep their current `
+      + 'styling — use “Apply theme…” above to restyle them.',
+    );
   }
 
   /** The swatch row shown in every colour picker, fed by the installed theme. */
@@ -212,10 +243,11 @@ export function createThemePanel(deps: ThemePanelDeps): ThemePanel {
     const wrap = document.createElement('div');
     wrap.className = 'theme-browser';
 
-    const preset = store.get().deck.themePreset;
+    const preset = chosenPresetId(store.get().deck);
     themeGallery = createThemeGallery(availableThemes(preset), preset, (theme) => {
       selectedThemeId = theme.id;
       if (chooser) chooser.hidden = true;
+      chooseTheme(theme);
       notifyThemePreview();
     });
     selectedThemeId = themeGallery.selectedId();
@@ -272,7 +304,7 @@ export function createThemePanel(deps: ThemePanelDeps): ThemePanel {
     const roleTitle = document.createElement('div');
     roleTitle.className = 'theme-option-title';
     roleTitle.textContent = 'Text roles';
-    const roleBoxes = (['title', 'body', 'caption'] as const).map((role) => {
+    const roleBoxes = (['title', 'heading', 'body', 'caption'] as const).map((role) => {
       const box = optionBox(role[0].toUpperCase() + role.slice(1), themeAdoption.roles.includes(role));
       box.input.addEventListener('change', () => {
         themeAdoption.roles = box.input.checked
@@ -460,23 +492,14 @@ export function createThemePanel(deps: ThemePanelDeps): ThemePanel {
       return wasOpen;
     },
     noteDeckOpened: (deck) => {
-      themeGallery?.setSelected(deck.themePreset);
+      // The chosen theme decides which card is selected; only an installed one
+      // wears the "Current" badge, and a deck can have the first without the second.
+      themeGallery?.setSelected(chosenPresetId(deck));
       themeGallery?.setInstalled(deck.themePreset);
-      selectedThemeId = themeGallery?.selectedId() ?? deck.themePreset;
+      selectedThemeId = chosenPresetId(deck) ?? themeGallery?.selectedId() ?? null;
       refreshSwatches();
       renderActiveTheme();
       renderLayoutPreview();
     },
-  };
-}
-
-function presetFromStyle(style: ThemeStyle, base: ThemePreset): ThemePreset {
-  return {
-    id: base.id,
-    name: `${base.name} · Modified`,
-    description: base.description,
-    fonts: structuredClone(style.fonts),
-    palette: [...style.palette],
-    colors: structuredClone(style.colors),
   };
 }

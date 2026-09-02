@@ -117,6 +117,41 @@ export async function transcodeToH264(
   });
 }
 
+/**
+ * Write raw RGBA pixels out as a PNG.
+ *
+ * Node has no image encoder and the main process has no canvas, so the one
+ * encoder already bundled does the work. Used by the HEIC importer, whose
+ * wasm decoder hands back nothing but a pixel buffer.
+ */
+export async function encodeRgbaToPng(
+  pixels: Buffer,
+  width: number,
+  height: number,
+  output: string,
+): Promise<void> {
+  await new Promise<void>((resolvePromise, reject) => {
+    const child = spawn(getFfmpegPath(), [
+      '-hide_banner', '-loglevel', 'error', '-y',
+      '-f', 'rawvideo', '-pix_fmt', 'rgba', '-s', `${width}x${height}`, '-i', 'pipe:0',
+      // Without these the image2 muxer treats the output as a numbered
+      // sequence and warns on every single-frame write.
+      '-frames:v', '1', '-update', '1',
+      output,
+    ]);
+    let stderr = '';
+    child.stderr.on('data', (d) => (stderr = (stderr + d).slice(-2000)));
+    child.on('error', reject);
+    child.on('close', (code) =>
+      code === 0 ? resolvePromise() : reject(new Error(`png encode failed: ${stderr}`)),
+    );
+    // A large photo is tens of megabytes of RGBA; let the stream drain rather
+    // than blocking, and ignore EPIPE if ffmpeg died first (handled above).
+    child.stdin.on('error', () => {});
+    child.stdin.end(pixels);
+  });
+}
+
 /** Natural dimensions and duration, or nulls if the file can't be probed. */
 export async function probeMedia(absolutePath: string): Promise<MediaInfo> {
   try {

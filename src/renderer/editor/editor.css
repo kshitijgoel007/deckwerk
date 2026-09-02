@@ -507,6 +507,72 @@ body.panel-resizing iframe { pointer-events: none; }
 .guide-x { top: 0; width: calc(1px * var(--inv)); }
 .guide-y { left: 0; height: calc(1px * var(--inv)); }
 
+/* Spacing and size measurements: a hairline with end caps and a pill label.
+   Every thickness is counter-scaled by --inv so the bar stays hairline-thin
+   and the label stays readable however far the canvas is zoomed. */
+.measure {
+  position: absolute;
+  pointer-events: none;
+  --measure-color: #ff2d55;
+  --cap: calc(4px * var(--inv));
+}
+
+.measure-size { --measure-color: #0a84ff; }
+
+.measure-x {
+  height: calc(1px * var(--inv));
+  background: var(--measure-color);
+  transform: translateY(-50%);
+}
+
+.measure-y {
+  width: calc(1px * var(--inv));
+  background: var(--measure-color);
+  transform: translateX(-50%);
+}
+
+/* End caps: a short tick across each end of the bar. */
+.measure::before,
+.measure::after {
+  content: '';
+  position: absolute;
+  background: var(--measure-color);
+}
+
+.measure-x::before,
+.measure-x::after {
+  top: calc(var(--cap) * -1);
+  width: calc(1px * var(--inv));
+  height: calc(var(--cap) * 2 + 1px * var(--inv));
+}
+
+.measure-x::before { left: 0; }
+.measure-x::after { right: 0; }
+
+.measure-y::before,
+.measure-y::after {
+  left: calc(var(--cap) * -1);
+  height: calc(1px * var(--inv));
+  width: calc(var(--cap) * 2 + 1px * var(--inv));
+}
+
+.measure-y::before { top: 0; }
+.measure-y::after { bottom: 0; }
+
+.measure-label {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%) scale(var(--inv));
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: var(--measure-color);
+  color: #fff;
+  font: 10px/1.2 var(--mono, ui-monospace, monospace);
+  white-space: nowrap;
+}
+
+
 .marquee {
   position: absolute;
   border: 1px solid var(--accent);
@@ -1771,6 +1837,8 @@ input[type="range"] { accent-color: var(--accent); border: 0; background: transp
 .sel-box.masking { outline-color: var(--green); }
 .sel-box.masking .handle { border-color: var(--green); }
 .guide { background: var(--danger); }
+.measure { --measure-color: var(--danger); }
+.measure-size { --measure-color: var(--accent); }
 .marquee { border-color: var(--accent); background: var(--accent-soft); }
 
 /* Timeline + status. */

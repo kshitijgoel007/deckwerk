@@ -1,11 +1,12 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { copyFile, cp, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { copyFile, cp, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { basename, extname, join, resolve, sep } from 'node:path';
 import { type Deck, emptyDeck, parseDeck } from '@shared/deck.js';
 import type { ImportedAsset } from '@shared/ipc.js';
-import { classifyMediaName } from '@shared/media.js';
+import { classifyMediaName, CONVERTED_IMAGE_EXTS } from '@shared/media.js';
 import { isWebSafeCodec, probeMedia, transcodeToH264, videoCodec } from './ffmpeg.js';
+import { convertHeicToPng } from './heic.js';
 
 /**
  * Reading and writing deck folders.
@@ -76,33 +77,94 @@ const DEFAULT_THEME = `/* Fonts, sizes and colours live here. The editor never r
 }
 `;
 
+/**
+ * Read a deck folder, naming the folder in every failure.
+ *
+ * Open surfaces this message verbatim in the status bar, so "no deck.json in
+ * /Users/.../Downloads" has to be distinguishable from a deck that is present
+ * but damaged: the first is the wrong folder, the second is a real problem
+ * with the right one.
+ */
 export async function loadDeck(dir: string): Promise<Deck> {
-  const raw = await readFile(join(dir, DECK_FILE), 'utf8');
-  return parseDeck(JSON.parse(raw));
+  const path = join(dir, DECK_FILE);
+  let raw: string;
+  try {
+    raw = await readFile(path, 'utf8');
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') throw new Error(`No ${DECK_FILE} in ${dir}`);
+    if (code === 'EISDIR') throw new Error(`${path} is a folder, not a deck file`);
+    throw new Error(`Could not read ${path}: ${(error as Error).message}`);
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    throw new Error(`${path} is not valid JSON: ${(error as Error).message}`);
+  }
+  try {
+    return parseDeck(parsed);
+  } catch (error) {
+    // parseDeck reports the offending fields but knows nothing of the folder.
+    throw new Error(`${path} is not a valid deck.\n${(error as Error).message}`);
+  }
 }
 
 /**
- * Write `deck.json`. Stable 2-space JSON with a trailing newline, so a deck
- * diffs cleanly in git and a load/save round-trip of an untouched deck is a
- * no-op.
+ * The exact bytes `saveDeck` writes for a deck: stable 2-space JSON with a
+ * trailing newline, so a deck diffs cleanly in git and a load/save round-trip
+ * of an untouched deck is a no-op. Watchers compare against this to tell a
+ * write of identical content from a real change.
  */
+export function serializeDeck(deck: Deck): string {
+  return `${JSON.stringify(parseDeck(deck), null, 2)}\n`;
+}
+
+/** Write `deck.json`, atomically. */
 export async function saveDeck(dir: string, deck: Deck): Promise<string> {
-  const validated = parseDeck(deck);
   await mkdir(dir, { recursive: true });
-  const json = `${JSON.stringify(validated, null, 2)}\n`;
-  await writeFile(join(dir, DECK_FILE), json, 'utf8');
+  const json = serializeDeck(deck);
+  const target = join(dir, DECK_FILE);
+  // Write beside the deck, then rename over it. A truncated deck.json is the
+  // one unrecoverable failure this app has — the presentation is the only
+  // copy — and a plain write leaves exactly that behind if the disk fills or
+  // the process dies mid-save. Rename within the folder is atomic, so a reader
+  // sees either the previous deck or the new one, never half of either.
+  const temporary = join(dir, `.${DECK_FILE}.${randomUUID()}.tmp`);
+  try {
+    await writeFile(temporary, json, 'utf8');
+    await rename(temporary, target);
+  } catch (error) {
+    await rm(temporary, { force: true }).catch(() => {});
+    throw error;
+  }
   // Returned so the caller can recognise the watcher echo of this very write.
   return json;
 }
 
+/**
+ * Create a new deck folder.
+ *
+ * Refuses a folder that already holds a deck. The New save panel hands back
+ * whatever name is in its field, including that of an existing presentation,
+ * and its own "replace?" prompt is about replacing a *file* — agreeing to it
+ * must not silently blank a real deck's slides. `copyDeck` guards Save As the
+ * same way. An existing `theme.css` is likewise never overwritten: that file
+ * is hand-authored and the editor's standing promise is that it never rewrites
+ * it.
+ */
 export async function createDeck(dir: string, title?: string): Promise<Deck> {
+  if (existsSync(join(dir, DECK_FILE))) {
+    throw new Error(`${dir} already contains a presentation`);
+  }
   await Promise.all([
     mkdir(join(dir, ASSETS_DIR), { recursive: true }),
     mkdir(join(dir, 'edit'), { recursive: true }),
   ]);
   const deck = emptyDeck(title ?? basename(dir));
   await saveDeck(dir, deck);
-  await writeFile(join(dir, deck.theme), DEFAULT_THEME, 'utf8');
+  const themePath = join(dir, deck.theme);
+  if (!existsSync(themePath)) await writeFile(themePath, DEFAULT_THEME, 'utf8');
   return deck;
 }
 
@@ -165,10 +227,22 @@ export async function importAsset(
 
   if (!existsSync(dest)) await copyFile(sourcePath, dest);
 
-  // Screen recordings are routinely HEVC, which Chromium cannot decode: the
-  // element imports but renders as nothing. Transcode on the way in, exactly
-  // as the Keynote importer does.
+  // Formats Chromium cannot decode import fine and then render as nothing.
+  // Both branches below re-encode on the way in, exactly as the Keynote
+  // importer does, and leave the original in place as the hashed source.
   let finalName = name;
+
+  // iPhone photos: HEIC out to PNG. Decoding is not free, and there is no
+  // duration to measure it against, so the placeholder just spins.
+  if (kind === 'image' && CONVERTED_IMAGE_EXTS.has(ext)) {
+    const converted = `${stem}.${hash}.png`;
+    const convertedPath = join(assetsDir, converted);
+    onProgress?.(null);
+    if (!existsSync(convertedPath)) await convertHeicToPng(dest, convertedPath);
+    finalName = converted;
+  }
+
+  // Screen recordings are routinely HEVC.
   if (kind === 'video') {
     const codec = await videoCodec(dest);
     if (!isWebSafeCodec(codec)) {

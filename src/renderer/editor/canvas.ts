@@ -29,6 +29,7 @@ import {
   pastedTableData,
   LIST_MARKER_COLOR_ATTRIBUTE,
   LIST_MARKER_COLOR_PROPERTY,
+  TYPING_STYLE_SENTINEL,
   type ListMarkerColorState,
 } from '@shared/paragraphs.js';
 import {
@@ -41,6 +42,12 @@ import {
   unbulletListItems,
 } from './listEditing.js';
 import {
+  applyTypedLink,
+  linkHrefForText,
+  linkifySelection,
+  typedLinkAtCaret,
+} from './linkEditing.js';
+import {
   applyPendingHud,
   clearPending,
   markPendingFailed,
@@ -51,7 +58,16 @@ import {
 import { newComment, openCommentsPopover, openCount } from './comments.js';
 import { reportRenderDivergences } from './renderInvariants.js';
 import { reportSelectionViolations } from './selectionInvariants.js';
-import { HANDLES, type SnapLine, snapMove, snapResize } from './snapping.js';
+import {
+  HANDLES,
+  type SizeGuide,
+  type SnapLine,
+  type SpacingGuide,
+  sizeGuides,
+  snapMove,
+  snapResize,
+  spacingGuides,
+} from './snapping.js';
 import type { EditorStore } from './store.js';
 
 export type TableSelection = {
@@ -243,9 +259,6 @@ function authoredTextHtml(body: HTMLElement): string {
   return normalizeParagraphHtml(clone.innerHTML);
 }
 
-/** Invisible text that gives a collapsed caret a stable styled DOM home. */
-const TYPING_STYLE_SENTINEL = '\u2060';
-
 /** True for the anonymous inline wrappers created by character formatting. */
 function isStyleOnlySpan(node: Element): node is HTMLSpanElement {
   return node.tagName === 'SPAN'
@@ -408,6 +421,10 @@ export class EditorCanvas {
   /** Cancels a not-yet-started idle warmup when the navigation target changes. */
   private cancelImageWarmup: (() => void) | null = null;
   private guides: SnapLine[] = [];
+  /** Equal-gap bars for the drag in progress. */
+  private spacing: SpacingGuide[] = [];
+  /** Matching width/height bars for the resize in progress. */
+  private sizeMatches: SizeGuide[] = [];
   private marquee: Rect | null = null;
 
   /** Called to open the trim window for a video. */
@@ -1507,6 +1524,45 @@ export class EditorCanvas {
       frag.appendChild(line);
     }
 
+    // Spacing bars call out runs of equal gaps; size bars call out a width or
+    // height the dragged object now shares with a neighbour. Both are measured
+    // in canvas pixels and counter-scaled so they read the same at any zoom.
+    const measure = (
+      axis: 'x' | 'y',
+      kind: 'spacing' | 'size',
+      start: number,
+      end: number,
+      cross: number,
+      value: number,
+    ): void => {
+      const bar = document.createElement('div');
+      bar.className = `measure measure-${axis} measure-${kind}`;
+      if (axis === 'x') {
+        bar.style.left = `${start}px`;
+        bar.style.top = `${cross}px`;
+        bar.style.width = `${Math.max(0, end - start)}px`;
+      } else {
+        bar.style.left = `${cross}px`;
+        bar.style.top = `${start}px`;
+        bar.style.height = `${Math.max(0, end - start)}px`;
+      }
+      bar.style.setProperty('--inv', String(1 / this.scale));
+      const label = document.createElement('span');
+      label.className = 'measure-label';
+      label.textContent = String(Math.round(value));
+      bar.appendChild(label);
+      frag.appendChild(bar);
+    };
+
+    for (const s of this.spacing) {
+      measure(s.axis, 'spacing', s.start, s.end, s.cross, s.gap);
+    }
+    for (const size of this.sizeMatches) {
+      for (const span of size.spans) {
+        measure(size.axis, 'size', span.start, span.end, span.cross, size.size);
+      }
+    }
+
     if (this.marquee) {
       const m = document.createElement('div');
       m.className = 'marquee';
@@ -1859,9 +1915,12 @@ export class EditorCanvas {
         }));
         const moved = { ...bounds, x: bounds.x + dx, y: bounds.y + dy };
         const snapped = ev.metaKey
-          ? { rect: moved, guides: [] } // Command suspends snapping for fine placement.
+          // Command suspends snapping for fine placement.
+          ? { rect: moved, guides: [], spacing: [], sizes: [] }
           : snapMove(moved, deck.canvas, others, threshold);
         this.guides = snapped.guides;
+        this.spacing = snapped.spacing;
+        this.sizeMatches = snapped.sizes;
 
         const finalDx = snapped.rect.x - bounds.x;
         const finalDy = snapped.rect.y - bounds.y;
@@ -1981,7 +2040,7 @@ export class EditorCanvas {
         // nothing meaningful to snap them to; snapping it would only nudge the
         // box away from the pointer. Alt suspends snapping outright.
         const snapped = ev.altKey || radians
-          ? { rect, guides: [] }
+          ? { rect, guides: [], spacing: [], sizes: [] }
           : snapResize(rect, edges, deck.canvas, others, threshold);
         this.guides = snapped.guides;
 
@@ -1995,6 +2054,18 @@ export class EditorCanvas {
           r.x = o.x + (o.w - r.w) / 2;
           r.y = o.y + (o.h - r.h) / 2;
         }
+
+        // Measure the box the author is actually getting. Reading the spacing
+        // and size guides off `snapped.rect` would advertise a width the
+        // aspect-ratio constraint then took away again.
+        const measured = ev.altKey || radians ? null : r;
+        this.spacing = measured
+          ? [
+            ...spacingGuides(measured, others, 'x'),
+            ...spacingGuides(measured, others, 'y'),
+          ]
+          : [];
+        this.sizeMatches = measured ? sizeGuides(measured, others) : [];
         if (radians) {
           // CSS rotates about the box centre, so growing an edge in the local
           // frame swings the whole box around that centre. Move the centre by
@@ -2113,7 +2184,8 @@ export class EditorCanvas {
       if (slide) {
         const box = this.marquee;
         const hits = slide.elements
-          .filter((e) => intersects(rotatedBounds(e), box))
+          // Locked master copies are not selectable (see selectAllElements).
+          .filter((e) => !e.layoutMasterId && intersects(rotatedBounds(e), box))
           .map((e) => e.id);
         if (hits.length > 0) this.store.select(hits, ev.shiftKey);
       }
@@ -2130,6 +2202,8 @@ export class EditorCanvas {
     this.host.classList.remove('is-rotating');
     this.maskOrigin = null;
     this.guides = [];
+    this.spacing = [];
+    this.sizeMatches = [];
     this.marquee = null;
     this.pendingTextEdit = null;
 
@@ -2617,6 +2691,32 @@ export class EditorCanvas {
     const onPaste = (event: ClipboardEvent) => {
       const pasted = event.clipboardData?.getData('text/html') ?? '';
       const plainText = event.clipboardData?.getData('text/plain') ?? '';
+
+      // Pasting a URL onto selected text links that text rather than
+      // replacing it, the way it works in Slack and every other chat app.
+      const pastedHref = linkHrefForText(plainText);
+      const selectionForLink = pastedHref ? window.getSelection() : null;
+      if (pastedHref && selectionForLink) {
+        // Seal first so the linkification is its own undo step: one
+        // Ctrl/Cmd+Z gives the plain text back rather than dropping the run
+        // that was being typed with it.
+        const range = selectionForLink.rangeCount > 0
+          ? selectionForLink.getRangeAt(0)
+          : null;
+        const linkable = range && !range.collapsed
+          && body.contains(range.commonAncestorContainer);
+        if (linkable) sealTextChunk();
+        const anchor = linkable
+          ? linkifySelection(body, selectionForLink, pastedHref)
+          : null;
+        if (anchor) {
+          event.preventDefault();
+          this.textSelectionRange = this.activeTextRange(body)?.cloneRange() ?? null;
+          this.commitLiveTextDom('Insert link');
+          return;
+        }
+      }
+
       const tableData = pastedTableData(pasted, plainText);
       const safeTable = tableData?.html ?? null;
       if (!safeTable || !tableData) return;
@@ -2928,6 +3028,21 @@ export class EditorCanvas {
       body.innerHTML = normalized;
       if (offsets) this.restoreTextRange(body, offsets);
     };
+    /**
+     * Link the URL the caret has just typed past. The seal makes it a history
+     * entry of its own, so Ctrl/Cmd+Z takes back the linkification and leaves
+     * the words that were typed.
+     */
+    const linkifyTypedUrl = () => {
+      const selection = window.getSelection();
+      const link = typedLinkAtCaret(body, selection);
+      if (!link || !selection) return false;
+      sealTextChunk();
+      applyTypedLink(link, selection);
+      this.textSelectionRange = this.activeTextRange(body)?.cloneRange() ?? null;
+      this.commitLiveTextDom('Insert link');
+      return true;
+    };
     const onInput = (event?: Event) => {
       const typed = event instanceof InputEvent ? event : null;
       if (
@@ -2943,6 +3058,14 @@ export class EditorCanvas {
         && !typed.isComposing
       ) {
         convertTypedArrow(body, window.getSelection());
+      }
+      if (
+        typed?.inputType === 'insertText'
+        && /^[\s\u00a0]+$/.test(typed.data ?? '')
+        && !typed.isComposing
+      ) {
+        // The space that ends a URL is the moment it becomes a link.
+        linkifyTypedUrl();
       }
       if (el.type === 'text' && (el.autoFit || el.noWrap)) scheduleAutoFit(node!);
       if (this.liveTextSync && !liveTimer) liveTimer = window.setTimeout(pushLive, 250);
@@ -3043,6 +3166,11 @@ export class EditorCanvas {
       // Editing keys must not reach the canvas shortcuts (Delete would remove
       // the element you are typing into).
       e.stopPropagation();
+      // Return ends a URL just as a space does, whatever it goes on to do to
+      // the paragraph or the list item below. The caret is left where it was,
+      // outside the new link, so the split still happens where it was asked
+      // for.
+      if (e.key === 'Enter' && !e.isComposing) linkifyTypedUrl();
       if ((e.metaKey || e.ctrlKey) && ['b', 'i', 'u'].includes(e.key.toLowerCase())) {
         e.preventDefault();
         const format = e.key.toLowerCase() === 'b'

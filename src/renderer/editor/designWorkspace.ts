@@ -1,6 +1,6 @@
 import { emptyDeck, type Deck, type LayoutMaster, type Slide, type SlideElement } from '@shared/deck.js';
 import { defaultLayoutMasters, syncDeckWithLayoutMasters, type FixedLayout } from '@shared/layoutMasters.js';
-import { themeCss, type ThemePreset } from '@shared/themes.js';
+import { deckTheme, themeCss, type ThemePreset } from '@shared/themes.js';
 import { renderSlide } from '../player/render.js';
 import { EditorCanvas } from './canvas.js';
 import { createShapeInsertPicker, insertText } from './elementCreation.js';
@@ -96,6 +96,17 @@ export class DesignWorkspace {
     if (!this.preview.hidden || this.editingOverlay) this.render();
   }
 
+  /**
+   * The theme the master surfaces render under.
+   *
+   * The layout editor opens from places that never went through a preview
+   * session — the sidebar summary, the inspector — so fall back to the deck's
+   * chosen theme rather than showing masters in a voice the deck is not using.
+   */
+  private effectiveTheme(): ThemePreset | null {
+    return this.theme ?? deckTheme(this.deps.store.get().deck);
+  }
+
   /** The compact Title + Body master shown in the sidebar's Layouts section. */
   createLayoutSummary(theme: ThemePreset | null, onActivate: () => void): HTMLElement {
     this.layoutSummaryObserver?.disconnect();
@@ -108,7 +119,8 @@ export class DesignWorkspace {
     const master = this.deps.store.get().deck.layoutMasters?.standard ?? defaultLayoutMasters().standard;
     const slide = previewSlide('standard', master);
     slide.elements = slide.elements.filter((element) => element.id !== 'preview-standard-caption');
-    if (theme) applyThemeInline(slide, theme);
+    const active = theme ?? deckTheme(this.deps.store.get().deck);
+    if (active) applyThemeInline(slide, active);
     frame.appendChild(renderSlide(slide, {
       resolveSrc: (src) => window.api.assetUrl(src),
       mediaPreload: 'metadata',
@@ -127,7 +139,8 @@ export class DesignWorkspace {
   }
 
   private render(): void {
-    this.previewStyle.textContent = this.theme ? themeCss(this.theme) : '';
+    const theme = this.effectiveTheme();
+    this.previewStyle.textContent = theme ? themeCss(theme) : '';
     if (this.preview.hidden) return;
     this.previewObservers.forEach((observer) => observer.disconnect());
     this.previewObservers = [];
@@ -210,7 +223,8 @@ export class DesignWorkspace {
     overlay.append(top, body);
     document.body.appendChild(overlay);
     this.editingOverlay = overlay;
-    this.previewStyle.textContent = this.theme ? themeCss(this.theme) : '';
+    const overlayTheme = this.effectiveTheme();
+    this.previewStyle.textContent = overlayTheme ? themeCss(overlayTheme) : '';
 
     const masterCanvas = new EditorCanvas(canvasHost, masterStore);
     const masterInspector = new Inspector(inspectorHost, masterStore);
@@ -229,7 +243,9 @@ export class DesignWorkspace {
         button.className = `layout-editor-rail-item${state.slideIndex === index ? ' active' : ''}`;
         const thumb = document.createElement('span');
         thumb.className = 'layout-editor-rail-thumb';
-        thumb.appendChild(renderSlide(state.deck.slides[index], {
+        const railSlide = structuredClone(state.deck.slides[index]);
+        revealPlaceholders(railSlide.elements);
+        thumb.appendChild(renderSlide(railSlide, {
           resolveSrc: (src) => window.api.assetUrl(src),
           mediaPreload: 'metadata',
         }));
@@ -267,7 +283,7 @@ export class DesignWorkspace {
 }
 
 function previewSlide(layout: FixedLayout, master: LayoutMaster): Slide {
-  const elements = structuredClone(master.elements);
+  const elements = revealPlaceholders(structuredClone(master.elements));
   for (const element of elements) {
     if (element.type !== 'text') continue;
     if (element.layoutPlaceholder === 'title') element.html = 'The big idea';
@@ -309,6 +325,11 @@ function previewSlide(layout: FixedLayout, master: LayoutMaster): Slide {
 }
 
 function applyThemeInline(slide: Slide, theme: ThemePreset): void {
+  // Preview clones render outside the preview stylesheet, so the theme's ground
+  // has to be painted on: a master shown on white would misrepresent the deck.
+  if (!slide.background.color && !slide.background.image) {
+    slide.background = { color: theme.colors.background, image: null };
+  }
   for (const element of slide.elements) {
     if (element.type !== 'text') continue;
     const role = element.class.includes('role-title')
@@ -324,6 +345,19 @@ function applyThemeInline(slide: Slide, theme: ThemePreset): void {
       color: font.color ?? theme.colors.text,
     };
   }
+}
+
+/**
+ * Placeholder copy is prompt text: `type.css` hides it everywhere outside an
+ * editing surface, so a design surface that renders masters through the player
+ * has to opt out of that. Without this the whole layout gallery — preview
+ * grid, sidebar summary, and the layout editor's own rail — drew empty slides.
+ */
+function revealPlaceholders<T extends SlideElement>(elements: T[]): T[] {
+  for (const element of elements) {
+    element.class = element.class.filter((name) => name !== 'placeholder');
+  }
+  return elements;
 }
 
 function masterEditingDeck(source: Deck, masters: NonNullable<Deck['layoutMasters']>): Deck {

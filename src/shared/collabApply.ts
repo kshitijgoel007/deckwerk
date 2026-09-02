@@ -122,6 +122,7 @@ function applyLenient(
       if (op.theme !== undefined) deck.theme = op.theme;
       if (op.themePreset !== undefined) deck.themePreset = op.themePreset;
       if (op.themeStyle !== undefined) deck.themeStyle = structuredClone(op.themeStyle);
+      if (op.themeSelection !== undefined) deck.themeSelection = structuredClone(op.themeSelection);
       if (op.layoutMasters !== undefined) deck.layoutMasters = structuredClone(op.layoutMasters);
       if (op.magicMoveEasing !== undefined) deck.magicMoveEasing = op.magicMoveEasing;
       return;

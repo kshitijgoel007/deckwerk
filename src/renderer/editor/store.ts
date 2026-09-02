@@ -11,6 +11,7 @@ import {
 } from '@shared/clipboard.js';
 import { makeId } from '@shared/geometry.js';
 import { pastedTableData } from '@shared/paragraphs.js';
+import { classifyMediaName } from '@shared/media.js';
 import type {
   DeckHistoryDocument,
 } from '@shared/deckHistory.js';
@@ -558,6 +559,38 @@ export class EditorStore {
     this.emit();
   }
 
+  /**
+   * Cmd/Ctrl-click in the rail: add or drop one slide without disturbing the
+   * rest of the selection. Shift-click covers contiguous ranges; this is how
+   * a scattered set of slides gets picked, and the rail's own commands
+   * (delete, hide, duplicate) then act on all of them.
+   */
+  toggleSlideSelection(index: number): void {
+    const clamped = Math.min(Math.max(index, 0), this.state.deck.slides.length - 1);
+    const slide = this.state.deck.slides[clamped];
+    if (!slide) return;
+    const picked = !this.state.slideSelection.has(slide.id);
+    // The selection never empties: unpicking the last slide would leave every
+    // rail command with nothing to act on and no row looking current.
+    if (!picked && this.state.slideSelection.size === 1) return;
+    const slideSelection = new Set(this.state.slideSelection);
+    if (picked) slideSelection.add(slide.id);
+    else slideSelection.delete(slide.id);
+    // Dropping the current slide hands "current" to the first row still
+    // selected, so the canvas keeps showing something that is selected.
+    const slideIndex = picked || clamped !== this.state.slideIndex
+      ? clamped
+      : this.state.deck.slides.findIndex((candidate) => slideSelection.has(candidate.id));
+    this.slideSelectionAnchor = clamped;
+    this.state = {
+      ...this.state,
+      slideIndex,
+      slideSelection,
+      selection: new Set(),
+    };
+    this.emit();
+  }
+
   /** Select one contiguous rail range without first exposing either endpoint. */
   selectSlideRange(startIndex: number, endIndex: number): void {
     if (this.state.deck.slides.length === 0) return;
@@ -597,11 +630,19 @@ export class EditorStore {
     this.emit();
   }
 
-  /** Ctrl/Cmd+A on the canvas: every element of the slide being edited. */
+  /**
+   * Ctrl/Cmd+A on the canvas: every element of the slide being edited.
+   *
+   * Layout-master copies are excluded. They are locked, derived state: they
+   * draw no selection handles and take no pointer events, so including them
+   * only let the next drag, delete or formatting click act on objects the
+   * author cannot see selected -- and the next master sync then threw that
+   * work away.
+   */
   selectAllElements(): void {
     const slide = this.slide;
     if (!slide) return;
-    this.select(slide.elements.map((el) => el.id));
+    this.select(slide.elements.filter((el) => !el.layoutMasterId).map((el) => el.id));
   }
 
   select(ids: string[], additive = false): void {
@@ -1031,12 +1072,34 @@ export async function pasteImageFilesFromClipboard(
   store: EditorStore,
   files: File[],
 ): Promise<{ kind: 'elements'; count: number } | null> {
-  const image = files.find((file) => file.type === 'image/png');
+  // A screenshot arrives as PNG, but copying a photo out of a page or a file
+  // manager can hand over any format the importer accepts — including the
+  // ones it has to re-encode. Matching PNG alone dropped those pastes with no
+  // element and no error.
+  const image = files.find((file) => clipboardImageName(file) !== null);
   if (!image || !window.api.importAssetFiles) return null;
+  const name = clipboardImageName(image) as string;
   const [asset] = await window.api.importAssetFiles([
-    new File([image], 'Screenshot.png', { type: 'image/png' }),
+    // The name is what tells the importer which format this is, so it has to
+    // survive the hand-off; the bytes are re-wrapped only to rename them.
+    new File([image], name, { type: image.type }),
   ]);
   return asset ? insertClipboardImage(store, asset) : null;
+}
+
+/**
+ * The name to import a pasted file under, or null if it isn't an image.
+ *
+ * Chromium names a screenshot `image.png`, so the extension is the only
+ * reliable signal; a clipboard file with no usable name but an image MIME
+ * type still imports, under a name derived from the type.
+ */
+function clipboardImageName(file: File): string | null {
+  if (classifyMediaName(file.name) === 'image') return file.name;
+  if (!file.type.startsWith('image/')) return null;
+  const ext = file.type.slice('image/'.length).split('+')[0].toLowerCase();
+  const name = `Screenshot.${ext === 'jpeg' ? 'jpg' : ext}`;
+  return classifyMediaName(name) === 'image' ? name : null;
 }
 
 function insertClipboardImage(

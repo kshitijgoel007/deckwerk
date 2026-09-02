@@ -407,6 +407,162 @@ describe('inline text editing', () => {
     expect(saved.type === 'text' && saved.html).toBe('Original →');
   });
 
+  it('links the selected text when a URL is pasted over it', () => {
+    const { store, canvas, host } = setup();
+    canvas.beginTextEdit('text-1');
+    const body = bodyOf(host, 'text-1');
+    const text = body.firstChild as Text;
+    const range = document.createRange();
+    range.setStart(text, 'Original '.length);
+    range.setEnd(text, 'Original text'.length);
+    window.getSelection()!.removeAllRanges();
+    window.getSelection()!.addRange(range);
+    const paste = new Event('paste', { bubbles: true, cancelable: true }) as ClipboardEvent;
+    Object.defineProperty(paste, 'clipboardData', {
+      value: {
+        getData: (type: string) => type === 'text/plain' ? 'https://example.com/deck' : '',
+      },
+    });
+    body.dispatchEvent(paste);
+
+    expect(paste.defaultPrevented).toBe(true);
+    const anchor = body.querySelector('a')!;
+    expect(anchor.getAttribute('href')).toBe('https://example.com/deck');
+    expect(anchor.textContent).toBe('text');
+    expect(body.textContent).toBe('Original text');
+    const saved = store.slide!.elements.find((element) => element.id === 'text-1')!;
+    expect(saved.type === 'text' && saved.html)
+      .toBe('Original <a href="https://example.com/deck">text</a>');
+  });
+
+  it('leaves a pasted URL as plain text when nothing is selected', () => {
+    const { canvas, host } = setup();
+    canvas.beginTextEdit('text-1');
+    const body = bodyOf(host, 'text-1');
+    const text = body.firstChild as Text;
+    const range = document.createRange();
+    range.setStart(text, text.data.length);
+    range.collapse(true);
+    window.getSelection()!.removeAllRanges();
+    window.getSelection()!.addRange(range);
+    const paste = new Event('paste', { bubbles: true, cancelable: true }) as ClipboardEvent;
+    Object.defineProperty(paste, 'clipboardData', {
+      value: { getData: (type: string) => type === 'text/plain' ? 'https://example.com' : '' },
+    });
+    body.dispatchEvent(paste);
+
+    // Not handled here: the browser inserts the URL, and typing a space after
+    // it is what links it.
+    expect(paste.defaultPrevented).toBe(false);
+    expect(body.querySelector('a')).toBeNull();
+  });
+
+  it('links a typed URL when the space that ends it is typed', () => {
+    const { store, canvas, host } = setup();
+    canvas.beginTextEdit('text-1');
+    const body = bodyOf(host, 'text-1');
+    body.textContent = 'See www.example.com ';
+    const text = body.firstChild as Text;
+    const range = document.createRange();
+    range.setStart(text, text.data.length);
+    range.collapse(true);
+    window.getSelection()!.removeAllRanges();
+    window.getSelection()!.addRange(range);
+
+    body.dispatchEvent(new InputEvent('input', {
+      inputType: 'insertText', data: ' ', bubbles: true,
+    }));
+
+    const anchor = body.querySelector('a')!;
+    expect(anchor.getAttribute('href')).toBe('https://www.example.com');
+    expect(anchor.textContent).toBe('www.example.com');
+    expect(body.textContent).toBe('See www.example.com ');
+    // The caret stays after the space, outside the link, so the next word is
+    // not swallowed into it.
+    const selection = window.getSelection()!;
+    expect(selection.anchorNode?.nodeValue).toBe(' ');
+    expect(selection.anchorOffset).toBe(1);
+    const saved = store.slide!.elements.find((element) => element.id === 'text-1')!;
+    expect(saved.type === 'text' && saved.html)
+      .toBe('See <a href="https://www.example.com">www.example.com</a> ');
+  });
+
+  it('keeps sentence punctuation out of a typed link', () => {
+    const { canvas, host } = setup();
+    canvas.beginTextEdit('text-1');
+    const body = bodyOf(host, 'text-1');
+    body.textContent = 'Read https://example.com/a. ';
+    const text = body.firstChild as Text;
+    const range = document.createRange();
+    range.setStart(text, text.data.length);
+    range.collapse(true);
+    window.getSelection()!.removeAllRanges();
+    window.getSelection()!.addRange(range);
+
+    body.dispatchEvent(new InputEvent('input', {
+      inputType: 'insertText', data: ' ', bubbles: true,
+    }));
+
+    expect(body.querySelector('a')?.getAttribute('href')).toBe('https://example.com/a');
+    expect(body.querySelector('a')?.textContent).toBe('https://example.com/a');
+    expect(body.textContent).toBe('Read https://example.com/a. ');
+  });
+
+  it('links a typed URL on Return, leaving the Return itself to do its work', () => {
+    const { store, canvas, host } = setup();
+    canvas.beginTextEdit('text-1');
+    const body = bodyOf(host, 'text-1');
+    body.textContent = 'Deck: https://example.com';
+    const text = body.firstChild as Text;
+    const range = document.createRange();
+    range.setStart(text, text.data.length);
+    range.collapse(true);
+    window.getSelection()!.removeAllRanges();
+    window.getSelection()!.addRange(range);
+
+    const enter = new KeyboardEvent('keydown', {
+      key: 'Enter', bubbles: true, cancelable: true,
+    });
+    body.dispatchEvent(enter);
+
+    const anchor = body.querySelector('a')!;
+    expect(anchor.getAttribute('href')).toBe('https://example.com');
+    expect(body.textContent).toBe('Deck: https://example.com');
+    // The paragraph split is still the browser's to make, and it has to make
+    // it outside the new link.
+    expect(enter.defaultPrevented).toBe(false);
+    const selection = window.getSelection()!;
+    expect(selection.anchorNode).toBe(body);
+    expect(selection.anchorOffset).toBe([...body.childNodes].indexOf(anchor) + 1);
+    const saved = store.slide!.elements.find((element) => element.id === 'text-1')!;
+    expect(saved.type === 'text' && saved.html)
+      .toBe('Deck: <a href="https://example.com">https://example.com</a>');
+  });
+
+  it('does not link words that merely look like text, or link twice', () => {
+    const { canvas, host } = setup();
+    canvas.beginTextEdit('text-1');
+    const body = bodyOf(host, 'text-1');
+    const typeSpace = (content: string) => {
+      body.textContent = `${content} `;
+      const text = body.firstChild as Text;
+      const range = document.createRange();
+      range.setStart(text, text.data.length);
+      range.collapse(true);
+      window.getSelection()!.removeAllRanges();
+      window.getSelection()!.addRange(range);
+      body.dispatchEvent(new InputEvent('input', {
+        inputType: 'insertText', data: ' ', bubbles: true,
+      }));
+      return body.querySelector('a');
+    };
+
+    expect(typeSpace('canvas.ts')).toBeNull();
+    expect(typeSpace('etc.So')).toBeNull();
+    expect(typeSpace('https://')).toBeNull();
+    expect(typeSpace('mailto:someone@example.com')).toBeNull();
+  });
+
   it('turns typed bullet and numbered markers into continuing lists on Return', () => {
     const { store, canvas, host } = setup();
     const run = (html: string) => {
@@ -2826,5 +2982,92 @@ describe('build badges on the canvas', () => {
 
     canvas.setBuildBadgesVisible(false);
     expect(host.querySelectorAll('.build-badge')).toHaveLength(0);
+  });
+});
+
+/** Three same-sized boxes in a row, the last one free to be dragged. */
+function setupRow() {
+  installDomShims();
+  const deck = emptyDeck('Row');
+  const box = (id: string, x: number) => ({
+    id,
+    type: 'text' as const,
+    x,
+    y: 500,
+    w: 100,
+    h: 100,
+    rot: 0,
+    z: 1,
+    opacity: 1,
+    class: [],
+    style: {},
+    html: id,
+    align: 'left' as const,
+    valign: 'middle' as const,
+  });
+  deck.slides[0].elements = [box('a', 100), box('b', 260), box('c', 800)];
+
+  const host = document.createElement('div');
+  document.body.replaceChildren(host);
+  const store = new EditorStore(deck, '/tmp/row');
+  const canvas = new EditorCanvas(host, store);
+  const stage = host.querySelector<HTMLElement>('.stage')!;
+  stage.getBoundingClientRect = () =>
+    ({ left: 0, top: 0, width: 1920, height: 1080 }) as DOMRect;
+  return { store, canvas, host };
+}
+
+describe('spacing and sizing guides', () => {
+  beforeEach(() => document.body.replaceChildren());
+
+  it('distributes a dragged box and draws the equal gaps it landed on', () => {
+    const { store, host } = setupRow();
+
+    // 'c' is dragged from x = 800 to x = 424, four pixels short of the 60px
+    // rhythm 'a' and 'b' already establish.
+    host.dispatchEvent(new PointerEvent('pointerdown', {
+      clientX: 850, clientY: 550, bubbles: true, pointerId: 1, button: 0,
+    }));
+    host.dispatchEvent(new PointerEvent('pointermove', {
+      clientX: 474, clientY: 550, bubbles: true, pointerId: 1, button: 0,
+    }));
+
+    expect(store.slide!.elements.find((el) => el.id === 'c')!.x).toBe(420);
+    const bars = [...host.querySelectorAll('.measure-spacing')];
+    expect(bars.map((bar) => bar.textContent)).toEqual(['60', '60']);
+
+    // Guides are transient: the drop clears them.
+    host.dispatchEvent(new PointerEvent('pointerup', {
+      clientX: 474, clientY: 550, bubbles: true, pointerId: 1, button: 0,
+    }));
+    expect(host.querySelectorAll('.measure-spacing')).toHaveLength(0);
+  });
+
+  it('matches a neighbour\'s width on resize and marks both boxes', () => {
+    const { store, host } = setupRow();
+
+    host.dispatchEvent(new PointerEvent('pointerdown', {
+      clientX: 850, clientY: 550, bubbles: true, pointerId: 1, button: 0,
+    }));
+    host.dispatchEvent(new PointerEvent('pointerup', {
+      clientX: 850, clientY: 550, bubbles: true, pointerId: 1, button: 0,
+    }));
+    const handle = host.querySelector<HTMLElement>('.handle-e[data-element-id="c"]')!;
+    handle.dispatchEvent(new PointerEvent('pointerdown', {
+      clientX: 900, clientY: 550, bubbles: true, pointerId: 1, button: 0,
+    }));
+    // A first, larger move clears the threshold that separates a drag from a
+    // click; the second lands 96 wide, four short of the others' 100.
+    host.dispatchEvent(new PointerEvent('pointermove', {
+      clientX: 960, clientY: 550, bubbles: true, pointerId: 1, button: 0,
+    }));
+    host.dispatchEvent(new PointerEvent('pointermove', {
+      clientX: 896, clientY: 550, bubbles: true, pointerId: 1, button: 0,
+    }));
+
+    expect(store.slide!.elements.find((el) => el.id === 'c')!.w).toBe(100);
+    const bars = [...host.querySelectorAll('.measure-size')];
+    expect(bars.length).toBeGreaterThanOrEqual(2);
+    expect(new Set(bars.map((bar) => bar.textContent))).toEqual(new Set(['100']));
   });
 });

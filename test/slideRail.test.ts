@@ -5,6 +5,10 @@ import { suggestMagicMovePairs } from '../src/shared/magicMove.js';
 import { Inspector } from '../src/renderer/editor/inspector.js';
 import { SlideRail } from '../src/renderer/editor/slideRail.js';
 import { EditorStore } from '../src/renderer/editor/store.js';
+import { THEMES, adoptThemeStyles, fullThemeSelection } from '../src/shared/themes.js';
+import { defaultLayoutMasters, syncDeckWithLayoutMasters } from '../src/shared/layoutMasters.js';
+import { applySlideLayout } from '../src/renderer/editor/slideLayouts.js';
+import { PLAYER_TYPE_CSS } from '../src/shared/playerTypeCss.js';
 
 /**
  * Rows select on pointerdown (a click never arrives when the browser turns a
@@ -12,6 +16,10 @@ import { EditorStore } from '../src/renderer/editor/store.js';
  */
 function pickRow(row: HTMLElement, shiftKey = false): void {
   row.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, shiftKey }));
+}
+
+function togglePickRow(row: HTMLElement): void {
+  row.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, metaKey: true }));
 }
 
 function mulberry32(seed: number): () => number {
@@ -283,14 +291,79 @@ describe('deleting slides from the rail', () => {
     expect(store.history()[0].label).toBe('Delete slide');
   });
 
-  it('refuses to empty the deck', () => {
+  it('deletes a scattered Cmd-click selection in one keystroke', () => {
+    const { store, host } = setup();
+    push(store, 'slide-3', 'slide-4', 'slide-5');
+
+    const items = () => host.querySelectorAll<HTMLElement>('.rail-item');
+    pickRow(items()[0]);
+    togglePickRow(items()[2]);
+    togglePickRow(items()[4]);
+    expect([...store.get().slideSelection]).toEqual(['slide-1', 'slide-3', 'slide-5']);
+
+    host.dispatchEvent(new KeyboardEvent('keydown', { key: 'Backspace', bubbles: true }));
+
+    expect(store.get().deck.slides.map((slide) => slide.id)).toEqual(['slide-2', 'slide-4']);
+    expect(store.history()[0].label).toBe('Delete 3 slides');
+
+    store.undo();
+    expect(store.get().deck.slides).toHaveLength(5);
+  });
+
+  it('drops a Cmd-clicked slide back out of the selection', () => {
+    const { store, host } = setup();
+    push(store, 'slide-3');
+
+    const items = () => host.querySelectorAll<HTMLElement>('.rail-item');
+    pickRow(items()[0]);
+    togglePickRow(items()[1]);
+    togglePickRow(items()[2]);
+    togglePickRow(items()[1]);
+    expect([...store.get().slideSelection]).toEqual(['slide-1', 'slide-3']);
+
+    host.dispatchEvent(new KeyboardEvent('keydown', { key: 'Backspace', bubbles: true }));
+    expect(store.get().deck.slides.map((slide) => slide.id)).toEqual(['slide-2']);
+  });
+
+  it('never unpicks the last remaining slide of the selection', () => {
+    const { store, host } = setup();
+    const items = () => host.querySelectorAll<HTMLElement>('.rail-item');
+    pickRow(items()[1]);
+    togglePickRow(items()[1]);
+
+    expect([...store.get().slideSelection]).toEqual(['slide-2']);
+    expect(store.get().slideIndex).toBe(1);
+  });
+
+  it('leaves one fresh slide behind when the selection covers the deck', () => {
     const { store, host } = setup();
     const items = () => host.querySelectorAll<HTMLElement>('.rail-item');
     pickRow(items()[0]);
     pickRow(items()[1], true);
 
     host.dispatchEvent(new KeyboardEvent('keydown', { key: 'Backspace', bubbles: true }));
-    expect(store.get().deck.slides).toHaveLength(2);
+
+    const slides = store.get().deck.slides;
+    expect(slides).toHaveLength(1);
+    // The surviving row keeps its id but none of its content: the deck is
+    // never momentarily empty, which the operation log cannot replay.
+    expect(slides[0].id).toBe('slide-1');
+    expect(slides[0].name).toBe('');
+    expect(store.get().slideIndex).toBe(0);
+    expect([...store.get().slideSelection]).toEqual([slides[0].id]);
+    expect(store.history()[0].label).toBe('Delete 2 slides');
+
+    store.undo();
+    expect(store.get().deck.slides.map((slide) => slide.id)).toEqual(['slide-1', 'slide-2']);
+  });
+
+  it('does not swap the deck\'s only slide for another empty one', () => {
+    const { store, host } = setup();
+    store.commit((deck) => { deck.slides.length = 1; }, { history: false });
+    pickRow(host.querySelectorAll<HTMLElement>('.rail-item')[0]);
+
+    host.dispatchEvent(new KeyboardEvent('keydown', { key: 'Backspace', bubbles: true }));
+    expect(store.get().deck.slides.map((slide) => slide.id)).toEqual(['slide-1']);
   });
 
   it('selects and deletes a large collapsed hidden suffix without expanding it', () => {
@@ -593,5 +666,143 @@ describe('slide rail keyboard insertion', () => {
     // An untouched rail thumbnail far away from the edit is not resolved again.
     expect(resolutionsByAsset.get('assets/frame-139.png')).toBe(1);
     expect(() => parseDeck(store.get().deck)).not.toThrow();
+  });
+});
+
+describe('adding a slide', () => {
+  beforeEach(() => document.body.replaceChildren());
+
+  it('themes the new slide like the slides the author already themed', () => {
+    const { store, rail } = setup();
+    const theme = THEMES[1];
+    store.commit((deck) => adoptThemeStyles(deck, theme, {
+      scope: 'slides', roles: ['title', 'body', 'caption'], fontFamily: true,
+      fontWeight: false, typeScale: false, textColor: false, background: false,
+      objectColors: false, replaceOverrides: true, detectRoles: false,
+    }, 0, new Set(), new Set(['slide-1'])));
+
+    rail.addSlide();
+
+    const { deck, slideIndex } = store.get();
+    const added = deck.slides[slideIndex];
+    const title = added.elements.find((el) => el.class.includes('role-title'))!;
+    expect(title.style['font-family']).toBe(theme.fonts.title.family);
+    expect(added.background.color).toBe(theme.colors.background);
+  });
+
+  it('leaves a new slide to the stylesheet when no theme has been applied', () => {
+    const { store, rail } = setup();
+    rail.addSlide();
+    const { deck, slideIndex } = store.get();
+    const added = deck.slides[slideIndex];
+    expect(added.elements.every((el) => Object.keys(el.style).length === 0)).toBe(true);
+    expect(added.background.color).toBeNull();
+  });
+
+  it('themes a slide inserted with Return in the rail from a merely chosen theme', () => {
+    const { store, host } = setup();
+    const theme = THEMES[2];
+    // What picking a card in the theme gallery records: a choice, no restyling.
+    store.commit((deck) => { deck.themeSelection = fullThemeSelection(theme.id); });
+    const untouched = JSON.stringify(store.get().deck.slides[0]);
+
+    host.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+
+    const { deck, slideIndex } = store.get();
+    expect(deck.slides).toHaveLength(3);
+    const added = deck.slides[slideIndex];
+    const title = added.elements.find((el) => el.class.includes('role-title'))!;
+    expect(title.style['font-family']).toBe(theme.fonts.title.family);
+    expect(title.style['font-size']).toBe(`${theme.fonts.title.size}px`);
+    expect(title.style.color).toBe(theme.fonts.title.color ?? theme.colors.text);
+    expect(added.background.color).toBe(theme.colors.background);
+    // The slides that were already there are left exactly as they were.
+    expect(JSON.stringify(deck.slides[0])).toBe(untouched);
+  });
+});
+
+/**
+ * The slide picker draws real slides through the player's own renderer, so it
+ * inherits the player's stylesheet — including the rule that hides prompt copy
+ * the author has not replaced (`type.css`). Editing a layout used to re-mark
+ * every authored title and body as prompt copy, and the whole picker went
+ * blank; the same class list also blanks the projector and every export, which
+ * is why this asserts on rendered visibility rather than on class names.
+ */
+describe('the slide picker after a layout change', () => {
+  beforeEach(() => {
+    document.head.replaceChildren();
+    document.body.replaceChildren();
+    const style = document.createElement('style');
+    style.textContent = PLAYER_TYPE_CSS;
+    document.head.appendChild(style);
+  });
+
+  function authoredRail() {
+    const { store, host, rail } = setup();
+    store.commit((deck) => {
+      deck.layoutMasters = defaultLayoutMasters();
+      for (const [index, slide] of deck.slides.entries()) {
+        applySlideLayout(slide, 'standard', deck.layoutMasters);
+        for (const element of slide.elements) {
+          if (element.type !== 'text') continue;
+          element.html = `Authored ${element.layoutPlaceholder} ${index + 1}`;
+          // What the canvas does on the first real content commit.
+          element.class = element.class.filter((name) => name !== 'placeholder');
+        }
+      }
+    }, { history: false });
+    return { store, host, rail };
+  }
+
+  /** Every line of text the picker actually shows, thumbnail by thumbnail. */
+  function visibleThumbText(host: HTMLElement): string[][] {
+    return [...host.querySelectorAll<HTMLElement>('.rail-thumb')].map((thumb) => (
+      [...thumb.querySelectorAll<HTMLElement>('.text-body')]
+        .filter((body) => getComputedStyle(body).visibility === 'visible')
+        .map((body) => body.textContent ?? '')
+    ));
+  }
+
+  it('still shows every authored title and body after a layout master is edited', () => {
+    const { store, host } = authoredRail();
+    expect(visibleThumbText(host)).toEqual([
+      ['Authored title 1', 'Authored body 1'],
+      ['Authored title 2', 'Authored body 2'],
+    ]);
+
+    // What the layout editor commits when the author presses Done.
+    store.commit((deck) => {
+      deck.layoutMasters!.standard.elements[0].x = 300;
+      syncDeckWithLayoutMasters(deck);
+    }, { label: 'Edit layout masters' });
+
+    expect(visibleThumbText(host)).toEqual([
+      ['Authored title 1', 'Authored body 1'],
+      ['Authored title 2', 'Authored body 2'],
+    ]);
+    // The new geometry reached the thumbnails, so this is not a stale render.
+    const title = host.querySelector<HTMLElement>('.rail-thumb .element-text')!;
+    expect(title.style.left).toBe('300px');
+  });
+
+  it('still shows authored copy after the slide switches layout', () => {
+    const { store, host } = authoredRail();
+    store.commit((deck) => {
+      applySlideLayout(deck.slides[0], 'title', deck.layoutMasters);
+    }, { label: 'Apply Title slide layout' });
+
+    expect(visibleThumbText(host)[0]).toContain('Authored title 1');
+  });
+
+  it('leaves an untouched prompt hidden, exactly as the projector shows it', () => {
+    const { store, host } = setup();
+    store.commit((deck) => {
+      deck.layoutMasters = defaultLayoutMasters();
+      syncDeckWithLayoutMasters(deck);
+      applySlideLayout(deck.slides[0], 'standard', deck.layoutMasters);
+    }, { history: false });
+
+    expect(visibleThumbText(host)[0]).toEqual([]);
   });
 });

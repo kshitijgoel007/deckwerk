@@ -11,7 +11,20 @@
 
 export const IMAGE_EXTS = new Set([
   '.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.avif', '.pdf',
+  '.heic', '.heif',
 ]);
+
+/**
+ * Image formats Chromium has no decoder for, so the importer re-encodes them
+ * to PNG on the way in. Dropping an iPhone photo without this produces a
+ * blank rectangle: the file copies fine and the element is valid, but neither
+ * the canvas nor the export can paint it.
+ *
+ * They are still `IMAGE_EXTS` — the drop is accepted, and the conversion is
+ * an import detail, the same way an HEVC screen recording is transcoded to
+ * H.264 without the author choosing that.
+ */
+export const CONVERTED_IMAGE_EXTS = new Set(['.heic', '.heif']);
 export const VIDEO_EXTS = new Set(['.mp4', '.mov', '.m4v', '.webm', '.mkv', '.avi']);
 
 /** Classify by file name/path extension; null means "not droppable media". */

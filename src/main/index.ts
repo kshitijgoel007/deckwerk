@@ -16,6 +16,7 @@ import {
   parseClipboardPayload,
   rewriteAssetSrcs,
 } from '@shared/clipboard.js';
+import { importClipboardImageUrl } from './clipboardImageFetch.js';
 import { IPC } from '@shared/ipc.js';
 import type {
   AgentContextDraft,
@@ -67,6 +68,7 @@ import {
   loadTheme,
   resolveAsset,
   saveDeck,
+  serializeDeck,
   saveTheme,
 } from './deckStore.js';
 import { exportDeck } from './exportDeck.js';
@@ -404,39 +406,58 @@ function watchDeck(dir: string, themeFile: string): void {
   try {
     const editDir = join(dir, HTML_EDIT_DIR);
     mkdirSync(editDir, { recursive: true });
-    watchers.push(
-      watch(join(dir, 'deck.json'), () => {
-        // Debounced: editors and agents often write in bursts.
-        if (deckTimer) clearTimeout(deckTimer);
-        deckTimer = setTimeout(async () => {
-          try {
-            const { readFile } = await import('node:fs/promises');
-            const raw = await readFile(join(dir, 'deck.json'), 'utf8');
-            // Our own autosave fires this watcher too. Byte-comparing against
-            // what we wrote is the only reliable echo test: comparing decks
-            // fails on key order, and that false mismatch caused a full reload
-            // that yanked the editor back to slide 1 a second after any edit.
-            if (raw === lastSavedDeckJson) return;
-            const deck = await loadDeck(dir);
-            if (!session) return;
-            session.deck = deck;
-            broadcastDeck();
-          } catch {
-            // Half-written JSON mid-save; the next event will retry.
-          }
-        }, 200);
-      }),
-      watch(join(dir, themeFile), () => {
-        if (themeTimer) clearTimeout(themeTimer);
-        themeTimer = setTimeout(async () => {
+    // Watch the folder, not the two files inside it. Every careful writer of
+    // deck.json — our own saveDeck, the collaboration server, git, and any
+    // editor a human points at theme.css — replaces the file by rename, and a
+    // watch bound to a path stops receiving events the moment that path gets a
+    // new inode. Watching the directory survives replacement.
+    const onDeckChanged = (): void => {
+      // Debounced: editors and agents often write in bursts.
+      if (deckTimer) clearTimeout(deckTimer);
+      deckTimer = setTimeout(async () => {
+        try {
+          const { readFile } = await import('node:fs/promises');
+          const raw = await readFile(join(dir, 'deck.json'), 'utf8');
+          // Our own autosave fires this watcher too. Byte-comparing against
+          // what we wrote is the only reliable echo test: comparing decks
+          // fails on key order, and that false mismatch caused a full reload
+          // that yanked the editor back to slide 1 a second after any edit.
+          if (raw === lastSavedDeckJson) return;
           if (!session) return;
-          const css = await loadTheme(session.dir, session.deck.theme);
-          sessionThemeCss = css;
-          for (const win of BrowserWindow.getAllWindows()) {
-            if (!win.isDestroyed()) win.webContents.send(IPC.themeCss, css);
-          }
-        }, 200);
+          // Watching the folder also catches writes nobody here made that
+          // change nothing — a script or checkout laying down identical
+          // content. Reloading those would broadcast a deck the windows
+          // already have, for no reason.
+          if (raw === serializeDeck(session.deck)) return;
+          const deck = await loadDeck(dir);
+          session.deck = deck;
+          broadcastDeck();
+        } catch {
+          // Half-written JSON mid-save; the next event will retry.
+        }
+      }, 200);
+    };
+    const onThemeChanged = (): void => {
+      if (themeTimer) clearTimeout(themeTimer);
+      themeTimer = setTimeout(async () => {
+        if (!session) return;
+        const css = await loadTheme(session.dir, session.deck.theme);
+        sessionThemeCss = css;
+        for (const win of BrowserWindow.getAllWindows()) {
+          if (!win.isDestroyed()) win.webContents.send(IPC.themeCss, css);
+        }
+      }, 200);
+    };
+    // A theme kept in a subfolder is not visible to a non-recursive directory
+    // watch, so that case keeps its own path watcher.
+    const themeInDeckRoot = !themeFile.includes('/') && !themeFile.includes(sep);
+    watchers.push(
+      watch(dir, (_event, filename) => {
+        const name = filename ? String(filename) : '';
+        if (name === 'deck.json') onDeckChanged();
+        else if (themeInDeckRoot && name === themeFile) onThemeChanged();
       }),
+      ...(themeInDeckRoot ? [] : [watch(join(dir, themeFile), onThemeChanged)]),
       // Saving an authoring file is the everyday way slides change, so it must
       // be cheap: the contents go straight to the editor's renderer, which is
       // already a browser and lays them out in an offscreen iframe. Nothing is
@@ -837,7 +858,10 @@ function registerHandlers(): void {
     if (!buf || buf.length === 0) {
       const html = clipboard.readHTML();
       const text = clipboard.readText();
-      if (/<table\b/i.test(html) || text.includes('\t')) {
+      // A real HTML table wins over everything else: a spreadsheet copy puts
+      // a bitmap of the range on the pasteboard *as well*, and an author who
+      // copied cells wants cells.
+      if (/<table\b/i.test(html)) {
         return { kind: 'external-html', html, text };
       }
       const image = clipboard.readImage();
@@ -853,6 +877,17 @@ function registerHandlers(): void {
         );
         return { kind: 'external-image', asset };
       }
+      // Tab-separated text is a spreadsheet range only when no bitmap was
+      // offered. Checking it before the bitmap used to discard a perfectly
+      // good pasted image whose caption happened to contain a tab.
+      if (text.includes('\t')) {
+        return { kind: 'external-html', html, text };
+      }
+      // Nothing but a reference: chat and web apps overwhelmingly write just
+      // an `<img src="https://…">`, with no pixels on the pasteboard at all.
+      // Go and get the bytes.
+      const linked = await importClipboardImageUrl(requireSession().dir, html, text);
+      if (linked) return { kind: 'external-image', asset: linked };
       return null;
     }
     let payload: ClipboardPayload | null = null;

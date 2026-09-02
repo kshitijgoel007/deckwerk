@@ -232,8 +232,10 @@ export function bindEditorKeys(deps: ShellDeps, clipboard: ClipboardActions): vo
       void clipboard.pasteClipboardData?.(html, text);
       return;
     }
+    // Any image the importer accepts, not just a PNG screenshot: the paste
+    // handler below picks the first one it can name.
     const files = [...(event.clipboardData?.items ?? [])]
-      .filter((item) => item.kind === 'file' && item.type === 'image/png')
+      .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
       .map((item) => item.getAsFile())
       .filter((file): file is File => file !== null);
     if (files.length === 0) return;

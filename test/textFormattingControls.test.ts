@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it } from 'vitest';
 import { emptyDeck, type Deck, type SlideElement } from '../src/shared/deck.js';
+import { defaultLayoutMasters } from '../src/shared/layoutMasters.js';
+import { applySlideLayout } from '../src/renderer/editor/slideLayouts.js';
 import { EditorCanvas } from '../src/renderer/editor/canvas.js';
 import { Inspector } from '../src/renderer/editor/inspector.js';
 import { wireCanvasInspector } from '../src/renderer/editor/shellWiring.js';
@@ -1404,5 +1406,118 @@ describe('inline run formatting while editing text', () => {
   it('hides the run controls when no text is being edited', () => {
     const { inspectorHost } = setup([textElement('text-1')]);
     expect(inspectorHost.querySelector('.text-selection-style')).toBeNull();
+  });
+});
+
+/**
+ * A layout preset is formatting too: picking one rewrites the geometry and the
+ * typography of the slide's title and body from the deck's layout master, the
+ * same properties these controls write one at a time. It is also the only
+ * formatting route that touches every slide at once, which is what made its
+ * bugs so loud — a single layout edit blanked the whole slide picker.
+ */
+describe('the layout preset as formatting', () => {
+  beforeEach(() => {
+    closePopover();
+    document.body.replaceChildren();
+  });
+
+  /** The Title + Body slide the layout masters produce, with authored copy. */
+  function layoutHarness(): Harness {
+    const masters = defaultLayoutMasters();
+    const harness = setup([], (deck) => {
+      deck.layoutMasters = masters;
+      applySlideLayout(deck.slides[0], 'standard', deck.layoutMasters);
+      for (const element of deck.slides[0].elements) {
+        if (element.type !== 'text') continue;
+        element.id = `text-${element.layoutPlaceholder}`;
+        element.html = `Authored ${element.layoutPlaceholder}`;
+        // What a real content commit does to prompt copy (see canvas.ts).
+        element.class = element.class.filter((name) => name !== 'placeholder');
+      }
+    });
+    return harness;
+  }
+
+  const presetSelect = (host: HTMLElement): HTMLSelectElement =>
+    field(host, 'Preset').querySelector<HTMLSelectElement>('select')!;
+
+  it('offers the layout presets once the selection is the slide itself', () => {
+    const { store, inspectorHost } = layoutHarness();
+    store.clearSelection();
+    expect([...presetSelect(inspectorHost).options].map((option) => option.textContent))
+      .toEqual(['Freeform', 'Title + body', 'Title slide', 'Edit layouts…']);
+    expect(presetSelect(inspectorHost).value).toBe('standard');
+  });
+
+  it('keeps authored text authored when the preset changes', () => {
+    const { store, canvasHost, inspectorHost } = layoutHarness();
+    store.clearSelection();
+    pick(presetSelect(inspectorHost), 'title');
+
+    const title = textOf(store, 'text-title');
+    expect(title.html).toBe('Authored title');
+    // `placeholder` means unfilled prompt copy, which the player, the exports
+    // and the slide-rail thumbnails all hide; see test/slideRail.test.ts for
+    // the rendered-visibility assertion this class list drives.
+    expect(title.class).not.toContain('placeholder');
+    expect(bodyOf(canvasHost, 'text-title').textContent).toBe('Authored title');
+  });
+
+  it('takes geometry and typography from the master the preset names', () => {
+    const { store, canvasHost, inspectorHost } = layoutHarness();
+    store.commit((deck) => {
+      const master = deck.layoutMasters!.title.elements[0];
+      if (master.type !== 'text') throw new Error('the title master starts with its title');
+      master.style['font-family'] = 'Georgia';
+      master.align = 'center';
+    }, { history: false });
+    store.clearSelection();
+    pick(presetSelect(inspectorHost), 'title');
+
+    const title = textOf(store, 'text-title');
+    expect({ x: title.x, y: title.y, w: title.w, h: title.h })
+      .toEqual({ x: 180, y: 350, w: 1560, h: 300 });
+    expect(title.style['font-family']).toBe('Georgia');
+    expect(title.align).toBe('center');
+    // The canvas repainted rather than keeping the old box.
+    expect(nodeOf(canvasHost, 'text-title').style.left).toBe('180px');
+    expect(bodyOf(canvasHost, 'text-title').style.textAlign).toBe('center');
+  });
+
+  it('hands object-level typography back to the master, keeping inline runs', () => {
+    const { store, inspectorHost } = layoutHarness();
+    store.select(['text-title']);
+    store.updateSelected((element) => {
+      if (element.type === 'text') element.html = 'Authored <b>title</b>';
+    }, { label: 'inline bold' });
+    field(inspectorHost, 'Colour').querySelector<HTMLButtonElement>('.color-picker-trigger')!.click();
+    document.querySelectorAll<HTMLButtonElement>('.color-picker-palette-button')[0].click();
+    expect(textOf(store, 'text-title').style.color).toBe('#112233');
+
+    // Editing the master is deck-wide formatting: it hands the placeholder's
+    // presentation back to the layout, so a hand-picked object colour goes
+    // with it while formatting inside the text survives. Nothing here is
+    // per-slide-override tracking; this pins what the model actually does.
+    store.clearSelection();
+    pick(presetSelect(inspectorHost), 'title');
+
+    expect(textOf(store, 'text-title').style.color).toBeUndefined();
+    expect(textOf(store, 'text-title').html).toBe('Authored <b>title</b>');
+  });
+
+  it('records one undoable step, and undo returns the previous formatting', () => {
+    const { store, inspectorHost } = layoutHarness();
+    store.clearSelection();
+    const before = textOf(store, 'text-title');
+    const geometry = { x: before.x, y: before.y, w: before.w, h: before.h };
+
+    pick(presetSelect(inspectorHost), 'title');
+    store.undo();
+
+    const title = textOf(store, 'text-title');
+    expect({ x: title.x, y: title.y, w: title.w, h: title.h }).toEqual(geometry);
+    expect(store.get().deck.slides[0].layout).toBe('standard');
+    expect(title.html).toBe('Authored title');
   });
 });

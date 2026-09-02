@@ -39,6 +39,27 @@ const ThemeStyleSchema = z.object({
 });
 
 /**
+ * The theme the author last applied, and which of its properties they took.
+ *
+ * `themeStyle` records the deck's *defaults*; this records the *choice*. They
+ * come apart whenever a theme is applied to slides rather than deck-wide: that
+ * writes the theme onto those slides inline and leaves the deck defaults alone,
+ * so without this a slide created afterwards would have no way of knowing which
+ * theme its siblings are wearing.
+ */
+const ThemeSelectionSchema = z.object({
+  /** Preset id from shared/themes.ts. */
+  preset: z.string(),
+  roles: z.array(z.enum(['title', 'heading', 'body', 'caption', 'base']))
+    .default(['title', 'body', 'caption']),
+  fontFamily: z.boolean().default(false),
+  fontWeight: z.boolean().default(false),
+  typeScale: z.boolean().default(false),
+  textColor: z.boolean().default(false),
+  objectColors: z.boolean().default(false),
+});
+
+/**
  * A comment attached to a slide or an element. Comments live in deck.json so
  * they sync through the same element-level diff/merge as every other edit and
  * survive download/export. `ts` is an ISO-8601 timestamp.
@@ -351,6 +372,8 @@ export const DeckSchema = z.object({
   themePreset: z.string().nullable().default(null),
   /** Persistent deck defaults, composed property-by-property from theme presets. */
   themeStyle: ThemeStyleSchema.nullable().default(null),
+  /** The last applied preset and properties, so new slides can match. */
+  themeSelection: ThemeSelectionSchema.nullable().default(null),
   /** Three fixed, deck-local layout masters. Null preserves legacy hard-coded layouts. */
   layoutMasters: z.object({
     freeform: LayoutMasterSchema,
@@ -378,6 +401,7 @@ export type Slide = z.infer<typeof SlideSchema>;
 export type Comment = z.infer<typeof CommentSchema>;
 export type Deck = z.infer<typeof DeckSchema>;
 export type ThemeStyle = z.infer<typeof ThemeStyleSchema>;
+export type ThemeSelection = z.infer<typeof ThemeSelectionSchema>;
 export type LayoutMaster = z.infer<typeof LayoutMasterSchema>;
 
 export const DECK_VERSION = 1 as const;

@@ -1,6 +1,6 @@
 import { watch, type FSWatcher } from 'node:fs';
-import { join } from 'node:path';
-import { loadDeck, saveDeck, loadTheme, saveTheme } from '../main/deckStore.js';
+import { join, sep } from 'node:path';
+import { loadDeck, saveDeck, loadTheme, saveTheme, serializeDeck } from '../main/deckStore.js';
 import { validateDeckIntegrity, type AgentOperation } from '../shared/agent.js';
 import { applyOpsLenient } from '../shared/collabApply.js';
 import type { Deck } from '../shared/deck.js';
@@ -86,15 +86,26 @@ export class CollabSession {
     this.events = events;
     let deckTimer: NodeJS.Timeout | null = null;
     let themeTimer: NodeJS.Timeout | null = null;
+    const onDeck = (): void => {
+      if (deckTimer) clearTimeout(deckTimer);
+      deckTimer = setTimeout(() => void this.reloadDeckFromDisk(), WATCH_DEBOUNCE_MS);
+    };
+    const onTheme = (): void => {
+      if (themeTimer) clearTimeout(themeTimer);
+      themeTimer = setTimeout(() => void this.reloadThemeFromDisk(), WATCH_DEBOUNCE_MS);
+    };
+    // The folder rather than the files: deck.json is replaced by rename on
+    // every save (ours and any careful external writer's), and a watch bound
+    // to that path goes deaf as soon as the inode behind it changes.
+    const theme = this.deck.theme;
+    const themeInDeckRoot = !theme.includes('/') && !theme.includes(sep);
     this.watchers.push(
-      watch(join(this.dir, 'deck.json'), () => {
-        if (deckTimer) clearTimeout(deckTimer);
-        deckTimer = setTimeout(() => void this.reloadDeckFromDisk(), WATCH_DEBOUNCE_MS);
+      watch(this.dir, (_event, filename) => {
+        const name = filename ? String(filename) : '';
+        if (name === 'deck.json') onDeck();
+        else if (themeInDeckRoot && name === theme) onTheme();
       }),
-      watch(join(this.dir, this.deck.theme), () => {
-        if (themeTimer) clearTimeout(themeTimer);
-        themeTimer = setTimeout(() => void this.reloadThemeFromDisk(), WATCH_DEBOUNCE_MS);
-      }),
+      ...(themeInDeckRoot ? [] : [watch(join(this.dir, theme), onTheme)]),
     );
   }
 
@@ -133,6 +144,18 @@ export class CollabSession {
       const { readFile } = await import('node:fs/promises');
       const raw = await readFile(join(this.dir, 'deck.json'), 'utf8');
       if (raw === this.lastSavedJson) return; // our own autosave echo
+      // Watching the folder also surfaces writes this session never made but
+      // which change nothing — a harness or script laying down the same
+      // deck.json, a git checkout of identical content. No client needs a
+      // resync for those, and each one would otherwise cost a seq bump.
+      if (raw === serializeDeck(this.deck)) return;
+      // A pending save means memory is ahead of disk. Adopting what disk holds
+      // right now would drop the transaction that has not been written yet, so
+      // let our own write be the one that lands. (Concurrent editing of one
+      // folder by two writers stays unsupported, as above; this only decides
+      // which way that race resolves, and losing an edit a user just made in
+      // the app is the worse direction.)
+      if (this.saveTimer) return;
       const deck = await loadDeck(this.dir);
       this.deck = deck;
       this.seq += 1;

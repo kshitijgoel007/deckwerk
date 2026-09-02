@@ -1,8 +1,17 @@
-import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { copyDeck, createDeck, deckFolderPath, importImageBuffer } from '../src/main/deckStore.js';
+import { emptyDeck } from '../src/shared/deck.js';
+import {
+  copyDeck,
+  createDeck,
+  deckFolderPath,
+  importImageBuffer,
+  loadDeck,
+  resolveAsset,
+  saveDeck,
+} from '../src/main/deckStore.js';
 
 describe('deck folder persistence', () => {
   const cleanup: string[] = [];
@@ -115,5 +124,232 @@ describe('deck folder naming', () => {
     expect(basename(dir)).toBe('rhoda_intro');
     expect(deck.title).toBe('rhoda_intro');
     expect(JSON.parse(await readFile(join(dir, 'deck.json'), 'utf8')).title).toBe('rhoda_intro');
+  });
+});
+
+/**
+ * Opening the wrong folder is the single most common way Open fails, and the
+ * renderer prints whatever `loadDeck` threw straight into the status bar
+ * (main.ts: `Open failed: ${err.message}`). So the message is the feature: it
+ * has to separate "this folder holds no presentation" — pick another one —
+ * from "this presentation is damaged", which needs a completely different
+ * response from the person reading it.
+ */
+describe('opening a folder that is not a healthy deck', () => {
+  const cleanup: string[] = [];
+
+  afterEach(async () => {
+    await Promise.all(cleanup.splice(0).map((path) => rm(path, { recursive: true, force: true })));
+  });
+
+  const folder = async (label: string): Promise<string> => {
+    const dir = await mkdtemp(join(tmpdir(), `deck-open-${label}-`));
+    cleanup.push(dir);
+    return dir;
+  };
+
+  it('names the folder when it holds no deck at all', async () => {
+    const dir = await folder('empty');
+    await expect(loadDeck(dir)).rejects.toThrow(`No deck.json in ${dir}`);
+  });
+
+  it('reports unreadable JSON as such, quoting the file it tried', async () => {
+    const dir = await folder('truncated');
+    // How a deck.json looked after a crash mid-save, before saveDeck became
+    // atomic. Still the shape a full disk or a bad sync client can produce.
+    await writeFile(join(dir, 'deck.json'), '{"version":1,"slides":[{"id":"s1"', 'utf8');
+
+    await expect(loadDeck(dir)).rejects.toThrow(/deck\.json is not valid JSON/);
+    await expect(loadDeck(dir)).rejects.toThrow(dir);
+  });
+
+  it('distinguishes a parseable file that is not a deck, listing the bad fields', async () => {
+    const dir = await folder('schema');
+    await writeFile(join(dir, 'deck.json'), JSON.stringify({ version: 1, slides: 'lots' }), 'utf8');
+
+    // The field-level detail from parseDeck has to survive the wrapping: it is
+    // the only clue about *what* is wrong with the document.
+    const error = await loadDeck(dir).catch((e: Error) => e);
+    expect(String(error)).toContain('is not a valid deck');
+    expect(String(error)).toContain('slides');
+  });
+
+  it('does not mistake a folder named deck.json for a deck', async () => {
+    const dir = await folder('dirname');
+    await mkdir(join(dir, 'deck.json'));
+
+    await expect(loadDeck(dir)).rejects.toThrow(/is a folder, not a deck file/);
+  });
+});
+
+/**
+ * Save/load has to be a fixed point. Autosave, the collaboration server's
+ * persistence and the fs watchers all decide whether something changed by
+ * comparing bytes, so a save that reformatted or reordered anything would read
+ * back as somebody else's edit and trigger a reload loop.
+ */
+describe('deck.json round-trips byte-for-byte', () => {
+  const cleanup: string[] = [];
+
+  afterEach(async () => {
+    await Promise.all(cleanup.splice(0).map((path) => rm(path, { recursive: true, force: true })));
+  });
+
+  it('returns exactly the bytes it wrote, and rewrites them identically', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'deck-roundtrip-'));
+    cleanup.push(root);
+    const dir = join(root, 'Deck');
+    const deck = emptyDeck('Round trip');
+
+    const written = await saveDeck(dir, deck);
+
+    // The return value is the watchers' echo test; if it ever diverged from
+    // the file, every save would look like an external edit.
+    expect(await readFile(join(dir, 'deck.json'), 'utf8')).toBe(written);
+    expect(written.endsWith('\n')).toBe(true);
+    const reloaded = await loadDeck(dir);
+    expect(await saveDeck(dir, reloaded)).toBe(written);
+    expect(reloaded).toEqual(deck);
+  });
+});
+
+/**
+ * New and Save As both point at a folder the user chose in a panel, and both
+ * can therefore be aimed at a presentation that already exists. copyDeck has
+ * always refused; createDeck used to overwrite deck.json and theme.css in
+ * place, which turns "New" on an existing name into a silent erase of somebody
+ * else's talk.
+ */
+describe('creating a deck never overwrites one', () => {
+  const cleanup: string[] = [];
+
+  afterEach(async () => {
+    await Promise.all(cleanup.splice(0).map((path) => rm(path, { recursive: true, force: true })));
+  });
+
+  it('refuses a folder that already holds a presentation, leaving it untouched', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'deck-create-existing-'));
+    cleanup.push(root);
+    const dir = join(root, 'Existing');
+    await createDeck(dir, 'Real talk');
+    const before = await readFile(join(dir, 'deck.json'), 'utf8');
+
+    await expect(createDeck(dir, 'Existing')).rejects.toThrow('already contains a presentation');
+
+    expect(await readFile(join(dir, 'deck.json'), 'utf8')).toBe(before);
+    expect((await loadDeck(dir)).title).toBe('Real talk');
+  });
+
+  it('keeps a hand-written theme.css that is already in the folder', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'deck-create-theme-'));
+    cleanup.push(root);
+    const dir = join(root, 'Themed');
+    await mkdir(dir, { recursive: true });
+    const css = '.slide { background: #101014; } /* two evenings of work */\n';
+    await writeFile(join(dir, 'theme.css'), css, 'utf8');
+
+    const deck = await createDeck(dir, 'Themed');
+
+    // "The editor never rewrites this file" is a promise printed in the
+    // default theme's own first line. New has to keep it too.
+    expect(await readFile(join(dir, deck.theme), 'utf8')).toBe(css);
+  });
+});
+
+/** Save As, at the edges of where the panel lets someone point it. */
+describe('copying a deck for Save As', () => {
+  const cleanup: string[] = [];
+
+  afterEach(async () => {
+    await Promise.all(cleanup.splice(0).map((path) => rm(path, { recursive: true, force: true })));
+  });
+
+  it('creates missing parent folders on the way to the destination', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'deck-save-as-parents-'));
+    cleanup.push(root);
+    const source = join(root, 'Original');
+    await createDeck(source, 'Original');
+
+    const copied = await copyDeck(source, join(root, 'Talks', '2026', 'Copy'));
+
+    expect(copied.title).toBe('Original');
+    expect((await loadDeck(join(root, 'Talks', '2026', 'Copy'))).title).toBe('Original');
+  });
+
+  it('refuses to write into the open deck, or into a subfolder of it', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'deck-save-as-nested-'));
+    cleanup.push(root);
+    const source = join(root, 'Original');
+    await createDeck(source, 'Original');
+
+    await expect(copyDeck(source, source)).rejects.toThrow('different folder');
+    await expect(copyDeck(source, join(source, 'assets', 'Copy'))).rejects.toThrow('inside the open deck');
+    // A trailing separator and a redundant `.` are the same folder to the
+    // filesystem, so they must be the same folder to this guard.
+    await expect(copyDeck(source, `${source}${'/'}`)).rejects.toThrow('different folder');
+    await expect(copyDeck(source, join(source, '.'))).rejects.toThrow('different folder');
+  });
+
+  it('carries the edit history sidecar into the copy', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'deck-save-as-history-'));
+    cleanup.push(root);
+    const source = join(root, 'Original');
+    await createDeck(source, 'Original');
+    await writeFile(join(source, 'deck-history-v2.json.gz'), Buffer.from([1, 2, 3]));
+
+    await copyDeck(source, join(root, 'Copy'));
+
+    // Undo history is part of the document as far as a user is concerned:
+    // a copy that dropped it would lose their ability to walk work back.
+    expect(await readFile(join(root, 'Copy', 'deck-history-v2.json.gz')))
+      .toEqual(Buffer.from([1, 2, 3]));
+  });
+});
+
+/**
+ * `resolveAsset` is the boundary that keeps a deck-relative `src` from
+ * naming a file elsewhere on the machine. The collaboration server hands it
+ * strings straight out of HTTP requests, so it is reachable by anyone on the
+ * network the host is sharing over.
+ */
+describe('resolving a deck-relative asset path', () => {
+  const deckDir = '/decks/Talk';
+
+  it('accepts paths inside the deck folder', () => {
+    expect(resolveAsset(deckDir, 'assets/clip.mp4')).toBe('/decks/Talk/assets/clip.mp4');
+    expect(resolveAsset(deckDir, 'assets/sub/frame.png')).toBe('/decks/Talk/assets/sub/frame.png');
+    // A path that walks out and back in still lands inside the deck.
+    expect(resolveAsset(deckDir, 'assets/../assets/clip.mp4')).toBe('/decks/Talk/assets/clip.mp4');
+  });
+
+  it('refuses every path that leaves the deck folder', () => {
+    for (const src of [
+      '../secrets.txt',
+      '../../etc/passwd',
+      'assets/../../Other/deck.json',
+      '/etc/passwd',
+      'assets/../..',
+      './../Talk-notes/private.md',
+      // A sibling whose name merely starts with this deck's name is not
+      // inside it: a prefix test without the separator would let this pass.
+      '../Talk-archive/deck.json',
+    ]) {
+      expect(() => resolveAsset(deckDir, src), src).toThrow('escapes the deck folder');
+    }
+  });
+
+  it('resolves a symlink inside the deck to its real target', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'deck-asset-symlink-'));
+    const deck = join(root, 'Talk');
+    await mkdir(join(deck, 'assets'), { recursive: true });
+    await writeFile(join(root, 'outside.txt'), 'not part of the deck', 'utf8');
+    await symlink(join(root, 'outside.txt'), join(deck, 'assets', 'link.txt'));
+
+    // Documents today's behaviour, which is path-based only: a symlink planted
+    // in assets/ still resolves to a path inside the deck, so the guard lets
+    // it through and the server would serve the file it points at.
+    expect(resolveAsset(deck, 'assets/link.txt')).toBe(join(deck, 'assets', 'link.txt'));
+
+    await rm(root, { recursive: true, force: true });
   });
 });

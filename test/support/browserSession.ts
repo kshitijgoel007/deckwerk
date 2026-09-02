@@ -234,6 +234,29 @@ export class Cdp {
     await this.mouse('mouseReleased', end.x, end.y, 1);
   }
 
+  /**
+   * Press the primary button at a viewport point and keep it down, so a test
+   * can walk the pointer and inspect what the drag shows *while it is still in
+   * progress* — snap guides, drop targets and marquees only exist mid-drag.
+   */
+  async beginDrag(x: number, y: number): Promise<{
+    moveTo: (toX: number, toY: number) => Promise<void>;
+    drop: (atX?: number, atY?: number) => Promise<void>;
+  }> {
+    await this.mouse('mouseMoved', x, y, 0);
+    await this.mouse('mousePressed', x, y, 1);
+    let at = { x, y };
+    return {
+      moveTo: async (toX: number, toY: number) => {
+        at = { x: toX, y: toY };
+        await this.mouse('mouseMoved', toX, toY, 1);
+      },
+      drop: async (atX = at.x, atY = at.y) => {
+        await this.mouse('mouseReleased', atX, atY, 1);
+      },
+    };
+  }
+
   /** Click near the leading edge of a rendered character at a text offset. */
   async clickTextAtOffset(
     selector: string,

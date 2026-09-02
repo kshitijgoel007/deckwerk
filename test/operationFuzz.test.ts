@@ -1,6 +1,12 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from 'vitest';
 import { DeckSchema, emptyDeck, type Deck, type SlideElement } from '../src/shared/deck.js';
+import {
+  defaultLayoutMasters,
+  syncDeckWithLayoutMasters,
+  type FixedLayout,
+} from '../src/shared/layoutMasters.js';
+import { applySlideLayout } from '../src/renderer/editor/slideLayouts.js';
 import { EditorCanvas } from '../src/renderer/editor/canvas.js';
 import { EditorStore } from '../src/renderer/editor/store.js';
 import { findRenderDivergences, formatDivergence } from '../src/renderer/editor/renderInvariants.js';
@@ -70,10 +76,18 @@ function seedElements(): SlideElement[] {
 
 type Op = { name: string; run: () => void };
 
+/** Prompt copy the layouts seed placeholders with; anything else is authored. */
+const PROMPT_COPY = new Set(['Slide title', 'Body text', 'New text']);
+
 function buildOps(store: EditorStore, canvas: EditorCanvas, random: () => number): Op[] {
   const pick = <T>(items: T[]): T => items[Math.floor(random() * items.length)];
+  // Locked layout-master copies take no pointer events and are excluded from
+  // Select All, so no interactive route can put one in the selection.
   const currentIds = (): string[] =>
-    store.get().deck.slides[store.get().slideIndex].elements.map((e) => e.id);
+    store.get().deck.slides[store.get().slideIndex].elements
+      .filter((e) => !e.layoutMasterId)
+      .map((e) => e.id);
+  let masterObjects = 0;
   const round = (n: number): number => Math.round(n * 100) / 100;
 
   return [
@@ -92,6 +106,7 @@ function buildOps(store: EditorStore, canvas: EditorCanvas, random: () => number
       },
     },
     { name: 'clear selection', run: () => store.clearSelection() },
+    { name: 'select all elements', run: () => store.selectAllElements() },
     { name: 'duplicate selection', run: () => store.duplicateSelection() },
     { name: 'delete selection', run: () => store.deleteSelection() },
     {
@@ -168,7 +183,12 @@ function buildOps(store: EditorStore, canvas: EditorCanvas, random: () => number
     {
       name: 'edit text html',
       run: () => store.updateSelected((el) => {
-        if (el.type === 'text') el.html = `Edited ${Math.floor(random() * 1000)}`;
+        if (el.type !== 'text') return;
+        el.html = `Edited ${Math.floor(random() * 1000)}`;
+        // A content commit retires placeholder status in the real editor
+        // (canvas.ts), and the invariants below rely on that being what an
+        // authored box looks like.
+        el.class = el.class.filter((name) => name !== 'placeholder');
       }, { label: 'text' }),
     },
     {
@@ -280,6 +300,85 @@ function buildOps(store: EditorStore, canvas: EditorCanvas, random: () => number
         el.magicMoveId = random() < 0.5 ? null : `pair-${Math.floor(random() * 3)}`;
       }, { label: 'pair' }),
     },
+    // Layout masters are deck-wide formatting: one commit rewrites the
+    // geometry, presentation and background of every slide that uses a
+    // layout. Pairing that with ordinary object edits is what turned every
+    // authored title into blank space in the slide picker.
+    {
+      name: 'install layout masters',
+      run: () => store.commit((deck: Deck) => {
+        deck.layoutMasters = defaultLayoutMasters();
+        syncDeckWithLayoutMasters(deck);
+      }, { label: 'install masters' }),
+    },
+    {
+      name: 'switch slide layout',
+      run: () => {
+        const index = store.get().slideIndex;
+        const layout = pick(['freeform', 'standard', 'title'] as FixedLayout[]);
+        store.commit((deck: Deck) => {
+          applySlideLayout(deck.slides[index], layout, deck.layoutMasters);
+        }, { label: `apply ${layout} layout` });
+      },
+    },
+    {
+      name: 'edit layout master placeholder',
+      run: () => store.commit((deck: Deck) => {
+        if (!deck.layoutMasters) return;
+        const master = deck.layoutMasters[pick(['standard', 'title'] as FixedLayout[])];
+        const target = master.elements[Math.floor(random() * master.elements.length)];
+        if (!target) return;
+        target.x = round(target.x + (random() - 0.5) * 200);
+        target.h = Math.max(20, round(target.h * (0.5 + random())));
+        target.style.color = pick(['rgb(255, 0, 0)', 'rgb(10, 10, 10)']);
+        if (target.type === 'text') target.align = pick(['left', 'center', 'right'] as const);
+        syncDeckWithLayoutMasters(deck);
+      }, { label: 'edit master placeholder' }),
+    },
+    {
+      name: 'add layout master decoration',
+      run: () => store.commit((deck: Deck) => {
+        if (!deck.layoutMasters) return;
+        const master = deck.layoutMasters[pick(['freeform', 'standard', 'title'] as FixedLayout[])];
+        master.elements.push({
+          id: `master-shape-${(masterObjects += 1)}`, type: 'shape',
+          x: 40, y: 900, w: 200, h: 120, rot: 0, z: 4, opacity: 1,
+          class: [], style: {}, shape: 'rect', fill: '#334455', stroke: null,
+          strokeWidth: 0, radius: 0, path: null, pathSize: null,
+          arrowStart: false, arrowEnd: false, control: null,
+        });
+        syncDeckWithLayoutMasters(deck);
+      }, { label: 'add master object' }),
+    },
+    {
+      name: 'remove layout master decoration',
+      run: () => store.commit((deck: Deck) => {
+        if (!deck.layoutMasters) return;
+        for (const layout of ['freeform', 'standard', 'title'] as FixedLayout[]) {
+          const master = deck.layoutMasters[layout];
+          master.elements = master.elements.filter((element) => (
+            element.type === 'text' && element.layoutPlaceholder !== undefined
+          ));
+        }
+        syncDeckWithLayoutMasters(deck);
+      }, { label: 'remove master objects' }),
+    },
+    {
+      name: 'build step on a random element',
+      run: () => {
+        const index = store.get().slideIndex;
+        const ids = currentIds();
+        if (!ids.length) return;
+        const target = pick(ids);
+        store.commit((deck: Deck) => {
+          deck.slides[index].timeline.push({
+            id: `t-${deck.slides[index].timeline.length}-${Math.floor(random() * 1000)}`,
+            trigger: { on: 'click', ref: null, delay: 0 },
+            action: { type: 'appear', target, value: null },
+          });
+        }, { label: 'build' });
+      },
+    },
     { name: 'undo', run: () => store.undo() },
     { name: 'redo', run: () => store.redo() },
     { name: 'refit auto text', run: () => canvas.refitAutoText() },
@@ -340,6 +439,49 @@ function checkInvariants(
   // 6. The canvas agrees with a fresh render of the same model.
   for (const divergence of findRenderDivergences(slideLayer, slide, (src) => src)) {
     problems.push(formatDivergence(divergence));
+  }
+
+  // 7. Authored text is never marked as unfilled prompt copy. `placeholder`
+  //    means "the author has not replaced this yet", and type.css hides such
+  //    text in the player, the slide-rail thumbnails and every export -- so
+  //    re-applying it to a box that already holds content does not look like
+  //    a class bug, it looks like the slide went blank. A layout-master
+  //    update used to do exactly that to every title and body in the deck.
+  for (const element of slide.elements) {
+    if (element.type !== 'text' || !element.class.includes('placeholder')) continue;
+    if (!PROMPT_COPY.has(element.html)) {
+      problems.push(`${element.id} holds authored text but is still marked placeholder`);
+    }
+  }
+
+  // 8. Every build step targets an element that exists. Removing an object
+  //    from a layout master removes its per-slide copies, and the steps aimed
+  //    at them have to go too, or the talk has clicks that do nothing.
+  for (const entry of slide.timeline) {
+    if (!present.has(entry.action.target)) {
+      problems.push(`build step ${entry.id} targets missing element ${entry.action.target}`);
+    }
+    if (entry.trigger.ref && !present.has(entry.trigger.ref)) {
+      problems.push(`build step ${entry.id} waits on missing element ${entry.trigger.ref}`);
+    }
+  }
+
+  // 9. Master copies stay derived state: one copy per master object, and
+  //    nothing left behind by a master that no longer holds it.
+  const masterObjects = new Set((state.deck.layoutMasters?.[
+    (slide.layout ?? 'freeform') as FixedLayout
+  ]?.elements ?? []).filter((element) => (
+    element.type !== 'text' || !element.layoutPlaceholder
+  )).map((element) => element.id));
+  const copied = slide.elements.filter((element) => element.layoutMasterId);
+  for (const copy of copied) {
+    if (!masterObjects.has(copy.layoutMasterId!)) {
+      problems.push(`${copy.id} copies master object ${copy.layoutMasterId}, which is gone`);
+    }
+  }
+  const copiedFrom = copied.map((element) => element.layoutMasterId);
+  if (new Set(copiedFrom).size !== copiedFrom.length) {
+    problems.push(`duplicate master copies: ${copiedFrom.join(', ')}`);
   }
   return problems;
 }

@@ -14,6 +14,12 @@ import type { SlideState } from './timeline.js';
  */
 
 const LIST_TAGS = new Set(['UL', 'OL']);
+/**
+ * Invisible text that gives a collapsed caret a stable styled DOM home while
+ * editing (see canvas.ts). It lives here so the editor modules that have to
+ * look past it agree on which character it is.
+ */
+export const TYPING_STYLE_SENTINEL = '\u2060';
 export const LIST_MARKER_COLOR_ATTRIBUTE = 'data-list-marker-color';
 export const LIST_MARKER_COLOR_PROPERTY = '--list-marker-color';
 const BLOCK_TAGS = new Set([

@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { emptyDeck } from '../src/shared/deck.js';
+import type { Slide } from '../src/shared/deck.js';
+import type { ThemeAdoption } from '../src/shared/themes.js';
 import {
   NO_APPLY,
   THEMES,
@@ -7,10 +9,12 @@ import {
   applyThemeToDeck,
   applyThemeToSlide,
   adoptThemeStyles,
+  applyDeckThemeToNewSlide,
   nearestPaletteColor,
   themeCss,
   withThemeBlock,
 } from '../src/shared/themes.js';
+import { applySlideLayout } from '../src/renderer/editor/slideLayouts.js';
 import { alignElements } from '../src/renderer/editor/align.js';
 import {
   EditorStore,
@@ -65,6 +69,19 @@ describe('theme presets', () => {
         t.fonts.title.family !== t.fonts.body.family
           || t.fonts.title.weight >= t.fonts.body.weight + 200,
         `${t.name} cannot tell its title from its body`,
+      ).toBe(true);
+      // Weights have to be cuts a real family ships. An in-between number like
+      // 650 is silently rounded to the nearest installed face, which is how a
+      // "semibold" heading and a "bold" title ended up as one weight.
+      for (const [role, font] of Object.entries(t.fonts)) {
+        expect(
+          font.weight % 100 === 0 && font.weight >= 300 && font.weight <= 800,
+          `${t.name} ${role} asks for weight ${font.weight}, which no cut ships`,
+        ).toBe(true);
+      }
+      expect(
+        t.fonts.heading.weight <= t.fonts.title.weight,
+        `${t.name} sets headings heavier than titles`,
       ).toBe(true);
     }
   });
@@ -309,5 +326,98 @@ describe('element clipboard', () => {
     const [id] = [...store.get().selection];
     const pasted = store.slide!.elements.find((el) => el.id === id)!;
     expect(pasted.type === 'shape' && pasted.control).toEqual({ x: 274, y: 344 });
+  });
+});
+
+describe('a new slide and the deck theme', () => {
+  /** What `SlideRail.addSlide` builds, minus the store: layout only, no styles. */
+  function freshSlide(deck: ReturnType<typeof emptyDeck>, at: number) {
+    const slide: Slide = {
+      id: `slide-new-${at}`, name: '', background: { color: null, image: null },
+      notes: '', elements: [], timeline: [],
+    };
+    deck.slides.splice(at, 0, slide);
+    applySlideLayout(slide, 'standard', deck.layoutMasters);
+    return slide;
+  }
+
+  const SLIDES_SCOPE_APPLY: ThemeAdoption = {
+    scope: 'slides', roles: ['title', 'body', 'caption'], fontFamily: true,
+    fontWeight: false, typeScale: false, textColor: false, background: false,
+    objectColors: false, replaceOverrides: true, detectRoles: false,
+  };
+
+  it('records the applied preset and properties even when only slides were themed', () => {
+    const deck = emptyDeck('T');
+    adoptThemeStyles(deck, THEMES[1], { ...SLIDES_SCOPE_APPLY }, 0, new Set(), new Set(['slide-1']));
+    // Deck defaults are untouched — this scope only wrote onto those slides.
+    expect(deck.themeStyle).toBeNull();
+    expect(deck.themePreset).toBeNull();
+    expect(deck.themeSelection).toEqual({
+      preset: THEMES[1].id,
+      roles: ['title', 'body', 'caption'],
+      fontFamily: true,
+      fontWeight: false,
+      typeScale: false,
+      textColor: false,
+      objectColors: false,
+    });
+  });
+
+  it('gives a slide created afterwards the same family, plus the theme background', () => {
+    const deck = emptyDeck('T');
+    const first = freshSlide(deck, 0);
+    deck.slides.pop(); // drop emptyDeck's own bare slide
+    adoptThemeStyles(deck, THEMES[1], { ...SLIDES_SCOPE_APPLY }, 0, new Set(), new Set([first.id]));
+
+    const fresh = freshSlide(deck, 1);
+    applyDeckThemeToNewSlide(deck, 1);
+
+    const titleOf = (slide: typeof fresh) =>
+      slide.elements.find((el) => el.class.includes('role-title'))!;
+    expect(titleOf(fresh).style['font-family']).toBe(THEMES[1].fonts.title.family);
+    expect(titleOf(fresh).style['font-family']).toBe(titleOf(first).style['font-family']);
+    // Sizes were not part of the apply, so they are not invented here either.
+    expect(titleOf(fresh).style['font-size']).toBeUndefined();
+    expect(fresh.background.color).toBe(THEMES[1].colors.background);
+    expect(fresh.layoutBackgroundInherited).toBe(false);
+  });
+
+  it('leaves a new slide inline-free when the theme is the deck default', () => {
+    const deck = emptyDeck('T');
+    adoptThemeStyles(deck, THEMES[1], {
+      ...SLIDES_SCOPE_APPLY, scope: 'deck', background: true,
+    }, 0, new Set());
+
+    const fresh = freshSlide(deck, 1);
+    applyDeckThemeToNewSlide(deck, 1);
+
+    // theme.css already styles the role classes and `.slide`; copying those
+    // values inline would only stop later theme edits from reaching the slide.
+    expect(fresh.elements.every((el) => Object.keys(el.style).length === 0)).toBe(true);
+    expect(fresh.background.color).toBeNull();
+  });
+
+  it('follows the last applied theme when it differs from the installed default', () => {
+    const deck = emptyDeck('T');
+    adoptThemeStyles(deck, THEMES[1], {
+      ...SLIDES_SCOPE_APPLY, scope: 'deck', background: true,
+    }, 0, new Set());
+    adoptThemeStyles(deck, THEMES[2], { ...SLIDES_SCOPE_APPLY }, 0, new Set(), new Set(['slide-1']));
+
+    const fresh = freshSlide(deck, 1);
+    applyDeckThemeToNewSlide(deck, 1);
+
+    const title = fresh.elements.find((el) => el.class.includes('role-title'))!;
+    expect(title.style['font-family']).toBe(THEMES[2].fonts.title.family);
+    expect(fresh.background.color).toBe(THEMES[2].colors.background);
+  });
+
+  it('is a no-op for a deck whose theme was never applied', () => {
+    const deck = emptyDeck('T');
+    const fresh = freshSlide(deck, 1);
+    const before = JSON.stringify(fresh);
+    applyDeckThemeToNewSlide(deck, 1);
+    expect(JSON.stringify(fresh)).toBe(before);
   });
 });

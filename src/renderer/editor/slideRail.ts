@@ -2,6 +2,7 @@ import { makeId } from '@shared/geometry.js';
 import { recoverPreviewFrames } from '../player/previewFrameRecovery.js';
 import { freezePreviewVideos, releasePreviewVideos } from '../player/previewPoster.js';
 import { renderSlide } from '../player/render.js';
+import { applyDeckThemeToNewSlide } from '@shared/themes.js';
 import { applySlideLayout } from './slideLayouts.js';
 import { newComment, openCommentsPopover, openCount } from './comments.js';
 import type { Deck, Slide } from '@shared/deck.js';
@@ -591,7 +592,11 @@ export class SlideRail {
       // click on a thumbnail then did nothing.
       item.addEventListener('pointerdown', (event) => {
         if (event.button !== 0) return;
-        this.store.selectSlide(i, event.shiftKey);
+        // Shift extends a range from the anchor; Cmd/Ctrl picks or drops this
+        // one row on its own, so a scattered set of slides can be deleted,
+        // hidden or duplicated in one go.
+        if (event.metaKey || event.ctrlKey) this.store.toggleSlideSelection(i);
+        else this.store.selectSlide(i, event.shiftKey);
         this.onSlideActivate?.(i);
         // Picking slides makes the rail the active surface, so Backspace is a
         // slide command from here on. Without this the keystroke reaches the
@@ -809,16 +814,12 @@ export class SlideRail {
   addSlide(): void {
     const at = this.store.get().slideIndex + 1;
     this.store.commit((deck) => {
-      const slide = {
-        id: makeId('slide'),
-        name: '',
-        background: { color: null, image: null },
-        notes: '',
-        elements: [],
-        timeline: [],
-      };
+      const slide = blankSlide();
       deck.slides.splice(at, 0, slide);
       applySlideLayout(slide, 'standard', deck.layoutMasters);
+      // Layout gives the slide its geometry; the deck's theme gives it its
+      // voice, so a new slide never lands looking unthemed beside its siblings.
+      applyDeckThemeToNewSlide(deck, at);
     }, { label: 'Add slide' });
     this.store.selectSlide(at);
   }
@@ -885,24 +886,51 @@ export class SlideRail {
   /**
    * Delete every slide selected in the rail, not just the current one.
    *
-   * A Shift-click range is a single unit as far as the user is concerned, so
-   * deleting it is one undo entry. A deck must keep at least one slide, so a
-   * selection covering the whole deck is refused rather than half-applied.
+   * A multi-slide selection is a single unit as far as the user is concerned,
+   * so deleting it is one undo entry. A deck must keep at least one slide: a
+   * selection covering the whole deck deletes all of it and lands on one
+   * fresh blank slide, rather than silently refusing the keystroke.
    */
   deleteSlide(): void {
     const { deck, slideIndex, slideSelection } = this.store.get();
     const doomed = deck.slides
       .map((slide, index) => ({ slide, index }))
       .filter(({ slide }) => slideSelection.has(slide.id));
-    if (doomed.length === 0 || doomed.length >= deck.slides.length) return;
+    if (doomed.length === 0) return;
+    // Nothing to gain from swapping the last slide for another empty one.
+    if (deck.slides.length === 1) return;
+    // Selecting the whole deck still has to leave a slide behind. The first
+    // row stays put and is emptied in place rather than deleted and re-added:
+    // the deck is never momentarily slide-less, which both the operation log
+    // and the collaboration merge refuse to replay.
+    const wholeDeck = doomed.length >= deck.slides.length;
+    const survivor = wholeDeck ? doomed[0].slide.id : null;
 
     const ids = new Set(doomed.map(({ slide }) => slide.id));
+    if (survivor) ids.delete(survivor);
     const first = Math.min(...doomed.map(({ index }) => index), slideIndex);
     this.store.commit((d) => {
       d.slides = d.slides.filter((slide) => !ids.has(slide.id));
-    }, { label: ids.size === 1 ? 'Delete slide' : `Delete ${ids.size} slides` });
-    this.store.selectSlide(Math.max(0, first - 1));
+      if (!survivor) return;
+      const kept = { ...blankSlide(), id: survivor };
+      d.slides[0] = kept;
+      applySlideLayout(kept, 'standard', d.layoutMasters);
+      applyDeckThemeToNewSlide(d, 0);
+    }, { label: doomed.length === 1 ? 'Delete slide' : `Delete ${doomed.length} slides` });
+    this.store.selectSlide(wholeDeck ? 0 : Math.max(0, first - 1));
   }
+}
+
+/** An empty slide, before a layout and the deck's theme are applied to it. */
+function blankSlide(): Slide {
+  return {
+    id: makeId('slide'),
+    name: '',
+    background: { color: null, image: null },
+    notes: '',
+    elements: [],
+    timeline: [],
+  };
 }
 
 function railButton(label: string, onClick: () => void): HTMLElement {

@@ -128,6 +128,7 @@ const UpdateDeckOperation = z.object({
   theme: z.string().optional(),
   themePreset: z.string().nullable().optional(),
   themeStyle: DeckSchema.shape.themeStyle.removeDefault().optional(),
+  themeSelection: DeckSchema.shape.themeSelection.removeDefault().optional(),
   layoutMasters: DeckSchema.shape.layoutMasters.removeDefault().optional(),
   magicMoveEasing: z.enum(['ease-in-out', 'ease-out', 'linear']).optional(),
 });
@@ -305,7 +306,19 @@ function applyOperation(deck: Deck, operation: AgentOperation): void {
       if (operation.theme !== undefined) deck.theme = operation.theme;
       if (operation.themePreset !== undefined) deck.themePreset = operation.themePreset;
       if (operation.themeStyle !== undefined) deck.themeStyle = structuredClone(operation.themeStyle);
+      if (operation.themeSelection !== undefined) {
+        deck.themeSelection = structuredClone(operation.themeSelection);
+      }
       if (operation.layoutMasters !== undefined) {
+        // Slides are not synchronized here on purpose. `updateDeck` is a field
+        // setter in an operation algebra that undo, redo and collaboration all
+        // replay, and every slide change travels as its own operation in the
+        // same batch (see deckDiff). Rewriting slides from this branch made
+        // those batches order-sensitive: an undo whose masters landed before
+        // its own deleteElements threw on an id this branch had already
+        // removed. Callers that mean "install masters and follow them" call
+        // syncDeckWithLayoutMasters alongside the operation, as the layout
+        // editor does.
         deck.layoutMasters = structuredClone(operation.layoutMasters);
       }
       if (operation.magicMoveEasing !== undefined) deck.magicMoveEasing = operation.magicMoveEasing;

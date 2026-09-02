@@ -1,13 +1,16 @@
-import type { Deck, Slide, SlideElement, ThemeStyle } from './deck.js';
+import type { Deck, Slide, SlideElement, ThemeSelection, ThemeStyle } from './deck.js';
 import { type FontSet, deckProseMax, fontSetCss, roleForElement } from './fontSets.js';
 
 /**
  * Theme presets, modelled on how omarchy themes work: installing a theme
  * changes what is *available* — the swatches in every colour picker, the role
  * styles in theme.css — while applying it to existing content is a separate,
- * granular act. With every apply-option off, installing a theme changes not a
- * single pixel of the deck; you then apply per slide (or deck-wide) with
- * exactly the aspects you asked for.
+ * granular act. Choosing a theme restyles not a single existing pixel; you then
+ * apply per slide (or deck-wide) with exactly the aspects you asked for.
+ *
+ * The one thing choosing does decide is the deck's *current* theme
+ * (`deck.themeSelection`), which is what slides created afterwards are born
+ * wearing — a new slide has no styling of its own to protect.
  */
 
 export interface ThemePreset {
@@ -43,6 +46,25 @@ export const NO_APPLY: ApplyOptions = {
   fontSizes: false,
   backgrounds: false,
 };
+
+/*
+ * Weights are a per-family decision, not a house default.
+ *
+ * A weight only means something if the family on the machine actually has that
+ * cut: `font-weight: 650` on Helvetica Neue (300/400/500/700) renders exactly
+ * as 700, so a "semibold heading" over a "bold title" was two names for one
+ * weight. Every pair below was checked against the cuts the stack really
+ * ships, and titles are heavy only where the typeface's display voice wants
+ * heft — grotesks and slabs, not Didones, book serifs or condensed humanists,
+ * where bold closes the counters and flattens the contrast that is the point
+ * of choosing them.
+ *
+ * The weight belongs to the theme. Layout masters carry geometry and no type
+ * styling of their own, and the `.role-*` weights in type.css are only the
+ * fallback for a deck whose stylesheet has no theme block -- an installed
+ * theme's block loads after them and wins. So switching theme switches weight,
+ * provided the apply carries it (see the panel's adoption defaults).
+ */
 
 /*
  * Five original, light presentation systems. Their directions borrow broad
@@ -82,7 +104,7 @@ export const THEMES: ThemePreset[] = [
     description: 'Warm editorial serif, humanist prose, and a restrained clay accent.',
     fonts: {
       title: { family: EDITORIAL_SERIF, size: 108, weight: 700, lineHeight: 1.0, letterSpacing: '-0.03em' },
-      heading: { family: EDITORIAL_SERIF, size: 64, weight: 600, lineHeight: 1.08, letterSpacing: '-0.015em' },
+      heading: { family: EDITORIAL_SERIF, size: 64, weight: 400, lineHeight: 1.08, letterSpacing: '-0.015em' },
       body: { family: AVENIR, size: 48, weight: 400, lineHeight: 1.32, letterSpacing: '0' },
       caption: { family: AVENIR, size: 30, weight: 500, lineHeight: 1.3, letterSpacing: '0.015em', color: '#6b6862' },
       base: { family: AVENIR, size: 42, weight: 400, lineHeight: 1.34, letterSpacing: '0' },
@@ -96,7 +118,7 @@ export const THEMES: ThemePreset[] = [
     description: 'Cool product minimalism with compact display type and desaturated blue.',
     fonts: {
       title: { family: HELVETICA, size: 106, weight: 700, lineHeight: 1.0, letterSpacing: '-0.045em' },
-      heading: { family: HELVETICA, size: 62, weight: 650, lineHeight: 1.08, letterSpacing: '-0.025em' },
+      heading: { family: HELVETICA, size: 62, weight: 500, lineHeight: 1.08, letterSpacing: '-0.025em' },
       body: { family: INTER, size: 46, weight: 400, lineHeight: 1.34, letterSpacing: '-0.005em' },
       caption: { family: MONO, size: 29, weight: 500, lineHeight: 1.3, letterSpacing: '0.025em', color: '#686a73' },
       base: { family: INTER, size: 42, weight: 400, lineHeight: 1.34, letterSpacing: '0' },
@@ -125,7 +147,7 @@ export const THEMES: ThemePreset[] = [
     fonts: {
       title: { family: HELVETICA, size: 118, weight: 700, lineHeight: 0.96, letterSpacing: '-0.05em' },
       heading: { family: HELVETICA, size: 68, weight: 700, lineHeight: 1.02, letterSpacing: '-0.03em' },
-      body: { family: INTER, size: 48, weight: 450, lineHeight: 1.28, letterSpacing: '-0.01em' },
+      body: { family: INTER, size: 48, weight: 400, lineHeight: 1.28, letterSpacing: '-0.01em' },
       caption: { family: MONO, size: 30, weight: 600, lineHeight: 1.22, letterSpacing: '0.07em', color: '#4f4f4f' },
       base: { family: INTER, size: 43, weight: 400, lineHeight: 1.3, letterSpacing: '0' },
     },
@@ -138,7 +160,7 @@ export const THEMES: ThemePreset[] = [
     description: 'Humanist display, readable book serif, and natural low-chroma accents.',
     fonts: {
       title: { family: HUMANIST, size: 104, weight: 600, lineHeight: 1.03, letterSpacing: '-0.02em' },
-      heading: { family: HUMANIST, size: 64, weight: 600, lineHeight: 1.1, letterSpacing: '-0.01em' },
+      heading: { family: HUMANIST, size: 64, weight: 400, lineHeight: 1.1, letterSpacing: '-0.01em' },
       body: { family: EDITORIAL_SERIF, size: 46, weight: 400, lineHeight: 1.38, letterSpacing: '0' },
       caption: { family: HUMANIST, size: 30, weight: 500, lineHeight: 1.32, letterSpacing: '0.025em', color: '#82766e' },
       base: { family: EDITORIAL_SERIF, size: 42, weight: 400, lineHeight: 1.38, letterSpacing: '0' },
@@ -152,7 +174,7 @@ export const THEMES: ThemePreset[] = [
     description: 'Warm near-black ground, tight grotesk display, and a brass accent for dark rooms.',
     fonts: {
       title: { family: HELVETICA, size: 108, weight: 700, lineHeight: 0.98, letterSpacing: '-0.04em' },
-      heading: { family: HELVETICA, size: 62, weight: 650, lineHeight: 1.06, letterSpacing: '-0.02em' },
+      heading: { family: HELVETICA, size: 62, weight: 500, lineHeight: 1.06, letterSpacing: '-0.02em' },
       body: { family: INTER, size: 46, weight: 400, lineHeight: 1.34, letterSpacing: '0' },
       caption: { family: MONO, size: 29, weight: 500, lineHeight: 1.3, letterSpacing: '0.04em', color: '#97918a' },
       base: { family: INTER, size: 42, weight: 400, lineHeight: 1.34, letterSpacing: '0' },
@@ -165,8 +187,8 @@ export const THEMES: ThemePreset[] = [
     name: 'Salon',
     description: 'High-contrast Didone display over calm Optima prose, cream paper, oxblood accent.',
     fonts: {
-      title: { family: DIDONE, size: 116, weight: 700, lineHeight: 1.0, letterSpacing: '-0.01em' },
-      heading: { family: DIDONE, size: 68, weight: 600, lineHeight: 1.08, letterSpacing: '0' },
+      title: { family: DIDONE, size: 116, weight: 400, lineHeight: 1.0, letterSpacing: '-0.01em' },
+      heading: { family: DIDONE, size: 68, weight: 400, lineHeight: 1.08, letterSpacing: '0' },
       body: { family: OPTIMA, size: 47, weight: 400, lineHeight: 1.36, letterSpacing: '0.005em' },
       caption: { family: OPTIMA, size: 30, weight: 500, lineHeight: 1.3, letterSpacing: '0.06em', color: '#7d7468' },
       base: { family: OPTIMA, size: 42, weight: 400, lineHeight: 1.36, letterSpacing: '0.005em' },
@@ -179,8 +201,8 @@ export const THEMES: ThemePreset[] = [
     name: 'Essay',
     description: 'Bookish Baskerville headings and Palatino prose with a deep-green accent.',
     fonts: {
-      title: { family: BASKERVILLE, size: 104, weight: 700, lineHeight: 1.04, letterSpacing: '-0.01em' },
-      heading: { family: BASKERVILLE, size: 62, weight: 600, lineHeight: 1.12, letterSpacing: '0' },
+      title: { family: BASKERVILLE, size: 104, weight: 600, lineHeight: 1.04, letterSpacing: '-0.01em' },
+      heading: { family: BASKERVILLE, size: 62, weight: 400, lineHeight: 1.12, letterSpacing: '0' },
       body: { family: BOOK_SERIF, size: 46, weight: 400, lineHeight: 1.4, letterSpacing: '0' },
       caption: { family: HUMANIST, size: 29, weight: 500, lineHeight: 1.32, letterSpacing: '0.03em', color: '#847b6d' },
       base: { family: BOOK_SERIF, size: 42, weight: 400, lineHeight: 1.4, letterSpacing: '0' },
@@ -194,7 +216,7 @@ export const THEMES: ThemePreset[] = [
     description: 'Geometric Futura display, warm poster paper, and primary Bauhaus colour.',
     fonts: {
       title: { family: FUTURA, size: 114, weight: 700, lineHeight: 0.98, letterSpacing: '-0.015em' },
-      heading: { family: FUTURA, size: 64, weight: 600, lineHeight: 1.06, letterSpacing: '0' },
+      heading: { family: FUTURA, size: 64, weight: 400, lineHeight: 1.06, letterSpacing: '0' },
       body: { family: AVENIR, size: 46, weight: 400, lineHeight: 1.32, letterSpacing: '0' },
       caption: { family: FUTURA, size: 29, weight: 500, lineHeight: 1.28, letterSpacing: '0.09em', color: '#6d675c' },
       base: { family: AVENIR, size: 42, weight: 400, lineHeight: 1.32, letterSpacing: '0' },
@@ -236,7 +258,7 @@ export const THEMES: ThemePreset[] = [
     description: 'Slab-serif titles over an open sans body — the classic poster pairing.',
     fonts: {
       title: { family: SLAB, size: 100, weight: 700, lineHeight: 1.04, letterSpacing: '-0.015em' },
-      heading: { family: SLAB, size: 60, weight: 600, lineHeight: 1.12, letterSpacing: '0' },
+      heading: { family: SLAB, size: 60, weight: 400, lineHeight: 1.12, letterSpacing: '0' },
       body: { family: SOURCE_SANS, size: 47, weight: 400, lineHeight: 1.36, letterSpacing: '0' },
       caption: { family: SOURCE_SANS, size: 30, weight: 400, lineHeight: 1.3, letterSpacing: '0.01em', color: '#77706a' },
       base: { family: SOURCE_SANS, size: 42, weight: 400, lineHeight: 1.36, letterSpacing: '0' },
@@ -245,6 +267,54 @@ export const THEMES: ThemePreset[] = [
     colors: { background: '#fbfaf8', text: '#23201c', muted: '#77706a', accent: '#17605f' },
   },
 ];
+
+/**
+ * Every property of a preset, as a selection record.
+ *
+ * Choosing a theme in the gallery says nothing about which aspects to take —
+ * unlike an explicit apply, which records exactly the boxes that were ticked.
+ * A slide born under this selection should simply look like the theme.
+ */
+export function fullThemeSelection(themeId: string): ThemeSelection {
+  return {
+    preset: themeId,
+    roles: ['title', 'heading', 'body', 'caption', 'base'],
+    fontFamily: true,
+    fontWeight: true,
+    typeScale: true,
+    textColor: true,
+    objectColors: true,
+  };
+}
+
+/**
+ * The deck's current theme: what the author last chose, with the deck's own
+ * edits folded in when those edits belong to that same preset.
+ *
+ * Every surface that shows "the theme" — the panel card, the layout master
+ * preview and its editor, a newly created slide — resolves it through here, so
+ * they cannot disagree about which theme the deck is wearing.
+ */
+export function deckTheme(deck: Deck): ThemePreset | null {
+  const preset = themeById(deck.themeSelection?.preset ?? deck.themePreset);
+  if (!preset) return null;
+  if (preset.id === deck.themePreset && deck.themeStyle) {
+    return presetFromStyle(deck.themeStyle, preset);
+  }
+  return preset;
+}
+
+/** A preset wearing the deck's composed defaults, for preview and labelling. */
+export function presetFromStyle(style: ThemeStyle, base: ThemePreset): ThemePreset {
+  return {
+    id: base.id,
+    name: `${base.name} · Modified`,
+    description: base.description,
+    fonts: structuredClone(style.fonts),
+    palette: [...style.palette],
+    colors: structuredClone(style.colors),
+  };
+}
 
 export function themeById(id: string | null | undefined): ThemePreset | null {
   return THEMES.find((t) => t.id === id) ?? null;
@@ -344,6 +414,25 @@ export function adoptThemeStyles(
     }
     deck.themeStyle = defaults;
     deck.themePreset = theme.id;
+  }
+
+  // Remember the choice, not just its effect: a slide created later has no
+  // other way to tell which theme the slides around it are wearing. Object-only
+  // applies are deliberately narrow and say nothing about the deck's look, and
+  // an apply with every property off is a no-op that must stay one — including
+  // for the slides the author has yet to create.
+  const adoptedAnything = options.fontFamily || options.fontWeight || options.typeScale
+    || options.textColor || options.background || options.objectColors;
+  if (options.scope !== 'selection' && adoptedAnything) {
+    deck.themeSelection = {
+      preset: theme.id,
+      roles: [...options.roles],
+      fontFamily: options.fontFamily,
+      fontWeight: options.fontWeight,
+      typeScale: options.typeScale,
+      textColor: options.textColor,
+      objectColors: options.objectColors,
+    };
   }
 
   for (const slide of slides) {
@@ -483,4 +572,39 @@ export function applyThemeToDeck(deck: Deck, theme: ThemePreset, opts: ApplyOpti
     ),
   );
   for (const slide of deck.slides) applyThemeToSlide(slide, theme, opts, maxProse);
+}
+
+/**
+ * Give a freshly created slide the theme the author last applied.
+ *
+ * When that theme is installed as the deck default, theme.css already styles
+ * the role classes and `.slide`; writing the same values inline would only cut
+ * the new slide off from later theme edits, so nothing is written. A theme
+ * applied to slides alone leaves no such stylesheet, and the new slide instead
+ * receives the same inline properties — and the theme's background — that its
+ * themed siblings carry.
+ */
+export function applyDeckThemeToNewSlide(deck: Deck, slideIndex: number): void {
+  const selection: ThemeSelection | null = deck.themeSelection;
+  const slide = deck.slides[slideIndex];
+  if (!selection || !slide) return;
+  if (selection.preset === deck.themePreset) return;
+  const theme = themeById(selection.preset);
+  if (!theme) return;
+  adoptThemeStyles(deck, theme, {
+    scope: 'slide',
+    roles: [...selection.roles],
+    fontFamily: selection.fontFamily,
+    fontWeight: selection.fontWeight,
+    typeScale: selection.typeScale,
+    textColor: selection.textColor,
+    // A new slide always takes the theme's ground, so it cannot land pale on a
+    // deck of dark slides just because the author applied typography alone.
+    background: true,
+    objectColors: selection.objectColors,
+    replaceOverrides: true,
+    detectRoles: false,
+  }, slideIndex, new Set());
+  // The background is now the slide's own, not the layout master's.
+  slide.layoutBackgroundInherited = false;
 }
