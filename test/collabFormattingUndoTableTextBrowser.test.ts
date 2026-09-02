@@ -265,7 +265,9 @@ describe.skipIf(!electronBinary)('table text formatting and borders in the colla
     }
     // The heaviest split file — whole-table formatting, every border preset,
     // all four drag scopes × every control, column insert/delete — ~7s
-    // locally. The CI worker cap (vitest.config.ts) keeps it well under this
-    // budget by not oversubscribing the runner's cores.
-  }, 120_000);
+    // locally, but CI browser ops run ~15x slower, so this needs a generous
+    // budget. It is safe now that the worker cap (vitest.config.ts) prevents
+    // it from starving sibling suites (only two run at once); the earlier 300s
+    // attempt failed only because, uncapped, it held a worker while thrashing.
+  }, 300_000);
 });

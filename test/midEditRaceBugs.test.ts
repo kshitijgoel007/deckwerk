@@ -582,10 +582,13 @@ describe.skipIf(!electronBinary)('mid-edit race conditions', () => {
     await open(a!, 'race-undo', 'Alice');
     await open(b!, 'race-undo', 'Bob');
 
-    // Alice edit #1: nudge keep-el right by 10.
-    await a!.click('#canvas [data-element-id="keep-el"]', 'the element to move');
-    await eventually(async () => a!.evaluate<string[]>('[...window.store.get().selection]'),
-      'Alice could not select keep-el',
+    // Alice edit #1: nudge keep-el right by 10. Re-click until the selection
+    // sticks: on a slow runner the element can still be settling when the
+    // first click lands, or a late collab render can clear a fresh selection.
+    await eventually(async () => {
+      await a!.click('#canvas [data-element-id="keep-el"]', 'the element to move');
+      return a!.evaluate<string[]>('[...window.store.get().selection]');
+    }, 'Alice could not select keep-el',
       (sel) => sel.length === 1 && sel[0] === 'keep-el');
     await a!.chord('ArrowRight', 'ArrowRight', 39, 8);
     await eventually(async () => storeX(a!, 'keep-el'),
