@@ -263,5 +263,10 @@ describe.skipIf(!electronBinary)('table text formatting and borders in the colla
         `${action} did not change the table`);
       await session.refocusTableAndUndo();
     }
-  }, 120_000);
+    // The heaviest split file — whole-table formatting, every border preset,
+    // all four drag scopes × every control, column insert/delete — ~7s
+    // locally but the 2-core CI runner thrashes launching many Electron
+    // suites at once and overran 120s. No screenshots here, so it is load,
+    // not a hang.
+  }, 300_000);
 });
