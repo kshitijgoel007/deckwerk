@@ -100,8 +100,12 @@ describe.skipIf(!electronBinary)('table text formatting and borders in the colla
 
     await selectTableWord();
     const wordFamily = await session.chooseFontFamily(SERIF_CHOICES, 'table word font family');
+    // A family with a space serializes quoted ("Liberation Serif"), one
+    // without does not (Georgia) — allow an optional quote (HTML-escaped in
+    // the committed markup as &quot;).
     await expectTableWordStyled(
-      new RegExp(`font-family:\\s*${wordFamily}`, 'i'), /<td[^>]*style="[^"]*font-family/i,
+      new RegExp(`font-family:\\s*(?:"|&quot;)?${wordFamily}`, 'i'),
+      /<td[^>]*style="[^"]*font-family/i,
     );
     await session.undoEditing(TABLE_ID);
 
