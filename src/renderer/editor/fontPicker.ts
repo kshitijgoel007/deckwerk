@@ -21,7 +21,7 @@ const SERIF_FALLBACK = ['Charter', 'Iowan Old Style', 'Georgia', 'Times New Roma
 const MONO_FALLBACK = ['SF Mono', 'JetBrains Mono', 'ui-monospace', 'Menlo', 'monospace'];
 
 // "bookman", not "book": Book is a weight name (Avenir-Book, Futura Book).
-const SERIF_HINTS = /serif|georgia|times|garamond|baskerville|charter|palatino|didot|caslon|bookman|minion|hoefler|iowan|cambria|constantia|utopia|century/i;
+const SERIF_HINTS = /serif|georgia|times|garamond|baskerville|charter|palatino|didot|caslon|bookman|minion|hoefler|iowan|cambria|constantia|utopia|century|rockwell|slab|clarendon/i;
 const MONO_HINTS = /mono|code|courier|consolas|menlo|monaco|inconsolata|hack|terminal|typewriter|fira ?code|source code/i;
 
 /** The stack that stands in for `family` on machines that lack it. */
@@ -52,11 +52,13 @@ export function primaryFamily(value: string): string {
  * Font Access API is unavailable (the browser collab client, mostly).
  */
 const PROBE_LIST = [
-  'Arial', 'Avenir', 'Avenir Next', 'Baskerville', 'Charter', 'Comic Sans MS',
-  'Courier New', 'Futura', 'Georgia', 'Gill Sans', 'Helvetica', 'Helvetica Neue',
-  'Hoefler Text', 'Impact', 'Inter', 'Iowan Old Style', 'JetBrains Mono',
-  'Menlo', 'Monaco', 'Optima', 'Palatino', 'Roboto', 'SF Mono', 'Segoe UI',
-  'Source Code Pro', 'Times New Roman', 'Trebuchet MS', 'Verdana',
+  'Arial', 'Avenir', 'Avenir Next', 'Avenir Next Condensed', 'Baskerville',
+  'Charter', 'Comic Sans MS', 'Courier New', 'Futura', 'Georgia', 'Gill Sans',
+  'Helvetica', 'Helvetica Neue', 'Hoefler Text', 'Impact', 'Inter',
+  'Iowan Old Style', 'JetBrains Mono', 'Menlo', 'Monaco', 'Optima', 'Palatino',
+  'Roboto', 'Roboto Slab', 'Rockwell', 'SF Mono', 'Segoe UI', 'Source Code Pro',
+  'Source Sans 3', 'Source Sans Pro', 'Times New Roman', 'Trebuchet MS',
+  'Verdana',
 ];
 
 let cachedFamilies: string[] | null = null;

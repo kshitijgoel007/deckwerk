@@ -44,7 +44,7 @@ function sampleDeck() {
 
 describe('theme presets', () => {
   it('offers legible light and dark themes', () => {
-    expect(THEMES).toHaveLength(10);
+    expect(THEMES).toHaveLength(12);
     const luminance = (hex: string) => [1, 3, 5]
       .map((i) => Number.parseInt(hex.slice(i, i + 2), 16))
       .reduce((sum, channel) => sum + channel, 0) / 3;

@@ -63,6 +63,17 @@ const BASKERVILLE = 'Baskerville, "Libre Baskerville", "Hoefler Text", Georgia, 
 const BOOK_SERIF = 'Palatino, "Palatino Linotype", "Iowan Old Style", "Book Antiqua", Georgia, serif';
 const FUTURA = 'Futura, "Century Gothic", "Avenir Next", "Trebuchet MS", sans-serif';
 const TERMINAL = '"SF Mono", Menlo, "JetBrains Mono", Consolas, ui-monospace, monospace';
+const AVENIR_CONDENSED =
+  '"Avenir Next Condensed", "Helvetica Neue Condensed", "Roboto Condensed", "Arial Narrow", "Avenir Next", sans-serif';
+/*
+ * Georgia sits third rather than last: the genuine slabs (Rockwell ships with
+ * Office, Roboto/Zilla Slab are webfonts) are absent on a bare machine, and a
+ * stack whose leading three families are all missing makes `availableThemes`
+ * hide the theme entirely. Georgia is sturdy enough to stand in.
+ */
+const SLAB = 'Rockwell, "Roboto Slab", Georgia, "Zilla Slab", "Bookman Old Style", serif';
+const SOURCE_SANS =
+  '"Source Sans 3", "Source Sans Pro", "Avenir Next", "Segoe UI", system-ui, sans-serif';
 
 export const THEMES: ThemePreset[] = [
   {
@@ -204,6 +215,34 @@ export const THEMES: ThemePreset[] = [
     },
     palette: ['#d7e4dc', '#7d9486', '#4ade80', '#e8b04b', '#6bb2d6', '#d67676', '#1a231e', '#0d1210'],
     colors: { background: '#0d1210', text: '#d7e4dc', muted: '#7d9486', accent: '#4ade80' },
+  },
+  {
+    id: 'colloquium',
+    name: 'Colloquium',
+    description: 'One humanist sans throughout: condensed medium titles over regular prose.',
+    fonts: {
+      title: { family: AVENIR_CONDENSED, size: 124, weight: 500, lineHeight: 1.0, letterSpacing: '-0.01em' },
+      heading: { family: AVENIR_CONDENSED, size: 72, weight: 500, lineHeight: 1.08, letterSpacing: '0' },
+      body: { family: AVENIR, size: 48, weight: 400, lineHeight: 1.34, letterSpacing: '0' },
+      caption: { family: AVENIR, size: 30, weight: 400, lineHeight: 1.3, letterSpacing: '0.01em', color: '#5f6772' },
+      base: { family: AVENIR, size: 42, weight: 400, lineHeight: 1.34, letterSpacing: '0' },
+    },
+    palette: ['#1d2126', '#5f6772', '#2c6e9b', '#b4552f', '#3f7a5e', '#c2933a', '#e6e9ec', '#f7f8f9'],
+    colors: { background: '#f7f8f9', text: '#1d2126', muted: '#5f6772', accent: '#2c6e9b' },
+  },
+  {
+    id: 'almanac',
+    name: 'Almanac',
+    description: 'Slab-serif titles over an open sans body — the classic poster pairing.',
+    fonts: {
+      title: { family: SLAB, size: 100, weight: 700, lineHeight: 1.04, letterSpacing: '-0.015em' },
+      heading: { family: SLAB, size: 60, weight: 600, lineHeight: 1.12, letterSpacing: '0' },
+      body: { family: SOURCE_SANS, size: 47, weight: 400, lineHeight: 1.36, letterSpacing: '0' },
+      caption: { family: SOURCE_SANS, size: 30, weight: 400, lineHeight: 1.3, letterSpacing: '0.01em', color: '#77706a' },
+      base: { family: SOURCE_SANS, size: 42, weight: 400, lineHeight: 1.36, letterSpacing: '0' },
+    },
+    palette: ['#23201c', '#77706a', '#17605f', '#a8442c', '#4a6b93', '#b3862f', '#e8e3da', '#fbfaf8'],
+    colors: { background: '#fbfaf8', text: '#23201c', muted: '#77706a', accent: '#17605f' },
   },
 ];
 
