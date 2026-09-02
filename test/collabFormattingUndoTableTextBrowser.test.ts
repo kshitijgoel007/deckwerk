@@ -9,14 +9,13 @@ import {
 } from './support/collabFormattingSession.js';
 
 /**
- * Production-browser regression for table formatting, borders, scopes, and
- * structure (split from the former omnibus
- * collabFormattingUndoBrowser.test.ts): whole-table object formatting, native
- * character selections inside cells through every inline text path, every
- * border control (presets and the draw tool), every dragged selection scope
- * (cell, row, column, rectangle) through every formatting control, and column
- * insert/delete — each applied through real input and undone back to the
- * exact original.
+ * Production-browser regression for table WORD and BORDER formatting (split
+ * from the former omnibus collabFormattingUndoBrowser.test.ts): whole-table
+ * object formatting, native character selections inside cells through every
+ * inline text path, and every border control (presets and the draw tool),
+ * each applied through real input and undone back to the exact original. The
+ * dragged-scope matrix and structure edits are in the sibling
+ * collabFormattingUndoTableScopesBrowser file.
  */
 
 // A serif preference list rather than one hardcoded family: Georgia is on
@@ -59,7 +58,6 @@ describe.skipIf(!electronBinary)('table text formatting and borders in the colla
       await session!.expectHtml(TABLE_ID, (html) => marker.test(html) && !cellMarker.test(html));
     };
 
-    console.log('DBG-SECTION inline-buttons');
     for (const [label, marker, cellMarker] of [
       ['Bold (Cmd/Ctrl+B)', /<(?:b|strong)\b|font-weight:\s*700/i,
         /<td[^>]*style="[^"]*font-weight/i],
@@ -75,7 +73,6 @@ describe.skipIf(!electronBinary)('table text formatting and borders in the colla
       await session.undoEditing(TABLE_ID);
     }
 
-    console.log('DBG-SECTION inline-shortcuts');
     for (const [key, marker, cellMarker] of [
       ['b', /<(?:b|strong)\b|font-weight:\s*700/i, /<td[^>]*style="[^"]*font-weight/i],
       ['i', /<(?:i|em)\b|font-style:\s*italic/i, /<td[^>]*style="[^"]*font-style/i],
@@ -88,7 +85,6 @@ describe.skipIf(!electronBinary)('table text formatting and borders in the colla
       await session.undoEditing(TABLE_ID);
     }
 
-    console.log('DBG-SECTION inline-fields');
     for (const [label, value, marker, cellMarker] of [
       ['Font size', '44', /font-size:\s*44px/i, /<td[^>]*style="[^"]*font-size/i],
       ['Font weight', '650', /font-weight:\s*650/i, /<td[^>]*style="[^"]*font-weight/i],
@@ -126,7 +122,6 @@ describe.skipIf(!electronBinary)('table text formatting and borders in the colla
     await session.undoEditing(TABLE_ID);
 
     /* Every table border control is exercised through real Chromium input. */
-    console.log('DBG-SECTION border-presets');
     await session.enterTable('Cell');
     const borderWidth = await session.idField(
       'Border width', 'test-table-border-width', '.table-border-paint .field-number');
@@ -166,7 +161,6 @@ describe.skipIf(!electronBinary)('table text formatting and borders in the colla
       await session.buttonId('No borders', 'test-no-borders-again'),
       'clear borders before drawing',
     );
-    console.log('DBG-SECTION border-draw');
     await editor.click(
       await session.buttonId('Draw borders', 'test-draw-borders'),
       'enable border drawing',
@@ -192,88 +186,8 @@ describe.skipIf(!electronBinary)('table text formatting and borders in the colla
     );
     await session.refocusTableAndUndo();
 
-    /* A real cell drag determines cell, horizontal, vertical, or rectangular
-       scope, and every control styles exactly the dragged cells. */
-    console.log('DBG-SECTION drag-scopes');
-    for (const scope of ['Cell', 'Row', 'Column', 'Range'] as const) {
-      const affected = { Cell: 1, Row: 2, Column: 2, Range: 4 }[scope];
-      await session.enterTable(scope);
-      await editor.click(`${PANEL} .text-table-options .color-picker-trigger:first-of-type`, `${scope} fill`);
-      await editor.click('.color-picker-popover .color-picker-palette-button[title="#1d7d45"]', 'green fill');
-      await session.expectTableStyled('background-color', affected);
-      await session.refocusTableAndUndo();
-
-      await session.enterTable(scope);
-      await editor.click(`${PANEL} .text-table-options .field-color:nth-of-type(2) .color-picker-trigger`, `${scope} text colour`);
-      await editor.click('.color-picker-popover .color-picker-palette-button[title="#1d7d45"]', 'green text');
-      await session.expectTableStyled('color:', affected);
-      await session.refocusTableAndUndo();
-
-      await session.enterTable(scope);
-      // The fixture already inherits Arial from the element. Choosing Arial
-      // again is correctly a no-op, so use a genuinely different family when
-      // asserting that the selected cells receive an explicit declaration.
-      await session.chooseFontFamily(SERIF_CHOICES, `${scope} font family`);
-      await session.expectTableStyled('font-family', affected);
-      await session.refocusTableAndUndo();
-
-      for (const [label, value, marker] of [
-        ['Font weight', '400', 'font-weight'],
-        ['Font size', '36', 'font-size'],
-      ] as const) {
-        for (const direction of ['up', 'down'] as const) {
-          await session.enterTable(scope);
-          const input = await session.idField(
-            label, `test-table-${scope}-${label.replace(' ', '-')}-${direction}`, '.field-number');
-          expect(await editor.evaluate<string>(`document.querySelector('${input}').value`)).toBe(value);
-          await editor.click(`${PANEL} button[aria-label="${label} ${direction}"]`,
-            `${scope} ${label} ${direction}`);
-          await session.expectTableStyled(marker, affected);
-          await session.refocusTableAndUndo();
-        }
-      }
-
-      await session.enterTable(scope);
-      await editor.click(`${PANEL} .align-button:nth-of-type(2)`, `${scope} centre alignment`);
-      await session.expectTableStyled('text-align: center', affected);
-      await session.refocusTableAndUndo();
-
-      await session.enterTable(scope);
-      const tableVertical = await session.idField('Vertical', `test-table-${scope}-vertical`, 'label.field');
-      await editor.choose(tableVertical, 'bottom', `${scope} vertical alignment`);
-      await session.expectTableStyled('vertical-align: bottom', affected);
-      await session.refocusTableAndUndo();
-
-      for (const [label, marker] of [
-        ['Bold (Cmd/Ctrl+B)', 'font-weight'],
-        ['Italic (Cmd/Ctrl+I)', 'font-style'],
-        ['Underline (Cmd/Ctrl+U)', 'text-decoration'],
-      ] as const) {
-        await session.enterTable(scope);
-        await editor.click(`${PANEL} button[aria-label="${label}"]`, `${scope} ${label}`);
-        await session.expectTableStyled(marker, affected);
-        await session.expectFormatButtonPressed(label);
-        await session.refocusTableAndUndo();
-      }
-    }
-
-    for (const [scope, action, cells] of [
-      ['Column', 'Insert before', 6],
-      ['Column', 'Insert after', 6],
-      ['Column', 'Delete column', 2],
-    ] as const) {
-      await session.enterTable(scope);
-      const actionSelector = await session.buttonId(action, `test-${action.replaceAll(' ', '-')}`);
-      await editor.click(actionSelector, action);
-      await eventually(async () => await session!.tableCellCount() === cells,
-        `${action} did not change the table`);
-      await session.refocusTableAndUndo();
-    }
-    // The heaviest split file — whole-table formatting, every border preset,
-    // all four drag scopes × every control, column insert/delete — ~7s
-    // locally, but CI browser ops run ~15x slower, so this needs a generous
-    // budget. It is safe now that the worker cap (vitest.config.ts) prevents
-    // it from starving sibling suites (only two run at once); the earlier 300s
-    // attempt failed only because, uncapped, it held a worker while thrashing.
+    // Word-level and border coverage only; the dragged-scope matrix and
+    // structure edits live in collabFormattingUndoTableScopesBrowser — 44
+    // real-input drag cycles are too many to share this budget at CI speed.
   }, 300_000);
 });
