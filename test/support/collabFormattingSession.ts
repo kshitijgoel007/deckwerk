@@ -278,13 +278,25 @@ export class FormattingSession {
    * asynchronously (installed families are enumerated or probed after the
    * field renders), so a fast suite can reach it before the option exists.
    */
-  async chooseFontFamily(value: string, label: string): Promise<void> {
-    await eventually(async () => this.editor.evaluate<boolean>(`(() => {
+  /**
+   * Choose a font family, returning the one actually chosen. `preferred` is a
+   * fallback list: the first option present in the dropdown wins. The font set
+   * differs by OS — Georgia is on macOS, not stock Ubuntu — so a test that
+   * hardcodes one font fails on CI for want of that font, not a real defect;
+   * callers assert against the returned name instead. '' (theme font) is
+   * always present. The list is awaited because the dropdown populates async.
+   */
+  async chooseFontFamily(preferred: string | string[], label: string): Promise<string> {
+    const wanted = Array.isArray(preferred) ? preferred : [preferred];
+    const chosen = await eventually(async () => this.editor.evaluate<string | null>(`(() => {
       const select = document.querySelector('${PANEL} .font-family-field select');
-      return Boolean(select
-        && [...select.options].some((option) => option.value === ${JSON.stringify(value)}));
-    })()`), `${label}: font family option ${JSON.stringify(value)} never appeared`);
-    await this.editor.choose(`${PANEL} .font-family-field select`, value, label);
+      if (!select) return null;
+      const have = new Set([...select.options].map((option) => option.value));
+      return ${JSON.stringify(wanted)}.find((family) => have.has(family)) ?? null;
+    })()`), `${label}: none of ${JSON.stringify(wanted)} appeared in the font list`,
+      (value) => value !== null);
+    await this.editor.choose(`${PANEL} .font-family-field select`, chosen!, label);
+    return chosen!;
   }
 
   async openProps(): Promise<void> {

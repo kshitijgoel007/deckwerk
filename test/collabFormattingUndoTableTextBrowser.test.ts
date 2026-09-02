@@ -19,6 +19,11 @@ import {
  * exact original.
  */
 
+// A serif preference list rather than one hardcoded family: Georgia is on
+// macOS but not stock Ubuntu CI, where the Liberation/DejaVu faces stand in.
+// The first one actually in the dropdown is chosen and asserted against.
+const SERIF_CHOICES = ['Georgia', 'Liberation Serif', 'DejaVu Serif', 'Times New Roman'];
+
 const DECK_ID = 'formatting-undo-table-text';
 
 let session: FormattingSession | null = null;
@@ -94,9 +99,9 @@ describe.skipIf(!electronBinary)('table text formatting and borders in the colla
     }
 
     await selectTableWord();
-    await session.chooseFontFamily('Georgia', 'table word font family');
+    const wordFamily = await session.chooseFontFamily(SERIF_CHOICES, 'table word font family');
     await expectTableWordStyled(
-      /font-family:\s*Georgia/i, /<td[^>]*style="[^"]*font-family/i,
+      new RegExp(`font-family:\\s*${wordFamily}`, 'i'), /<td[^>]*style="[^"]*font-family/i,
     );
     await session.undoEditing(TABLE_ID);
 
@@ -198,7 +203,7 @@ describe.skipIf(!electronBinary)('table text formatting and borders in the colla
       // The fixture already inherits Arial from the element. Choosing Arial
       // again is correctly a no-op, so use a genuinely different family when
       // asserting that the selected cells receive an explicit declaration.
-      await session.chooseFontFamily('Georgia', `${scope} font family`);
+      await session.chooseFontFamily(SERIF_CHOICES, `${scope} font family`);
       await session.expectTableStyled('font-family', affected);
       await session.refocusTableAndUndo();
 
