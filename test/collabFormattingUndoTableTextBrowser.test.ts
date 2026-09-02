@@ -59,6 +59,7 @@ describe.skipIf(!electronBinary)('table text formatting and borders in the colla
       await session!.expectHtml(TABLE_ID, (html) => marker.test(html) && !cellMarker.test(html));
     };
 
+    console.log('DBG-SECTION inline-buttons');
     for (const [label, marker, cellMarker] of [
       ['Bold (Cmd/Ctrl+B)', /<(?:b|strong)\b|font-weight:\s*700/i,
         /<td[^>]*style="[^"]*font-weight/i],
@@ -74,6 +75,7 @@ describe.skipIf(!electronBinary)('table text formatting and borders in the colla
       await session.undoEditing(TABLE_ID);
     }
 
+    console.log('DBG-SECTION inline-shortcuts');
     for (const [key, marker, cellMarker] of [
       ['b', /<(?:b|strong)\b|font-weight:\s*700/i, /<td[^>]*style="[^"]*font-weight/i],
       ['i', /<(?:i|em)\b|font-style:\s*italic/i, /<td[^>]*style="[^"]*font-style/i],
@@ -86,6 +88,7 @@ describe.skipIf(!electronBinary)('table text formatting and borders in the colla
       await session.undoEditing(TABLE_ID);
     }
 
+    console.log('DBG-SECTION inline-fields');
     for (const [label, value, marker, cellMarker] of [
       ['Font size', '44', /font-size:\s*44px/i, /<td[^>]*style="[^"]*font-size/i],
       ['Font weight', '650', /font-weight:\s*650/i, /<td[^>]*style="[^"]*font-weight/i],
@@ -123,6 +126,7 @@ describe.skipIf(!electronBinary)('table text formatting and borders in the colla
     await session.undoEditing(TABLE_ID);
 
     /* Every table border control is exercised through real Chromium input. */
+    console.log('DBG-SECTION border-presets');
     await session.enterTable('Cell');
     const borderWidth = await session.idField(
       'Border width', 'test-table-border-width', '.table-border-paint .field-number');
@@ -163,6 +167,7 @@ describe.skipIf(!electronBinary)('table text formatting and borders in the colla
       'clear borders before drawing',
     );
     await editor.click(
+    console.log('DBG-SECTION border-draw');
       await session.buttonId('Draw borders', 'test-draw-borders'),
       'enable border drawing',
     );
@@ -189,6 +194,7 @@ describe.skipIf(!electronBinary)('table text formatting and borders in the colla
 
     /* A real cell drag determines cell, horizontal, vertical, or rectangular
        scope, and every control styles exactly the dragged cells. */
+    console.log('DBG-SECTION drag-scopes');
     for (const scope of ['Cell', 'Row', 'Column', 'Range'] as const) {
       const affected = { Cell: 1, Row: 2, Column: 2, Range: 4 }[scope];
       await session.enterTable(scope);
