@@ -828,11 +828,19 @@ export async function launchBrowser(
   return { process: child, debugPort, log: collectProcessOutput(child) };
 }
 
+/**
+ * How long a freshly spawned Electron may take to expose its DevTools target.
+ * The first launch in a CI job is a cold one -- font cache, page cache, a
+ * two-core runner -- and twice in six nightlies it missed 15 s with nothing in
+ * its log; every later launch in the same job was fine. Locally 15 s stays.
+ */
+const FIND_TARGET_TIMEOUT_MS = process.env.CI ? 60_000 : 15_000;
+
 export async function findTarget(
   port: number,
   predicate: (target: DevToolsTarget) => boolean,
   browserLog: () => string,
-  timeoutMs = 15_000,
+  timeoutMs = FIND_TARGET_TIMEOUT_MS,
 ): Promise<DevToolsTarget> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
