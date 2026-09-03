@@ -45,7 +45,8 @@ type ExhaustiveCase = {
   italic: boolean;
   underline: boolean;
   size: number;
-  family: '' | 'Arial';
+  /** '' for the theme font, or the alternate family picked at run time (see ALTERNATE_FAMILIES). */
+  family: string;
   alignment: Alignment;
   list: ListStyle;
   route: ToggleRoute;
@@ -65,7 +66,26 @@ function target(fragment: string, label: string): ExhaustiveCase['target'] {
   return { start, end: start + fragment.length, label };
 }
 
-function cases(): ExhaustiveCase[] {
+/**
+ * The non-theme family the matrix switches to. Hardcoding "Arial" made the
+ * matrix impossible on CI: the picker lists only installed fonts, and a stock
+ * Ubuntu runner has none of the Mac/Windows set — so the option never existed
+ * and every case failed at "cannot choose". The first family present wins;
+ * DejaVu Sans is on every Debian-family machine, Liberation Sans on most.
+ */
+const ALTERNATE_FAMILIES = ['Arial', 'Liberation Sans', 'DejaVu Sans', 'Helvetica', 'Verdana', 'Noto Sans'];
+
+async function pickAlternateFamily(editor: Cdp): Promise<string> {
+  return eventually(async () => editor.evaluate<string | null>(`(() => {
+    const select = document.querySelector('${PANEL} .font-family-field select');
+    if (!select) return null;
+    const have = new Set([...select.options].map((option) => option.value));
+    return ${JSON.stringify(ALTERNATE_FAMILIES)}.find((family) => have.has(family)) ?? null;
+  })()`), `none of ${JSON.stringify(ALTERNATE_FAMILIES)} is offered by the font family picker`,
+    (value) => value !== null) as Promise<string>;
+}
+
+function cases(alternate: string): ExhaustiveCase[] {
   const result: ExhaustiveCase[] = [];
   const targets = [
     target('ipsum', 'word in first paragraph'),
@@ -81,7 +101,7 @@ function cases(): ExhaustiveCase[] {
     // normally need only one production interaction.
     for (const list of lists) {
       for (const alignment of alignments) {
-        for (const family of ['', 'Arial'] as const) {
+        for (const family of ['', alternate]) {
           for (const size of [28, 48]) {
             for (const weight of weights) {
               for (const italic of [false, true]) {
@@ -496,7 +516,10 @@ export async function runExhaustiveTextFormatting(
     `document.querySelector(${JSON.stringify(EXHAUSTIVE_CONTENT)})?.isContentEditable === true`,
   ), 'exhaustive fixture did not enter text editing');
 
-  const allCases = cases();
+  // The box is selected, so the inspector's picker is on screen and lists the
+  // families this machine actually has.
+  const alternate = await pickAlternateFamily(editor);
+  const allCases = cases(alternate);
   const configuredLimit = Number(process.env.EXHAUSTIVE_FORMAT_FUZZ_CASES ?? allCases.length);
   const selectedCases = allCases.slice(0, Math.max(1, Math.min(allCases.length, configuredLimit)));
   let previous: ExhaustiveCase | null = null;
