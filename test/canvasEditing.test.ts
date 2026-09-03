@@ -1127,6 +1127,94 @@ describe('inline text editing', () => {
     expect(canvas.isEditing()).toBe(false);
   });
 
+  /**
+   * Discarding a session (`endTextEditing(false)`) reverts to the last
+   * *committed* baseline, never to where the session started. Sealed typing
+   * runs and formatting changes are committed history with their own undo
+   * entries; a discard that reached past them silently erased that history in
+   * one transient write, and the next typing run then folded into the revert's
+   * coalesce key so one undo appeared to restore pre-formatting markup.
+   *
+   * No key drives this branch today (Escape commits), so it is exercised
+   * through the canvas method that ends a session from outside.
+   */
+  it('discards only what came after the last sealed typing run', () => {
+    vi.useFakeTimers();
+    try {
+      const { store, canvas, host } = setup();
+      const html = () => {
+        const el = store.slide!.elements.find((e) => e.id === 'text-1')!;
+        return (el as { html: string }).html;
+      };
+      const typed = (text: string, body: HTMLElement) => {
+        body.textContent = text;
+        body.dispatchEvent(new InputEvent('input', {
+          inputType: 'insertText', data: text.at(-1) ?? '', bubbles: true,
+        }));
+      };
+      canvas.beginTextEdit('text-1');
+      const body = bodyOf(host, 'text-1');
+
+      // A pause seals the first run: it is committed, undoable history.
+      typed('Original text alpha', body);
+      vi.advanceTimersByTime(700);
+      expect(html()).toBe('Original text alpha');
+      expect(store.canUndo()).toBe(true);
+
+      // The second run is still open when the session is discarded.
+      typed('Original text alpha beta', body);
+      canvas.endTextEditing(false);
+
+      expect(canvas.isEditing()).toBe(false);
+      expect(html(), 'the sealed run survives the discard').toBe('Original text alpha');
+      store.undo();
+      expect(html(), 'one undo steps back exactly one run').toBe('Original text');
+      expect(store.canUndo()).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('discards only what came after a formatting change', () => {
+    vi.useFakeTimers();
+    try {
+      const { store, canvas, host } = setup();
+      const html = () => {
+        const el = store.slide!.elements.find((e) => e.id === 'text-1')!;
+        return (el as { html: string }).html;
+      };
+      store.select(['text-1']);
+      store.updateSelected((element) => {
+        if (element.type === 'text') element.html = '<p>First</p><p>Second</p>';
+      });
+      canvas.beginTextEdit('text-1');
+      const body = bodyOf(host, 'text-1');
+
+      // Formatting commits at once, as its own undo step.
+      const range = document.createRange();
+      range.selectNodeContents(body);
+      window.getSelection()!.removeAllRanges();
+      window.getSelection()!.addRange(range);
+      expect(canvas.applyTextSelectionListStyle('Bulleted')).toBe(true);
+      const listed = '<ul><li>First</li><li>Second</li></ul>';
+      expect(html()).toBe(listed);
+
+      // Typing after it is still an open run when the session is discarded.
+      body.querySelector('li:last-child')!.textContent = 'Second more';
+      body.dispatchEvent(new InputEvent('input', {
+        inputType: 'insertText', data: 'e', bubbles: true,
+      }));
+      canvas.endTextEditing(false);
+
+      expect(canvas.isEditing()).toBe(false);
+      expect(html(), 'the list conversion survives the discard').toBe(listed);
+      store.undo();
+      expect(html(), 'one undo takes back the list conversion').toBe('<p>First</p><p>Second</p>');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('records the edit as a single undoable change', () => {
     const { store, canvas, host } = setup();
     expect(store.canUndo()).toBe(false);
