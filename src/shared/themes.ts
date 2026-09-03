@@ -523,6 +523,9 @@ export function adoptThemeStyles(
   selectedSlideIds: Set<string> = new Set(),
 ): void {
   const source = themeStyleOf(theme);
+  // Read off the deck's own themes, so a colour picked from a deck-local
+  // theme's row travels by slot exactly like a built-in swatch does.
+  const slots = paletteSlots(deckThemes(deck));
   const slides = options.scope === 'deck'
     ? deck.slides
     : options.scope === 'slides'
@@ -615,8 +618,8 @@ export function adoptThemeStyles(
         if (options.textColor) set('color', font.color ?? source.colors.text);
         el.style = style;
       } else if (el.type === 'shape' && options.objectColors) {
-        if (el.fill) el.fill = nearestPaletteColor(el.fill, source.palette);
-        if (el.stroke) el.stroke = nearestPaletteColor(el.stroke, source.palette);
+        if (el.fill) el.fill = remapObjectColor(el.fill, source.palette, slots);
+        if (el.stroke) el.stroke = remapObjectColor(el.stroke, source.palette, slots);
       }
     }
   }
@@ -707,6 +710,59 @@ export function nearestPaletteColor(color: string, palette: string[]): string {
 }
 
 /**
+ * Every swatch a deck could have picked a shape colour from, keyed to its slot.
+ *
+ * A palette slot is a role, not just a colour: slot 0 is the ink, 1 the muted
+ * tone, 2 the accent, the last two the surface and the ground. Nearest-in-RGB
+ * throws that role away, and across a light/dark pair it throws it away
+ * asymmetrically — Research's mid grey `#6b6862` sits closer to the *blue* of
+ * Research · Dark than to that theme's own grey, and the blue's nearest light
+ * swatch is the light blue, so a grey box switched to dark and back came home
+ * a different colour. The swatch a colour was picked from is the one fact that
+ * survives the flip, so shape colours travel by slot and only fall back to
+ * nearest for a colour that is nobody's swatch.
+ *
+ * Both sides of every theme are indexed: a deck can be wearing either.
+ */
+function paletteSlots(pool: ThemePreset[]): Map<string, number> {
+  const slots = new Map<string, number>();
+  const remember = (palette: string[]): void => {
+    palette.forEach((color, slot) => {
+      const key = canonicalHex(color);
+      // First writer wins, so the order of `pool` decides any collision.
+      if (key && !slots.has(key)) slots.set(key, slot);
+    });
+  };
+  for (const theme of pool) {
+    remember(theme.palette);
+    remember(themeVariant(theme, themeMode(theme) === 'dark' ? 'light' : 'dark').palette);
+  }
+  return slots;
+}
+
+/** `#ABC` and `#aabbcc` are the same swatch; anything else has no key. */
+function canonicalHex(color: string): string | null {
+  const rgb = hexToRgb(color);
+  if (!rgb) return null;
+  return `#${rgb.map((channel) => channel.toString(16).padStart(2, '0')).join('')}`;
+}
+
+/**
+ * Where a shape colour lands under `palette`: the matching slot when the
+ * colour is a known swatch, and the nearest colour otherwise.
+ */
+export function remapObjectColor(
+  color: string,
+  palette: string[],
+  slots: Map<string, number>,
+): string {
+  const key = canonicalHex(color);
+  const slot = key === null ? undefined : slots.get(key);
+  if (slot !== undefined && slot < palette.length) return palette[slot];
+  return nearestPaletteColor(color, palette);
+}
+
+/**
  * Apply the selected aspects of a theme to one slide, in place.
  *
  * `maxProse` is the deck-wide typographic scale (see `deckProseMax`), passed in
@@ -717,6 +773,7 @@ export function applyThemeToSlide(
   theme: ThemePreset,
   opts: ApplyOptions,
   maxProse: number,
+  slots: Map<string, number> = paletteSlots(THEMES),
 ): void {
   if (opts.backgrounds) {
     slide.background = { color: theme.colors.background, image: null };
@@ -740,8 +797,8 @@ export function applyThemeToSlide(
     }
 
     if (el.type === 'shape' && opts.objectColors) {
-      if (el.fill) el.fill = nearestPaletteColor(el.fill, theme.palette);
-      if (el.stroke) el.stroke = nearestPaletteColor(el.stroke, theme.palette);
+      if (el.fill) el.fill = remapObjectColor(el.fill, theme.palette, slots);
+      if (el.stroke) el.stroke = remapObjectColor(el.stroke, theme.palette, slots);
     }
   }
 }
@@ -758,7 +815,8 @@ export function applyThemeToDeck(deck: Deck, theme: ThemePreset, opts: ApplyOpti
         })),
     ),
   );
-  for (const slide of deck.slides) applyThemeToSlide(slide, theme, opts, maxProse);
+  const slots = paletteSlots(deckThemes(deck));
+  for (const slide of deck.slides) applyThemeToSlide(slide, theme, opts, maxProse, slots);
 }
 
 /**
