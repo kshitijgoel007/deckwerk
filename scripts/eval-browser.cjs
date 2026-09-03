@@ -22,10 +22,18 @@ app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 
 let mainWindow;
 app.whenReady().then(async () => {
+  // Hidden on a developer's machine, so tests never pop windows over their
+  // work. On CI's bare Xvfb (CI_NO_WINDOW_MANAGER) the window is shown: an
+  // unmapped X11 window gets no compositor frames at all, and every input
+  // event dispatched over DevTools then waits out a fixed fallback before the
+  // renderer handles it -- the nightly formatting matrix ran at 2.8 s/case in
+  // this window against 145 ms/case in the app's shown window on the same
+  // runner. Nobody is looking at that display, so showing it costs nothing.
+  const showWindow = Boolean(process.env.CI_NO_WINDOW_MANAGER);
   mainWindow = new BrowserWindow({
     width: 1600,
     height: 1000,
-    show: false,
+    show: showWindow,
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
