@@ -1,0 +1,77 @@
+# Flathub manifest for DeckWerk.
+#
+# This file is the source of truth for the Flatpak build, but Flathub does not
+# read it from this repository: after the initial submission is accepted, a
+# copy lives in github.com/flathub/org.deckwerk.DeckWerk and updates are made
+# by pull request there. `scripts/render-flatpak-manifest.mjs` regenerates this
+# file with a release's URL and checksum so that PR is a one-line change.
+#
+# The app is installed from the prebuilt linux tar.gz rather than compiled in
+# the sandbox: a from-source Electron build inside Flathub would require
+# vendoring every npm dependency as a flatpak-node-generator source list, which
+# is a large and permanently-churning amount of generated metadata.
+#
+# runtime-version must name a runtime Flathub still supports. Check with:
+#   flatpak remote-ls flathub --system | grep org.freedesktop.Platform
+app-id: org.deckwerk.DeckWerk
+runtime: org.freedesktop.Platform
+runtime-version: '24.08'
+sdk: org.freedesktop.Sdk
+base: org.electronjs.Electron2.BaseApp
+base-version: '24.08'
+command: deckwerk
+separate-locales: false
+
+finish-args:
+  - --share=ipc
+  - --share=network
+  - --socket=wayland
+  # Electron still runs under XWayland in many setups; fallback-x11 grants X11
+  # only when Wayland is unavailable rather than unconditionally.
+  - --socket=fallback-x11
+  - --socket=pulseaudio
+  # Hardware video decode. Without it, playback of a 4K clip on a projector
+  # falls back to software decoding and drops frames.
+  - --device=dri
+  # Decks are ordinary folders the user picks anywhere on disk, and the app
+  # reads media referenced from inside them.
+  - --filesystem=home
+  - --talk-name=org.freedesktop.Notifications
+  # Presenting must not be interrupted by the screen blanking.
+  - --talk-name=org.freedesktop.ScreenSaver
+  - --system-talk-name=org.freedesktop.login1
+
+modules:
+  - name: deckwerk
+    buildsystem: simple
+    build-commands:
+      # The release tarball is staged into app/ (see the archive source's
+      # `dest`), which keeps the packaging inputs at the build root and lets
+      # the app tree be copied wholesale without any exclusion dance.
+      - mkdir -p /app/deckwerk
+      - cp -a app/. /app/deckwerk/
+      - install -Dm755 deckwerk-flatpak-launcher.sh /app/bin/deckwerk
+      - install -Dm644 org.deckwerk.DeckWerk.desktop
+        /app/share/applications/org.deckwerk.DeckWerk.desktop
+      - install -Dm644 org.deckwerk.DeckWerk.metainfo.xml
+        /app/share/metainfo/org.deckwerk.DeckWerk.metainfo.xml
+      # Must genuinely be 512x512: the icon-theme cache and Flathub's linter
+      # both read the directory name as a claim about the file.
+      - install -Dm644 org.deckwerk.DeckWerk.png
+        /app/share/icons/hicolor/512x512/apps/org.deckwerk.DeckWerk.png
+    sources:
+      # Regenerated per release by scripts/render-flatpak-manifest.mjs;
+      # flatpak-builder verifies the sha256 before unpacking.
+      - type: archive
+        url: https://github.com/vsitzmann/deckwerk/releases/download/v0.1.0/deckwerk-0.1.0-linux-x64.tar.gz
+        sha256: 0000000000000000000000000000000000000000000000000000000000000000
+        strip-components: 1
+        dest: app
+      - type: file
+        path: ../packaging/linux/deckwerk-flatpak-launcher.sh
+      - type: file
+        path: ../packaging/linux/org.deckwerk.DeckWerk.desktop
+      - type: file
+        path: ../packaging/linux/org.deckwerk.DeckWerk.metainfo.xml
+      - type: file
+        path: ../packaging/linux/org.deckwerk.DeckWerk.png

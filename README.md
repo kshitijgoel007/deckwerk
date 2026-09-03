@@ -55,6 +55,38 @@ DeckWerk is particularly suited to:
 - Talks containing many images, clips, diagrams, and animations
 - Presentations collaboratively edited by people and AI agents
 
+## Installing
+
+**macOS** — via [Homebrew](https://brew.sh):
+
+```bash
+brew install --cask vsitzmann/tap/deckwerk
+```
+
+**Linux** — via [Flathub](https://flathub.org):
+
+```bash
+flatpak install flathub org.deckwerk.DeckWerk
+```
+
+An `.AppImage` and a `.deb` are also attached to every
+[release](https://github.com/vsitzmann/deckwerk/releases) for people who would
+rather not use Flatpak.
+
+**Windows** — download the installer from the
+[latest release](https://github.com/vsitzmann/deckwerk/releases/latest).
+
+**Any platform** — build it yourself. Three commands, no cross-compilation
+tricks, and it works on distributions the packages above do not cover:
+
+```bash
+git clone https://github.com/vsitzmann/deckwerk.git
+cd deckwerk && npm ci && npm run dist
+```
+
+See [docs/BUILDING.md](docs/BUILDING.md) for prerequisites and the
+Python-free variant.
+
 ## File format
 
 DeckWerk presentations are stored locally as folders containing the presentation and its media. Videos remain ordinary video files and images remain ordinary image files.
@@ -69,7 +101,11 @@ DeckWerk is in *alpha, under active development*. I already use it to author and
 
 ## Development
 
-DeckWerk is an open-source Electron application under the MIT license. Development instructions, architecture notes, and testing guidance live in the project’s contributor documentation.
+DeckWerk is an open-source Electron application under the MIT license.
+
+- [docs/BUILDING.md](docs/BUILDING.md) — building from source on any platform
+- [docs/RELEASING.md](docs/RELEASING.md) — how signed releases are cut
+- [AGENTS.md](AGENTS.md) — architecture, authoring model, and testing notes
 
 ## Name
 

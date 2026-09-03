@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=DeckWerk
+GenericName=Slide Editor
+Comment=Slide editor for video-heavy talks
+Exec=deckwerk %U
+Icon=org.deckwerk.DeckWerk
+Terminal=false
+Categories=Office;Presentation;
+Keywords=slides;presentation;deck;talk;keynote;
+StartupNotify=true
+StartupWMClass=DeckWerk

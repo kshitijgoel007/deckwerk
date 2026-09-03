@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Hardened-runtime entitlements. Notarization requires the hardened runtime,
+  and the hardened runtime forbids by default several things Electron and the
+  bundled sidecars genuinely need. Each exception below is load-bearing:
+
+  - allow-jit / allow-unsigned-executable-memory: V8 compiles JavaScript at
+    runtime; without these the renderer crashes on launch.
+  - allow-dyld-environment-variables: Electron sets DYLD_* when spawning its
+    helper processes.
+  - disable-library-validation: the app loads code not signed by us —
+    libheif-js's native module and the ffmpeg/ffprobe binaries unpacked from
+    the asar, plus the frozen PyInstaller Keynote importer.
+-->
+<plist version="1.0">
+  <dict>
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+    <true/>
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+  </dict>
+</plist>

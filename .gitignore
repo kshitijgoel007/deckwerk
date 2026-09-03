@@ -31,3 +31,6 @@ decks/
 
 # Local reference presentation (>100MB, stripped from history).
 reference.key
+
+# Packaged installers (electron-builder output).
+release/

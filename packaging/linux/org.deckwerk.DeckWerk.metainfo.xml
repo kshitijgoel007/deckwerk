@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  AppStream metadata. Flathub will not accept a submission without this file,
+  and GNOME Software / KDE Discover use it to render the store listing: the
+  summary, the description, the screenshots and the release notes all come
+  from here rather than from the .desktop entry.
+
+  NOTE: the <screenshots> block below points at files that must exist in
+  docs/assets/screenshots on the default branch before submitting to Flathub.
+  Flathub's linter rejects unreachable screenshot URLs, and at least one
+  screenshot is mandatory.
+-->
+<component type="desktop-application">
+  <id>org.deckwerk.DeckWerk</id>
+  <launchable type="desktop-id">org.deckwerk.DeckWerk.desktop</launchable>
+
+  <name>DeckWerk</name>
+  <summary>Slide editor for video-heavy talks</summary>
+
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+
+  <developer id="org.deckwerk">
+    <name>Vincent Sitzmann</name>
+  </developer>
+
+  <description>
+    <p>
+      DeckWerk is an opinionated cross-platform WYSIWYG slide editor, built so that
+      Linux is a first-class platform for authoring and presenting talks.
+    </p>
+    <p>
+      It is optimized for presentations whose substance is visual material — research
+      talks, lectures, and demos — with animation, tables, plotting and templating
+      deliberately kept minimal.
+    </p>
+    <p>Features:</p>
+    <ul>
+      <li>Video as a first-class object: drag in a clip, then crop, trim and adjust it without leaving the app</li>
+      <li>Automatic transcoding of videos and images into presentation-safe formats</li>
+      <li>Import of existing Keynote presentations, with no copy of Keynote required</li>
+      <li>Collaborative editing over a trusted network or tailnet, with no accounts and no third-party upload</li>
+      <li>Native AI agent integration, so an agent and a person can edit the same deck</li>
+    </ul>
+  </description>
+
+  <categories>
+    <category>Office</category>
+    <category>Presentation</category>
+  </categories>
+
+  <keywords>
+    <keyword>slides</keyword>
+    <keyword>presentation</keyword>
+    <keyword>deck</keyword>
+    <keyword>talk</keyword>
+    <keyword>keynote</keyword>
+  </keywords>
+
+  <url type="homepage">https://deckwerk.org</url>
+  <url type="bugtracker">https://github.com/vsitzmann/deckwerk/issues</url>
+  <url type="vcs-browser">https://github.com/vsitzmann/deckwerk</url>
+
+  <screenshots>
+    <screenshot type="default">
+      <image>https://raw.githubusercontent.com/vsitzmann/deckwerk/main/docs/assets/screenshots/editor.png</image>
+      <caption>Editing a slide with a video placed on the canvas</caption>
+    </screenshot>
+    <screenshot>
+      <image>https://raw.githubusercontent.com/vsitzmann/deckwerk/main/docs/assets/screenshots/presenter.png</image>
+      <caption>Presenter view with speaker notes and the next slide</caption>
+    </screenshot>
+  </screenshots>
+
+  <content_rating type="oars-1.1"/>
+
+  <releases>
+    <release version="0.1.0" date="2026-09-03">
+      <description>
+        <p>First public release.</p>
+      </description>
+    </release>
+  </releases>
+</component>

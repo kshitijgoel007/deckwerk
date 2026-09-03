@@ -1,7 +1,8 @@
 {
-  "name": "slide-editor",
+  "name": "deckwerk",
   "version": "0.1.0",
-  "description": "HTML slide editor and player with first-class video support",
+  "description": "Cross-platform WYSIWYG slide editor with first-class video support",
+  "author": "Vincent Sitzmann <sitzmann@mit.edu>",
   "main": "out/main/index.js",
   "type": "module",
   "bin": {
@@ -14,10 +15,10 @@
     "precollab": "npm run build:collab",
     "build": "tsc --noEmit && electron-vite build && npm run build:export && npm run build:collab",
     "build:export": "vite build --config vite.export.config.ts",
-    "build:importer": "python3 -m venv .venv-import && ./.venv-import/bin/pip install -q keynote-parser pyinstaller && ./.venv-import/bin/pyinstaller --onefile --name keynote-import --collect-all keynote_parser --collect-all snappy --distpath build/importers --workpath build/pyinstaller --specpath build/pyinstaller importers/keynote/import_keynote.py",
+    "build:importer": "node scripts/build-importer.mjs",
     "setup:importer": "python3 -m venv .venv-import && ./.venv-import/bin/pip install -q keynote-parser",
-    "dist": "npm run build && npm run build:importer && electron-builder",
-    "dist:linux": "npm run build && npm run build:importer && electron-builder --linux",
+    "dist": "npm run build && npm run build:importer && electron-builder --config electron-builder.config.cjs --publish never",
+    "dist:linux": "npm run build && npm run build:importer && electron-builder --linux --config electron-builder.config.cjs --publish never",
     "start": "electron-vite preview",
     "pretest": "node scripts/check-test-environment.cjs",
     "test": "npm run test:serial && npm run test:ordinary",
@@ -44,43 +45,9 @@
     "eval:papers:serve": "npm run build:collab && vite-node --config vitest.config.ts scripts/serve-paper-benchmark.mts",
     "eval:edits:serve": "npm run build:collab && vite-node --config vitest.config.ts scripts/serve-edit-benchmark.mts",
     "eval:importer": "npm run build:export && vite-node --config vitest.config.ts scripts/eval-importer-regressions.mts",
-    "build:katex": "vite-node --config vitest.config.ts scripts/build-katex-inline.mts"
-  },
-  "build": {
-    "appId": "com.scenerepresentations.slide-editor",
-    "productName": "DeckWerk",
-    "files": [
-      "out/**/*",
-      "dist/collab/**/*",
-      "package.json"
-    ],
-    "extraResources": [
-      {
-        "from": "build/importers",
-        "to": "importers"
-      }
-    ],
-    "beforePack": "scripts/assert-importer-fresh.cjs",
-    "asarUnpack": [
-      "**/node_modules/ffmpeg-static/**",
-      "**/node_modules/ffprobe-static/**",
-      "**/node_modules/libheif-js/**"
-    ],
-    "mac": {
-      "category": "public.app-category.productivity",
-      "icon": "resources/deckwerk-icon.icns",
-      "target": [
-        "dmg",
-        "zip"
-      ]
-    },
-    "linux": {
-      "category": "Office",
-      "target": [
-        "AppImage",
-        "deb"
-      ]
-    }
+    "build:katex": "vite-node --config vitest.config.ts scripts/build-katex-inline.mts",
+    "dist:mac": "npm run build && npm run build:importer && electron-builder --mac --config electron-builder.config.cjs --publish never",
+    "dist:win": "npm run build && npm run build:importer && electron-builder --win --config electron-builder.config.cjs --publish never"
   },
   "dependencies": {
     "@codemirror/lang-css": "^6.3.1",
