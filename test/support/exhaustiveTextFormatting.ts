@@ -459,7 +459,31 @@ export async function runRoleRoundTrip(editor: Cdp): Promise<void> {
   expect(again, 'role round trip: coming back to a role is repeatable').toEqual(body);
 }
 
-export async function runExhaustiveTextFormatting(editor: Cdp): Promise<number> {
+/**
+ * Let the renderer paint twice before the next real-input step.
+ *
+ * Two animation frames is the normal wait, but `requestAnimationFrame` only
+ * fires for a window the compositor is producing frames for. Under CI's bare
+ * Xvfb (no window manager, no compositor) a hosted window can go without
+ * frames indefinitely, and awaiting rAF there never resolves: the nightly
+ * matrix hung for its whole 30-minute budget with no other symptom. The
+ * timer fallback keeps the wait short in that case; when frames do come, the
+ * rAF path wins and the timer is just cleared.
+ */
+async function settleFrames(editor: Cdp): Promise<void> {
+  await editor.evaluate(`new Promise((resolve) => {
+    const timer = setTimeout(() => resolve('timer'), 100);
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      clearTimeout(timer);
+      resolve('frames');
+    }));
+  })`);
+}
+
+export async function runExhaustiveTextFormatting(
+  editor: Cdp,
+  options: { budgetMs?: number } = {},
+): Promise<number> {
   await editor.click(`#canvas [data-element-id="${EXHAUSTIVE_TEXT_ID}"]`, 'exhaustive text box');
   // Roles are a whole-box control, driven here on the selected box before the
   // inline matrix starts editing inside it.
@@ -476,9 +500,31 @@ export async function runExhaustiveTextFormatting(editor: Cdp): Promise<number> 
   const configuredLimit = Number(process.env.EXHAUSTIVE_FORMAT_FUZZ_CASES ?? allCases.length);
   const selectedCases = allCases.slice(0, Math.max(1, Math.min(allCases.length, configuredLimit)));
   let previous: ExhaustiveCase | null = null;
+  // Progress goes to the log in blocks, with the block's own pace, so a run
+  // that dies to a timeout on CI still says how far it got and whether it was
+  // slowing down (a per-case cost that grows with the session) or stuck.
+  const startedAt = Date.now();
+  let blockStartedAt = startedAt;
+  const PROGRESS_BLOCK = 100;
 
   for (const [index, state] of selectedCases.entries()) {
     const label = `exhaustive case ${index + 1}/${selectedCases.length}`;
+    if (index > 0 && index % PROGRESS_BLOCK === 0) {
+      const now = Date.now();
+      const perCase = ((now - blockStartedAt) / PROGRESS_BLOCK).toFixed(0);
+      console.log(`${label}: ${((now - startedAt) / 1000).toFixed(0)}s elapsed, `
+        + `${perCase}ms/case over the last ${PROGRESS_BLOCK}`);
+      // A matrix that will not fit its budget fails here, with the pace that
+      // says so, rather than being killed by the test timeout with nothing
+      // but "timed out" to show for half an hour of CI.
+      const projected = now - startedAt + (selectedCases.length - index) * ((now - blockStartedAt) / PROGRESS_BLOCK);
+      if (options.budgetMs !== undefined && projected > options.budgetMs) {
+        throw new Error(`${label}: at ${perCase}ms/case the matrix projects to `
+          + `${(projected / 60_000).toFixed(0)} min against a ${(options.budgetMs / 60_000).toFixed(0)} min budget; `
+          + `recoveries so far: ${recoveries.length}`);
+      }
+      blockStartedAt = now;
+    }
     const editing = await editor.evaluate<boolean>(
       `document.querySelector(${JSON.stringify(EXHAUSTIVE_CONTENT)})?.isContentEditable === true`,
     );
@@ -493,9 +539,7 @@ export async function runExhaustiveTextFormatting(editor: Cdp): Promise<number> 
         `document.querySelector(${JSON.stringify(EXHAUSTIVE_CONTENT)})?.isContentEditable === true`,
       ), `${label}: text editing did not resume`);
     }
-    await editor.evaluate(`new Promise((resolve) => requestAnimationFrame(
-      () => requestAnimationFrame(() => resolve(true)),
-    ))`);
+    await settleFrames(editor);
     await selectExactRange(editor, state.target, `${label}: ${state.target.label}`);
 
     // Block operations intentionally expand the live Range to the paragraphs
@@ -521,9 +565,7 @@ export async function runExhaustiveTextFormatting(editor: Cdp): Promise<number> 
       expect(afterBlocks.text, `${label}: block operations changed text`).toBe(EXHAUSTIVE_TEXT);
       expect(afterBlocks.nested, `${label}: block operations nested lists; ${afterBlocks.html}`)
         .toBe(false);
-      await editor.evaluate(`new Promise((resolve) => requestAnimationFrame(
-        () => requestAnimationFrame(() => resolve(true)),
-      ))`);
+      await settleFrames(editor);
       await selectExactRange(editor, state.target, `${label}: reselect ${state.target.label}`);
     }
     const recoverSelection = () => selectExactRange(

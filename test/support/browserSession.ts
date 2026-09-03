@@ -40,6 +40,9 @@ interface ElementBox {
   height: number;
 }
 
+/** See `Cdp.call`. Five minutes: longer than any command, shorter than any test budget it could hide behind. */
+const CDP_COMMAND_TIMEOUT_MS = 5 * 60_000;
+
 export class Cdp {
   private nextId = 1;
   private clickTargets = 0;
@@ -77,10 +80,36 @@ export class Cdp {
     return cdp;
   }
 
-  call(method: string, params: Record<string, unknown> = {}): Promise<any> {
+  /**
+   * One DevTools command. A reply that never comes — a renderer that stopped
+   * pumping tasks, an `awaitPromise` on a promise nothing will resolve — used
+   * to hang the caller until the *test* timeout killed it, which reports
+   * nothing but "timed out" for however long that budget was (the nightly
+   * exhaustive matrix: 30 minutes of CI). The cap is generous, because no
+   * single command legitimately runs anywhere near it, and the error names the
+   * command so the log says what the browser never answered.
+   */
+  call(
+    method: string,
+    params: Record<string, unknown> = {},
+    timeoutMs = CDP_COMMAND_TIMEOUT_MS,
+  ): Promise<any> {
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      const timer = setTimeout(() => {
+        if (!this.pending.delete(id)) return;
+        reject(new Error(`DevTools command ${method} got no reply in ${timeoutMs}ms`));
+      }, timeoutMs);
+      this.pending.set(id, {
+        resolve: (value) => {
+          clearTimeout(timer);
+          resolve(value);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
       this.socket.send(JSON.stringify({ id, method, params }));
     });
   }

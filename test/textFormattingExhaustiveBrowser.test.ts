@@ -130,7 +130,7 @@ describe.skipIf(!RUN_EXHAUSTIVE || !electronBinary)('exhaustive formatting fuzz 
       && Boolean(document.querySelector(${JSON.stringify(EXHAUSTIVE_CONTENT)}))
     )`), 'Chromium exhaustive fixture did not connect');
 
-    const cases = await runExhaustiveTextFormatting(editor);
+    const cases = await runExhaustiveTextFormatting(editor, { budgetMs: TEST_TIMEOUT - 60_000 });
     // Recoveries are the symptom under test surfacing in the harness itself.
     // A handful across thousands of real-input steps is machine-load noise; a
     // pattern is a regression that silent retries used to hide.
@@ -212,7 +212,7 @@ describe.skipIf(!RUN_EXHAUSTIVE || !electronBinary)('exhaustive formatting fuzz 
     await editor.call('Page.bringToFront');
     await editor.evaluate('window.focus()');
 
-    const cases = await runExhaustiveTextFormatting(editor);
+    const cases = await runExhaustiveTextFormatting(editor, { budgetMs: TEST_TIMEOUT - 60_000 });
     // Recoveries are the symptom under test surfacing in the harness itself.
     // A handful across thousands of real-input steps is machine-load noise; a
     // pattern is a regression that silent retries used to hide.
