@@ -125,6 +125,20 @@ describe('the layout gallery', () => {
       .toEqual(['The big idea', 'Readable body copy for the story.']);
   });
 
+  it('dresses the sidebar summary in the chosen theme', () => {
+    const theme = THEMES.find((candidate) => candidate.fonts.title.family !== THEMES[0].fonts.title.family)!;
+    const summary = build().workspace.createLayoutSummary(theme, vi.fn());
+    document.body.appendChild(summary);
+
+    // The summary renders outside the preview stylesheet, so the theme reaches
+    // it as inline CSS declarations or not at all.
+    const title = document.querySelector<HTMLElement>('.theme-layout-summary .element-text')!;
+    expect(title.style.getPropertyValue('font-family')).toBe(theme.fonts.title.family);
+    expect(title.style.getPropertyValue('font-size')).toBe(`${theme.fonts.title.size}px`);
+    const ground = document.querySelector<HTMLElement>('.theme-layout-summary .slide')!;
+    expect(ground.style.background).not.toBe('');
+  });
+
   it('draws the master being edited in the layout editor rail', () => {
     build().workspace.openLayoutEditor('standard');
     expect(shownIn('.layout-editor-rail-thumb')).toEqual(['Slide title', 'Body text', 'Slide title']);

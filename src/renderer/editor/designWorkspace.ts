@@ -324,6 +324,8 @@ function previewSlide(layout: FixedLayout, master: LayoutMaster): Slide {
   };
 }
 
+const PREVIEW_ROLES = ['title', 'heading', 'body', 'caption'] as const;
+
 function applyThemeInline(slide: Slide, theme: ThemePreset): void {
   // Preview clones render outside the preview stylesheet, so the theme's ground
   // has to be painted on: a master shown on white would misrepresent the deck.
@@ -332,17 +334,21 @@ function applyThemeInline(slide: Slide, theme: ThemePreset): void {
   }
   for (const element of slide.elements) {
     if (element.type !== 'text') continue;
-    const role = element.class.includes('role-title')
-      ? 'title'
-      : element.class.includes('role-caption') ? 'caption' : 'body';
+    const role = PREVIEW_ROLES.find((name) => element.class.includes(`role-${name}`)) ?? 'base';
     const font = theme.fonts[role];
+    // Element styles are CSS declarations: the renderer hands each key straight
+    // to `setProperty`, which drops camelCase outright. Written that way, the
+    // whole preview silently kept wearing the deck's stylesheet instead of the
+    // theme the author had just picked. The size belongs here too -- a type
+    // scale is most of what distinguishes one theme from the next.
     element.style = {
       ...element.style,
-      fontFamily: font.family,
-      fontWeight: String(font.weight),
-      letterSpacing: font.letterSpacing,
-      lineHeight: String(font.lineHeight),
-      color: font.color ?? theme.colors.text,
+      'font-family': font.family,
+      'font-size': `${font.size}px`,
+      'font-weight': String(font.weight),
+      'letter-spacing': font.letterSpacing,
+      'line-height': String(font.lineHeight),
+      color: font.color ?? (role === 'caption' ? theme.colors.muted : theme.colors.text),
     };
   }
 }
@@ -363,8 +369,14 @@ function revealPlaceholders<T extends SlideElement>(elements: T[]): T[] {
 function masterEditingDeck(source: Deck, masters: NonNullable<Deck['layoutMasters']>): Deck {
   const deck = emptyDeck('Layout masters');
   deck.canvas = structuredClone(source.canvas);
+  // The masters are edited under the deck's own theme, so the editing deck has
+  // to answer "which theme is this deck wearing" the same way the deck does --
+  // `deckTheme` reads the chosen preset out of `themeSelection`, and the
+  // inspector's type defaults come from there.
   deck.themePreset = source.themePreset;
   deck.themeStyle = source.themeStyle ? structuredClone(source.themeStyle) : null;
+  deck.themeSelection = source.themeSelection ? structuredClone(source.themeSelection) : null;
+  deck.customThemes = structuredClone(source.customThemes ?? []);
   deck.slides = LAYOUTS.map((layout) => ({
     id: `master-slide-${layout}`,
     name: LABELS[layout],
