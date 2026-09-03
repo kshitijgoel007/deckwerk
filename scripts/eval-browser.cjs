@@ -31,6 +31,13 @@ app.whenReady().then(async () => {
       nodeIntegration: false,
       sandbox: true,
       autoplayPolicy: 'no-user-gesture-required',
+      // The command-line switches above are not the whole story: Electron
+      // also throttles per window, and treats a window that is never shown as
+      // background -- so under CI's bare Xvfb (the window is never mapped at
+      // all) the page reports itself hidden, requestAnimationFrame stops, and
+      // timers align to one-second ticks. The nightly formatting matrix ran
+      // at 2.8 s/case there against 145 ms/case in the shown Electron window.
+      backgroundThrottling: false,
     },
   });
   // The evaluation model may navigate through CDP while this first load is in
