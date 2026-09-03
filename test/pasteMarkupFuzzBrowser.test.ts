@@ -161,7 +161,12 @@ describe.skipIf(!electronBinary)('pasted markup survives being edited', () => {
 
     console.log(`running ${CASES.length} paste cases (${EXTRA_SEEDS.length} extra seed(s): `
       + `${EXTRA_SEEDS.join(', ') || 'none'})`);
+    // PASTE_FUZZ_ONLY="spreadsheet-table → placeholder" narrows the walk to
+    // the cases whose "payload → target" label contains the text: the way to
+    // replay one failing case from a CI log without the hour around it.
+    const only = process.env.PASTE_FUZZ_ONLY ?? '';
     for (const testCase of CASES) {
+      if (only && !`${testCase.payload.name} → ${testCase.target}`.includes(only)) continue;
       await runPasteCase(editor, server.port, testCase);
     }
   });

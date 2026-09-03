@@ -2808,6 +2808,10 @@ export class EditorCanvas {
         }, { label: 'Edit text', coalesceKey, historyGroup: `text:${elementId}` });
         this.textEditStoreBase = html;
         this.textEditDomBase = html;
+        // A sealed run is committed history with its own undo entry. Discarding
+        // the session (Escape) must not silently take it back as well: the
+        // revert baseline moves up to what was just committed.
+        this.textEditRevertHtml = html;
       }
       this.textEditKeyClaimed = false;
       this.textEditCoalesceKey = `text:${elementId}:${this.textEditSession}:${++this.textEditChunk}`;
@@ -3162,8 +3166,10 @@ export class EditorCanvas {
         // Escape means discard — including anything live sync already
         // streamed. The revert shares the session's coalesce key, so in the
         // collab undo layer stream + revert fold into one net no-op. It
-        // targets the last peer-aware baseline, not the session start, so
-        // discarding local work never also discards a collaborator's edit.
+        // targets the last committed baseline (session start, or the most
+        // recent sealed run / formatting commit), never further back: those
+        // commits are undoable history in their own right, and a collaborator's
+        // edit is never discarded along with local work.
         const revertHtml = this.textEditRevertHtml ?? el.html;
         const streamed = findTextTarget(this.store.get().deck, elementId);
         if (streamed && streamed.html !== revertHtml) {
@@ -4656,6 +4662,12 @@ export class EditorCanvas {
     }, { label, coalesceKey, historyGroup: `text:${elementId}` });
     this.textEditStoreBase = html;
     this.textEditDomBase = html;
+    // Committed, undoable history: a later Escape discards only what was
+    // streamed after this, never the formatting itself. Reverting to the
+    // session start here wiped four list conversions in one undo-less
+    // transient, and the next typing run then folded into that revert's key —
+    // so one Ctrl/Cmd+Z after typing "restored" the pre-formatting markup.
+    this.textEditRevertHtml = html;
     // The key deliberately stays put: leaving edit mode commits this same html
     // again, and that commit has to fold into this entry so one Ctrl/Cmd+Z
     // takes back the formatting change rather than an invisible re-commit of
