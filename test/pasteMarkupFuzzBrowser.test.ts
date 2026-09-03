@@ -303,7 +303,17 @@ async function runPasteCase(cdp: Cdp, port: number, testCase: PasteCase): Promis
       await checkBox(cdp, port, label);
       continue;
     }
-    await applyOperation(cdp, operation);
+    try {
+      await applyOperation(cdp, operation);
+    } catch (error) {
+      // The harness's own failures ("cannot click …") name no case; on CI
+      // that left a Linux-only failure with nothing to reproduce from.
+      const html = await cdp.evaluate<string>(
+        `document.querySelector('${PASTE_CONTENT}')?.innerHTML ?? '(no box)'`,
+      ).catch(() => '(unreadable)');
+      throw new Error(`${label}: ${error instanceof Error ? error.message : String(error)}\n`
+        + `box before the operation: ${JSON.stringify(before)}\nbox now: ${html}`);
+    }
     await checkBox(cdp, port, label);
     const after = await contentText(cdp, PASTE_CONTENT);
     if (operation.kind === 'cross-box' || operation.kind === 'escape-reenter') {
