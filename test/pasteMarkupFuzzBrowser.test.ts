@@ -539,9 +539,17 @@ async function caretAtEnd(cdp: Cdp): Promise<void> {
     for (let index = text.length - 1; index >= 0; index -= 1) {
       if (!/[\\s\\u2060]/.test(text[index])) return index;
     }
-    return 0;
+    return -1;
   })()`);
-  await cdp.clickTextAtOffset(PASTE_CONTENT, offset, 'last visible character');
+  if (offset < 0) {
+    // Earlier edits can legitimately empty the box (a drag-selected "first
+    // word" that covered the whole of a short list, then Backspace). There is
+    // no character to click then; the box itself is the target, and the walk
+    // carries on typing into it.
+    await cdp.click(PASTE_CONTENT, 'empty box');
+  } else {
+    await cdp.clickTextAtOffset(PASTE_CONTENT, offset, 'last visible character');
+  }
   await cdp.key('End', 35);
 }
 
