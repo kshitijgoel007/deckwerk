@@ -36,11 +36,11 @@ describe('retired field names in persisted stores', () => {
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), 'alias-stores-'));
     stateDir = await mkdtemp(join(tmpdir(), 'alias-stores-state-'));
-    process.env.SLIDE_EDITOR_STATE_DIR = stateDir;
+    process.env.DECKWERK_STATE_DIR = stateDir;
   });
 
   afterEach(async () => {
-    delete process.env.SLIDE_EDITOR_STATE_DIR;
+    delete process.env.DECKWERK_STATE_DIR;
     await rm(dir, { recursive: true, force: true });
     await rm(stateDir, { recursive: true, force: true });
   });

@@ -64,7 +64,7 @@ describe('slide-agent CLI', () => {
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), 'agent-cli-'));
     stateDir = await mkdtemp(join(tmpdir(), 'agent-cli-state-'));
-    process.env.SLIDE_EDITOR_STATE_DIR = stateDir;
+    process.env.DECKWERK_STATE_DIR = stateDir;
     await mkdir(join(dir, 'assets'), { recursive: true });
     const deck = emptyDeck('CLI deck');
     deck.slides = [
@@ -76,7 +76,7 @@ describe('slide-agent CLI', () => {
   });
 
   afterEach(async () => {
-    delete process.env.SLIDE_EDITOR_STATE_DIR;
+    delete process.env.DECKWERK_STATE_DIR;
     await rm(dir, { recursive: true, force: true });
     await rm(stateDir, { recursive: true, force: true });
   });

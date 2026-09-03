@@ -392,7 +392,7 @@ required.
   that still exist; `stale: true` means that sidecar was left behind by an app
   that never shut down cleanly.
 
-The sidecar lives in `~/.slide-editor/runtime/<deck>-<hash>/`, never in the
+The sidecar lives in `~/.deckwerk/runtime/<deck>-<hash>/`, never in the
 deck folder — it is ephemeral state, not part of the document, and it stays out
 of git.
 

@@ -25,9 +25,9 @@ import { IPC } from '@shared/ipc.js';
  * app instance) can point it somewhere else.
  */
 export function agentStateRoot(): string {
-  return process.env.SLIDE_EDITOR_STATE_DIR
-    ? resolve(process.env.SLIDE_EDITOR_STATE_DIR)
-    : join(homedir(), '.slide-editor', 'runtime');
+  return process.env.DECKWERK_STATE_DIR
+    ? resolve(process.env.DECKWERK_STATE_DIR)
+    : join(homedir(), '.deckwerk', 'runtime');
 }
 
 export function deckRevision(deck: Deck): string {

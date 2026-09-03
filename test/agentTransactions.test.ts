@@ -217,12 +217,12 @@ describe('the file-backed request bridge', () => {
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), 'agent-bridge-'));
     stateDir = await mkdtemp(join(tmpdir(), 'agent-bridge-state-'));
-    process.env.SLIDE_EDITOR_STATE_DIR = stateDir;
+    process.env.DECKWERK_STATE_DIR = stateDir;
     await writeFile(join(dir, 'deck.json'), `${JSON.stringify(fixture(), null, 2)}\n`, 'utf8');
   });
 
   afterEach(async () => {
-    delete process.env.SLIDE_EDITOR_STATE_DIR;
+    delete process.env.DECKWERK_STATE_DIR;
     await rm(dir, { recursive: true, force: true });
     await rm(stateDir, { recursive: true, force: true });
   });
@@ -332,13 +332,13 @@ describe('offline transactions', () => {
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), 'agent-deck-'));
     stateDir = await mkdtemp(join(tmpdir(), 'agent-state-'));
-    process.env.SLIDE_EDITOR_STATE_DIR = stateDir;
+    process.env.DECKWERK_STATE_DIR = stateDir;
     await mkdir(join(dir, 'assets'), { recursive: true });
     await writeFile(join(dir, 'deck.json'), `${JSON.stringify(fixture(), null, 2)}\n`, 'utf8');
   });
 
   afterEach(async () => {
-    delete process.env.SLIDE_EDITOR_STATE_DIR;
+    delete process.env.DECKWERK_STATE_DIR;
     await rm(dir, { recursive: true, force: true });
     await rm(stateDir, { recursive: true, force: true });
   });

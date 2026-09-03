@@ -71,7 +71,7 @@ describe('slide-agent theme', () => {
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), 'agent-theme-'));
     stateDir = await mkdtemp(join(tmpdir(), 'agent-theme-state-'));
-    process.env.SLIDE_EDITOR_STATE_DIR = stateDir;
+    process.env.DECKWERK_STATE_DIR = stateDir;
     const deck = emptyDeck('Theme deck');
     deck.slides = parseDeck({
       version: 1,
@@ -85,7 +85,7 @@ describe('slide-agent theme', () => {
   });
 
   afterEach(async () => {
-    delete process.env.SLIDE_EDITOR_STATE_DIR;
+    delete process.env.DECKWERK_STATE_DIR;
     await rm(dir, { recursive: true, force: true });
     await rm(stateDir, { recursive: true, force: true });
   });

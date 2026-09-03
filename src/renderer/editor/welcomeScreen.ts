@@ -24,7 +24,7 @@ export class WelcomeScreen {
     const title = document.createElement('h1');
     title.textContent = 'What would you like to present?';
     const detail = document.createElement('p');
-    detail.textContent = 'Create a deck, open a slide-editor folder, or bring in an existing Keynote presentation.';
+    detail.textContent = 'Create a deck, open a DeckWerk folder, or bring in an existing Keynote presentation.';
 
     const choices = document.createElement('div');
     choices.className = 'welcome-actions';
