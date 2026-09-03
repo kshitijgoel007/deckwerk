@@ -152,6 +152,44 @@ describe('authored placeholder content and layout changes', () => {
     expect(slotOf(deck, 'title').style['font-family']).toBe('Georgia');
     expect(slotOf(deck, 'title').align).toBe('center');
   });
+
+  it('leaves styling the master says nothing about on the slide', () => {
+    const deck = authoredDeck();
+    // What "Apply theme" writes onto the slides themselves.
+    slotOf(deck, 'title').style = {
+      'font-family': 'Charter, serif', 'font-size': '88px', 'font-weight': '700',
+    };
+    const master = deck.layoutMasters!.standard.elements[0];
+    if (master.type !== 'text') throw new Error('the standard master starts with its title');
+    master.align = 'center';
+    syncDeckWithLayoutMasters(deck);
+
+    expect(slotOf(deck, 'title').align).toBe('center');
+    expect(slotOf(deck, 'title').style).toEqual({
+      'font-family': 'Charter, serif', 'font-size': '88px', 'font-weight': '700',
+    });
+  });
+
+  it('adopts the master\u2019s styling whole when the slide is put on the layout', () => {
+    const deck = authoredDeck();
+    slotOf(deck, 'title').style = { 'font-family': 'Charter, serif', 'font-size': '88px' };
+    applySlideLayout(deck.slides[0], 'standard', deck.layoutMasters);
+
+    expect(slotOf(deck, 'title').style).toEqual({});
+  });
+
+  it('lets the master override one property without clearing the rest', () => {
+    const deck = authoredDeck();
+    slotOf(deck, 'title').style = { 'font-family': 'Charter, serif', 'font-size': '88px' };
+    const master = deck.layoutMasters!.standard.elements[0];
+    if (master.type !== 'text') throw new Error('the standard master starts with its title');
+    master.style['font-size'] = '64px';
+    syncDeckWithLayoutMasters(deck);
+
+    expect(slotOf(deck, 'title').style).toEqual({
+      'font-family': 'Charter, serif', 'font-size': '64px',
+    });
+  });
 });
 
 describe('re-synchronizing a deck with its masters', () => {

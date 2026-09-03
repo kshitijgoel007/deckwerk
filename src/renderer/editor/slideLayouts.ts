@@ -14,7 +14,10 @@ export function applySlideLayout(
   masters: Deck['layoutMasters'] = null,
 ): void {
   const master = masters?.[layout] ?? defaultLayoutMasters()[layout];
-  syncSlideWithLayoutMaster(slide, layout, master, { forceBackground: Boolean(masters) });
+  syncSlideWithLayoutMaster(slide, layout, master, {
+    forceBackground: Boolean(masters),
+    replaceStyle: true,
+  });
 }
 
 export const LAYOUT_LABELS: Array<[SlideLayout, string]> = [

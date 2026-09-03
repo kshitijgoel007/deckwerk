@@ -62,15 +62,36 @@ function textForSlot(slide: Slide, slot: 'title' | 'body'): TextEl | undefined {
     && (element.layoutPlaceholder === slot || element.class.includes(roleClass(slot))));
 }
 
-function copyPlaceholderPresentation(target: TextEl, source: TextEl): void {
+function copyPlaceholderPresentation(
+  target: TextEl,
+  source: TextEl,
+  replaceStyle: boolean,
+): void {
   target.x = source.x;
   target.y = source.y;
   target.w = source.w;
   target.h = source.h;
   target.rot = source.rot;
   target.opacity = source.opacity;
-  target.style = structuredClone(source.style);
-  target.contentStyle = source.contentStyle ? structuredClone(source.contentStyle) : undefined;
+  // Putting a slide on a layout is the author asking for that layout's look,
+  // so it adopts the master's styling whole. Propagating a master edit is not:
+  // there the master's declarations win and everything it is silent about
+  // stays the slide's own, because that is where a theme applied to slides
+  // lives. Replacing wholesale on this path meant merely opening the layout
+  // editor and pressing Done dropped the deck's typography back to the
+  // stylesheet's on every slide at once, as if the deck had changed theme.
+  if (replaceStyle) {
+    target.style = structuredClone(source.style);
+    target.contentStyle = source.contentStyle ? structuredClone(source.contentStyle) : undefined;
+  } else {
+    target.style = { ...target.style, ...structuredClone(source.style) };
+    if (source.contentStyle) {
+      target.contentStyle = {
+        ...(target.contentStyle ?? {}),
+        ...structuredClone(source.contentStyle),
+      };
+    }
+  }
   target.align = source.align;
   target.valign = source.valign;
   target.autoFit = source.autoFit;
@@ -116,7 +137,7 @@ export function syncSlideWithLayoutMaster(
   slide: Slide,
   layout: FixedLayout,
   master: LayoutMaster,
-  options: { forceBackground?: boolean } = {},
+  options: { forceBackground?: boolean; replaceStyle?: boolean } = {},
 ): void {
   slide.layout = layout;
   const retiredCopies = new Set(slide.elements
@@ -133,7 +154,7 @@ export function syncSlideWithLayoutMaster(
       target.html = source.layoutPlaceholder === 'title' ? 'Slide title' : 'Body text';
       slide.elements.push(target);
     }
-    copyPlaceholderPresentation(target, source);
+    copyPlaceholderPresentation(target, source, options.replaceStyle === true);
   }
 
   const decorations = master.elements.filter((element) => (
