@@ -23,6 +23,7 @@ export const IPC = {
   deckState: 'deck:state',
   themeCss: 'deck:themeCss',
   assetImport: 'asset:import',
+  assetImportUrl: 'asset:importUrl',
   assetImportProgress: 'asset:importProgress',
   clipboardWrite: 'clipboard:write',
   clipboardRead: 'clipboard:read',

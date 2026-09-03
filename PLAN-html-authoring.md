@@ -9,7 +9,7 @@ equations, invented coordinates, whole-deck reads before acting.
 
 So: **let the agent edit slides as HTML/CSS.** A real browser lays the markup
 out, we bake the geometry it computed into ordinary deck objects. What comes
-back is not a blob — it is the same draggable, snappable, Magic-Move-pairable
+back is not a blob — it is the same draggable, snappable, Morph-pairable
 objects you get by placing them by hand.
 
 The JSON transaction path stays underneath as the commit mechanism; HTML is the
@@ -249,7 +249,7 @@ test matters more than any unit test here.
 - `data-element="html"` forces verbatim preservation; `data-element="none"`
   excludes a node.
 - Builds ride on `data-build="click"` / `data-build="afterPrev+500"`.
-- Magic Move pairing rides on `data-magic-move="<identity>"`.
+- Morph pairing rides on `data-morph="<identity>"`.
 - Video trim is `data-trim="start,end"`; crops are `data-crop="x,y,w,h"`.
 - Vertical alignment is `data-valign`; auto-fit is `data-autofit`.
 - Presentational CSS must be inline or in `theme.css`. A `<style>` block in the

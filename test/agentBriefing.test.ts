@@ -134,7 +134,7 @@ describe('the capability cookbook', () => {
   it('covers the features an agent would otherwise reimplement badly', () => {
     const ids = capabilities().map((capability) => capability.id);
     expect(ids).toEqual(expect.arrayContaining([
-      'latex', 'crop', 'video', 'builds', 'magic-move', 'auto-fit', 'shapes', 'media-frame',
+      'latex', 'crop', 'video', 'builds', 'morph', 'auto-fit', 'shapes', 'media-frame',
     ]));
   });
 
@@ -216,7 +216,7 @@ describe('cookbook coverage, derived from the schema', () => {
 
   /** Fields the editor sets for itself, which an agent has no business writing. */
   const EXEMPT_FIELDS: Record<string, string> = {
-    lineageId: 'Internal: stamped on duplication so Magic Move auto-pair can recognise a copy.',
+    lineageId: 'Internal: stamped on duplication so Morph auto-pair can recognise a copy.',
     originalType: 'Importer-only, on unsupported placeholders.',
     note: 'Importer-only, on unsupported placeholders.',
   };
@@ -305,7 +305,7 @@ describe('cookbook coverage, derived from the schema', () => {
       }
     };
     collect(SlideSchema, 'slide');
-    collect(DeckSchema.shape.magicMoveEasing, 'magicMoveEasing');
+    collect(DeckSchema.shape.morphEasing, 'morphEasing');
 
     const uncovered: string[] = [];
     for (const [field, values] of vocabulary) {

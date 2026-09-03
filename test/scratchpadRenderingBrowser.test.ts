@@ -171,7 +171,7 @@ function importedPage(): string {
     {
       id: 'native-one', name: 'Native one', notes: '', skipped: false,
       background: { color: '#f8fafc', image: null }, timeline: [],
-      magicMoveFromPrevious: false, magicMoveDuration: 1000,
+      morphFromPrevious: false, morphDuration: 1000,
       elements: [
         {
           id: 'native-title', type: 'text', x: 160, y: 130, w: 1600, h: 130,

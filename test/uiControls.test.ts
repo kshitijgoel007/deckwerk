@@ -23,9 +23,9 @@ describe('shared editor controls', () => {
   afterEach(() => closePopover());
 
   it('makes help popovers keyboard discoverable and non-modal', () => {
-    const help = helpButton({ title: 'Magic Move', description: 'Pairs objects.', firstAction: 'Select slides.' });
+    const help = helpButton({ title: 'Morph', description: 'Pairs objects.', firstAction: 'Select slides.' });
     document.body.appendChild(help);
-    expect(help.getAttribute('aria-label')).toBe('Help: Magic Move');
+    expect(help.getAttribute('aria-label')).toBe('Help: Morph');
     expect(help.getAttribute('aria-haspopup')).toBe('true');
     help.click();
     expect(document.querySelector('[role="tooltip"]')?.textContent).toContain('Start here: Select slides.');

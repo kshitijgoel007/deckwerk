@@ -122,6 +122,61 @@ the prose. What it cannot do is carry a file-local `<style>` block into the
 deck: text colour and fonts from such classes affect only the preview, so
 define them in `theme.css`, which the deck actually loads.
 
+### What your markup becomes
+
+Everything below arrives as an ordinary object you can drag, restyle and pair
+with Morph. Write the markup you would write anyway — this is what it
+turns into, not a list of things to opt into.
+
+- **Text** — any text-bearing tag: headings, `<p>`, `<blockquote>`, `<li>`,
+  `<dt>`/`<dd>`, `<figcaption>`, `<small>`, `<cite>`, and their inline markup.
+  A `<ul>`/`<ol>` stays one object, markers and all, and a hand-written
+  `<table>` becomes an editable deck table with the column widths the browser
+  measured.
+- **Media** — `<img>` and `<video>`. A border, a radius, a circular mask, a
+  ring shadow or a backdrop colour on the media *or on a frame that wraps only
+  that media* becomes the picture's own, so a framed photograph is one object
+  rather than a picture with a ring floating beside it. The deck paints a
+  media border inside the box, so the frame lands on the picture's outer edge
+  rather than just outside it.
+- **Crops** — `object-fit: cover/contain` with an `object-position` that is
+  not the default is a crop, and it is measured into the deck's own
+  `sourceBox`, so the framing you chose is what the crop tool picks up when
+  someone nudges the picture inside its window. A circular mask always
+  becomes a crop for the same reason. Plain centred `cover` stays implicit, so
+  the picture keeps re-covering when its box is resized.
+- **Shapes** — a `<div>` with a background or a border becomes a rect or an
+  ellipse behind its children. An inline `<svg>` that draws exactly *one*
+  primitive (`rect`, `circle`, `ellipse`, `line`, `path`, `polygon`,
+  `polyline`) becomes that shape: a `<line>` with `marker-end` is a real
+  arrow, angle and all, and a single `<path>` keeps its `d` and its viewBox.
+- **Decoration** — `::before`/`::after` come across too: solid paint as a
+  shape, a gradient bar, a shadowed chip, a border-triangle arrowhead or a
+  `content:"→"` as a styled text object, painted in front of or behind its
+  owner as the CSS said.
+- **Backgrounds** — a photograph or gradient on a container that dissolves is
+  kept as a painted box underneath the words it was behind.
+
+### What to avoid
+
+These still import, but as an inert `data-element="html"` region — movable and
+resizable, editable only by rewriting the markup (`validate` lists them as
+`importGaps`):
+
+- **A multi-primitive inline SVG.** A boxes-and-arrows diagram drawn as one
+  `<svg>` is a picture to the deck. Build it from divs and one-primitive SVGs
+  and every box, label and arrow stays editable.
+- **`clip-path` and `mask-image`.** A clipped triangle or a masked panel is
+  preserved whole rather than quietly flattened to the rectangle underneath.
+- **`<canvas>`, `<iframe>`, form controls.**
+- **A container that mixes loose prose with block children** — usually a block
+  element inside a `<p>`, which the HTML parser closes early. Wrap the prose.
+
+And two that are silently *lost*, so the compile reports them as warnings
+instead: `transform: scale()`/`skew()` (only rotation survives — size the
+element directly) and `backdrop-filter` (use a translucent fill). CSS columns
+are not lost, but each column becomes its own text box.
+
 **Edit style attributes as attributes, not as text.** The export entity-escapes
 quotes inside `style="…"` — a font stack reads
 `font-family:&quot;Avenir&quot;, sans-serif`. A regex that scans for `;` will
@@ -148,8 +203,8 @@ list means the slide clips text — fix it (shorter text, a bigger box, a
 smaller size, or `data-autofit="true"`) rather than rendering a PNG to look
 for it.
 
-Use `slide-agent capabilities` for the data attributes that carry builds, Magic
-Move, crops, video trim and KaTeX. Use `render` only when you want a PNG to
+Use `slide-agent capabilities` for the data attributes that carry builds,
+Morph, crops, video trim and KaTeX. Use `render` only when you want a PNG to
 look at.
 
 ## What not to do any more
@@ -242,6 +297,7 @@ Diagnostics go to stderr. Exit codes are `0` ok, `1` error,
 | `preview [deck] [--port n] [--open]` | Export through the real player and serve on localhost; prints its URL as JSON, then blocks — run it in the background and give the user the URL |
 | `validate [deck]` | Schema, duplicate ids, timeline references, missing assets |
 | `asset import <deck> <paths...>` | Media copied into `assets/`, deduped, probed, transcoded |
+| `theme list\|show\|create\|delete\|choose\|apply [deck]` | The theme system: what is on offer, and writing, choosing and adopting one |
 | `transaction apply <deck> <file.json>` | One atomic, named change |
 
 The deck argument defaults to the current directory.
@@ -253,6 +309,43 @@ For each gap, export its slide with `inspect --html --slide <id>`, replace the
 conspicuous `data-element="unsupported"` placeholder with real HTML, and save.
 The replacement becomes an editable text, media, shape, or HTML object on the
 way back; a clean `importGaps: []` confirms that the repair loop is complete.
+
+### Make or change a theme
+
+A theme is a *preset* — five font roles, a swatch palette, four ground colours
+— and installing one is separate from applying it, exactly as in the panel.
+Presets shipped with the app are read-only; a theme you write is stored on the
+deck, offered in the same gallery, and travels in the deck folder.
+
+```bash
+slide-agent theme list $DECK                      # what is on offer, and what the deck wears
+slide-agent theme show $DECK --id almanac > /tmp/spec.json   # start from one that works
+# edit /tmp/spec.json: new id, name, description, colours, fonts
+slide-agent theme create $DECK --spec /tmp/spec.json
+slide-agent theme apply  $DECK --id lab-night --scope deck
+slide-agent render $DECK --all --output /tmp/shots   # look at it
+```
+
+- **`create` restyles nothing.** Like installing a theme in the panel, it
+  changes what is *available*. `choose` makes it the deck's current theme, so
+  new slides are born wearing it; `apply` restyles slides that already exist.
+- `--scope deck` is the install: it writes the deck's defaults, adopts them on
+  every slide, and rewrites the generated block in `theme.css`. `--scope slides`
+  with `--slide <id>` (repeatable) or `--all` restyles only those slides and
+  leaves the stylesheet alone.
+- Narrow what is taken with `--roles title,heading,body,caption,base` and
+  `--properties fonts,weights,scale,text-color,background,object-colors`. Both
+  default to everything.
+- `--detect-roles` tags untagged text by size. It reads the *inline* font size,
+  so text sized by the stylesheet has nothing to classify by — the command says
+  so rather than tagging everything `role-base` in silence.
+- Append `-dark` or `-light` to any theme id for its counterpart: every colour
+  keeps its hue and flips its lightness, so the theme keeps its voice.
+- Ids are lowercase, digits and dashes, may not shadow a built-in, and may not
+  end in `-dark`/`-light`. `--replace` overwrites a deck theme you are
+  iterating on.
+- A deck-wide apply reports `warnings` when the deck's own CSS styles type or
+  colour outside the generated block: those declarations sit below it and win.
 
 ### Start with `context`
 
@@ -271,7 +364,7 @@ slide-agent context ~/talks/millivid
   "outline": [
     { "index": 17, "id": "slide-18", "title": "Scaling is the bitter lesson",
       "elements": { "text": 2, "image": 1 }, "builds": 1,
-      "magicMoveFromPrevious": false, "skipped": false }
+      "morphFromPrevious": false, "skipped": false }
   ],
   "style": {
     "canvas": { "w": 1920, "h": 1080 },
@@ -326,7 +419,7 @@ Each element carries:
   are measurements, and without an editor none was taken.
 - `media` — `src`, `fit`, `sourceBox` (the crop), `effects`, border, duration.
 - `shape` — kind, stroke, fill, arrowheads, curve `control` point, `path`.
-- `magicMoveId` and `lineageId` — explicit pairing and duplication ancestry.
+- `morphId` and `lineageId` — explicit pairing and duplication ancestry.
 - `selected` — whether the user has it selected right now.
 
 Offline, `rendered` is `null` and `computedStyle` is empty: authored inspection
@@ -366,9 +459,9 @@ after you read it:
   "label": "Pair the equation across the derivation",
   "operations": [
     { "op": "replaceElement", "slideId": "slide-19", "elementId": "equation-19",
-      "element": { "…": "the whole element, with magicMoveId set" } },
+      "element": { "…": "the whole element, with morphId set" } },
     { "op": "replaceSlide", "slideId": "slide-19",
-      "slide": { "…": "the whole slide, with magicMoveFromPrevious: true" } }
+      "slide": { "…": "the whole slide, with morphFromPrevious: true" } }
   ]
 }
 ```
@@ -388,7 +481,7 @@ Operations, applied in array order:
 | `insertElements` | Append elements to a slide |
 | `replaceElement` | Replace one element; its `id` must not change |
 | `deleteElements` | Remove elements and any timeline entries referencing them |
-| `updateDeck` | `title`, `magicMoveEasing` |
+| `updateDeck` | `title`, `morphEasing` |
 
 Rules worth internalising:
 
@@ -449,6 +542,18 @@ slide-agent inspect $DECK --slide results      # confirm the result
 - Text styling belongs in `theme.css` via `role-title` / `role-heading` /
   `role-body` / `role-caption` classes; inline `style` on an element overrides
   the stylesheet and is best reserved for deliberate one-offs.
+- A deck may carry its own theme presets in `deck.json` (`customThemes`), which
+  resolve everywhere a built-in preset id does. Write them with
+  `slide-agent theme create`, never by hand.
+- The morph transition is named **Morph** (it shipped as "Magic Move" until
+  2026-09). Its fields are `morphId`, `morphFromPrevious`, `morphDuration` and
+  `morphEasing`, and its HTML attributes are `data-morph`,
+  `data-morph-from-previous` and `data-morph-duration`. The retired spellings
+  still load: `src/shared/fieldAliases.ts` maps them on the way in, for decks,
+  authored HTML and agent requests alike. Renaming a field means adding a row
+  there, never teaching a reader two names; renaming what the user reads means
+  editing `MORPH_NAME` in `src/shared/featureNames.ts`, which every label,
+  tooltip and undo entry interpolates.
 
 ## Seeing a deck without the app at all
 

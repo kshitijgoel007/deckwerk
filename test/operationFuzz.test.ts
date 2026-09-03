@@ -295,9 +295,9 @@ function buildOps(store: EditorStore, canvas: EditorCanvas, random: () => number
       },
     },
     {
-      name: 'set magic move id',
+      name: 'set morph id',
       run: () => store.updateSelected((el) => {
-        el.magicMoveId = random() < 0.5 ? null : `pair-${Math.floor(random() * 3)}`;
+        el.morphId = random() < 0.5 ? null : `pair-${Math.floor(random() * 3)}`;
       }, { label: 'pair' }),
     },
     // Layout masters are deck-wide formatting: one commit rewrites the
@@ -404,7 +404,7 @@ function checkInvariants(
   }
 
   // 2. Element ids are unique. Duplicates make every id-keyed lookup -- and
-  //    every magic move pairing -- ambiguous.
+  //    every morph pairing -- ambiguous.
   const ids = slide.elements.map((el) => el.id);
   const duplicated = ids.filter((id, i) => ids.indexOf(id) !== i);
   if (duplicated.length) problems.push(`duplicate element ids: ${[...new Set(duplicated)].join(', ')}`);

@@ -176,3 +176,22 @@ export function clipboardImageSource(html: string, text = ''): ClipboardImageSou
   }
   return null;
 }
+
+/**
+ * The image a drag out of a web page is carrying, or null when the drag is
+ * not one.
+ *
+ * A cross-application drag from a browser puts no file on the pasteboard: it
+ * offers the same `<img>` markup an image copy would, plus the image's URL in
+ * `text/uri-list`. `uriList` may hold several lines and `#` comments, so only
+ * its first real entry counts, and it stands in for the plain-text fallback
+ * because dragging an image out of a page often writes the page's own URL as
+ * `text/plain`.
+ */
+export function dragImageSource(html: string, uriList = '', text = ''): ClipboardImageSource | null {
+  const uri = uriList
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => line !== '' && !line.startsWith('#'));
+  return clipboardImageSource(html, uri ?? text);
+}

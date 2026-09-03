@@ -255,3 +255,68 @@ describe('a real slide, where something is always nearly aligned', () => {
     expect(out.guides.some((g) => g.axis === 'x' && g.at === 960.5)).toBe(true);
   });
 });
+
+describe('a row with a backdrop behind it', () => {
+  // Slide 3 of deckwerk_intro: three 477-square pictures, a title, and a body
+  // text box 1680 wide that spans the whole area the pictures sit in. The body
+  // box overlaps the pictures vertically, so it looks like a row neighbour —
+  // but it encloses them, and letting it in destroyed the chain the pictures
+  // form. Moving the middle picture then produced no distribution guide at all.
+  const title = { x: 120, y: 58, w: 1680, h: 142 };
+  const body = { x: 120, y: 252, w: 1680, h: 700 };
+  const left = { x: 83, y: 417, w: 477, h: 477 };
+  const right = { x: 1340, y: 417, w: 477, h: 477 };
+  const others = [title, body, left, right];
+  const middle = { x: 708, y: 417, w: 477, h: 477 };
+
+  it('snaps the middle picture to equal gaps despite the enclosing box', () => {
+    // Equidistant is x = 711.5; from 715 that is 3.5 away, and the nearest
+    // alignment (the 960 centre line, 6.5 away) must not win.
+    const out = snapMove({ ...middle, x: 715 }, CANVAS, others, 10);
+    expect(out.rect.x).toBe(711.5);
+    expect(out.spacing.map((gap) => gap.gap)).toEqual([151.5, 151.5]);
+  });
+
+  it('keeps the gap bars after the position is rounded to whole pixels', () => {
+    // The store commits integers, so the ideal 151.5/151.5 lands as 152/151.
+    // Those are still the same gap as far as an author is concerned.
+    const bars = spacingGuides({ ...middle, x: 712 }, [left, right], 'x');
+    expect(bars.map((bar) => bar.gap)).toEqual([152, 151]);
+  });
+
+  it('never treats the enclosing box as a neighbour', () => {
+    // With only the body box around there is no row, and so nothing to say.
+    expect(spacingDelta(middle, [body, title], 'x', 10)).toBeNull();
+    expect(spacingGuides(middle, [body, title], 'x')).toEqual([]);
+  });
+});
+
+describe('which objects count as row neighbours', () => {
+  const rect = { x: 500, y: 400, w: 200, h: 200 };
+
+  it('excludes an object the rect partly overlaps along the axis', () => {
+    // Half under the rect: there is no gap between them to measure, and
+    // sorting it into the row would put it "between" the real neighbours.
+    const overlapping = { x: 400, y: 400, w: 200, h: 200 };
+    const far = { x: 900, y: 400, w: 200, h: 200 };
+    expect(spacingGuides(rect, [overlapping, far], 'x')).toEqual([]);
+    expect(spacingDelta(rect, [overlapping, far], 'x', 10)).toBeNull();
+  });
+
+  it('keeps a neighbour that just clears the rect', () => {
+    // Clear of the rect on the axis by any amount is a neighbour, however
+    // slight; only genuine overlap is excluded.
+    const close = { x: 200, y: 400, w: 200, h: 200 };
+    const next = { x: 800, y: 400, w: 200, h: 200 };
+    expect(spacingGuides(rect, [close, next], 'x').map((bar) => bar.gap)).toEqual([100, 100]);
+    const nearer = { x: 201, y: 400, w: 200, h: 200 };
+    expect(spacingDelta(rect, [nearer, next], 'x', 10)).toBeCloseTo(0.5, 6);
+  });
+
+  it('ignores an object that misses the rect on the cross axis', () => {
+    const above = { x: 200, y: 100, w: 200, h: 200 };
+    const beside = { x: 800, y: 400, w: 200, h: 200 };
+    // Only `beside` is a row member, and one neighbour makes no distribution.
+    expect(spacingGuides(rect, [above, beside], 'x')).toEqual([]);
+  });
+});

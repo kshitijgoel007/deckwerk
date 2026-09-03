@@ -1,7 +1,7 @@
 import type { SlideElement } from '@shared/deck.js';
 
 /**
- * Where a Magic Move pair starts, and where it ends.
+ * Where a Morph pair starts, and where it ends.
  *
  * Split out of the player because it is the one part of a transition that can
  * be wrong in a way the eye reads as a disaster: if the start state does not
@@ -62,7 +62,7 @@ export interface TextLayout {
 const HORIZONTAL: Record<string, number> = { left: 0, center: 0.5, right: 1, justify: 0 };
 const VERTICAL: Record<string, number> = { top: 0, middle: 0.5, bottom: 1 };
 
-export interface MagicMoveTransforms {
+export interface MorphTransforms {
   /** Transform at offset 0: the target drawn as the source was. */
   start: string;
   /** Transform at offset 1: exactly what the settled render applies. */
@@ -71,11 +71,11 @@ export interface MagicMoveTransforms {
   origin: string;
 }
 
-export function magicMoveTransforms(
+export function morphTransforms(
   from: SlideElement,
   to: SlideElement,
   text: TextLayout | null = null,
-): MagicMoveTransforms {
+): MorphTransforms {
   const isText = from.type === 'text' && to.type === 'text';
   // Text scales by its rendered font size, never by its box: scaling a text
   // box that grew wider without the text changing would smear the glyphs.

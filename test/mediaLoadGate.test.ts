@@ -195,7 +195,7 @@ describe('preview frame recovery', () => {
  * The gate aborts the fetch of an element that left the DOM — necessary,
  * because a detached media element keeps downloading. But preview elements are
  * cached and re-appended (the slide rail keys thumbnail DOM by slide, the
- * Magic Move panel keeps its two surfaces), and an element whose `src` was
+ * Morph panel keeps its two surfaces), and an element whose `src` was
  * dropped is black forever, however long you look at it. So the abort stashes
  * the source and recovery puts it back.
  */

@@ -283,7 +283,7 @@ describe('agent context publication', () => {
       radius: 0, path: null, pathSize: null, arrowStart: false, arrowEnd: true,
       control: { x: 400, y: 640 },
     };
-    const paired = text('paired', 'Shared', { magicMoveId: 'mm-1', lineageId: 'origin-1' });
+    const paired = text('paired', 'Shared', { morphId: 'mm-1', lineageId: 'origin-1' });
     const h = harness(deckOf(makeSlide('slide-1', [video, arrow, paired])));
     await h.bridge.flush();
 
@@ -302,9 +302,9 @@ describe('agent context publication', () => {
     expect(shape.shape?.control).toEqual({ x: 400, y: 640 });
     expect(shape.authored.rot).toBe(15);
 
-    const magic = scene.elements.find((e) => e.id === 'paired')!;
-    expect(magic.magicMoveId).toBe('mm-1');
-    expect(magic.lineageId).toBe('origin-1');
+    const pairedScene = scene.elements.find((e) => e.id === 'paired')!;
+    expect(pairedScene.morphId).toBe('mm-1');
+    expect(pairedScene.lineageId).toBe('origin-1');
   });
 
   it('produces a schema-valid context document', async () => {

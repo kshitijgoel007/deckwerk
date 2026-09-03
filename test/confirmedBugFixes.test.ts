@@ -154,14 +154,14 @@ describe('player: slide changes', () => {
     expect(play).not.toHaveBeenCalled();
   });
 
-  it('does not animate a Magic Move between slides that are not neighbours', () => {
+  it('does not animate a Morph between slides that are not neighbours', () => {
     // The flag describes a slide's relation to the one before it, so jumping
     // from the rail (or stepping backwards) used to animate two slides that
     // were never authored as a pair: objects flying around at random.
     const deck = deckOf(
       { elements: [text('a', { x: 0 })] },
       { elements: [text('b')] },
-      { magicMoveFromPrevious: true, elements: [text('a', { x: 900 })] },
+      { morphFromPrevious: true, elements: [text('a', { x: 900 })] },
     );
     const { stage, player } = mount(deck);
     // jsdom has no Web Animations API; a stub is enough to observe whether the

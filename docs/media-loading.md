@@ -39,8 +39,8 @@ white screen, then black, then eventually the first slide.
 - **`'auto'`** is for the one surface where playback is imminent: the live
   Player. Buffering ahead is the point there.
 - **`'metadata'`** is for every preview surface — editor canvas, slide rail
-  thumbnails, Magic Move panel, Speaker View and agent measurement. The rail,
-  Magic Move panel and Speaker View then freeze their videos into stills (see
+  thumbnails, Morph panel, Speaker View and agent measurement. The rail,
+  Morph panel and Speaker View then freeze their videos into stills (see
   below); the canvas keeps live elements because it plays them on demand. It fetches the
   container header only, then seeks one frame (the element's in-point, or a
   hair past zero) so the element shows a picture instead of black. Cost per
@@ -67,7 +67,7 @@ network inside that timeout — nondeterministic frames in the output.
 
 ### Preview surfaces show a still, not a video
 
-A rail thumbnail or a Magic Move preview never plays. Giving it a live
+A rail thumbnail or a Morph preview never plays. Giving it a live
 `<video>` buys nothing and costs the one property that matters: a `<video>`
 paints nothing until a frame is decoded, and the decoded frames of a page that
 is hidden, occluded, or simply holding many media players are Chromium's to
@@ -131,7 +131,7 @@ not fire a burst of refetches. Both editor entry points install it.
 
 The same pass repairs the other way a preview goes permanently black: the gate
 aborts the fetch of an element that left the DOM, and preview DOM is *cached
-and re-appended* (rail thumbnails by slide, the Magic Move panel's two
+and re-appended* (rail thumbnails by slide, the Morph panel's two
 surfaces). An element whose `src` was dropped can never paint again, so the
 abort stashes it in `data-gate-aborted-src` and recovery restores it. Both
 caches run a recovery pass over a surface before re-showing it.
@@ -148,9 +148,9 @@ the flag; if you write code that manages playback, honour it.
 
 A recreated element restarts from "no frame decoded" — black until the network
 round-trips again. This is why the slide rail caches thumbnail DOM by slide
-identity, the editor canvas patches elements in place, the Magic Move panel
+identity, the editor canvas patches elements in place, the Morph panel
 caches its two preview surfaces per side, and the Player adopts carried videos
-across Magic Move transitions. The Magic Move panel is the instructive case:
+across Morph transitions. The Morph panel is the instructive case:
 it re-renders on every store notification *and* on every pairing click, so
 before it cached, each click on an object threw away four decoded previews
 (panel plus modal) and mounted four black ones — behind the load gate, black
@@ -225,7 +225,7 @@ accumulates decoded bitmaps from the rest of the deck.
   `no-store`.
 - `test/collabServer.test.ts` — ETag/304/immutable behaviour of the asset
   route.
-- `test/magicMove.test.ts` — the Magic Move panel's preview surfaces survive a
+- `test/morph.test.ts` — the Morph panel's preview surfaces survive a
   re-render, and adopt their decoded elements when an edit rebuilds them.
 - `test/previewStillsBrowser.test.ts` — the real editor over a throttled link:
   every preview ends up a painted still, no preview keeps a video, and

@@ -23,8 +23,8 @@ export interface SlideOutline {
   /** Element counts by type, so an agent can spot figure and video slides. */
   elements: Record<string, number>;
   builds: number;
-  magicMoveFromPrevious: boolean;
-  magicMoveDuration: number;
+  morphFromPrevious: boolean;
+  morphDuration: number;
   /** Kept in the deck but stepped over when presenting. */
   skipped: boolean;
 }
@@ -66,8 +66,8 @@ export function deckOutline(deck: Deck): SlideOutline[] {
     title: slideTitle(slide),
     elements: Object.fromEntries(countBy(slide.elements.map((element) => element.type))),
     builds: slide.timeline.length,
-    magicMoveFromPrevious: slide.magicMoveFromPrevious ?? false,
-    magicMoveDuration: slide.magicMoveDuration ?? 1000,
+    morphFromPrevious: slide.morphFromPrevious ?? false,
+    morphDuration: slide.morphDuration ?? 1000,
     skipped: slide.skipped ?? false,
   }));
 }

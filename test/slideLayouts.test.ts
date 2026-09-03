@@ -63,7 +63,7 @@ describe('slide layouts', () => {
 
     expect(host.querySelector('.insp-title')?.textContent).toBe('slide');
     expect([...host.querySelectorAll('.insp-subtitle')].map((heading) => heading.textContent))
-      .toEqual(['Layout', 'Magic Move']);
+      .toEqual(['Layout', 'Morph']);
     expect([...host.querySelectorAll<HTMLElement>('.insp-group')]
       .some((section) => section.querySelector('h3')?.textContent === 'Slide')).toBe(false);
 
@@ -100,7 +100,7 @@ describe('slide layouts', () => {
 
     expect(host.querySelector('.insp-title')?.textContent).toBe('slides');
     expect([...host.querySelectorAll('.insp-subtitle')].map((heading) => heading.textContent))
-      .toEqual(['Layout', 'Magic Move']);
+      .toEqual(['Layout', 'Morph']);
     const layout = [...host.querySelectorAll<HTMLSelectElement>('select')].find((select) =>
       [...select.options].some((option) => option.value === 'standard'))!;
     expect(layout.value).toBe('__mixed__');

@@ -54,6 +54,13 @@ export interface SnapResult {
 /** Slack, in canvas pixels, for calling two measurements "the same". */
 const EPSILON = 0.5;
 
+/**
+ * Slack for calling two *gaps* equal. Positions are committed as whole pixels,
+ * so a row whose ideal spacing falls on a half pixel settles one pixel out on
+ * one side — with a stricter tolerance the guides vanish the moment you drop.
+ */
+const GAP_TOLERANCE = 1;
+
 /** The three interesting positions along one axis of a rect. */
 function edges(r: Rect, axis: 'x' | 'y'): [number, number, number] {
   return axis === 'x'
@@ -90,34 +97,45 @@ function sharedCross(a: Rect, b: Rect, axis: 'x' | 'y'): number {
 /**
  * The neighbours that share a row (axis 'x') or column (axis 'y') with `rect`.
  *
- * Spacing is only meaningful between objects that actually line up across the
- * axis, so anything that misses the rect on the cross axis is left out.
+ * Two conditions, and the second one matters as much as the first. A neighbour
+ * has to line up across the axis, or there is no gap worth measuring — and it
+ * has to be clear of the rect *along* the axis. A full-width body text box or
+ * a background panel passes the first test and fails the second: it encloses
+ * the rect rather than sitting beside it, every gap it forms is negative, and
+ * letting it into the row sorts it between the real neighbours and breaks the
+ * chain they form. That is what made distribution guides look erratic — they
+ * simply never appeared on any slide with a backdrop behind the row.
  */
 function row(rect: Rect, others: Rect[], axis: 'x' | 'y'): Rect[] {
   const cross = crossSpan(rect, axis);
+  const span = axisSpan(rect, axis);
   return others
     .filter((other) => {
       const c = crossSpan(other, axis);
-      return c.start < cross.end - EPSILON && cross.start < c.end - EPSILON;
+      if (c.start >= cross.end - EPSILON || cross.start >= c.end - EPSILON) return false;
+      const a = axisSpan(other, axis);
+      return a.end <= span.start + EPSILON || a.start >= span.end - EPSILON;
     })
     .sort((a, b) => axisSpan(a, axis).start - axisSpan(b, axis).start);
 }
 
-/** Neighbours immediately before and after `rect` along the axis. */
+/**
+ * Neighbours immediately before and after `rect` along the axis. Members are
+ * already clear of the rect, so "before" and "after" are unambiguous.
+ */
 function flanking(
   rect: Rect,
   members: Rect[],
   axis: 'x' | 'y',
 ): { prev: Rect | null; next: Rect | null } {
-  const centre = axisSpan(rect, axis).start + extent(rect, axis) / 2;
+  const span = axisSpan(rect, axis);
   let prev: Rect | null = null;
   let next: Rect | null = null;
   for (const member of members) {
-    const span = axisSpan(member, axis);
-    const memberCentre = span.start + extent(member, axis) / 2;
-    if (memberCentre <= centre) {
-      if (!prev || span.end > axisSpan(prev, axis).end) prev = member;
-    } else if (!next || span.start < axisSpan(next, axis).start) next = member;
+    const m = axisSpan(member, axis);
+    if (m.end <= span.start + EPSILON) {
+      if (!prev || m.end > axisSpan(prev, axis).end) prev = member;
+    } else if (!next || m.start < axisSpan(next, axis).start) next = member;
   }
   return { prev, next };
 }
@@ -209,9 +227,9 @@ export function spacingGuides(rect: Rect, others: Rect[], axis: 'x' | 'y'): Spac
     let first = seed;
     let last = seed;
     while (first > 0 && gaps[first - 1] !== null
-      && Math.abs(gaps[first - 1]! - value) <= EPSILON) first--;
+      && Math.abs(gaps[first - 1]! - value) <= GAP_TOLERANCE) first--;
     while (last < gaps.length - 1 && gaps[last + 1] !== null
-      && Math.abs(gaps[last + 1]! - value) <= EPSILON) last++;
+      && Math.abs(gaps[last + 1]! - value) <= GAP_TOLERANCE) last++;
     if (last - first + 1 < 2) continue;
     for (let i = first; i <= last; i++) chosen.add(i);
   }

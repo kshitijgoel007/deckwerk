@@ -1,7 +1,7 @@
 import type { SlideElement } from '../../shared/deck';
 
 /**
- * Human names for objects in the build and Magic Move lists. A slide can hold a
+ * Human names for objects in the build and Morph lists. A slide can hold a
  * dozen shapes, and "shape" repeated twelve times tells you nothing about which
  * one a row points at — so shapes are named by geometry plus their dominant
  * colour, and paired with swatches when the list can render markup.

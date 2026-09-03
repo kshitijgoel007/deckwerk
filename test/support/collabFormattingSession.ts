@@ -95,6 +95,8 @@ export async function runInlineFormatMatrix(
     ['Bold (Cmd/Ctrl+B)', /<(b|strong)\b|font-weight/i],
     ['Italic (Cmd/Ctrl+I)', /<(i|em)\b|font-style/i],
     ['Underline (Cmd/Ctrl+U)', /<u\b|text-decoration/i],
+    ['Superscript (Cmd/Ctrl+Shift+=)', /<sup\b|vertical-align: super/i],
+    ['Subscript (Cmd/Ctrl+Shift+-)', /<sub\b|vertical-align: sub/i],
   ] as const) {
     await session.beginSelectFirstWord(id);
     await session.typeAtEnd(id, ' pre', `${id} ${label} typing before the change`);

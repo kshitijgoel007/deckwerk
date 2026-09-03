@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { renameRetiredFields } from './fieldAliases.js';
 
 /**
  * The deck format. This schema is the single source of truth: `deck.json` is
@@ -90,8 +91,8 @@ const BaseElement = z.object({
   class: z.array(z.string()).default([]),
   /** Inline style escape hatch, applied after classes. */
   style: z.record(z.string()).default({}),
-  /** Explicit identity shared by elements manually paired for Magic Move. */
-  magicMoveId: z.string().nullable().optional(),
+  /** Explicit identity shared by elements manually paired for Morph. */
+  morphId: z.string().nullable().optional(),
   /** Stable ancestry retained when an object is duplicated, for opt-in Auto-pair. */
   lineageId: z.string().nullable().optional(),
   /** Source object in a fixed layout master; synchronized copies are read-only on slides. */
@@ -178,9 +179,12 @@ const ImageElement = BaseElement.extend({
   fit: z.enum(['contain', 'cover', 'fill']).default('contain'),
   alt: z.string().default(''),
   /**
-   * Shape of the element box's mask. 'circle' clips the visible window to an
-   * inscribed ellipse; combined with `sourceBox` this gives Keynote-style
-   * "shift the photo behind a circular mask" editing. Absent means rectangular.
+   * Shape of the element box's mask. 'circle' clips the visible window to the
+   * box's inscribed ellipse, so the editor squares the box when it turns the
+   * mask on and hands the picture to `sourceBox` at its own aspect ratio --
+   * that is what makes the crop a true circle instead of an oval, and what
+   * gives Keynote-style "shift the photo behind a circular mask" editing.
+   * Absent means rectangular.
    */
   maskShape: z.enum(['rect', 'circle']).optional(),
   /** Ordered, non-destructive visual effects. Order is significant. */
@@ -349,15 +353,34 @@ export const SlideSchema = z.object({
   /** True while the concrete slide background mirrors its selected layout master. */
   layoutBackgroundInherited: z.boolean().optional(),
   /** Animate the transition from the preceding slide, including unpaired fades. */
-  magicMoveFromPrevious: z.boolean().optional(),
-  /** Duration of the Magic Move transition from the preceding slide, in milliseconds. */
-  magicMoveDuration: z.number().min(100).max(5000).optional(),
+  morphFromPrevious: z.boolean().optional(),
+  /** Duration of the Morph transition from the preceding slide, in milliseconds. */
+  morphDuration: z.number().min(100).max(5000).optional(),
   /** Kept in the deck and editable, but stepped over when presenting. */
   skipped: z.boolean().optional(),
   elements: z.array(ElementSchema).default([]),
   timeline: z.array(TimelineEntrySchema).default([]),
   /** Discussion attached to the slide as a whole; absent when there is none. */
   comments: z.array(CommentSchema).optional(),
+});
+
+/**
+ * A theme the deck carries itself, indistinguishable from a built-in preset
+ * once resolved.
+ *
+ * Presets in `shared/themes.ts` ship with the app; these ship with the deck,
+ * so a theme an agent wrote for this talk travels in the deck folder and
+ * survives being handed to someone else. Same shape as a built-in — id, name,
+ * description, the five font roles, the swatch row and the four grounds — so
+ * every surface that resolves a preset id finds one either way.
+ */
+export const CustomThemeSchema = z.object({
+  id: z.string().regex(/^[a-z0-9][a-z0-9-]*$/, 'theme ids are lowercase, digits and dashes'),
+  name: z.string().min(1),
+  description: z.string().default(''),
+  fonts: ThemeStyleSchema.shape.fonts,
+  palette: z.array(z.string()),
+  colors: ThemeStyleSchema.shape.colors,
 });
 
 export const DeckSchema = z.object({
@@ -374,14 +397,25 @@ export const DeckSchema = z.object({
   themeStyle: ThemeStyleSchema.nullable().default(null),
   /** The last applied preset and properties, so new slides can match. */
   themeSelection: ThemeSelectionSchema.nullable().default(null),
+  /**
+   * Preset ids this deck has actually *worn*, most recently used first.
+   *
+   * Selecting a card in the gallery is not a use: only applying a theme to
+   * slides and creating a slide under one write here. That is what lets the
+   * picker point at the theme the author would go back to — the deck's real
+   * previous look — rather than at whatever card they clicked through last.
+   */
+  themeHistory: z.array(z.string()).default([]),
+  /** Deck-local theme presets, offered and applied exactly like the built-ins. */
+  customThemes: z.array(CustomThemeSchema).default([]),
   /** Three fixed, deck-local layout masters. Null preserves legacy hard-coded layouts. */
   layoutMasters: z.object({
     freeform: LayoutMasterSchema,
     standard: LayoutMasterSchema,
     title: LayoutMasterSchema,
   }).nullable().default(null),
-  /** Deck-wide motion curve for Magic Move transitions. */
-  magicMoveEasing: z.enum(['ease-in-out', 'ease-out', 'linear']).default('ease-in-out'),
+  /** Deck-wide motion curve for Morph transitions. */
+  morphEasing: z.enum(['ease-in-out', 'ease-out', 'linear']).default('ease-in-out'),
   slides: z.array(SlideSchema).default([]),
 });
 
@@ -402,6 +436,7 @@ export type Comment = z.infer<typeof CommentSchema>;
 export type Deck = z.infer<typeof DeckSchema>;
 export type ThemeStyle = z.infer<typeof ThemeStyleSchema>;
 export type ThemeSelection = z.infer<typeof ThemeSelectionSchema>;
+export type CustomTheme = z.infer<typeof CustomThemeSchema>;
 export type LayoutMaster = z.infer<typeof LayoutMasterSchema>;
 
 export const DECK_VERSION = 1 as const;
@@ -411,7 +446,7 @@ export const DECK_VERSION = 1 as const;
  * path-annotated message rather than a raw ZodError dump.
  */
 export function parseDeck(raw: unknown): Deck {
-  const result = DeckSchema.safeParse(migrateDeckMagicMoveDuration(raw));
+  const result = DeckSchema.safeParse(migrateDeckMorphDuration(renameRetiredFields(raw)));
   if (result.success) return result.data;
   const details = result.error.issues
     .map((i) => `  ${i.path.join('.') || '<root>'}: ${i.message}`)
@@ -420,23 +455,23 @@ export function parseDeck(raw: unknown): Deck {
 }
 
 /**
- * Decks written before per-slide Magic Move timing stored one global duration.
+ * Decks written before per-slide Morph timing stored one global duration.
  * Copy that value onto slides which do not already carry an explicit duration;
  * DeckSchema then strips the retired deck-level field from the parsed result.
  */
-function migrateDeckMagicMoveDuration(raw: unknown): unknown {
+function migrateDeckMorphDuration(raw: unknown): unknown {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return raw;
   const deck = raw as Record<string, unknown>;
-  if (!Object.prototype.hasOwnProperty.call(deck, 'magicMoveDuration') || !Array.isArray(deck.slides)) return raw;
-  const duration = deck.magicMoveDuration;
+  if (!Object.prototype.hasOwnProperty.call(deck, 'morphDuration') || !Array.isArray(deck.slides)) return raw;
+  const duration = deck.morphDuration;
   return {
     ...deck,
     slides: deck.slides.map((candidate) => {
       if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return candidate;
       const slide = candidate as Record<string, unknown>;
-      return Object.prototype.hasOwnProperty.call(slide, 'magicMoveDuration')
+      return Object.prototype.hasOwnProperty.call(slide, 'morphDuration')
         ? candidate
-        : { ...slide, magicMoveDuration: duration };
+        : { ...slide, morphDuration: duration };
     }),
   };
 }

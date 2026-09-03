@@ -1,13 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import type { SlideElement } from '../src/shared/deck.js';
 import {
-  magicMoveTransforms,
+  morphTransforms,
   type Rect,
   type TextLayout,
-} from '../src/renderer/player/magicMoveTransform.js';
+} from '../src/renderer/player/morphTransform.js';
 
 /**
- * The one invariant a Magic Move start state has to satisfy: at offset 0 the
+ * The one invariant a Morph start state has to satisfy: at offset 0 the
  * target object must be drawn exactly where the source object was drawn. When
  * it is not, the object visibly flies in from wherever the transform put it —
  * the failure this suite exists to make impossible.
@@ -122,7 +122,7 @@ function atStart(
   rect: Rect,
   text: TextLayout | null = null,
 ): Point[] {
-  const { start, origin } = magicMoveTransforms(from, to, text);
+  const { start, origin } = morphTransforms(from, to, text);
   expect(origin).toBe('center');
   return corners(rect).map((point) => applyTransform(start, center(to), point));
 }
@@ -160,7 +160,7 @@ const text = (over: Partial<Extract<SlideElement, { type: 'text' }>> = {}): Slid
   ...over,
 } as SlideElement);
 
-describe('Magic Move start state', () => {
+describe('Morph start state', () => {
   it('draws a moved and resized object exactly over the object it came from', () => {
     const from = shape({ x: 100, y: 80, w: 400, h: 200 });
     const to = shape({ x: 900, y: 600, w: 200, h: 100 });
@@ -177,7 +177,7 @@ describe('Magic Move start state', () => {
     expectSameShape(atStart(from, to, box(to)), painted(from, box(from)));
     // And the settled render is what offset 1 describes, so nothing snaps when
     // the fill-none animation hands back to CSS.
-    const { final } = magicMoveTransforms(from, to);
+    const { final } = morphTransforms(from, to);
     expectSameShape(
       corners(box(to)).map((point) => applyTransform(final, center(to), point)),
       painted(to, box(to)),
@@ -191,7 +191,7 @@ describe('Magic Move start state', () => {
     // the slide instead of sliding across it.
     const from = shape({ shape: 'line', x: 200, y: 100, w: 300, h: 300 });
     const to = shape({ shape: 'line', x: 1400, y: 100, w: 0.004, h: 300 });
-    const { start } = magicMoveTransforms(from, to);
+    const { start } = morphTransforms(from, to);
 
     expect(start).not.toMatch(/Infinity|NaN/);
     expect(drift(atStart(from, to, box(to)), painted(from, box(from)))).toBeLessThan(0.01);
@@ -203,7 +203,7 @@ describe('Magic Move start state', () => {
     // the transform displaced.
     const from = shape({ x: 100, y: 100, w: 300, h: 100, style: { transform: 'scaleX(-1)' } });
     const to = shape({ x: 900, y: 500, w: 300, h: 100 });
-    const { start } = magicMoveTransforms(from, to);
+    const { start } = morphTransforms(from, to);
 
     expect(start).toContain('scaleX(-1)');
     expectSameShape(atStart(from, to, box(to)), painted(from, box(from)));
@@ -219,7 +219,7 @@ describe('Magic Move start state', () => {
       const layout: TextLayout = { sourceInk: ink, targetInk: ink, fontScale: 1, squeeze: 1 };
 
       expectSameShape(atStart(from, to, ink, layout), painted(from, ink));
-      expect(magicMoveTransforms(from, to, layout).start).toBe(
+      expect(morphTransforms(from, to, layout).start).toBe(
         'translate(0px, 0px) scale(1, 1)',
       );
     });
@@ -260,7 +260,7 @@ describe('Magic Move start state', () => {
         squeeze: 1,
       };
 
-      expect(magicMoveTransforms(from, to, layout).start).toContain('scale(2, 2)');
+      expect(morphTransforms(from, to, layout).start).toContain('scale(2, 2)');
       expectSameShape(atStart(from, to, layout.targetInk!, layout), painted(from, sourceInk));
     });
 
@@ -298,7 +298,7 @@ describe('Magic Move start state', () => {
       const layout: TextLayout = { sourceInk, targetInk, fontScale: 1, squeeze: 1 };
 
       expectSameShape(atStart(from, to, targetInk, layout), painted(from, sourceInk));
-      const { final } = magicMoveTransforms(from, to, layout);
+      const { final } = morphTransforms(from, to, layout);
       expectSameShape(
         corners(targetInk).map((point) => applyTransform(final, center(to), point)),
         painted(to, targetInk),

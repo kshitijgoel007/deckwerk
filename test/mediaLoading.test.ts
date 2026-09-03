@@ -117,7 +117,7 @@ describe('media-loading contract across surfaces', () => {
   it.each([
     'src/renderer/editor/canvas.ts',
     'src/renderer/editor/slideRail.ts',
-    'src/renderer/editor/magicMovePanel.ts',
+    'src/renderer/editor/morphPanel.ts',
     'src/renderer/editor/agentBridge.ts',
     'src/renderer/editor/renderInvariants.ts',
     // Speaker View's previews live in the component both clients share.

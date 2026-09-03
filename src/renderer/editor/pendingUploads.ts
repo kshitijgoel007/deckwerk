@@ -134,3 +134,37 @@ function thumbnail(
     return null;
   }
 }
+
+/**
+ * Natural size for an image that lives at a URL.
+ *
+ * A browser may *display* cross-origin bytes without permission, so a dropped
+ * web image can be measured — and previewed — before its host has fetched
+ * anything. The canvas is deliberately never touched here: reading it back
+ * would throw on the tainted result, and the URL itself serves as the
+ * placeholder's preview. A URL that never answers resolves to nulls rather
+ * than holding the drop open for ever.
+ */
+export async function probeRemoteImage(
+  url: string,
+  timeoutMs = 8000,
+): Promise<{ width: number | null; height: number | null }> {
+  // No `crossOrigin`: this is an ordinary display load, and asking for CORS
+  // would make every host that omits the header fail instead of decode.
+  const img = new Image();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('image probe timed out')), timeoutMs);
+      const settle = (fn: () => void) => () => {
+        clearTimeout(timer);
+        fn();
+      };
+      img.onload = settle(resolve);
+      img.onerror = settle(() => reject(new Error('undecodable image')));
+      img.src = url;
+    });
+    return { width: img.naturalWidth || null, height: img.naturalHeight || null };
+  } catch {
+    return { width: null, height: null };
+  }
+}

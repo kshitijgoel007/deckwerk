@@ -1,6 +1,7 @@
 import type { Slide } from '@shared/deck.js';
+import { MORPH_NAME } from '@shared/featureNames.js';
 import { makeId } from '@shared/geometry.js';
-import { explicitMagicMovePairs, suggestMagicMovePairs } from '@shared/magicMove.js';
+import { explicitMorphPairs, suggestMorphPairs } from '@shared/morph.js';
 import { recoverPreviewFrames } from '../player/previewFrameRecovery.js';
 import { freezePreviewVideos } from '../player/previewPoster.js';
 import { renderSlide } from '../player/render.js';
@@ -27,8 +28,8 @@ interface PreviewSurface {
   observer: ResizeObserver | null;
 }
 
-/** Explicit Magic Move authoring between the selected slide and the next one. */
-export class MagicMovePanel {
+/** Explicit Morph authoring between the selected slide and the next one. */
+export class MorphPanel {
   private selectedSourceId: string | null = null;
   private message = '';
   /** Cached preview surfaces, keyed by side and compact/modal presentation. */
@@ -81,12 +82,12 @@ export class MagicMovePanel {
     header.className = 'panel-header';
     const title = document.createElement('h4');
     title.className = 'insp-subtitle';
-    title.textContent = 'Magic Move';
+    title.textContent = MORPH_NAME;
     header.appendChild(title);
     this.host.appendChild(header);
 
     const duration = document.createElement('label');
-    duration.className = 'field magic-duration';
+    duration.className = 'field morph-duration';
     const durationLabel = document.createElement('span');
     durationLabel.textContent = 'Duration';
     const durationInput = document.createElement('input');
@@ -94,14 +95,14 @@ export class MagicMovePanel {
     durationInput.min = '100';
     durationInput.max = '5000';
     durationInput.step = '50';
-    durationInput.value = String(next?.magicMoveDuration ?? 1000);
+    durationInput.value = String(next?.morphDuration ?? 1000);
     durationInput.disabled = !next;
     durationInput.addEventListener('change', () => {
       const value = Math.max(100, Math.min(5000, Number(durationInput.value) || 1000));
       this.store.commit((nextDeck) => {
         const destination = nextDeck.slides[slideIndex + 1];
-        if (destination) destination.magicMoveDuration = value;
-      }, { label: 'Change Magic Move duration' });
+        if (destination) destination.morphDuration = value;
+      }, { label: `Change ${MORPH_NAME} duration` });
     });
     const suffix = document.createElement('span');
     suffix.className = 'field-suffix';
@@ -110,7 +111,7 @@ export class MagicMovePanel {
     this.host.appendChild(duration);
 
     const easing = document.createElement('label');
-    easing.className = 'field magic-easing';
+    easing.className = 'field morph-easing';
     const easingLabel = document.createElement('span');
     easingLabel.textContent = 'Motion curve';
     const easingSelect = document.createElement('select');
@@ -124,12 +125,12 @@ export class MagicMovePanel {
       option.textContent = text;
       easingSelect.appendChild(option);
     }
-    easingSelect.value = deck.magicMoveEasing;
+    easingSelect.value = deck.morphEasing;
     easingSelect.addEventListener('change', () => {
-      const value = easingSelect.value as typeof deck.magicMoveEasing;
+      const value = easingSelect.value as typeof deck.morphEasing;
       this.store.commit((nextDeck) => {
-        nextDeck.magicMoveEasing = value;
-      }, { label: 'Change Magic Move easing' });
+        nextDeck.morphEasing = value;
+      }, { label: `Change ${MORPH_NAME} easing` });
     });
     easing.append(easingLabel, easingSelect);
     this.host.appendChild(easing);
@@ -138,22 +139,22 @@ export class MagicMovePanel {
       this.dropPreviews('compact');
       const hint = document.createElement('p');
       hint.className = 'insp-hint';
-      hint.textContent = 'Select a slide that has another slide after it to create Magic Move pairs.';
+      hint.textContent = `Select a slide that has another slide after it to create ${MORPH_NAME} pairs.`;
       this.host.appendChild(hint);
       return;
     }
 
-    const pairs = explicitMagicMovePairs(current.elements, next.elements);
-    const magicEnabled = next.magicMoveFromPrevious ?? pairs.length > 0;
+    const pairs = explicitMorphPairs(current.elements, next.elements);
+    const morphEnabled = next.morphFromPrevious ?? pairs.length > 0;
     const enabled = document.createElement('label');
-    enabled.className = 'field field-check magic-enable';
+    enabled.className = 'field field-check morph-enable';
     const enabledInput = document.createElement('input');
     enabledInput.type = 'checkbox';
-    enabledInput.checked = magicEnabled;
+    enabledInput.checked = morphEnabled;
     enabledInput.addEventListener('change', () => {
       this.store.commit((nextDeck) => {
-        nextDeck.slides[slideIndex + 1].magicMoveFromPrevious = enabledInput.checked;
-      }, { label: enabledInput.checked ? 'Enable Magic Move' : 'Disable Magic Move' });
+        nextDeck.slides[slideIndex + 1].morphFromPrevious = enabledInput.checked;
+      }, { label: enabledInput.checked ? `Enable ${MORPH_NAME}` : `Disable ${MORPH_NAME}` });
     });
     const enabledLabel = document.createElement('span');
     enabledLabel.textContent = 'Enabled';
@@ -161,9 +162,9 @@ export class MagicMovePanel {
     this.host.appendChild(enabled);
 
     const enableAndPair = document.createElement('button');
-    enableAndPair.className = 'panel-action magic-enable-pair';
+    enableAndPair.className = 'panel-action morph-enable-pair';
     enableAndPair.textContent = 'Enable and Auto-Pair';
-    enableAndPair.title = 'Enable Magic Move to the next slide and pair strongly matching objects';
+    enableAndPair.title = `Enable ${MORPH_NAME} to the next slide and pair strongly matching objects`;
     enableAndPair.addEventListener('click', () => this.enableAndAutoPair());
     this.host.appendChild(enableAndPair);
 
@@ -174,24 +175,24 @@ export class MagicMovePanel {
       pairNumbers.set(target.id, index + 1);
     });
     const previews = document.createElement('div');
-    previews.className = 'magic-previews magic-compact-previews';
+    previews.className = 'morph-previews morph-compact-previews';
     previews.append(
       this.preview(current, `Slide ${slideIndex + 1}`, 'source', pairNumbers, false),
       this.preview(next, `Slide ${slideIndex + 2}`, 'target', pairNumbers, false),
     );
     const summary = document.createElement('p');
-    summary.className = 'insp-hint magic-summary';
-    summary.textContent = magicEnabled
+    summary.className = 'insp-hint morph-summary';
+    summary.textContent = morphEnabled
       ? `${pairCount} paired; every other object will fade out or in.`
       : `Disabled · ${pairCount} object${pairCount === 1 ? '' : 's'} paired.`;
     const edit = document.createElement('button');
-    edit.className = 'primary panel-action magic-open';
-    edit.textContent = 'Open Magic Move editor…';
+    edit.className = 'primary panel-action morph-open';
+    edit.textContent = `Open ${MORPH_NAME} editor…`;
     edit.addEventListener('click', () => this.openModal());
     this.host.append(previews, summary, edit);
     if (this.message) {
       const status = document.createElement('p');
-      status.className = 'insp-hint magic-message';
+      status.className = 'insp-hint morph-message';
       status.textContent = this.message;
       this.host.appendChild(status);
     }
@@ -211,12 +212,12 @@ export class MagicMovePanel {
     header.className = 'panel-header';
     const title = document.createElement('h4');
     title.className = 'insp-subtitle';
-    title.textContent = 'Magic Move';
+    title.textContent = MORPH_NAME;
     header.appendChild(title);
 
     const action = document.createElement('button');
-    action.className = 'primary panel-action magic-bulk-pair';
-    action.textContent = 'Enable Magic-Move & Auto-Pair';
+    action.className = 'primary panel-action morph-bulk-pair';
+    action.textContent = `Enable ${MORPH_NAME} & Auto-Pair`;
     action.addEventListener('click', () => this.autoPairAcross(slides));
 
     const hint = document.createElement('p');
@@ -226,13 +227,13 @@ export class MagicMovePanel {
     this.host.append(header, hint, action);
     if (this.message) {
       const status = document.createElement('p');
-      status.className = 'insp-hint magic-message';
+      status.className = 'insp-hint morph-message';
       status.textContent = this.message;
       this.host.appendChild(status);
     }
   }
 
-  /** Auto-pair and enable Magic Move for every consecutive pair in the run. */
+  /** Auto-pair and enable Morph for every consecutive pair in the run. */
   private autoPairAcross(slides: Slide[]): void {
     const ids = slides.map((slide) => slide.id);
     let paired = 0;
@@ -243,36 +244,36 @@ export class MagicMovePanel {
         const left = byId.get(ids[i]);
         const right = byId.get(ids[i + 1]);
         if (!left || !right) continue;
-        for (const [source, target] of suggestMagicMovePairs(left.elements, right.elements)) {
-          if (pairMagicMoveObjects(left, right, source.id, target.id)) paired += 1;
+        for (const [source, target] of suggestMorphPairs(left.elements, right.elements)) {
+          if (pairMorphObjects(left, right, source.id, target.id)) paired += 1;
         }
-        right.magicMoveFromPrevious = true;
+        right.morphFromPrevious = true;
         transitions += 1;
       }
-    }, { label: 'Auto-pair and enable Magic Move' });
-    this.message = `Enabled Magic Move across ${transitions} transition${transitions === 1 ? '' : 's'}; paired ${paired} object${paired === 1 ? '' : 's'}.`;
+    }, { label: `Auto-pair and enable ${MORPH_NAME}` });
+    this.message = `Enabled ${MORPH_NAME} across ${transitions} transition${transitions === 1 ? '' : 's'}; paired ${paired} object${paired === 1 ? '' : 's'}.`;
     this.render();
   }
 
   private openModal(): void {
     if (this.modal?.isConnected) return;
     const backdrop = document.createElement('div');
-    backdrop.className = 'magic-modal-backdrop';
+    backdrop.className = 'morph-modal-backdrop';
     const dialog = document.createElement('section');
-    dialog.className = 'magic-modal';
+    dialog.className = 'morph-modal';
     dialog.setAttribute('role', 'dialog');
     dialog.setAttribute('aria-modal', 'true');
-    dialog.setAttribute('aria-label', 'Magic Move object pairing');
+    dialog.setAttribute('aria-label', `${MORPH_NAME} object pairing`);
     const header = document.createElement('header');
     const heading = document.createElement('h2');
-    heading.textContent = 'Magic Move';
+    heading.textContent = MORPH_NAME;
     const close = document.createElement('button');
-    close.className = 'magic-modal-close';
+    close.className = 'morph-modal-close';
     close.textContent = 'Done';
     close.addEventListener('click', () => this.closeModal());
     header.append(heading, close);
     const content = document.createElement('div');
-    content.className = 'magic-modal-content';
+    content.className = 'morph-modal-content';
     dialog.append(header, content);
     backdrop.appendChild(dialog);
     backdrop.addEventListener('mousedown', (event) => {
@@ -312,25 +313,25 @@ export class MagicMovePanel {
       return;
     }
 
-    const pairs = explicitMagicMovePairs(current.elements, next.elements);
+    const pairs = explicitMorphPairs(current.elements, next.elements);
     const pairNumbers = new Map<string, number>();
     pairs.forEach(([source, target], index) => {
       pairNumbers.set(source.id, index + 1);
       pairNumbers.set(target.id, index + 1);
     });
     const instruction = document.createElement('p');
-    instruction.className = 'insp-hint magic-instruction';
+    instruction.className = 'insp-hint morph-instruction';
     instruction.textContent = this.selectedSourceId
       ? 'Now choose its partner on the target slide.'
       : 'Choose an object on the source slide, then its partner on the target slide.';
     const previews = document.createElement('div');
-    previews.className = 'magic-previews';
+    previews.className = 'morph-previews';
     previews.append(
       this.preview(current, `Source · Slide ${slideIndex + 1}`, 'source', pairNumbers),
       this.preview(next, `Target · Slide ${slideIndex + 2}`, 'target', pairNumbers),
     );
     const actions = document.createElement('div');
-    actions.className = 'button-row magic-actions';
+    actions.className = 'button-row morph-actions';
     const auto = document.createElement('button');
     auto.textContent = 'Auto-pair';
     auto.title = 'Pair strongly matching text, media, and shapes; leave uncertain objects alone';
@@ -343,7 +344,7 @@ export class MagicMovePanel {
     content.append(instruction, previews, actions);
     if (this.message) {
       const status = document.createElement('p');
-      status.className = 'insp-hint magic-message';
+      status.className = 'insp-hint morph-message';
       status.textContent = this.message;
       content.appendChild(status);
     }
@@ -353,7 +354,7 @@ export class MagicMovePanel {
       unpairTargets.set(target.id, target.id);
     }
     const lists = document.createElement('div');
-    lists.className = 'magic-lists';
+    lists.className = 'morph-lists';
     lists.append(
       this.elementList(current, 'source', pairNumbers, unpairTargets),
       this.elementList(next, 'target', pairNumbers, unpairTargets),
@@ -369,7 +370,7 @@ export class MagicMovePanel {
     unpairTargets: Map<string, string>,
   ): HTMLElement {
     const list = document.createElement('div');
-    list.className = 'magic-list';
+    list.className = 'morph-list';
     list.dataset.side = side;
     const ordered = [...slide.elements].sort((a, b) => {
       const pairA = pairNumbers.get(a.id) ?? Infinity;
@@ -379,21 +380,21 @@ export class MagicMovePanel {
     });
     for (const element of ordered) {
       const row = document.createElement('div');
-      row.className = 'magic-list-item';
+      row.className = 'morph-list-item';
       const pair = pairNumbers.get(element.id);
       if (pair) row.classList.add('paired');
       if (side === 'source' && element.id === this.selectedSourceId) {
         row.classList.add('selected-source');
       }
       const pick = document.createElement('button');
-      pick.className = 'magic-list-pick';
+      pick.className = 'morph-list-pick';
       pick.dataset.elementId = element.id;
       pick.dataset.side = side;
       const badge = document.createElement('b');
-      badge.className = 'magic-list-badge';
+      badge.className = 'morph-list-badge';
       badge.textContent = pair ? String(pair) : '';
       const label = document.createElement('span');
-      label.className = 'magic-list-label';
+      label.className = 'morph-list-label';
       renderElementLabel(label, element);
       pick.append(badge, label);
       pick.addEventListener('click', () => this.handleObjectClick(side, element.id));
@@ -432,24 +433,24 @@ export class MagicMovePanel {
     interactive = true,
   ): HTMLElement {
     const wrap = document.createElement('div');
-    wrap.className = 'magic-preview-wrap';
+    wrap.className = 'morph-preview-wrap';
     const label = document.createElement('div');
-    label.className = 'magic-preview-label';
+    label.className = 'morph-preview-label';
     label.textContent = labelText;
     const canvas = this.store.get().deck.canvas;
     const frame = this.previewFrame(slide, side, interactive, canvas);
     // The label carries the slide number, which a reorder can change under a
     // surface that is otherwise still valid.
-    if (!interactive) frame.setAttribute('aria-label', `Open Magic Move editor from ${labelText}`);
+    if (!interactive) frame.setAttribute('aria-label', `Open ${MORPH_NAME} editor from ${labelText}`);
 
     // Hit boxes carry pair badges and the current selection, so they are
     // rebuilt every render -- unlike the surface behind them, which holds
     // decoded video frames worth keeping.
-    for (const stale of [...frame.querySelectorAll('.magic-object-hit')]) stale.remove();
+    for (const stale of [...frame.querySelectorAll('.morph-object-hit')]) stale.remove();
     for (const element of slide.elements) {
       const hit = document.createElement(interactive ? 'button' : 'div');
-      hit.className = 'magic-object-hit';
-      if (!interactive) hit.classList.add('magic-object-hit-readonly');
+      hit.className = 'morph-object-hit';
+      if (!interactive) hit.classList.add('morph-object-hit-readonly');
       hit.dataset.elementId = element.id;
       hit.dataset.side = side;
       hit.title = describe(element);
@@ -500,9 +501,9 @@ export class MagicMovePanel {
     }
 
     const frame = document.createElement('div');
-    frame.className = 'magic-preview';
+    frame.className = 'morph-preview';
     if (!interactive) {
-      frame.classList.add('magic-compact-preview');
+      frame.classList.add('morph-compact-preview');
       frame.tabIndex = 0;
       frame.setAttribute('role', 'button');
       frame.addEventListener('click', () => this.openModal());
@@ -515,7 +516,7 @@ export class MagicMovePanel {
     }
     frame.style.aspectRatio = `${canvas.w} / ${canvas.h}`;
     const surface = document.createElement('div');
-    surface.className = 'magic-preview-surface';
+    surface.className = 'morph-preview-surface';
     surface.style.width = `${canvas.w}px`;
     surface.style.height = `${canvas.h}px`;
     const updateScale = () => {
@@ -563,8 +564,8 @@ export class MagicMovePanel {
     this.selectedSourceId = null;
     this.message = 'Objects paired.';
     this.store.commit((deck) => {
-      pairMagicMoveObjects(deck.slides[slideIndex], deck.slides[slideIndex + 1], sourceId, targetId);
-    }, { label: 'Pair Magic Move objects' });
+      pairMorphObjects(deck.slides[slideIndex], deck.slides[slideIndex + 1], sourceId, targetId);
+    }, { label: `Pair ${MORPH_NAME} objects` });
   }
 
   private unpair(targetId: string): void {
@@ -572,8 +573,8 @@ export class MagicMovePanel {
     this.message = '';
     this.store.commit((deck) => {
       const target = deck.slides[slideIndex + 1]?.elements.find((element) => element.id === targetId);
-      if (target) target.magicMoveId = null;
-    }, { label: 'Unpair Magic Move objects' });
+      if (target) target.morphId = null;
+    }, { label: `Unpair ${MORPH_NAME} objects` });
   }
 
   private clearPairs(): void {
@@ -583,30 +584,30 @@ export class MagicMovePanel {
       const current = deck.slides[slideIndex];
       const next = deck.slides[slideIndex + 1];
       if (!current || !next) return;
-      for (const [, target] of explicitMagicMovePairs(current.elements, next.elements)) {
-        target.magicMoveId = null;
+      for (const [, target] of explicitMorphPairs(current.elements, next.elements)) {
+        target.morphId = null;
       }
-    }, { label: 'Clear Magic Move pairs' });
+    }, { label: `Clear ${MORPH_NAME} pairs` });
   }
 
-  /** One-click: turn on Magic Move to the next slide and auto-pair matches. */
+  /** One-click: turn on Morph to the next slide and auto-pair matches. */
   private enableAndAutoPair(): void {
     const { deck, slideIndex } = this.store.get();
     const current = deck.slides[slideIndex];
     const next = deck.slides[slideIndex + 1];
     if (!current || !next) return;
-    const suggestions = suggestMagicMovePairs(current.elements, next.elements);
+    const suggestions = suggestMorphPairs(current.elements, next.elements);
     this.message = suggestions.length > 0
-      ? `Enabled Magic Move; auto-paired ${suggestions.length} object${suggestions.length === 1 ? '' : 's'}.`
-      : 'Enabled Magic Move; no confident new matches to pair.';
+      ? `Enabled ${MORPH_NAME}; auto-paired ${suggestions.length} object${suggestions.length === 1 ? '' : 's'}.`
+      : `Enabled ${MORPH_NAME}; no confident new matches to pair.`;
     this.store.commit((nextDeck) => {
       const left = nextDeck.slides[slideIndex];
       const right = nextDeck.slides[slideIndex + 1];
       for (const [source, target] of suggestions) {
-        pairMagicMoveObjects(left, right, source.id, target.id);
+        pairMorphObjects(left, right, source.id, target.id);
       }
-      right.magicMoveFromPrevious = true;
-    }, { label: 'Enable and auto-pair Magic Move' });
+      right.morphFromPrevious = true;
+    }, { label: `Enable and auto-pair ${MORPH_NAME}` });
   }
 
   private autoPair(): void {
@@ -614,7 +615,7 @@ export class MagicMovePanel {
     const current = deck.slides[slideIndex];
     const next = deck.slides[slideIndex + 1];
     if (!current || !next) return;
-    const suggestions = suggestMagicMovePairs(current.elements, next.elements);
+    const suggestions = suggestMorphPairs(current.elements, next.elements);
     if (suggestions.length === 0) {
       this.message = 'No confident new matches found.';
       this.render();
@@ -625,13 +626,13 @@ export class MagicMovePanel {
       const left = nextDeck.slides[slideIndex];
       const right = nextDeck.slides[slideIndex + 1];
       for (const [source, target] of suggestions) {
-        pairMagicMoveObjects(left, right, source.id, target.id);
+        pairMorphObjects(left, right, source.id, target.id);
       }
-    }, { label: 'Auto-pair Magic Move objects' });
+    }, { label: `Auto-pair ${MORPH_NAME} objects` });
   }
 }
 
-export function pairMagicMoveObjects(
+export function pairMorphObjects(
   current: Slide,
   next: Slide,
   sourceId: string,
@@ -640,16 +641,16 @@ export function pairMagicMoveObjects(
   const source = current.elements.find((element) => element.id === sourceId);
   const target = next.elements.find((element) => element.id === targetId);
   if (!source || !target) return false;
-  const matchId = source.magicMoveId ?? makeId('magic');
+  const matchId = source.morphId ?? makeId('morph');
   for (const element of current.elements) {
-    if (element !== source && element.magicMoveId === matchId) element.magicMoveId = null;
+    if (element !== source && element.morphId === matchId) element.morphId = null;
   }
   for (const element of next.elements) {
-    if (element !== target && element.magicMoveId === matchId) element.magicMoveId = null;
+    if (element !== target && element.morphId === matchId) element.morphId = null;
   }
-  source.magicMoveId = matchId;
-  target.magicMoveId = matchId;
-  next.magicMoveFromPrevious = true;
+  source.morphId = matchId;
+  target.morphId = matchId;
+  next.morphFromPrevious = true;
   return true;
 }
 

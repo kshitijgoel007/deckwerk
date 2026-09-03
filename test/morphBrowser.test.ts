@@ -17,21 +17,21 @@ import {
 import { collabClientDir } from './support/collabClient.js';
 
 /**
- * Magic Move, measured on real slides in a real browser.
+ * Morph, measured on real slides in a real browser.
  *
- * `test/magicMoveTransform.test.ts` proves the arithmetic against described
+ * `test/morphTransform.test.ts` proves the arithmetic against described
  * layouts. This proves the layouts: the deck below is a spread of the things
  * that actually break a transition — an alignment change, boxes that resize
  * without their text moving, auto-fit and condensed no-wrap lines, rotated
- * type, KaTeX, hairline rules, flipped shapes, images — paired through Magic
- * Move and played by the production Player in the production Present view.
+ * type, KaTeX, hairline rules, flipped shapes, images — paired through Morph
+ * and played by the production Player in the production Present view.
  *
  * The assertion is the one that matters: freeze every transition at offset 0
  * and each paired object must be sitting exactly where its source object was
  * sitting on the slide before. Anything else is a fly-in.
  */
 
-const DECK_ID = 'magic-move-geometry';
+const DECK_ID = 'morph-geometry';
 const PNG_BASE64 =
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
 
@@ -63,7 +63,7 @@ const base = {
 };
 
 function textElement(
-  over: Partial<Extract<SlideElement, { type: 'text' }>> & { id: string; magicMoveId?: string },
+  over: Partial<Extract<SlideElement, { type: 'text' }>> & { id: string; morphId?: string },
 ): SlideElement {
   return {
     type: 'text', x: 0, y: 0, w: 800, h: 200, ...base, class: ['role-title'],
@@ -81,11 +81,11 @@ function shapeElement(
   } as SlideElement;
 }
 
-function slide(id: string, elements: SlideElement[], magicMove: boolean): Slide {
+function slide(id: string, elements: SlideElement[], morph: boolean): Slide {
   return {
     id, name: id, background: { color: null, image: null }, notes: '', timeline: [],
     elements,
-    ...(magicMove ? { magicMoveFromPrevious: true, magicMoveDuration: 5000 } : {}),
+    ...(morph ? { morphFromPrevious: true, morphDuration: 5000 } : {}),
   } as Slide;
 }
 
@@ -97,7 +97,7 @@ function slide(id: string, elements: SlideElement[], magicMove: boolean): Slide 
  * checked more loosely, by where the block starts.
  */
 function fixtureDeck(imageSrc: string): Deck {
-  const deck = emptyDeck('Magic Move geometry');
+  const deck = emptyDeck('Morph geometry');
   const warmUp = slide('warm-up', [
     textElement({ id: 'warm', html: 'Warm up', x: 200, y: 400, w: 900, h: 200 }),
   ], false);
@@ -105,49 +105,49 @@ function fixtureDeck(imageSrc: string): Deck {
   const first = slide('first', [
     // A centred hero title in a full-bleed box.
     textElement({
-      id: 'title-1', magicMoveId: 'title', html: 'Magic Move',
+      id: 'title-1', morphId: 'title', html: 'Morph',
       x: 0, y: 380, w: 1920, h: 300, align: 'center', valign: 'middle',
       style: { 'font-size': '128px' },
     }),
     // A body box that will grow without its text moving.
     textElement({
-      id: 'body-1', magicMoveId: 'body', class: ['role-body'], html: 'Body copy stays put',
+      id: 'body-1', morphId: 'body', class: ['role-body'], html: 'Body copy stays put',
       x: 160, y: 760, w: 700, h: 120, style: { 'font-size': '40px' },
     }),
     // An auto-fitting no-wrap line that has to shrink into a smaller box.
     textElement({
-      id: 'fit-1', magicMoveId: 'fit', html: 'Auto-fitted single line',
+      id: 'fit-1', morphId: 'fit', html: 'Auto-fitted single line',
       x: 160, y: 120, w: 1100, h: 120, noWrap: true, autoFit: true,
       style: { 'font-size': '72px' },
     }),
     // A condensed no-wrap line: same font size, squeezed horizontally.
     textElement({
-      id: 'condense-1', magicMoveId: 'condense',
+      id: 'condense-1', morphId: 'condense',
       html: 'A deliberately overlong condensed line of type',
       x: 1300, y: 120, w: 480, h: 100, noWrap: true, noWrapMode: 'condense',
       style: { 'font-size': '48px' },
     }),
     // Rotated type.
     textElement({
-      id: 'rot-1', magicMoveId: 'rot', html: 'Tilted', rot: 15,
+      id: 'rot-1', morphId: 'rot', html: 'Tilted', rot: 15,
       x: 1400, y: 700, w: 400, h: 120, align: 'center', style: { 'font-size': '56px' },
     }),
     // Math, which lays out as boxes rather than plain glyphs.
     textElement({
-      id: 'math-1', magicMoveId: 'math', html: 'Energy $E = mc^2$ today',
+      id: 'math-1', morphId: 'math', html: 'Energy $E = mc^2$ today',
       x: 200, y: 950, w: 800, h: 100, align: 'center', style: { 'font-size': '44px' },
     }),
-    shapeElement({ id: 'rect-1', magicMoveId: 'rect', x: 1500, y: 900, w: 300, h: 140 }),
+    shapeElement({ id: 'rect-1', morphId: 'rect', x: 1500, y: 900, w: 300, h: 140 }),
     shapeElement({
-      id: 'arrow-1', magicMoveId: 'arrow', shape: 'arrow', rot: 90, arrowEnd: true,
+      id: 'arrow-1', morphId: 'arrow', shape: 'arrow', rot: 90, arrowEnd: true,
       x: 1000, y: 600, w: 300, h: 2, fill: null, stroke: '#111827', strokeWidth: 6,
     }),
     shapeElement({
-      id: 'rule-1', magicMoveId: 'rule', shape: 'line', x: 900, y: 200, w: 240, h: 2,
+      id: 'rule-1', morphId: 'rule', shape: 'line', x: 900, y: 200, w: 240, h: 2,
       fill: null, stroke: '#111827', strokeWidth: 4,
     }),
     {
-      id: 'image-1', magicMoveId: 'image', type: 'image', src: imageSrc, ...base,
+      id: 'image-1', morphId: 'image', type: 'image', src: imageSrc, ...base,
       x: 1200, y: 300, w: 200, h: 200, fit: 'fill', alt: '', sourceBox: null,
     } as SlideElement,
     // Unpaired: leaves as a ghost, so the pairs share the stage with fades.
@@ -158,51 +158,51 @@ function fixtureDeck(imageSrc: string): Deck {
     // Same title, now small, left-aligned and top-anchored: the alignment
     // change is what used to start it half a title-width off.
     textElement({
-      id: 'title-2', magicMoveId: 'title', html: 'Magic Move',
+      id: 'title-2', morphId: 'title', html: 'Morph',
       x: 120, y: 80, w: 1400, h: 160, align: 'left', valign: 'top',
       style: { 'font-size': '64px' },
     }),
     textElement({
-      id: 'body-2', magicMoveId: 'body', class: ['role-body'], html: 'Body copy stays put',
+      id: 'body-2', morphId: 'body', class: ['role-body'], html: 'Body copy stays put',
       x: 160, y: 760, w: 1500, h: 120, style: { 'font-size': '40px' },
     }),
     textElement({
-      id: 'fit-2', magicMoveId: 'fit', html: 'Auto-fitted single line',
+      id: 'fit-2', morphId: 'fit', html: 'Auto-fitted single line',
       x: 900, y: 400, w: 520, h: 80, noWrap: true, autoFit: true,
       style: { 'font-size': '72px' },
     }),
     textElement({
-      id: 'condense-2', magicMoveId: 'condense',
+      id: 'condense-2', morphId: 'condense',
       html: 'A deliberately overlong condensed line of type',
       x: 200, y: 560, w: 900, h: 100, noWrap: true, noWrapMode: 'condense',
       style: { 'font-size': '48px' },
     }),
     textElement({
-      id: 'rot-2', magicMoveId: 'rot', html: 'Tilted', rot: -12,
+      id: 'rot-2', morphId: 'rot', html: 'Tilted', rot: -12,
       x: 300, y: 300, w: 400, h: 120, align: 'center', style: { 'font-size': '56px' },
     }),
     textElement({
-      id: 'math-2', magicMoveId: 'math', html: 'Energy $E = mc^2$ today',
+      id: 'math-2', morphId: 'math', html: 'Energy $E = mc^2$ today',
       x: 1000, y: 980, w: 800, h: 100, align: 'right', style: { 'font-size': '44px' },
     }),
     // Flipped on this slide, plain on the next: the authored transform has to
     // survive both directions.
     shapeElement({
-      id: 'rect-2', magicMoveId: 'rect', x: 300, y: 900, w: 500, h: 100,
+      id: 'rect-2', morphId: 'rect', x: 300, y: 900, w: 500, h: 100,
       style: { transform: 'scaleX(-1)' },
     }),
     shapeElement({
-      id: 'arrow-2', magicMoveId: 'arrow', shape: 'arrow', rot: 24, arrowEnd: true,
+      id: 'arrow-2', morphId: 'arrow', shape: 'arrow', rot: 24, arrowEnd: true,
       x: 1400, y: 500, w: 420, h: 2, fill: null, stroke: '#111827', strokeWidth: 6,
     }),
     // A hairline rule: dividing by its box width is how a transform ends up
     // scaled into the thousands.
     shapeElement({
-      id: 'rule-2', magicMoveId: 'rule', shape: 'line', x: 400, y: 460, w: 0.01, h: 200,
+      id: 'rule-2', morphId: 'rule', shape: 'line', x: 400, y: 460, w: 0.01, h: 200,
       fill: null, stroke: '#111827', strokeWidth: 4,
     }),
     {
-      id: 'image-2', magicMoveId: 'image', type: 'image', src: imageSrc, ...base,
+      id: 'image-2', morphId: 'image', type: 'image', src: imageSrc, ...base,
       x: 60, y: 620, w: 420, h: 120, fit: 'fill', alt: '', sourceBox: null,
     } as SlideElement,
     // Arriving unpaired: fades in, and must not disturb the movers.
@@ -213,23 +213,23 @@ function fixtureDeck(imageSrc: string): Deck {
     // Right/bottom aligned in a huge box: the third distinct alignment for
     // the same object.
     textElement({
-      id: 'title-3', magicMoveId: 'title', html: 'Magic Move',
+      id: 'title-3', morphId: 'title', html: 'Morph',
       x: 200, y: 200, w: 1500, h: 700, align: 'right', valign: 'bottom',
       style: { 'font-size': '96px' },
     }),
     // The deliberate re-wrap: one line becomes two, so only the start of the
     // block can be compared.
     textElement({
-      id: 'body-3', magicMoveId: 'body', class: ['role-body'], html: 'Body copy stays put',
+      id: 'body-3', morphId: 'body', class: ['role-body'], html: 'Body copy stays put',
       x: 160, y: 40, w: 320, h: 200, style: { 'font-size': '40px' },
     }),
     textElement({
-      id: 'rot-3', magicMoveId: 'rot', html: 'Tilted', rot: 0,
+      id: 'rot-3', morphId: 'rot', html: 'Tilted', rot: 0,
       x: 1500, y: 120, w: 400, h: 120, align: 'center', style: { 'font-size': '56px' },
     }),
-    shapeElement({ id: 'rect-3', magicMoveId: 'rect', x: 1400, y: 960, w: 400, h: 80 }),
+    shapeElement({ id: 'rect-3', morphId: 'rect', x: 1400, y: 960, w: 400, h: 80 }),
     {
-      id: 'image-3', magicMoveId: 'image', type: 'image', src: imageSrc, ...base,
+      id: 'image-3', morphId: 'image', type: 'image', src: imageSrc, ...base,
       x: 900, y: 700, w: 260, h: 260, fit: 'fill', alt: '', sourceBox: null,
     } as SlideElement,
   ], true);
@@ -295,9 +295,9 @@ function anchorFraction(element: SlideElement): { x: number; y: number } {
   };
 }
 
-describe.skipIf(!electronBinary)('Magic Move geometry in the browser', () => {
+describe.skipIf(!electronBinary)('Morph geometry in the browser', () => {
   it('starts every paired object exactly where its source object was', async () => {
-    workDir = await mkdtemp(join(tmpdir(), 'magic-move-browser-'));
+    workDir = await mkdtemp(join(tmpdir(), 'morph-browser-'));
     const decksRoot = join(workDir, 'decks');
     const deckDir = join(decksRoot, DECK_ID);
     const clientDir = await collabClientDir();
@@ -368,8 +368,8 @@ describe.skipIf(!electronBinary)('Magic Move geometry in the browser', () => {
 
       const pairs = next.elements.flatMap((target) => {
         const source = previous.elements
-          .find((candidate) => candidate.magicMoveId
-            && candidate.magicMoveId === target.magicMoveId);
+          .find((candidate) => candidate.morphId
+            && candidate.morphId === target.morphId);
         return source ? [{ source, target }] : [];
       });
       // The fixture is only worth anything if it really is pairing objects.

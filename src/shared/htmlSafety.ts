@@ -35,9 +35,13 @@ export function sanitizeAuthoredHtml(source: string): {
         report.removedEventHandlers += 1;
         continue;
       }
-      if (!['src', 'href', 'poster', 'xlink:href'].includes(name)) continue;
+      if (!['src', 'href', 'poster', 'xlink:href', 'action', 'formaction'].includes(name)) continue;
       const value = attribute.value.trim();
-      if (/^javascript:/i.test(value)) {
+      // The URL parser strips ASCII tabs, newlines and other control characters
+      // out of a scheme before it looks at it, so `java&#9;script:` is run as
+      // `javascript:`. The scheme is tested the way the browser will read it.
+      const scheme = value.replace(/[\u0000-\u0020]/g, '');
+      if (/^javascript:/i.test(scheme)) {
         node.removeAttribute(attribute.name);
         report.blockedUrls.push(value);
       } else if (/^https?:/i.test(value)) {
@@ -88,13 +92,41 @@ const PASTE_REMOVED = 'script, style, link, meta, base, iframe, object, embed, f
 const PASTE_UNWRAPPED = 'font, marquee, center, header, footer, nav, aside, main, article,'
   + ' section, figure, figcaption, label, fieldset, legend, video';
 
+/**
+ * How far a raised or lowered run shrinks. The value is em-relative on
+ * purpose: the run then keeps tracking whatever size it inherits, including
+ * the size auto-fit writes on `.text-content`.
+ */
+export const BASELINE_RUN_FONT_SIZE = '0.7em';
+
+/**
+ * True for a font size expressed as a ratio to its context (`0.7em`, `84%`,
+ * `smaller`) rather than as a measurement. The distinction matters whenever a
+ * size is applied to text: an absolute size is an authored fact that a new one
+ * replaces, while a relative size is a *relationship* — it is how superscripts,
+ * subscripts, and proportionally scaled runs are written, and how they keep
+ * tracking the text around them (auto-fit's fitted size included). Overwriting
+ * one with a measurement silently destroys that relationship: the raised digit
+ * jumps to full size, and in an auto-fitting box it then drags every other
+ * line down with it.
+ */
+export function isRelativeFontSize(value: string | null | undefined): boolean {
+  return /(?:em|rem|%|ex|ch|vw|vh|vmin|vmax)$|^(?:smaller|larger)$/i
+    .test((value ?? '').trim());
+}
+
 /** Tag-based inline formatting and the style-only span it canonicalizes to. */
-const TAG_FORMAT_STYLES: Record<string, [string, string]> = {
-  B: ['font-weight', '700'],
-  STRONG: ['font-weight', '700'],
-  I: ['font-style', 'italic'],
-  EM: ['font-style', 'italic'],
-  U: ['text-decoration-line', 'underline'],
+const TAG_FORMAT_STYLES: Record<string, Array<[string, string]>> = {
+  B: [['font-weight', '700']],
+  STRONG: [['font-weight', '700']],
+  I: [['font-style', 'italic']],
+  EM: [['font-style', 'italic']],
+  U: [['text-decoration-line', 'underline']],
+  // A superscript is raised *and* shrunk. Keeping only the baseline shift
+  // would paste a full-size character sitting above the line, which reads as
+  // a layout bug rather than as a superscript.
+  SUP: [['vertical-align', 'super'], ['font-size', BASELINE_RUN_FONT_SIZE]],
+  SUB: [['vertical-align', 'sub'], ['font-size', BASELINE_RUN_FONT_SIZE]],
 };
 
 export function sanitizePastedTextHtml(html: string): string {
@@ -115,13 +147,17 @@ export function sanitizePastedTextHtml(html: string): string {
   // so pasted <strong>/<em>/<u> accreted contradictory layers
   // (<strong><span style="font-weight:400">…) that no toggle could clean up.
   // Convert the tag dialect to the span dialect on the way in.
-  for (const node of [...root.querySelectorAll<HTMLElement>('b, strong, i, em, u')].reverse()) {
-    const [property, value] = TAG_FORMAT_STYLES[node.tagName]!;
+  for (const node of [...root.querySelectorAll<HTMLElement>(
+    'b, strong, i, em, u, sup, sub',
+  )].reverse()) {
+    const declarations = TAG_FORMAT_STYLES[node.tagName]!;
     const span = document.createElement('span');
     for (const attribute of [...node.attributes]) {
       span.setAttribute(attribute.name, attribute.value);
     }
-    if (!span.style.getPropertyValue(property)) span.style.setProperty(property, value);
+    for (const [property, value] of declarations) {
+      if (!span.style.getPropertyValue(property)) span.style.setProperty(property, value);
+    }
     span.append(...node.childNodes);
     node.replaceWith(span);
   }

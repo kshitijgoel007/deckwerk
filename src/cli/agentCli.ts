@@ -16,7 +16,25 @@ import { deckOutline, deckStyleDigest } from '@shared/deckDigest.js';
 import { slidesToHtml } from '@shared/htmlSlides.js';
 import { capabilities } from '@shared/capabilities.js';
 import { PLAYER_TYPE_CSS } from '@shared/playerTypeCss.js';
-import type { Comment, Deck } from '@shared/deck.js';
+import { CustomThemeSchema, type Comment, type Deck } from '@shared/deck.js';
+import { diffDecks } from '@shared/deckDiff.js';
+import { renameRetiredFields } from '@shared/fieldAliases.js';
+import {
+  type ThemeAdoption,
+  type ThemePreset,
+  type ThemeTextRole,
+  adoptThemeStyles,
+  deckThemes,
+  fullThemeSelection,
+  themeById,
+  themeCss,
+  THEME_BLOCK_END,
+  THEME_BLOCK_START,
+  themeIssues,
+  themeMode,
+  themeStyleCss,
+  withThemeBlock,
+} from '@shared/themes.js';
 import { RevisionConflict, applyTransactionOffline, validateDeckFolder } from '../main/agentDeck.js';
 import {
   deckRevision,
@@ -90,6 +108,20 @@ Everything else:
   preview   [deck] [--port <n>] [--open]  export through the real player and
                                           serve it on localhost; blocks until
                                           killed. --open shows it to the user
+  theme     list [deck]                   presets on offer, and the deck's own
+  theme     show [deck] [--id <themeId>]  one preset as JSON — the shape create reads
+  theme     create [deck] --spec <file.json> [--replace]
+                                          add a theme to the deck; changes what
+                                          is available, restyles nothing
+  theme     delete [deck] --id <themeId>  drop a deck theme
+  theme     choose [deck] --id <themeId>  the deck's current theme: what new
+                                          slides are born wearing
+  theme     apply  [deck] --id <themeId> [--scope deck|slides] [--slide id|--all]
+            [--roles title,heading,body,caption,base]
+            [--properties fonts,weights,scale,text-color,background,object-colors]
+            [--keep-overrides] [--detect-roles]
+                                          restyle slides that already exist;
+                                          --scope deck also writes theme.css
   comments  [deck] [--unresolved]         every comment, with its slide number.
                                           Humans leave instructions this way —
                                           check it at the start of a task.
@@ -132,6 +164,8 @@ export async function runAgentCli(argv: string[], io: CliIo): Promise<number> {
         return await validateCommand(rest, io);
       case 'asset':
         return await assetCommand(rest, io);
+      case 'theme':
+        return await themeCommand(rest, io);
       case 'comments':
         return await commentsCommand(rest, io);
       case 'transaction':
@@ -632,8 +666,11 @@ async function transactionCommand(argv: string[], io: CliIo): Promise<number> {
     return EXIT_USAGE;
   }
 
+  // The schema strips keys it does not know, so a transaction written against
+  // retired field names has to be canonicalised before it is parsed -- not in
+  // applyAgentTransaction, which would only ever see the stripped copy.
   const draft = DraftTransactionSchema.parse(
-    JSON.parse(await readFile(resolve(io.cwd, file), 'utf8')),
+    renameRetiredFields(JSON.parse(await readFile(resolve(io.cwd, file), 'utf8'))),
   );
   return applyTransaction(deckDir, draft, io);
 }
@@ -964,6 +1001,364 @@ function jsonCompactArrays(value: Record<string, unknown>, keys: string[]): stri
     return `  ${JSON.stringify(key)}: ${printed === undefined ? 'null' : printed.replace(/\n/g, '\n  ')}`;
   });
   return `{\n${parts.join(',\n')}\n}\n`;
+}
+
+/* --- theme --- */
+
+/**
+ * `theme` — the theme system from the command line.
+ *
+ * Themes were a panel-only affair: the presets are compiled in, and choosing,
+ * installing and adopting one all lived in the renderer, so an agent asked to
+ * "make me a theme like X" could only hand-write CSS that no gallery listed
+ * and no slide adopted. These subcommands are the same four acts the panel
+ * performs, in the same order — see what exists, write a preset, make it the
+ * deck's current theme, restyle existing slides with the aspects you asked for
+ * — with the preset itself stored on the deck so it travels with the folder.
+ */
+async function themeCommand(argv: string[], io: CliIo): Promise<number> {
+  const [subcommand, ...rest] = argv;
+  switch (subcommand) {
+    case 'list': return themeListCommand(rest, io);
+    case 'show': return themeShowCommand(rest, io);
+    case 'create': return themeCreateCommand(rest, io);
+    case 'delete': return themeDeleteCommand(rest, io);
+    case 'choose': return themeChooseCommand(rest, io);
+    case 'apply': return themeApplyCommand(rest, io);
+    default:
+      throw new UsageError(`Unknown theme subcommand: ${subcommand ?? '(none)'}.`
+        + ' Expected list, show, create, delete, choose or apply.');
+  }
+}
+
+/** A preset trimmed to what a caller browsing the gallery needs. */
+function themeSummary(theme: ThemePreset, custom: boolean): Record<string, unknown> {
+  return {
+    id: theme.id,
+    name: theme.name,
+    description: theme.description,
+    source: custom ? 'deck' : 'built-in',
+    mode: themeMode(theme),
+    fonts: { title: theme.fonts.title.family, body: theme.fonts.body.family },
+    colors: theme.colors,
+  };
+}
+
+async function themeListCommand(argv: string[], io: CliIo): Promise<number> {
+  const { flags, positional } = parseFlags(argv);
+  ensureKnownFlags('theme list', flags, []);
+  ensurePositionals('theme list', positional, 1);
+  const deckDir = resolveDeckDir(positional[0], io);
+  const deck = await loadDeck(deckDir);
+  const custom = new Set(deck.customThemes.map((theme) => theme.id));
+  io.out(jsonCompactArrays({
+    // What the deck is wearing, and what a new slide would be born wearing:
+    // the two come apart whenever a theme was applied to slides alone.
+    installed: deck.themePreset,
+    chosen: deck.themeSelection?.preset ?? null,
+    modified: deck.themeStyle !== null,
+    themes: deckThemes(deck).map((theme) => themeSummary(theme, custom.has(theme.id))),
+    variants: 'Append -dark or -light to any id for its counterpart on the other side of the room.',
+  }, ['themes']));
+  return EXIT_OK;
+}
+
+async function themeShowCommand(argv: string[], io: CliIo): Promise<number> {
+  const { flags, options, positional } = parseFlags(argv, ['id']);
+  ensureKnownFlags('theme show', flags, []);
+  ensurePositionals('theme show', positional, 1);
+  const deckDir = resolveDeckDir(positional[0], io);
+  const deck = await loadDeck(deckDir);
+  const id = options.get('id') ?? deck.themeSelection?.preset ?? deck.themePreset;
+  if (!id) {
+    throw new UsageError('This deck has no theme yet. Pass --id, or `theme list` to see them all.');
+  }
+  const theme = resolveTheme(deck, id);
+  // The whole preset, in exactly the shape `theme create --spec` reads back:
+  // deriving a new theme from a shipped one is show, edit two fields, create.
+  io.out(json({
+    ...structuredClone(theme),
+    mode: themeMode(theme),
+    css: themeCss(theme),
+  }));
+  return EXIT_OK;
+}
+
+async function themeCreateCommand(argv: string[], io: CliIo): Promise<number> {
+  const { flags, options, positional } = parseFlags(argv, ['spec']);
+  ensureKnownFlags('theme create', flags, ['replace']);
+  ensurePositionals('theme create', positional, 1);
+  const deckDir = resolveDeckDir(positional[0], io);
+  const specPath = options.get('spec');
+  if (!specPath) throw new UsageError('theme create needs --spec <file.json>');
+
+  const parsed = CustomThemeSchema.safeParse(
+    JSON.parse(await readFile(resolve(io.cwd, specPath), 'utf8')),
+  );
+  if (!parsed.success) {
+    io.err(`That spec is not a theme:\n${parsed.error.issues
+      .map((issue) => `  ${issue.path.join('.') || '(root)'}: ${issue.message}`).join('\n')}`
+      + '\n\nRun `slide-agent theme show <deck> --id basic` for a preset in the shape this reads.');
+    return EXIT_ERROR;
+  }
+  const preset = parsed.data;
+
+  const deck = await loadDeck(deckDir);
+  const replacing = flags.has('replace');
+  const existing = replacing
+    ? deck.customThemes.filter((theme) => theme.id !== preset.id)
+    : deck.customThemes;
+  const issues = themeIssues(preset, existing);
+  if (issues.length > 0) {
+    io.err(`That theme cannot be added:\n${issues.map((issue) => `  ${issue}`).join('\n')}`);
+    return EXIT_ERROR;
+  }
+
+  const next = structuredClone(deck);
+  next.customThemes = [...existing, preset];
+  const code = await applyTransaction(deckDir, {
+    version: AGENT_PROTOCOL_VERSION,
+    label: `${replacing ? 'Update' : 'Add'} theme ${preset.name}`,
+    operations: diffDecks(deck, next),
+  }, io, {
+    theme: themeSummary(preset, true),
+    // Adding a theme is the omarchy move: it changes what is *available*, and
+    // restyles nothing. Say so, or the caller reports success on a deck that
+    // looks exactly as it did.
+    next: `Nothing changed visually yet. \`theme choose ${deckDir} --id ${preset.id}\` makes it `
+      + `the deck's current theme; \`theme apply ${deckDir} --id ${preset.id} --scope deck\` `
+      + 'restyles the slides that already exist.',
+  });
+  return code;
+}
+
+async function themeDeleteCommand(argv: string[], io: CliIo): Promise<number> {
+  const { flags, options, positional } = parseFlags(argv, ['id']);
+  ensureKnownFlags('theme delete', flags, []);
+  ensurePositionals('theme delete', positional, 1);
+  const deckDir = resolveDeckDir(positional[0], io);
+  const id = options.get('id');
+  if (!id) throw new UsageError('theme delete needs --id <themeId>');
+  const deck = await loadDeck(deckDir);
+  if (!deck.customThemes.some((theme) => theme.id === id)) {
+    io.err(`This deck has no theme "${id}". Built-in presets cannot be deleted.`);
+    return EXIT_ERROR;
+  }
+  const next = structuredClone(deck);
+  next.customThemes = next.customThemes.filter((theme) => theme.id !== id);
+  return applyTransaction(deckDir, {
+    version: AGENT_PROTOCOL_VERSION,
+    label: `Remove theme ${id}`,
+    operations: diffDecks(deck, next),
+  }, io, {
+    // The preset is gone; the styling it wrote onto slides is not, because it
+    // was written as inline properties and deck defaults that stand on their own.
+    note: deck.themePreset === id || deck.themeSelection?.preset === id
+      ? 'The deck still names this theme; slides keep the styling it applied, '
+        + 'but new slides no longer inherit it. Choose another theme.'
+      : undefined,
+  });
+}
+
+async function themeChooseCommand(argv: string[], io: CliIo): Promise<number> {
+  const { flags, options, positional } = parseFlags(argv, ['id']);
+  ensureKnownFlags('theme choose', flags, []);
+  ensurePositionals('theme choose', positional, 1);
+  const deckDir = resolveDeckDir(positional[0], io);
+  const id = options.get('id');
+  if (!id) throw new UsageError('theme choose needs --id <themeId>');
+  const deck = await loadDeck(deckDir);
+  const theme = resolveTheme(deck, id);
+  const next = structuredClone(deck);
+  next.themeSelection = fullThemeSelection(theme.id);
+  return applyTransaction(deckDir, {
+    version: AGENT_PROTOCOL_VERSION,
+    label: `Choose ${theme.name}`,
+    operations: diffDecks(deck, next),
+  }, io, {
+    theme: themeSummary(theme, deck.customThemes.some((candidate) => candidate.id === theme.id)),
+    note: `New slides will be born wearing “${theme.name}”. Existing slides keep their `
+      + 'current styling — `theme apply` restyles those.',
+  });
+}
+
+/** Property groups, so a narrowed apply reads as a list rather than six flags. */
+const THEME_PROPERTIES: Record<string, keyof ThemeAdoption> = {
+  fonts: 'fontFamily',
+  weights: 'fontWeight',
+  scale: 'typeScale',
+  'text-color': 'textColor',
+  background: 'background',
+  'object-colors': 'objectColors',
+};
+
+async function themeApplyCommand(argv: string[], io: CliIo): Promise<number> {
+  const { flags, options, positional } = parseFlags(argv, ['id', 'scope', 'roles', 'properties']);
+  ensureKnownFlags('theme apply', flags, ['slide', 'selected', 'all', 'keep-overrides', 'detect-roles']);
+  ensurePositionals('theme apply', positional, 1);
+  const deckDir = resolveDeckDir(positional[0], io);
+  const id = options.get('id');
+  if (!id) throw new UsageError('theme apply needs --id <themeId>');
+
+  const deck = await loadDeck(deckDir);
+  ensureSlideIdsExist(flags, deck);
+  const theme = resolveTheme(deck, id);
+
+  const roles = parseList(options.get('roles'), ['title', 'heading', 'body', 'caption', 'base'],
+    'roles') as ThemeTextRole[];
+  const chosen = parseList(options.get('properties'), Object.keys(THEME_PROPERTIES), 'properties');
+  const properties = Object.fromEntries(Object.entries(THEME_PROPERTIES)
+    .map(([name, key]) => [key, chosen.includes(name)]));
+
+  // Which slides, decided the way every other command decides it: --all, named
+  // slides, or the editor's live selection. `--all` means every slide and
+  // nothing more — the install (deck defaults plus the stylesheet) is only
+  // ever asked for by name, with --scope deck.
+  const scope = options.get('scope') ?? 'slides';
+  if (scope !== 'deck' && scope !== 'slides') {
+    throw new UsageError(`Unknown scope "${scope}". Use --scope deck (defaults, every slide and`
+      + ' theme.css) or --scope slides (only the ones you name, the default).');
+  }
+  const context = await currentContext(deckDir, { scenes: false });
+  const wanted = selectionFilter(flags);
+  const targets = deck.slides.filter((slide, index) => !wanted || wanted({
+    id: slide.id,
+    index,
+    selected: context.selectedSlideIds.includes(slide.id),
+    active: slide.id === context.activeSlideId,
+  }));
+  if (scope === 'slides' && targets.length === 0) {
+    io.err('No slides selected. Pass --slide <id> (repeatable) or --all for every slide,'
+      + ' or --scope deck to install the theme deck-wide.');
+    return EXIT_ERROR;
+  }
+
+  const next = structuredClone(deck);
+  adoptThemeStyles(next, theme, {
+    scope,
+    roles,
+    ...properties,
+    // The panel's default, and the only setting under which a deck-wide apply
+    // is visible at all: inline properties an earlier theme wrote must give
+    // way, or the stylesheet this apply installs is overridden on every box.
+    replaceOverrides: !flags.has('keep-overrides'),
+    detectRoles: flags.has('detect-roles'),
+  } as ThemeAdoption, 0, new Set(), new Set(targets.map((slide) => slide.id)));
+
+  const operations = diffDecks(deck, next);
+  if (operations.length === 0) {
+    io.out(json({ status: 'applied', applied: false, changed: 0, message: 'Nothing to change.' }));
+    return EXIT_OK;
+  }
+  const warnings = themeApplyWarnings(deck, next, flags.has('detect-roles'));
+
+  // A deck-wide apply is also an install: the deck's composed defaults belong
+  // in the stylesheet the slides actually load, inside the generated block so
+  // the hand-written CSS around it survives. The block is prepared here but
+  // written only once the transaction has landed: a conflict or a refusal from
+  // the live editor must leave the deck folder exactly as it was, not with a
+  // stylesheet describing a theme deck.json never adopted.
+  let stylesheet: { path: string; css: string } | null = null;
+  if (scope === 'deck' && next.themeStyle) {
+    const cssPath = join(deckDir, next.theme);
+    const current = existsSync(cssPath) ? await readFile(cssPath, 'utf8') : '';
+    warnings.push(...handWrittenOverrides(current, next.theme));
+    stylesheet = {
+      path: cssPath,
+      css: withThemeBlock(current, themeStyleCss(next.themeStyle, theme.name)),
+    };
+  }
+
+  const code = await applyTransaction(deckDir, {
+    version: AGENT_PROTOCOL_VERSION,
+    label: `Apply ${theme.name}`,
+    operations,
+  }, io, {
+    theme: themeSummary(theme, deck.customThemes.some((candidate) => candidate.id === theme.id)),
+    scope,
+    roles,
+    properties: chosen,
+    slides: scope === 'deck' ? deck.slides.length : targets.length,
+    ...(stylesheet ? { stylesheet: next.theme } : {}),
+    ...(warnings.length > 0 ? { warnings } : {}),
+  });
+  if (code === EXIT_OK && stylesheet) await writeFile(stylesheet.path, stylesheet.css, 'utf8');
+  return code;
+}
+
+/**
+ * The two ways an apply reports success and changes nothing a viewer can see.
+ *
+ * Both are quiet by construction, and both cost an agent a full render to
+ * notice: role detection reads the *inline* font size, so text whose sizes
+ * live in the deck's stylesheet has no signal to classify by and lands wholly
+ * on `base`; and the generated theme block sits above the hand-written CSS, so
+ * a deck that styles `.slide` or a role class in its own hand wins over the
+ * theme it just installed. Neither is an error — they are the layering working
+ * as designed — so they are reported rather than refused.
+ */
+function themeApplyWarnings(before: Deck, after: Deck, detectedRoles: boolean): string[] {
+  if (!detectedRoles) return [];
+  const previous = new Map(before.slides.flatMap((slide) => slide.elements
+    .map((element) => [element.id, element.class.join(' ')] as const)));
+  const tagged = after.slides.flatMap((slide) => slide.elements
+    .filter((element) => element.type === 'text')
+    .filter((element) => previous.get(element.id) !== element.class.join(' '))
+    .map((element) => element.class.find((name) => name.startsWith('role-'))));
+  if (tagged.length > 1 && tagged.every((role) => role === 'role-base')) {
+    return [`Role detection tagged all ${tagged.length} text elements as role-base: it reads the `
+      + 'inline font-size, and these have none (their sizes come from the stylesheet). Tag the '
+      + 'roles yourself — add role-title/role-heading/role-body/role-caption classes — and apply again.'];
+  }
+  return [];
+}
+
+/**
+ * Hand-written rules that will outrank the block this apply just installed.
+ *
+ * Any selector outside the generated block that sets type or colour is a
+ * candidate: the block is written above the author's own CSS, so equal
+ * specificity resolves in the author's favour, and a legacy class like
+ * `.title` beats the role classes the theme styles. Comments are stripped
+ * first, or the file's header prose reads as a selector.
+ */
+function handWrittenOverrides(css: string, file: string): string[] {
+  const start = css.indexOf(THEME_BLOCK_START);
+  const end = css.indexOf(THEME_BLOCK_END);
+  const outside = (start !== -1 && end > start
+    ? css.slice(0, start) + css.slice(end + THEME_BLOCK_END.length)
+    : css).replace(/\/\*[\s\S]*?\*\//g, ' ');
+  const selectors = [...outside.matchAll(/([^{}]+)\{([^}]*)\}/g)]
+    .filter(([, , body]) => /font-family|font-size|font-weight|(^|[;\s])color\s*:/.test(body))
+    .map(([, selector]) => selector.trim().replace(/\s+/g, ' '))
+    .filter((selector) => selector.length > 0 && !selector.startsWith('@'));
+  const unique = [...new Set(selectors)];
+  if (unique.length === 0) return [];
+  const shown = unique.slice(0, 6).join(', ');
+  return [`${file} styles ${shown}${unique.length > 6 ? `, and ${unique.length - 6} more` : ''} `
+    + 'by hand, below the generated theme block, so those declarations win over the theme. '
+    + 'Remove or narrow them if the theme should show through.'];
+}
+
+/** A preset id resolved against this deck, with the whole menu on a miss. */
+function resolveTheme(deck: Deck, id: string): ThemePreset {
+  const theme = themeById(id, deckThemes(deck));
+  if (theme) return theme;
+  throw new UsageError(`No theme "${id}". Known: `
+    + `${deckThemes(deck).map((candidate) => candidate.id).join(', ')}`
+    + ' (each also as <id>-dark or <id>-light).');
+}
+
+/** A comma-separated flag value, checked against what the command accepts. */
+function parseList(value: string | undefined, allowed: string[], label: string): string[] {
+  if (value === undefined) return [...allowed];
+  const parts = value.split(',').map((part) => part.trim()).filter(Boolean);
+  const unknown = parts.filter((part) => !allowed.includes(part));
+  if (unknown.length > 0) {
+    throw new UsageError(`Unknown --${label}: ${unknown.join(', ')}. `
+      + `Choose from ${allowed.join(', ')}.`);
+  }
+  return parts;
 }
 
 /** A scratch directory for the export a render is captured from. */

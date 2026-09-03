@@ -242,8 +242,8 @@ describe('the walk', () => {
                data-notes="Say hello" style="background:#101014">
         <h1 class="role-title">Hello</h1>
       </section>
-      <section class="slide" data-slide-id="next" data-magic-move-from-previous="true"
-               data-magic-move-duration="1450"></section>
+      <section class="slide" data-slide-id="next" data-morph-from-previous="true"
+               data-morph-duration="1450"></section>
     `);
     const slides = measureSlides(doc);
 
@@ -252,10 +252,10 @@ describe('the walk', () => {
       name: 'Intro',
       notes: 'Say hello',
       background: { color: '#101014', image: null },
-      magicMoveFromPrevious: false,
+      morphFromPrevious: false,
     });
-    expect(slides[1].magicMoveFromPrevious).toBe(true);
-    expect(slides[1].magicMoveDuration).toBe(1450);
+    expect(slides[1].morphFromPrevious).toBe(true);
+    expect(slides[1].morphDuration).toBe(1450);
   });
 
   it('treats a page with no slide sections as one slide', () => {
@@ -460,7 +460,7 @@ describe('minting ids for compiled slides', () => {
     name: '',
     notes: '',
     background: { color: null, image: null },
-    magicMoveFromPrevious: false,
+    morphFromPrevious: false,
     nodes: [],
     ...over,
   });

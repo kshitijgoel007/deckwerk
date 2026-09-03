@@ -1,4 +1,5 @@
 import { expect } from 'vitest';
+import { themeById } from '../../src/shared/themes.js';
 import { Cdp, eventually } from './browserSession.js';
 
 /**
@@ -364,8 +365,105 @@ async function selectExactRange(
  * Every state is reached through production controls and a genuine pointer
  * selection. `EXHAUSTIVE_FORMAT_FUZZ_CASES` can cap it for a quick smoke run.
  */
+const ROLE_SELECT = `${PANEL} .text-role select`;
+/** The theme the fixture deck wears; its `.role-title` rule says otherwise. */
+export const ROLE_ROUND_TRIP_THEME = 'basic';
+export const ROLE_STYLESHEET_TITLE_SIZE = '96px';
+
+type RenderedType = {
+  family: string;
+  size: string;
+  weight: string;
+  lineHeight: string;
+  letterSpacing: string;
+  color: string;
+  text: string;
+  math: number;
+};
+
+/** What the box actually renders, after theme.css and every inline override. */
+function renderedType(editor: Cdp): Promise<RenderedType> {
+  return editor.evaluate<RenderedType>(`(() => {
+    const content = document.querySelector(${JSON.stringify(EXHAUSTIVE_CONTENT)});
+    const style = getComputedStyle(content);
+    return {
+      family: style.fontFamily,
+      size: style.fontSize,
+      weight: style.fontWeight,
+      lineHeight: style.lineHeight,
+      letterSpacing: style.letterSpacing,
+      color: style.color,
+      text: content.textContent?.replaceAll('\u2060', '') ?? '',
+      math: content.querySelectorAll('.katex').length,
+    };
+  })()`);
+}
+
+/**
+ * Switching a text box's role, then switching it back.
+ *
+ * The role is the formatting control with the widest blast radius: it strips
+ * inline type at every level — box, `.text-content`, and each run — and sets
+ * the box in the current theme's type for the role it was given. Three
+ * properties are checked on the way through.
+ *
+ * The type has to actually change, and to the *current theme's* values rather
+ * than to whichever `.role-*` rules the deck's theme.css still carries. The
+ * fixture stylesheet deliberately disagrees with the deck's theme for exactly
+ * this reason: a box that comes back at the stylesheet's 96px is wearing the
+ * theme the deck was made with, which is the bug this pass exists to catch.
+ *
+ * The paint has to survive untouched — clearing it dropped white text over a
+ * dark photograph back to the stylesheet's near-black, and the box read as
+ * blank — along with the text and the rendered math.
+ *
+ * And the switch has to be repeatable: once a box has been normalised to the
+ * theme, leaving a role and coming back to it has to land on the identical
+ * rendered values.
+ */
+export async function runRoleRoundTrip(editor: Cdp): Promise<void> {
+  const theme = themeById(ROLE_ROUND_TRIP_THEME)!;
+  // The box is committed, not being edited, so its math reads as rendered
+  // KaTeX rather than as source: prose is matched by phrase.
+  const before = await renderedType(editor);
+  expect(before.text, 'role round trip: prose before').toContain('Lorem ipsum carries inline math');
+  expect(before.text, 'role round trip: prose before')
+    .toContain('Third paragraph exercises lists, alignment, and typography together.');
+  expect(before.math, 'role round trip: math before').toBeGreaterThanOrEqual(2);
+
+  const wear = async (letter: string, role: 'title' | 'body'): Promise<RenderedType> => {
+    const settled = await editor.pressOptionKey(ROLE_SELECT, letter, 'Role');
+    expect(settled, `role round trip: Role dropdown did not settle on ${role}`).toBe(`role-${role}`);
+    const font = theme.fonts[role];
+    const state = await eventually(
+      async () => renderedType(editor),
+      `role round trip: the ${role} role never reached the box`,
+      (seen) => seen.size === `${font.size}px`,
+      10_000,
+    );
+    expect(state.weight, `role ${role} weight`).toBe(String(font.weight));
+    expect(state.family, `role ${role} family`)
+      .toContain(font.family.split(',')[0].replaceAll('"', ''));
+    expect(state.color, `role ${role} kept the authored paint`).toBe(before.color);
+    expect(state.text, `role ${role} kept the text`).toBe(before.text);
+    expect(state.math, `role ${role} kept the rendered math`).toBeGreaterThanOrEqual(2);
+    return state;
+  };
+
+  const title = await wear('T', 'title');
+  expect(title.size, 'role title took the theme size, not the stylesheet rule')
+    .not.toBe(ROLE_STYLESHEET_TITLE_SIZE);
+  const body = await wear('B', 'body');
+  await wear('T', 'title');
+  const again = await wear('B', 'body');
+  expect(again, 'role round trip: coming back to a role is repeatable').toEqual(body);
+}
+
 export async function runExhaustiveTextFormatting(editor: Cdp): Promise<number> {
   await editor.click(`#canvas [data-element-id="${EXHAUSTIVE_TEXT_ID}"]`, 'exhaustive text box');
+  // Roles are a whole-box control, driven here on the selected box before the
+  // inline matrix starts editing inside it.
+  await runRoleRoundTrip(editor);
   // The focused regression test owns strict double-click-to-edit coverage.
   // This long matrix enters editing through the equally real and less
   // timing-sensitive selected-box click path so failures belong to formatting.

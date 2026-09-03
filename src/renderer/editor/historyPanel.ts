@@ -37,6 +37,7 @@ export class HistoryPanel {
     const header = document.createElement('div');
     header.className = 'panel-header';
     const title = document.createElement('h3');
+    title.className = 'insp-title';
     title.textContent = 'Edit history';
     header.appendChild(title);
     this.host.appendChild(header);

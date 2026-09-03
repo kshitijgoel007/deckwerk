@@ -93,7 +93,7 @@ describe('diffDecks round-trips', () => {
     const next = structuredClone(prev);
     next.slides[0].name = 'Renamed';
     next.slides[0].background.color = '#123456';
-    next.slides[0].magicMoveDuration = 500;
+    next.slides[0].morphDuration = 500;
     const ops = diffDecks(prev, next);
     expect(ops.map((op) => op.op)).toEqual(['setSlideProperties']);
     expectRoundTrip(prev, next);

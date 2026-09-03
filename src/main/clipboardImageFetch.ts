@@ -98,30 +98,58 @@ function decodeDataImage(source: Extract<ClipboardImageSource, { kind: 'data' }>
   return { bytes, ext };
 }
 
+/** Hops a paste URL may bounce through before it is given up on. */
+const MAX_REDIRECTS = 5;
+
+/**
+ * Served types that say nothing about the bytes. Only for these -- or for no
+ * type at all -- may the URL's own extension decide; a server that says
+ * `text/html` is describing a page, however the path is spelled.
+ */
+function isGenericContentType(contentType: string): boolean {
+  const type = contentType.trim().toLowerCase().split(';')[0];
+  return type === '' || type === 'application/octet-stream' || type === 'binary/octet-stream';
+}
+
 async function downloadImage(
   url: string,
   options: FetchClipboardImageOptions,
 ): Promise<{ bytes: Uint8Array; ext: string }> {
-  const parsed = new URL(url);
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    throw new Error(`Refusing to fetch ${parsed.protocol} on a paste`);
-  }
-  if (options.blockPrivateAddresses) await assertPublicHost(parsed);
-
   const doFetch = options.fetchImpl ?? fetch;
-  const response = await doFetch(parsed.href, {
-    redirect: 'follow',
-    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-    // Credentials must not ride along on a paste.
-    headers: { accept: 'image/*' },
-  });
+  let parsed = new URL(url);
+  let response: Response | null = null;
+  // Redirects are followed by hand so that every hop, not only the first URL,
+  // is held to the same scheme and address rules: an innocuous public URL
+  // that bounces to `http://169.254.169.254/` must be refused, not fetched.
+  for (let hop = 0; hop <= MAX_REDIRECTS; hop += 1) {
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      throw new Error(`Refusing to fetch ${parsed.protocol} on a paste`);
+    }
+    if (options.blockPrivateAddresses) await assertPublicHost(parsed);
+
+    response = await doFetch(parsed.href, {
+      redirect: 'manual',
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      // Credentials must not ride along on a paste.
+      headers: { accept: 'image/*' },
+    });
+    const location = response.headers.get('location');
+    if (response.status < 300 || response.status >= 400 || !location) break;
+    if (hop === MAX_REDIRECTS) throw new Error('Image URL redirected too many times');
+    parsed = new URL(location, parsed);
+    response = null;
+  }
+  if (!response) throw new Error('Image URL redirected too many times');
   if (!response.ok) throw new Error(`Image URL returned ${response.status}`);
 
   // Trust the served type over the URL's extension: chat CDNs routinely serve
   // a `.png`-looking path as WebP, and the extension decides how we store it.
+  // The extension only gets a say when the server declared nothing useful.
   const contentType = response.headers.get('content-type') ?? '';
   const ext = imageMimeExtension(contentType)
-    ?? (urlLooksLikeImage(parsed.href) ? extensionFromUrl(parsed) : null);
+    ?? (isGenericContentType(contentType) && urlLooksLikeImage(parsed.href)
+      ? extensionFromUrl(parsed)
+      : null);
   if (!ext) throw new Error(`Not an importable image: ${contentType || parsed.href}`);
 
   const declared = Number(response.headers.get('content-length') ?? NaN);
@@ -152,7 +180,19 @@ export async function importClipboardImageUrl(
   options: FetchClipboardImageOptions = {},
 ): Promise<ImportedAsset | null> {
   const source = clipboardImageSource(html, text);
-  if (!source) return null;
+  return source ? await importImageSource(deckDir, source, options) : null;
+}
+
+/**
+ * Import an image that is only a reference — the shape both an image-only
+ * paste and a drag out of a web page arrive in. Never throws, for the same
+ * reason: a drop that cannot reach its bytes should leave the deck alone.
+ */
+export async function importImageSource(
+  deckDir: string,
+  source: ClipboardImageSource,
+  options: FetchClipboardImageOptions = {},
+): Promise<ImportedAsset | null> {
   let workDir = '';
   try {
     const { bytes, ext } = source.kind === 'data'
@@ -160,12 +200,12 @@ export async function importClipboardImageUrl(
       : await downloadImage(source.url, options);
     workDir = await mkdtemp(join(tmpdir(), 'deckwerk-paste-image-'));
     // `importAsset` names the asset from this file, and probes it for the
-    // dimensions the pasted element is sized from.
+    // dimensions the new element is sized from.
     const staged = join(workDir, `Pasted image${ext}`);
     await writeFile(staged, bytes);
     return await importAsset(deckDir, staged);
   } catch (err) {
-    console.error('Could not paste the image behind the clipboard:', err);
+    console.error('Could not fetch the image behind the paste or drop:', err);
     return null;
   } finally {
     if (workDir) await rm(workDir, { recursive: true, force: true }).catch(() => undefined);

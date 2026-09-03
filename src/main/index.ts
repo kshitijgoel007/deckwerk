@@ -16,7 +16,8 @@ import {
   parseClipboardPayload,
   rewriteAssetSrcs,
 } from '@shared/clipboard.js';
-import { importClipboardImageUrl } from './clipboardImageFetch.js';
+import { importClipboardImageUrl, importImageSource } from './clipboardImageFetch.js';
+import type { ClipboardImageSource } from '@shared/clipboardImages.js';
 import { IPC } from '@shared/ipc.js';
 import type {
   AgentContextDraft,
@@ -922,6 +923,15 @@ function registerHandlers(): void {
     rewriteAssetSrcs(payload, map);
     return payload;
   });
+
+  // An image dragged out of a web page arrives as a reference, not a file:
+  // the renderer hands over the URL (or `data:` payload) it found on the
+  // drag, and the bytes are fetched here, next to the deck folder.
+  ipcMain.handle(
+    IPC.assetImportUrl,
+    async (_e, source: ClipboardImageSource): Promise<ImportedAsset | null> =>
+      importImageSource(requireSession().dir, source),
+  );
 
   ipcMain.handle(IPC.assetProbe, async (_e, src: string) => {
     const s = requireSession();

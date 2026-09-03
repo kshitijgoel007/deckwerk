@@ -26,9 +26,9 @@ Use **Reset trim** to restore the full clip.
 
 ### Crop
 
-Select an image or video and click **Edit mask**. Drag the handles on the slide to change the visible area, then click **Done editing mask**.
+Select an image or video and click **Edit mask**. Drag the handles on the slide to change the visible area, or drag the picture itself to slide it around behind the window. Click **Done editing mask** when the framing is right.
 
-Cropping is non-destructive. Use **Reset crop** to reveal the full frame again. Turn on **Circular mask** for a round crop.
+Cropping is non-destructive. Use **Reset crop** to reveal the full frame again. Turn on **Circular mask** for a round crop: the window becomes a true circle whatever the picture's shape, and the picture keeps its own proportions behind it -- drag it in **Edit mask** to choose what the circle shows.
 
 > Screenshot placeholder: Cropping an image with mask handles.
 

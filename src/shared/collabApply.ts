@@ -123,8 +123,10 @@ function applyLenient(
       if (op.themePreset !== undefined) deck.themePreset = op.themePreset;
       if (op.themeStyle !== undefined) deck.themeStyle = structuredClone(op.themeStyle);
       if (op.themeSelection !== undefined) deck.themeSelection = structuredClone(op.themeSelection);
+      if (op.themeHistory !== undefined) deck.themeHistory = [...op.themeHistory];
+      if (op.customThemes !== undefined) deck.customThemes = structuredClone(op.customThemes);
       if (op.layoutMasters !== undefined) deck.layoutMasters = structuredClone(op.layoutMasters);
-      if (op.magicMoveEasing !== undefined) deck.magicMoveEasing = op.magicMoveEasing;
+      if (op.morphEasing !== undefined) deck.morphEasing = op.morphEasing;
       return;
     case 'setSlideProperties': {
       const at = indexOfSlide(deck, op.slideId);

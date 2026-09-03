@@ -78,6 +78,13 @@ marketing page:
   styled — but text colour and fonts from a `<style>` block inside an edit
   file will NOT follow into the deck. Reusable styles belong in theme.css;
   inline styles are for one-offs.
+- **A whole look is a theme, not a pile of CSS.** When the ask is the deck's
+  design rather than one slide's ("make it look like X", "darker", "a serif
+  deck"), work through `slide-agent theme`: `show` a shipped preset, edit it,
+  `create` it on the deck, then `apply --scope deck`. That way the look is a
+  preset the gallery lists and new slides inherit, not rules only you know
+  about. `slide-agent theme list` shows what already exists — reach for a
+  built-in before writing one.
 
 ## The loop
 
@@ -161,7 +168,7 @@ deck before deciding what to change. To *show* the deck to a human, run
 `slide-agent preview . --open` in the background: it serves the deck through
 the real player on localhost and prints the URL.
 
-`slide-agent capabilities` documents builds, Magic Move, crops, video trim
+`slide-agent capabilities` documents builds, Morph, crops, video trim
 and KaTeX, each with working markup. `slide-agent docs` has the full guide.
 The older JSON transaction API is still there for tooling with no browser, but
 it is not how slides are authored any more.

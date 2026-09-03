@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type { Deck } from '@shared/deck.js';
 import type { DeckHistoryDocument } from '@shared/deckHistory.js';
 import type { ClipboardReadResult, ClipboardWriteRequest } from '@shared/clipboard.js';
+import type { ClipboardImageSource } from '@shared/clipboardImages.js';
 import { IPC } from '@shared/ipc.js';
 import type {
   AgentContextDraft,
@@ -91,6 +92,13 @@ const api = {
       files.map((file) => webUtils.getPathForFile(file)).filter(Boolean),
       progressToken,
     ),
+  /**
+   * Import an image that a drag or a paste only pointed at — a remote URL or
+   * an inline `data:` payload. The renderer cannot fetch cross-origin bytes
+   * itself, so the main process goes and gets them.
+   */
+  importImageUrl: (source: ClipboardImageSource): Promise<ImportedAsset | null> =>
+    ipcRenderer.invoke(IPC.assetImportUrl, source),
   onAssetImportProgress: (fn: (p: AssetImportProgress) => void): (() => void) =>
     on(IPC.assetImportProgress, fn),
   probeAsset: (src: string): Promise<MediaInfo> =>

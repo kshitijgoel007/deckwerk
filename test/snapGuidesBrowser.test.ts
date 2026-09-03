@@ -228,6 +228,46 @@ describe.skipIf(!electronBinary)('spacing and sizing guides in the running edito
   }, 180_000);
 });
 
+  it('shows the equal gaps when a row sits on top of a body text box', async () => {
+    // Slide 3 of deckwerk_intro: three 477-square pictures over a body text
+    // box that spans the whole area. The box overlaps the pictures vertically,
+    // so it used to count as a neighbour in their row — it encloses them, every
+    // gap it forms is negative, and the chain the pictures make was broken.
+    // Moving the middle picture produced no distribution guide at all.
+    const shot = (id: string, x: number) => ({
+      ...picture(id, x, 477, 477), y: 417, fit: 'contain' as const,
+    });
+    const { cdp, toScreen, boxOf, guides } = await openEditor([
+      { id: 'title', type: 'text', x: 120, y: 58, w: 1680, h: 142, z: 1,
+        html: 'Three pictures', align: 'left', valign: 'middle' },
+      // Behind the pictures: the row sits on top of the body copy, and a click
+      // on a picture has to reach the picture, not the box under it.
+      { id: 'body', type: 'text', x: 120, y: 252, w: 1680, h: 700, z: 0,
+        html: 'Body', align: 'left', valign: 'top' },
+      shot('left', 83),
+      shot('middle', 708),
+      shot('right', 1340),
+    ]);
+
+    const centre = toScreen(708 + 477 / 2, 417 + 477 / 2);
+    await cdp.clickAt(centre.x, centre.y);
+    expect(await cdp.evaluate<string[]>('[...window.store.get().selection]')).toEqual(['middle']);
+
+    // Equidistant is x = 711.5, with 151.5 either side. Drag away, then back
+    // to within a few pixels of it.
+    const drag = await cdp.beginDrag(centre.x, centre.y);
+    await drag.moveTo(toScreen(600 + 477 / 2, 417 + 477 / 2).x, centre.y);
+    expect((await guides()).spacing).toEqual([]);
+
+    await drag.moveTo(toScreen(715 + 477 / 2, 417 + 477 / 2).x, centre.y);
+    expect((await guides()).spacing).toEqual(['152', '152']);
+
+    await drag.drop();
+    // Whole pixels: 152 one side, 151 the other, which is as even as the grid
+    // allows — and the bars still read as equal when you pick it up again.
+    expect(await boxOf('middle')).toMatchObject({ x: 712 });
+  }, 180_000);
+
 describe.skipIf(Boolean(electronBinary))('spacing and sizing guides (skipped)', () => {
   it('needs a downloaded Electron binary to drive real pointer input', () => {
     expect(electronBinary).toBe('');

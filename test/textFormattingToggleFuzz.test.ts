@@ -18,8 +18,13 @@ import { extraFuzzSeeds } from './support/fuzzSeeds.js';
  */
 
 const TEXT = 'Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor.';
-type Format = 'bold' | 'italic' | 'underline';
-const FORMATS: Format[] = ['bold', 'italic', 'underline'];
+type Format = 'bold' | 'italic' | 'underline' | 'superscript' | 'subscript';
+const FORMATS: Format[] = ['bold', 'italic', 'underline', 'superscript', 'subscript'];
+/** The baseline formats are one exclusive choice: turning one on turns the other off. */
+const OPPOSITE: Partial<Record<Format, Format>> = {
+  superscript: 'subscript',
+  subscript: 'superscript',
+};
 
 function textElement(): SlideElement {
   return {
@@ -80,9 +85,12 @@ function selectOffsets(root: HTMLElement, start: number, end: number): void {
 }
 
 function toggleShortcut(content: HTMLElement, format: Format): void {
-  const key = format === 'italic' ? 'i' : format === 'underline' ? 'u' : 'b';
+  const key = format === 'italic' ? 'i'
+    : format === 'underline' ? 'u'
+      : format === 'superscript' ? '='
+        : format === 'subscript' ? '-' : 'b';
   const event = new KeyboardEvent('keydown', {
-    key, metaKey: true,
+    key, metaKey: true, shiftKey: format === 'superscript' || format === 'subscript',
     bubbles: true, cancelable: true,
   });
   content.dispatchEvent(event);
@@ -91,7 +99,9 @@ function toggleShortcut(content: HTMLElement, format: Format): void {
 
 function toggleButton(inspectorHost: HTMLElement, format: Format): void {
   const label = format === 'italic' ? 'Italic (Cmd/Ctrl+I)'
-    : format === 'underline' ? 'Underline (Cmd/Ctrl+U)' : 'Bold (Cmd/Ctrl+B)';
+    : format === 'underline' ? 'Underline (Cmd/Ctrl+U)'
+      : format === 'superscript' ? 'Superscript (Cmd/Ctrl+Shift+=)'
+        : format === 'subscript' ? 'Subscript (Cmd/Ctrl+Shift+-)' : 'Bold (Cmd/Ctrl+B)';
   const button = inspectorHost.querySelector<HTMLButtonElement>(
     `button[aria-label="${label}"]`,
   )!;
@@ -118,8 +128,12 @@ function typeAtCaret(content: HTMLElement, value: string): void {
 }
 
 function effectiveFormat(node: Text, root: HTMLElement, format: Format): boolean {
+  const baseline = format === 'superscript' ? 'super' : format === 'subscript' ? 'sub' : null;
   for (let current = node.parentElement; current && current !== root; current = current.parentElement) {
-    if (format === 'italic') {
+    if (baseline) {
+      if (current.style.verticalAlign) return current.style.verticalAlign === baseline;
+      if (current.matches('sup, sub')) return current.matches(baseline === 'super' ? 'sup' : 'sub');
+    } else if (format === 'italic') {
       if (current.style.fontStyle) return current.style.fontStyle === 'italic';
       if (current.matches('i, em')) return true;
     } else if (format === 'bold') {
@@ -250,6 +264,8 @@ describe('stateful inline text formatting fuzzing', () => {
         bold: Array(TEXT.length).fill(false),
         italic: Array(TEXT.length).fill(false),
         underline: Array(TEXT.length).fill(false),
+        superscript: Array(TEXT.length).fill(false),
+        subscript: Array(TEXT.length).fill(false),
       };
       const random = mulberry32(seed);
 
@@ -263,6 +279,11 @@ describe('stateful inline text formatting fuzzing', () => {
         if (random() < 0.5) toggleShortcut(content, format);
         else toggleButton(inspectorHost, format);
         expected[format].fill(next, start, end);
+        // Either baseline command writes an absolute answer for the whole
+        // range — raised, lowered, or back on the line — so it always settles
+        // the other one too rather than leaving both claiming the characters.
+        const opposite = OPPOSITE[format];
+        if (opposite) expected[opposite].fill(false, start, end);
 
         expect(content.textContent, `seed ${seed}, step ${step + 1}: visible text`).toBe(TEXT);
         expect(savedText(store), `seed ${seed}, step ${step + 1}: saved text`).toBe(TEXT);
@@ -270,6 +291,11 @@ describe('stateful inline text formatting fuzzing', () => {
           .toBe(TEXT.slice(start, end));
         expect(formatMap(content, format), `seed ${seed}, step ${step + 1}: ${format}`)
           .toEqual(expected[format]);
+        const other = OPPOSITE[format];
+        if (other) {
+          expect(formatMap(content, other), `seed ${seed}, step ${step + 1}: ${other}`)
+            .toEqual(expected[other]);
+        }
       }
     });
   }

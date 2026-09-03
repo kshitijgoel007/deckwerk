@@ -34,13 +34,31 @@ const CONTENT = `#canvas [data-element-id="${TEXT_ID}"] .text-content`;
 const PANEL = '#inspector';
 const MOD = process.platform === 'darwin' ? 4 : 2;
 
-type Format = 'bold' | 'italic' | 'underline';
+type Format = 'bold' | 'italic' | 'underline' | 'superscript' | 'subscript';
 type InputRoute = 'shortcut' | 'button';
 
-const FORMAT_UI: Record<Format, { key: string; code: string; keyCode: number; label: string }> = {
+/** Shift is part of the chord for the baselines; CDP spells it as bit 8. */
+const SHIFT = 8;
+const FORMAT_UI: Record<Format, {
+  key: string; code: string; keyCode: number; label: string; shift?: boolean;
+}> = {
   bold: { key: 'b', code: 'KeyB', keyCode: 66, label: 'Bold (Cmd/Ctrl+B)' },
   italic: { key: 'i', code: 'KeyI', keyCode: 73, label: 'Italic (Cmd/Ctrl+I)' },
   underline: { key: 'u', code: 'KeyU', keyCode: 85, label: 'Underline (Cmd/Ctrl+U)' },
+  superscript: {
+    key: '+', code: 'Equal', keyCode: 187, shift: true,
+    label: 'Superscript (Cmd/Ctrl+Shift+=)',
+  },
+  subscript: {
+    key: '_', code: 'Minus', keyCode: 189, shift: true,
+    label: 'Subscript (Cmd/Ctrl+Shift+-)',
+  },
+};
+const FORMATS: Format[] = ['bold', 'italic', 'underline', 'superscript', 'subscript'];
+/** Raised and lowered are one exclusive choice, so each settles the other. */
+const OPPOSITE: Partial<Record<Format, Format>> = {
+  superscript: 'subscript',
+  subscript: 'superscript',
 };
 
 let workDir = '';
@@ -180,10 +198,23 @@ describe.skipIf(!electronBinary)('desktop inline-formatting matrix', () => {
       bold: Array(authoredText.length).fill(false),
       italic: Array(authoredText.length).fill(false),
       underline: Array(authoredText.length).fill(false),
+      superscript: Array(authoredText.length).fill(false),
+      subscript: Array(authoredText.length).fill(false),
+    };
+
+    /**
+     * Record what one command is expected to have done. A baseline command
+     * writes an absolute answer over its whole range — raised, lowered, or
+     * back on the line — so it always settles the opposite baseline too.
+     */
+    const record = (format: Format, active: boolean, start = 0, end = authoredText.length) => {
+      expected[format].fill(active, start, end);
+      const opposite = OPPOSITE[format];
+      if (opposite) expected[opposite].fill(false, start, end);
     };
 
     const assertAllFormats = async (label: string, expectedSelection?: string) => {
-      for (const format of ['bold', 'italic', 'underline'] as const) {
+      for (const format of FORMATS) {
         const state = await readFormatState(editor!, format);
         expect(state.text, `${label}: ${format} changed text`).toBe(authoredText);
         expect(state.map, `${label}: ${format} scope drifted`).toEqual(expected[format]);
@@ -198,7 +229,7 @@ describe.skipIf(!electronBinary)('desktop inline-formatting matrix', () => {
     const invoke = async (format: Format, route: InputRoute, label: string) => {
       const ui = FORMAT_UI[format];
       if (route === 'shortcut') {
-        await editor!.chord(ui.key, ui.code, ui.keyCode, MOD);
+        await editor!.chord(ui.key, ui.code, ui.keyCode, ui.shift ? MOD | SHIFT : MOD);
       } else {
         await editor!.click(
           `${PANEL} button[aria-label="${ui.label}"]`,
@@ -216,7 +247,7 @@ describe.skipIf(!electronBinary)('desktop inline-formatting matrix', () => {
     const applyWhole = async (format: Format, route: InputRoute, active: boolean) => {
       await selectWholeText();
       await invoke(format, route, `whole-text ${format}`);
-      expected[format].fill(active);
+      record(format, active);
       await assertAllFormats(`whole-text ${format} via ${route}`, authoredText);
     };
 
@@ -236,7 +267,7 @@ describe.skipIf(!electronBinary)('desktop inline-formatting matrix', () => {
         selectBoxFirst,
       );
       await invoke(format, 'shortcut', label);
-      expected[format].fill(active, range.start, range.end);
+      record(format, active, range.start, range.end);
       await assertAllFormats(`${label}: ${format} via shortcut`, wanted);
     };
 
@@ -259,7 +290,7 @@ describe.skipIf(!electronBinary)('desktop inline-formatting matrix', () => {
     const random = mulberry32(0x5eedb17);
     for (let step = 0; step < 32; step += 1) {
       const range = wordRanges[Math.floor(random() * wordRanges.length)];
-      const format = (['bold', 'italic', 'underline'] as const)[Math.floor(random() * 3)];
+      const format = FORMATS[Math.floor(random() * FORMATS.length)];
       const active = !expected[format][range.start];
       await applyWordShortcut(
         range,
@@ -293,7 +324,7 @@ describe.skipIf(!electronBinary)('desktop inline-formatting matrix', () => {
       await eventually(async () => selectedText(editor!), `${label}: pointer range did not settle`,
         (value) => normalizeSelection(value) === normalizeSelection(wanted));
       await invoke(format, route, label);
-      expected[format].fill(active, start, end);
+      record(format, active, start, end);
       await assertAllFormats(`${label}: ${format} via ${route}`, wanted);
     };
 
@@ -337,7 +368,7 @@ describe.skipIf(!electronBinary)('desktop inline-formatting matrix', () => {
     const insertedLength = inserted.text.length - authoredText.length;
     expect(insertedLength).toBe('NOVUM '.length);
     authoredText = inserted.text;
-    for (const format of ['bold', 'italic', 'underline'] as const) {
+    for (const format of FORMATS) {
       expected[format].splice(insertedAt, 0, ...Array(insertedLength).fill(false));
     }
     await assertAllFormats('after inserting a paragraph and word');
@@ -352,6 +383,12 @@ describe.skipIf(!electronBinary)('desktop inline-formatting matrix', () => {
     await applyRange(novum.start, novum.end, 'bold', 'button', false, 'inserted word unbold');
     await applyRange(novum.start, novum.end, 'italic', 'shortcut', false, 'inserted word unitalic');
     await applyRange(novum.start, novum.end, 'underline', 'button', false, 'inserted word ununderline');
+
+    // The exclusive pair, over one word: raise it, swap it to lowered without
+    // an intervening "off", then put it back on the line.
+    await applyRange(novum.start, novum.end, 'superscript', 'shortcut', true, 'inserted word raised');
+    await applyRange(novum.start, novum.end, 'subscript', 'button', true, 'inserted word lowered');
+    await applyRange(novum.start, novum.end, 'subscript', 'shortcut', false, 'inserted word back on the line');
 
     // Regression journey: whole-object formatting must not leave a latent
     // bold/italic typing state that later leaks into an automatically created
@@ -600,7 +637,11 @@ async function readFormatState(cdp: Cdp, format: Format): Promise<{
         ? style.fontStyle === 'italic'
         : ${JSON.stringify(format)} === 'underline'
           ? style.textDecorationLine.includes('underline')
-          : (style.fontWeight === 'bold' || Number.parseInt(style.fontWeight, 10) >= 600);
+          : ${JSON.stringify(format)} === 'superscript'
+            ? style.verticalAlign === 'super'
+            : ${JSON.stringify(format)} === 'subscript'
+              ? style.verticalAlign === 'sub'
+              : (style.fontWeight === 'bold' || Number.parseInt(style.fontWeight, 10) >= 600);
       const authored = node.data.replaceAll('\u2060', '');
       for (let index = 0; index < authored.length; index += 1) map.push(active);
     }

@@ -843,11 +843,11 @@ export class SlideRail {
         const id = makeId(el.type);
         remap.set(el.id, id);
         el.id = id;
-        // A duplicated slide starts with no Magic Move decisions. Auto-pair is
+        // A duplicated slide starts with no Morph decisions. Auto-pair is
         // available in the dedicated panel when that is what the author wants.
-        el.magicMoveId = null;
+        el.morphId = null;
       }
-      copy.magicMoveFromPrevious = false;
+      copy.morphFromPrevious = false;
       for (const entry of copy.timeline) {
         entry.id = makeId('t');
         entry.action.target = remap.get(entry.action.target) ?? entry.action.target;

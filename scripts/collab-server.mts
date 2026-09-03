@@ -7,6 +7,15 @@ import { SharedAgentRuntime } from '../src/server/sharedAgent.js';
  * Collaborative editing server:
  *   npm run collab -- <decksRootDir> [--port 5800] [--host 0.0.0.0]
  *     [--shared-agent] [--agent-codex-home <dir>] [--agent-name <name>]
+ *     [--access <adminLogin>]
+ *
+ * --access <adminLogin> turns on multi-user access control: identity comes
+ * from tailscale serve's Tailscale-User-Login headers (trusted on loopback
+ * only — pair the flag with --host 127.0.0.1), decks get public/private/
+ * shared permissions in an access.json sidecar, and <adminLogin> (a tailnet
+ * login, e.g. you@example.com) sees and manages everything. Without the flag
+ * the server behaves exactly as before: no identity, every deck open to
+ * anyone who can reach the port.
  *
  * Hosts one directory of deck folders for browser clients over HTTP +
  * WebSocket: every immediate subdirectory containing a deck.json is openable,
@@ -24,18 +33,21 @@ let sharedAgentEnabled = false;
 let agentCodexHome = process.env.DECKWERK_AGENT_CODEX_HOME?.trim()
   || join(homedir(), '.deckwerk', 'shared-agent-codex');
 let agentName = 'Shared demo agent';
+let accessAdmin: string | null = null;
 for (let i = 0; i < args.length; i++) {
   if (args[i] === '--port') port = Number(args[++i]);
   else if (args[i] === '--host') host = args[++i];
   else if (args[i] === '--shared-agent') sharedAgentEnabled = true;
   else if (args[i] === '--agent-codex-home') agentCodexHome = args[++i];
   else if (args[i] === '--agent-name') agentName = args[++i];
+  else if (args[i] === '--access') accessAdmin = args[++i];
   else if (!args[i].startsWith('-') && !rootDir) rootDir = args[i];
 }
-if (!rootDir || Number.isNaN(port)) {
+if (!rootDir || Number.isNaN(port) || (accessAdmin !== null && !accessAdmin?.trim())) {
   process.stderr.write(
     'usage: npm run collab -- <decksRootDir> [--port 5800] [--host 0.0.0.0] '
-    + '[--shared-agent] [--agent-codex-home <dir>] [--agent-name <name>]\n',
+    + '[--shared-agent] [--agent-codex-home <dir>] [--agent-name <name>] '
+    + '[--access <adminLogin>]\n',
   );
   process.exit(2);
 }
@@ -44,17 +56,25 @@ const clientDir = defaultClientDir(resolve(import.meta.dirname, '..'));
 const sharedAgent = sharedAgentEnabled
   ? new SharedAgentRuntime({ codexHome: resolve(agentCodexHome), name: agentName })
   : undefined;
+if (accessAdmin && host !== '127.0.0.1' && host !== 'localhost' && host !== '::1') {
+  process.stderr.write(
+    'warning: --access trusts identity headers on loopback only. Bind --host 127.0.0.1 '
+    + 'and front the server with `tailscale serve`; every other interface will refuse all requests.\n',
+  );
+}
 const server = await startCollabServer({
   rootDir: resolve(rootDir),
   clientDir,
   port,
   host,
   sharedAgent,
+  accessControl: accessAdmin ? { admin: accessAdmin } : undefined,
 });
 
 process.stdout.write(`${JSON.stringify({
   status: 'serving',
   rootDir: resolve(rootDir),
+  accessControl: accessAdmin ? { admin: accessAdmin } : null,
   clientBundle: clientDir ?? null,
   sharedAgent: sharedAgent ? {
     enabled: true,

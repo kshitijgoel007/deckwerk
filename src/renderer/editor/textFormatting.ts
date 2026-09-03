@@ -1,7 +1,21 @@
 import type { SlideElement } from '@shared/deck.js';
+import { isRelativeFontSize } from '@shared/htmlSafety.js';
 
 type TextElement = Extract<SlideElement, { type: 'text' }>;
 export type TextFormat = 'bold' | 'italic' | 'underline';
+/**
+ * Superscript and subscript are one exclusive baseline choice rather than a
+ * third independent toggle, and — unlike bold, italic and underline — they
+ * only ever describe a run inside a box. Raising a whole box is meaningless
+ * (a block has no baseline to shift against), so these two live outside
+ * `TextFormat`: the whole-box helpers below deliberately do not accept them.
+ */
+export type BaselineFormat = 'superscript' | 'subscript';
+export type InlineTextFormat = TextFormat | BaselineFormat;
+
+export function isBaselineFormat(format: InlineTextFormat): format is BaselineFormat {
+  return format === 'superscript' || format === 'subscript';
+}
 
 function serialized(fragment: DocumentFragment): string {
   const out = document.createElement('div');
@@ -31,7 +45,16 @@ function setHtmlTextProperty(
   const properties = [property, ...aliases];
   let changed = false;
 
+  // A proportional run size is a relationship to its surroundings, not an
+  // authored measurement: superscripts and scaled runs are written `0.7em`
+  // so they keep tracking the box size, this new one included. Leave those
+  // declarations alone — clearing them, as every other property is cleared,
+  // would snap every raised digit up to the box's full size.
+  const proportionalSize = (node: HTMLElement): boolean =>
+    property === 'font-size' && isRelativeFontSize(node.style.fontSize);
+
   for (const node of template.content.querySelectorAll<HTMLElement>('*')) {
+    if (proportionalSize(node)) continue;
     for (const candidate of properties) {
       if (node.style.getPropertyValue(candidate)) {
         node.style.removeProperty(candidate);
@@ -56,6 +79,19 @@ function setHtmlTextProperty(
       }
     }
     for (const parent of parents) {
+      // Anything still declaring a size after the pass above is proportional,
+      // so a run under one inherits the new size already, scaled.
+      if (property === 'font-size') {
+        let inherited = false;
+        for (
+          let node: HTMLElement | null = parent;
+          node && template.content.contains(node);
+          node = node.parentElement
+        ) {
+          if (node.style.fontSize) { inherited = true; break; }
+        }
+        if (inherited) continue;
+      }
       parent.style.setProperty(property, value);
       if (property === 'color') parent.style.setProperty('-webkit-text-fill-color', value);
     }
@@ -217,4 +253,77 @@ export function setWholeTextFormat(
 
 export function toggleWholeTextFormat(element: TextElement, format: TextFormat): void {
   setWholeTextFormat(element, format, !wholeTextFormatState(element, format));
+}
+
+/**
+ * The type properties a theme role owns. Switching a box's role has to clear
+ * every one of them: an inline declaration — on the box, on `.text-content`,
+ * or on a run inside the markup — beats the role class in the cascade, so a
+ * role change on imported text was otherwise invisible.
+ *
+ * Paint is deliberately absent. A role carries type, not colour: the deck
+ * stylesheets that decks actually ship style `.role-*` with size and weight
+ * and leave `color` to `.slide`, while an imported box carries an explicit
+ * colour chosen for what sits behind it. Clearing that colour dropped white
+ * text over a dark photograph back to the stylesheet's near-black and the box
+ * read as blank. An author who wants the theme's colour clears it with the
+ * Colour field's own "follow theme" control.
+ */
+const ROLE_PROPERTIES = [
+  'font-family',
+  'font-size',
+  'font-weight',
+  'line-height',
+  'letter-spacing',
+] as const;
+
+/**
+ * Retag a text box with a semantic role and set it in that role's type.
+ *
+ * `defaults` is the current theme's type for the role, and it is written on
+ * the box so it wins outright. Clearing the overrides and letting the cascade
+ * decide is not enough: a deck's theme.css keeps whichever `.role-*` rules
+ * were installed when the deck was made, so on a deck themed since — the
+ * common case — falling through dressed the box in the *old* theme. A later
+ * deck-wide theme apply strips these inline values again as it installs its
+ * own stylesheet, so the box rejoins the cascade when the theme next changes.
+ *
+ * Pass `null` for a deck with no theme chosen at all: there is no "current
+ * theme" to impose, and the deck's own stylesheet is the whole authority.
+ */
+export function applyTextRole(
+  element: TextElement,
+  role: string | null,
+  defaults: {
+    family: string;
+    size: number;
+    weight: number;
+    lineHeight: number;
+    letterSpacing: string;
+  } | null,
+): void {
+  element.class = element.class.filter((name) => !name.startsWith('role-'));
+  if (role) element.class.push(role.startsWith('role-') ? role : `role-${role}`);
+
+  const style = { ...element.style };
+  const contentStyle = { ...element.contentStyle };
+  for (const declarations of [style, contentStyle]) {
+    for (const property of ROLE_PROPERTIES) delete declarations[property];
+  }
+
+  if (role && defaults) {
+    style['font-family'] = defaults.family;
+    style['font-size'] = `${defaults.size}px`;
+    style['font-weight'] = String(defaults.weight);
+    style['line-height'] = String(defaults.lineHeight);
+    style['letter-spacing'] = defaults.letterSpacing;
+  }
+
+  element.style = style;
+  if (Object.keys(contentStyle).length > 0) element.contentStyle = contentStyle;
+  else delete element.contentStyle;
+
+  for (const property of ROLE_PROPERTIES) {
+    element.html = setHtmlTextProperty(element.html, property, null);
+  }
 }

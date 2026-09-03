@@ -102,6 +102,39 @@ describe('measured nodes become deck objects', () => {
     expect(untrimmed).toMatchObject({ start: 3, end: null });
   });
 
+  it('lands an imported round crop as one editable picture', () => {
+    // What the walk hands over for `<div class="crop"><img></div>`: the
+    // frame's ring, its backdrop and its round window folded onto the picture,
+    // and the `object-fit`/`object-position` framing measured into a crop.
+    // The whole point is that this is *one* object -- the ring used to arrive
+    // as a second shape stacked exactly on top, which moved on its own -- and
+    // that its crop is the editor's own, so the crop tool starts where the
+    // picture actually is instead of snapping it to the window.
+    const portrait = elementFromNode(node({
+      tag: 'img',
+      rect: { x: 120, y: 300, w: 260, h: 260 },
+      attrs: { src: 'assets/bird.jpg', alt: 'Crimson sunbird', objectFit: 'cover' },
+      dataset: { crop: '-19.07,0,346.67,260' },
+      style: {
+        'border-radius': '50%',
+        'box-shadow': 'rgb(22, 24, 43) 0px 0px 0px 5px',
+        'background-color': 'rgb(233, 229, 220)',
+      },
+    }), 'bird', 3) as Extract<SlideElement, { type: 'image' }>;
+
+    expect(portrait).toMatchObject({
+      type: 'image', fit: 'cover', maskShape: 'circle',
+      w: 260, h: 260,
+    });
+    expect(portrait.sourceBox).toEqual({ x: -19.07, y: 0, w: 346.67, h: 260 });
+    // The radius became the typed mask; ring and backdrop stay as element CSS.
+    expect(portrait.style['border-radius']).toBeUndefined();
+    expect(portrait.style['box-shadow']).toBe('rgb(22, 24, 43) 0px 0px 0px 5px');
+    expect(portrait.style['background-color']).toBe('rgb(233, 229, 220)');
+    // A crop and a leftover `object-position` would fight over the framing.
+    expect(portrait.style['object-position']).toBeUndefined();
+  });
+
   it('promotes a CSS-authored media radius into the editable typed field', () => {
     const video = elementFromNode(node({
       tag: 'video',
@@ -296,6 +329,53 @@ describe('measured nodes become deck objects', () => {
     expect((svg as Extract<SlideElement, { type: 'html' }>).html).toContain('<circle');
   });
 
+  it('reads ordinary semantic tags as text rather than inert markup', () => {
+    // The rule used to be an allow-list of a dozen tags, so a definition
+    // list, a figure caption or an <article> came back as an HTML fallback
+    // nobody could edit.
+    for (const tag of ['dt', 'dd', 'figure', 'article', 'small', 'cite', 'label']) {
+      expect(elementFromNode(node({ tag, html: 'words' }), `${tag}-1`, 1))
+        .toMatchObject({ type: 'text', html: 'words' });
+    }
+    // Embedded content is still preserved verbatim: it is a picture, not prose.
+    for (const tag of ['canvas', 'iframe', 'object']) {
+      expect(elementFromNode(node({ tag, html: `<${tag}></${tag}>` }), `${tag}-1`, 1))
+        .toMatchObject({ type: 'html' });
+    }
+  });
+
+  it('rebuilds a one-primitive SVG as the shape it draws', () => {
+    // The walker recognises the primitive and hands the mapping the same data
+    // attributes a hand-written shape carries, so an arrow authored in SVG is
+    // as re-colourable and re-pointable as one drawn in the editor.
+    const arrow = elementFromNode(node({
+      tag: 'div',
+      dataset: {
+        element: 'shape', shape: 'arrow', stroke: 'rgb(22, 24, 43)',
+        strokeWidth: '6', arrowEnd: 'true',
+      },
+      rect: { x: 100, y: 300, w: 300, h: 6 },
+      html: '',
+    }), 'arrow-1', 1);
+    expect(arrow).toMatchObject({
+      type: 'shape', shape: 'arrow', stroke: 'rgb(22, 24, 43)',
+      strokeWidth: 6, arrowEnd: true, fill: null,
+    });
+
+    const icon = elementFromNode(node({
+      tag: 'div',
+      dataset: {
+        element: 'shape', shape: 'path', path: 'M12 2 L22 20 L2 20 Z',
+        pathSize: '24,24', stroke: '#ffad52', strokeWidth: '2',
+      },
+      html: '',
+    }), 'icon-1', 2);
+    expect(icon).toMatchObject({
+      type: 'shape', shape: 'path', path: 'M12 2 L22 20 L2 20 Z',
+      pathSize: { w: 24, h: 24 },
+    });
+  });
+
   it('refuses a node with no area, which would be an invisible object', () => {
     expect(elementFromNode(node({ rect: { x: 0, y: 0, w: 0, h: 40 } }), 'empty', 1)).toBeNull();
   });
@@ -316,7 +396,7 @@ describe('measured nodes become deck objects', () => {
       name: 'Results',
       notes: '',
       background: { color: '#ffffff', image: null },
-      magicMoveFromPrevious: false,
+      morphFromPrevious: false,
       nodes: [
         node({ elementId: 'kept-id' }),
         node({ tag: 'h1' }),
@@ -502,10 +582,10 @@ describe('deck objects become authored HTML', () => {
 
   it('carries the slide identity a bake-back needs to find its target', () => {
     const slide = emptyDeck('Deck').slides[0];
-    slide.magicMoveDuration = 1450;
+    slide.morphDuration = 1450;
     const html = slideToHtml(slide, { w: 1920, h: 1080 });
     expect(html).toContain('data-slide-id="slide-1"');
     expect(html).toContain('data-canvas="1920x1080"');
-    expect(html).toContain('data-magic-move-duration="1450"');
+    expect(html).toContain('data-morph-duration="1450"');
   });
 });

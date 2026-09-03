@@ -110,6 +110,59 @@ tailscale address is among them). Collaborators open the URL in a browser and
 pick a presentation; `?name=Alice` sets the display name, otherwise the client
 asks once and the server falls back to `Guest n`.
 
+### Access control (`--access`)
+
+By default the server has no notion of users: every deck under the root is
+open to anyone who can reach the port. For a standing multi-user deployment
+(e.g. a lab server on a tailnet), opt in with:
+
+```bash
+npm run collab -- path/to/decks --host 127.0.0.1 --access you@example.com
+```
+
+and front it with `tailscale serve` (e.g. `tailscale serve --bg --https=443
+http://127.0.0.1:5800`). Identity comes from the `Tailscale-User-Login` /
+`Tailscale-User-Name` headers serve injects, trusted **only** on loopback
+sockets — so bind `127.0.0.1`; any other interface refuses all requests. A
+bare loopback request without any proxy headers (a shell on the machine
+itself) counts as the admin; a proxied request that carries `X-Forwarded-For`
+but no login — a tagged node, or the public internet via `tailscale funnel` —
+is refused rather than promoted. Do not expose an `--access` server through
+Funnel: nobody arriving that way has an identity. There are no passwords
+anywhere: tailnet membership is the authentication.
+
+With the flag on:
+
+- Each deck folder gets an `access.json` sidecar:
+  `{ "owner": <login>, "visibility": "public" | "private", "sharedWith": [<logins>] }`.
+  It is not part of `deck.json`, so it can never be edited through a deck
+  transaction. A deck without the sidecar is public and admin-owned, so
+  enabling the flag on an existing decks directory changes nothing until
+  someone restricts a deck.
+- New and imported decks start **private** to their creator.
+- The deck list is filtered per user and grouped in the picker (yours /
+  shared with you / public); every deck-scoped route — HTTP API, assets,
+  WebSocket join — enforces the same check, and revoking access closes that
+  person's live sockets immediately. Sharing grants edit rights; there is no
+  read-only participant.
+- `GET/PUT /api/access?deck=<id>` reads and (owner or admin only) changes a
+  deck's permissions; the client's Share… dialog — in the toolbar and on
+  picker rows you manage — is the UI for it. Ownership transfer is admin-only.
+- The server remembers everyone it has identified in `users.json` at the
+  decks root and serves the list at `GET /api/users`; the Share… dialog uses
+  it to autocomplete people by tailnet login or display name. Being listed
+  grants nothing by itself.
+- The `--access` argument names the admin's tailnet login: the admin sees and
+  manages every deck.
+- Display names come from the tailnet identity; `?name=` and the name prompt
+  are ignored.
+- Shared-agent account management (`--shared-agent` login / switch-account),
+  which is host-only without the flag, is admin-only with it: behind serve
+  every request is loopback, so "loopback" can no longer mean "the owner".
+
+Without the flag, behavior is byte-for-byte the pre-access server — the
+desktop app's Collaborate/Agent flows never pass it.
+
 ### Shared-agent test mode
 
 For demos, the headless server can run one Codex App Server identity that every

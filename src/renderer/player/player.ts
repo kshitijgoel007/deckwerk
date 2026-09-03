@@ -14,12 +14,12 @@ import { decodeImage, revealImagesWhenDecoded } from './imageDecode.js';
 import { DecodedVideoPool, releaseDecodedVideo } from './decodedVideoPool.js';
 import { applyStaticSlideState } from './staticState.js';
 import {
-  essentialMagicMovePairs,
-  explicitMagicMovePairs,
-  unchangedMagicMovePairs,
-  type MagicMovePair,
-} from '@shared/magicMove.js';
-import { magicMoveTransforms, type Rect, type TextLayout } from './magicMoveTransform.js';
+  essentialMorphPairs,
+  explicitMorphPairs,
+  unchangedMorphPairs,
+  type MorphPair,
+} from '@shared/morph.js';
+import { morphTransforms, type Rect, type TextLayout } from './morphTransform.js';
 import { isPendingSrc } from '@shared/media.js';
 
 /**
@@ -207,16 +207,16 @@ export class Player {
     const slide = slides[Math.min(Math.max(cursor.slide, 0), slides.length - 1)];
     const previousSlide = slides[previousSlideIndex];
     const explicitPairs = previousSlide
-      ? explicitMagicMovePairs(previousSlide.elements, slide.elements)
+      ? explicitMorphPairs(previousSlide.elements, slide.elements)
       : [];
-    const magicMoveEnabled = slide.magicMoveFromPrevious ?? explicitPairs.length > 0;
-    // Only the step from one slide to the very next one is a Magic Move. The
+    const morphEnabled = slide.morphFromPrevious ?? explicitPairs.length > 0;
+    // Only the step from one slide to the very next one is a Morph. The
     // flag describes a slide's relationship to the slide before it, so jumping
     // -- a rail click, goToSlide, or stepping backwards -- used to animate
     // between two slides that were never authored as a pair, which reads as
     // objects flying around at random.
-    const magicMove = slides.indexOf(slide) === previousSlideIndex + 1
-      && previousSlide !== undefined && magicMoveEnabled;
+    const morph = slides.indexOf(slide) === previousSlideIndex + 1
+      && previousSlide !== undefined && morphEnabled;
     const steps = stepCount(slide);
     this.cursor = {
       slide: slides.indexOf(slide),
@@ -263,7 +263,7 @@ export class Player {
       });
     }
     const previousNodes = new Map<string, HTMLElement>();
-    if (magicMove) {
+    if (morph) {
       for (const node of this.stage.querySelectorAll<HTMLElement>('[data-element-id]')) {
         const id = node.dataset.elementId;
         if (id && node.style.visibility !== 'hidden') {
@@ -390,7 +390,7 @@ export class Player {
     this.rescale();
 
     this.applyState(slide, resolveState(slide, this.cursor.step));
-    if (magicMove && previousSlide) this.runMagicMove(previousSlide, slide, previousNodes);
+    if (morph && previousSlide) this.runMorph(previousSlide, slide, previousNodes);
     this.warmUpcomingMedia();
     this.onCursor?.(this.getCursor(), steps);
   }
@@ -528,12 +528,12 @@ export class Player {
     });
   }
 
-  private runMagicMove(
+  private runMorph(
     previous: Slide,
     next: Slide,
     previousNodes: Map<string, HTMLElement>,
   ): void {
-    const duration = next.magicMoveDuration ?? 1000;
+    const duration = next.morphDuration ?? 1000;
     // The named curves map to beziers chosen for object motion, not the CSS
     // keywords of the same name: 'ease-out' front-loads the motion (snappy
     // arrival), while the default symmetric ease-in-out keeps mid-transition
@@ -542,13 +542,13 @@ export class Player {
       'ease-in-out': 'cubic-bezier(.45,.05,.55,.95)',
       'ease-out': 'cubic-bezier(.2,.8,.2,1)',
       linear: 'linear',
-    }[this.deck.magicMoveEasing];
+    }[this.deck.morphEasing];
     const targetSlide = this.stage.querySelector<HTMLElement>('.slide');
     if (!targetSlide) return;
-    const pairs = matchMagicMoveElements(previous.elements, next.elements);
+    const pairs = matchMorphElements(previous.elements, next.elements);
     const pairedSources = new Set(pairs.map(([source]) => source.id));
     const pairedTargets = new Set(pairs.map(([, target]) => target.id));
-    const unchanged = unchangedMagicMovePairs(
+    const unchanged = unchangedMorphPairs(
       previous.elements.filter((element) => !pairedSources.has(element.id)),
       next.elements.filter((element) => !pairedTargets.has(element.id)),
     );
@@ -559,7 +559,7 @@ export class Player {
     // Near-identical leftovers (same object up to a few pixels of drift, as
     // imports routinely produce) glide the tiny delta as ordinary movers
     // instead of fading out and back in as two objects.
-    const essential = essentialMagicMovePairs(
+    const essential = essentialMorphPairs(
       previous.elements.filter((element) => !pairedSources.has(element.id)),
       next.elements.filter((element) => !pairedTargets.has(element.id)),
     );
@@ -625,7 +625,7 @@ export class Player {
         start: startTransform,
         final: finalTransform,
         origin,
-      } = magicMoveTransforms(from, to, textLayouts.get(to.id) ?? null);
+      } = morphTransforms(from, to, textLayouts.get(to.id) ?? null);
       const stacking = stackingFrames(to.id) ?? [];
       if (stacking.length) zIndexInUse = true;
       // The ease lives on the first keyframe, not the timing options: keyframe
@@ -681,8 +681,8 @@ export class Player {
       if (pairedSources.has(source.id)) continue;
       const ghost = previousNodes.get(source.id);
       if (!ghost) continue;
-      ghost.classList.add('magic-move-ghost');
-      ghost.dataset.magicMoveSourceId = source.id;
+      ghost.classList.add('morph-ghost');
+      ghost.dataset.morphSourceId = source.id;
       delete ghost.dataset.elementId;
       ghost.style.pointerEvents = 'none';
       ghost.style.visibility = 'visible';
@@ -967,7 +967,7 @@ export class Player {
  */
 function measureTextLayouts(
   slide: HTMLElement,
-  pairs: MagicMovePair[],
+  pairs: MorphPair[],
   previousNodes: Map<string, HTMLElement>,
 ): Map<string, TextLayout> {
   const layouts = new Map<string, TextLayout>();
@@ -1115,11 +1115,11 @@ function textFontScale(
 }
 
 /** Backwards-compatible export for tests and callers; runtime matching is explicit only. */
-export function matchMagicMoveElements(
+export function matchMorphElements(
   previous: SlideElement[],
   next: SlideElement[],
 ): Array<[SlideElement, SlideElement]> {
-  return explicitMagicMovePairs(previous, next);
+  return explicitMorphPairs(previous, next);
 }
 
 /**
@@ -1128,7 +1128,7 @@ export function matchMagicMoveElements(
  *
  * A cloned video carries no decoded frame: it paints its own black background
  * until it loads, while the cloned border overlay paints at once. During a
- * Magic Move fade that reads exactly as the video having vanished and left its
+ * Morph fade that reads exactly as the video having vanished and left its
  * frame behind. A canvas holding the current frame fades out as the picture.
  */
 function freezeClonedVideos(source: HTMLElement, clone: HTMLElement): void {

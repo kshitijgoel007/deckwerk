@@ -1,7 +1,7 @@
 /**
  * Turn preview `<video>` elements into still pictures.
  *
- * A rail thumbnail or a Magic Move preview never plays: all it needs is one
+ * A rail thumbnail or a Morph preview never plays: all it needs is one
  * frame. Keeping a live `<video>` for each of them is what makes previews go
  * black, and the failure has three independent triggers, all of them outside
  * our control:

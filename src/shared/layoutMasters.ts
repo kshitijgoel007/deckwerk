@@ -96,7 +96,7 @@ function decorationCopy(slideId: string, source: SlideElement, order: number): S
   const copy = structuredClone(source);
   copy.id = `${slideId}--master--${source.id}`;
   copy.layoutMasterId = source.id;
-  copy.magicMoveId = null;
+  copy.morphId = null;
   copy.lineageId = undefined;
   copy.z = -10_000 + order;
   copy.class = [...copy.class.filter((name) => name !== 'placeholder'), 'layout-master-element']

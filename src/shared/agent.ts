@@ -8,6 +8,7 @@ import {
   type Slide,
   type SlideElement,
 } from './deck.js';
+import { renameRetiredFields } from './fieldAliases.js';
 
 export const AGENT_PROTOCOL_VERSION = 1 as const;
 
@@ -49,7 +50,7 @@ export const ComputedElementSceneSchema = z.object({
     control: z.object({ x: z.number(), y: z.number() }).nullable(),
     path: z.string().nullable(),
   }).nullable(),
-  magicMoveId: z.string().nullable(),
+  morphId: z.string().nullable(),
   lineageId: z.string().nullable(),
 });
 
@@ -62,8 +63,8 @@ export const ComputedSlideSceneSchema = z.object({
   canvas: z.object({ w: z.number().positive(), h: z.number().positive() }),
   background: z.unknown(),
   layout: z.string(),
-  magicMoveFromPrevious: z.boolean(),
-  magicMoveDuration: z.number().min(100).max(5000),
+  morphFromPrevious: z.boolean(),
+  morphDuration: z.number().min(100).max(5000),
   skipped: z.boolean(),
   timeline: z.array(z.unknown()),
   elements: z.array(ComputedElementSceneSchema),
@@ -129,8 +130,10 @@ const UpdateDeckOperation = z.object({
   themePreset: z.string().nullable().optional(),
   themeStyle: DeckSchema.shape.themeStyle.removeDefault().optional(),
   themeSelection: DeckSchema.shape.themeSelection.removeDefault().optional(),
+  themeHistory: DeckSchema.shape.themeHistory.removeDefault().optional(),
+  customThemes: DeckSchema.shape.customThemes.removeDefault().optional(),
   layoutMasters: DeckSchema.shape.layoutMasters.removeDefault().optional(),
-  magicMoveEasing: z.enum(['ease-in-out', 'ease-out', 'linear']).optional(),
+  morphEasing: z.enum(['ease-in-out', 'ease-out', 'linear']).optional(),
 });
 /**
  * Replace every slide property except `elements`, so slide-level edits
@@ -229,7 +232,7 @@ export function canonicalDeckJson(deck: Deck): string {
 }
 
 export function applyAgentTransaction(deck: Deck, transaction: AgentTransaction): Deck {
-  const tx = AgentTransactionSchema.parse(transaction);
+  const tx = AgentTransactionSchema.parse(renameRetiredFields(transaction));
   return applyAgentOperations(deck, tx.operations);
 }
 
@@ -237,7 +240,9 @@ export function applyAgentTransaction(deck: Deck, transaction: AgentTransaction)
 export function applyAgentOperations(deck: Deck, operations: AgentOperation[]): Deck {
   const next = structuredClone(parseDeck(deck));
 
-  for (const operation of operations) applyOperation(next, AgentOperationSchema.parse(operation));
+  for (const operation of operations) {
+    applyOperation(next, AgentOperationSchema.parse(renameRetiredFields(operation)));
+  }
   const parsed = DeckSchema.parse(next);
   const errors = validateDeckIntegrity(parsed);
   if (errors.length > 0) throw new Error(errors.join('\n'));
@@ -309,6 +314,7 @@ function applyOperation(deck: Deck, operation: AgentOperation): void {
       if (operation.themeSelection !== undefined) {
         deck.themeSelection = structuredClone(operation.themeSelection);
       }
+      if (operation.themeHistory !== undefined) deck.themeHistory = [...operation.themeHistory];
       if (operation.layoutMasters !== undefined) {
         // Slides are not synchronized here on purpose. `updateDeck` is a field
         // setter in an operation algebra that undo, redo and collaboration all
@@ -321,7 +327,10 @@ function applyOperation(deck: Deck, operation: AgentOperation): void {
         // editor does.
         deck.layoutMasters = structuredClone(operation.layoutMasters);
       }
-      if (operation.magicMoveEasing !== undefined) deck.magicMoveEasing = operation.magicMoveEasing;
+      if (operation.customThemes !== undefined) {
+        deck.customThemes = structuredClone(operation.customThemes);
+      }
+      if (operation.morphEasing !== undefined) deck.morphEasing = operation.morphEasing;
       return;
     case 'setSlideProperties': {
       const at = requireSlideIndex(deck, operation.slideId);
@@ -412,8 +421,8 @@ export function authoredScene(
     canvas: deck.canvas,
     background: slide.background,
     layout: slide.layout ?? 'freeform',
-    magicMoveFromPrevious: slide.magicMoveFromPrevious ?? false,
-    magicMoveDuration: slide.magicMoveDuration ?? 1000,
+    morphFromPrevious: slide.morphFromPrevious ?? false,
+    morphDuration: slide.morphDuration ?? 1000,
     skipped: slide.skipped ?? false,
     timeline: slide.timeline,
     elements: slide.elements.map((element) => authoredElementScene(element, selectedElementIds)),
@@ -458,7 +467,7 @@ function authoredElementScene(element: SlideElement, selected: Set<string>): Com
       control: element.control ?? null,
       path: element.path,
     } : null,
-    magicMoveId: element.magicMoveId ?? null,
+    morphId: element.morphId ?? null,
     lineageId: element.lineageId ?? null,
   };
 }

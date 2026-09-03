@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { emptyDeck, parseDeck } from '../src/shared/deck.js';
-import { suggestMagicMovePairs } from '../src/shared/magicMove.js';
+import { suggestMorphPairs } from '../src/shared/morph.js';
 import { Inspector } from '../src/renderer/editor/inspector.js';
 import { SlideRail } from '../src/renderer/editor/slideRail.js';
 import { EditorStore } from '../src/renderer/editor/store.js';
@@ -592,24 +592,24 @@ describe('slide rail keyboard insertion', () => {
     expect(store.get().slideIndex).toBe(0);
   });
 
-  it('does not implicitly Magic Move every object on a duplicated slide', () => {
+  it('does not implicitly Morph every object on a duplicated slide', () => {
     const { store, host } = setup();
     store.get().deck.slides[0].elements.push({
       id: 'source', type: 'text', x: 20, y: 20, w: 300, h: 80, rot: 0, z: 1,
       opacity: 1, class: ['role-title'], style: {}, html: 'Keep me', align: 'left',
-      valign: 'top', magicMoveId: 'existing-chain',
+      valign: 'top', morphId: 'existing-chain',
     });
     const rail = new SlideRail(host, store);
 
     rail.duplicateSlide();
 
-    expect(store.get().deck.slides[0].elements[0].magicMoveId).toBe('existing-chain');
-    expect(store.get().deck.slides[1].elements[0].magicMoveId).toBeNull();
+    expect(store.get().deck.slides[0].elements[0].morphId).toBe('existing-chain');
+    expect(store.get().deck.slides[1].elements[0].morphId).toBeNull();
     expect(store.get().deck.slides[1].elements[0].lineageId).toBe('source');
     const copy = store.get().deck.slides[1].elements[0];
     if (copy.type !== 'text') throw new Error('expected duplicated text');
     copy.html = 'Edited after duplication';
-    expect(suggestMagicMovePairs(
+    expect(suggestMorphPairs(
       store.get().deck.slides[0].elements,
       store.get().deck.slides[1].elements,
     ).map(([source, target]) => [source.id, target.id])).toEqual([['source', copy.id]]);
@@ -648,7 +648,7 @@ describe('slide rail keyboard insertion', () => {
     new Inspector(inspectorHost, store);
     const firstThumb = railHost.querySelector('.rail-thumb');
     // Props renders the selected and following slide once for its two compact
-    // read-only Magic Move previews.
+    // read-only Morph previews.
     expect(assetResolutions).toBe(142);
 
     store.selectSlide(69);

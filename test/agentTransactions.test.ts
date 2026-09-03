@@ -124,7 +124,7 @@ describe('agent transaction operations', () => {
     expect(next.slides).toHaveLength(3);
   });
 
-  it('pairs Magic Move objects across a slide range in a single transaction', () => {
+  it('pairs Morph objects across a slide range in a single transaction', () => {
     // The plan's worked example: several slides are selected in the rail and
     // their matching objects get one shared identity per pair.
     const deck = emptyDeck('Range');
@@ -137,20 +137,20 @@ describe('agent transaction operations', () => {
     const operations: AgentOperation[] = parsed.slides.slice(1).map((current) => ({
       op: 'replaceSlide' as const,
       slideId: current.id,
-      slide: { ...current, magicMoveFromPrevious: true },
+      slide: { ...current, morphFromPrevious: true },
     }));
     operations.push(...parsed.slides.map((current) => ({
       op: 'replaceElement' as const,
       slideId: current.id,
       elementId: current.elements[0].id,
-      element: { ...current.elements[0], magicMoveId: 'mm-equation' },
+      element: { ...current.elements[0], morphId: 'mm-equation' },
     })));
 
     const next = applyAgentTransaction(parsed, transaction(operations, parsed, 'Pair equations'));
-    expect(next.slides.map((s) => s.elements[0].magicMoveId)).toEqual(
+    expect(next.slides.map((s) => s.elements[0].morphId)).toEqual(
       ['mm-equation', 'mm-equation', 'mm-equation', 'mm-equation'],
     );
-    expect(next.slides.slice(1).every((s) => s.magicMoveFromPrevious)).toBe(true);
+    expect(next.slides.slice(1).every((s) => s.morphFromPrevious)).toBe(true);
   });
 
   it('refuses unknown ids, id changes and duplicate ids, leaving the deck untouched', () => {

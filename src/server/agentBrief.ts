@@ -1,3 +1,5 @@
+import { MORPH_NAME } from '../shared/featureNames.js';
+
 /** Task-neutral onboarding served by every agent-scoped collaboration session. */
 export const AGENT_BRIEF = `# Edit this presentation as an agent
 
@@ -62,8 +64,7 @@ option. Do not silently choose a more elaborate aesthetic.
 ### Native edits — existing content and local changes
 
 Use native edits for text changes, typography, alignment, geometry, object paint,
-text/media effects, media fit/crop/trim, shapes, builds, slide properties, themes, and Magic
-Move settings. Unmentioned properties and unrelated objects remain unchanged.
+text/media effects, media fit/crop/trim, shapes, builds, slide properties, themes, and ${MORPH_NAME} settings. Unmentioned properties and unrelated objects remain unchanged.
 
 1. Read \`GET /api/edit-schema\` for every editable property, type, enum, range,
    unset rule, and example.
@@ -164,9 +165,22 @@ measurement and import. Never imitate equations with Unicode subscripts,
 \`<sub>\`/\`<sup>\`, or manually positioned text. JavaScript and event handlers are removed. Presentation-time
 external network resources are blocked, so import assets first or use upload.
 
-The importer converts text, lists, images, video, simple shapes, and box paint to
-editable native objects. It preserves the smallest unsupported region as isolated
-HTML. Visual fidelity has priority over native-object ratio.
+The importer converts to editable native objects: every text-bearing tag with its
+inline markup, lists and hand-written tables, images and video (a border, radius,
+circular mask, ring shadow or backdrop -- on the media or on a frame wrapping
+only that media -- becomes the picture's own, and an \`object-position\` framing
+becomes the deck's own editable crop), box paint as rect/ellipse shapes, an
+inline SVG that draws exactly one primitive as that shape (a \`<line>\` with
+\`marker-end\` becomes a real arrow), \`::before\`/\`::after\` decoration, and a
+container's background photo or gradient as a painted box behind its words. It
+preserves the smallest unsupported region as isolated HTML. Visual fidelity has
+priority over native-object ratio.
+
+Avoid, because they import as inert HTML regions: a multi-primitive inline SVG
+diagram (build boxes-and-arrows from divs and one-primitive SVGs instead),
+\`clip-path\`, \`mask-image\`, \`<canvas>\`, \`<iframe>\`, and a block element inside a
+\`<p>\`. Avoid \`transform: scale()\`/\`skew()\` and \`backdrop-filter\` outright: only
+rotation survives a transform, and neither is carried into the deck.
 
 Replacement preserves slide IDs, comments, speaker notes, and hidden state while
 replacing visual content and builds. A replacement may contain a different number

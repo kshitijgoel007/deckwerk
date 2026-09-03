@@ -6,6 +6,21 @@ import { describeElement, renderElementLabel } from './elementLabel.js';
 import type { EditorStore } from './store.js';
 
 /**
+ * The Props tab's section: a ruled block under an `insp-subtitle` heading. The
+ * markup matches the inspector's `optionSection` so every side panel reads with
+ * the same hierarchy.
+ */
+function panelSection(title: string, extraClass = ''): HTMLElement {
+  const section = document.createElement('section');
+  section.className = `insp-option-section ${extraClass}`.trim();
+  const heading = document.createElement('h4');
+  heading.className = 'insp-subtitle';
+  heading.textContent = title;
+  section.appendChild(heading);
+  return section;
+}
+
+/**
  * Authoring for builds.
  *
  * Entries are shown grouped by the step they belong to, because "what appears
@@ -43,16 +58,15 @@ export class TimelinePanel {
     const header = document.createElement('div');
     header.className = 'panel-header';
     const title = document.createElement('h3');
+    title.className = 'insp-title';
     title.textContent = 'Build';
     header.appendChild(title);
     this.host.appendChild(header);
 
     const selection = this.store.get().selection;
 
-    const elementsTitle = document.createElement('div');
-    elementsTitle.className = 'step-label';
-    elementsTitle.textContent = 'Slide elements';
-    this.host.appendChild(elementsTitle);
+    const elementsSection = panelSection('Slide elements', 'build-elements-section');
+    this.host.appendChild(elementsSection);
 
     // The list mirrors the canvas selection: picking an object on the slide
     // lights up its row here, and picking a row selects it on the slide, so
@@ -70,7 +84,7 @@ export class TimelinePanel {
       row.addEventListener('click', () => this.store.select([element.id]));
       list.appendChild(row);
     }
-    this.host.appendChild(list);
+    elementsSection.appendChild(list);
 
     const add = document.createElement('button');
     add.className = 'primary panel-action';
@@ -80,7 +94,7 @@ export class TimelinePanel {
       ? 'Select an element on the slide or in the list first'
       : 'Hide the selected elements until the next click';
     add.addEventListener('click', () => this.addAnimationForSelection());
-    this.host.appendChild(add);
+    elementsSection.appendChild(add);
 
     // Text with several paragraphs can build in line by line: one stored
     // entry that fans out into a step per paragraph, in document order.
@@ -93,15 +107,18 @@ export class TimelinePanel {
       addPara.textContent = 'Add animation by paragraph';
       addPara.title = 'Reveal this text one paragraph per click';
       addPara.addEventListener('click', () => this.addParagraphAnimation(paraTarget.id));
-      this.host.appendChild(addPara);
+      elementsSection.appendChild(addPara);
     }
+
+    const stepsSection = panelSection('Build steps', 'build-steps-section');
+    this.host.appendChild(stepsSection);
 
     if (slide.timeline.length === 0) {
       const hint = document.createElement('p');
       hint.className = 'insp-hint';
       hint.textContent =
         'No build steps. Everything is visible when the slide appears, and videos with autoplay start immediately.';
-      this.host.appendChild(hint);
+      stepsSection.appendChild(hint);
       return;
     }
 
@@ -144,7 +161,7 @@ export class TimelinePanel {
         block.appendChild(this.entryRow(entry, slide, numbersBySource.get(entry.id) ?? []));
       }
       if (stepIndex > 0 && block.childElementCount === 0) return;
-      this.host.appendChild(block);
+      stepsSection.appendChild(block);
     });
   }
 

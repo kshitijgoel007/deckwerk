@@ -73,15 +73,24 @@ async function createFixture(deckDir: string): Promise<void> {
     z: 1,
     opacity: 1,
     class: ['role-body'],
-    style: {},
+    // An explicit paint, the way an imported box carries one: the role round
+    // trip asserts a role change never takes it away.
+    style: { color: 'rgb(220, 38, 38)' },
     html: EXHAUSTIVE_HTML,
     align: 'left',
     valign: 'top',
   });
   await saveDeck(deckDir, deck);
+  // Distinct type per role and no `color` on any of them — how the deck
+  // stylesheets in decks/ are written. `.role-title` deliberately disagrees
+  // with the deck's own theme (96px here, 108px there), which is what lets the
+  // role round trip tell "wearing the current theme" apart from "wearing
+  // whatever theme.css was installed with the deck".
   await writeFile(join(deckDir, 'theme.css'), [
     '.slide { background: #fff; color: #111827; }',
+    '.role-title { font: 700 96px/1.05 Georgia, serif; letter-spacing: -0.02em; }',
     '.role-body { font: 400 42px/1.35 Arial, sans-serif; }',
+    '.role-caption { font: 400 24px/1.3 Arial, sans-serif; }',
     '',
   ].join('\n'), 'utf8');
 }

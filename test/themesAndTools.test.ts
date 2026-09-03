@@ -290,7 +290,7 @@ describe('element clipboard', () => {
     expect(pasted.x).toBe(24); // original 0 + offset
     expect(created[0]).not.toBe('t1');
     expect(pasted.lineageId).toBe('t1');
-    expect(pasted.magicMoveId).toBeNull();
+    expect(pasted.morphId).toBeNull();
   });
 
   it('pastes onto a different slide', async () => {
@@ -309,7 +309,7 @@ describe('element clipboard', () => {
     expect(store.get().deck.slides[1].elements[0]).toMatchObject({
       id: pastedId,
       lineageId: 's1',
-      magicMoveId: null,
+      morphId: null,
     });
   });
 

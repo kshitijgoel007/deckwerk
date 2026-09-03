@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs';
 import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join, relative, resolve } from 'node:path';
 import type { Deck } from '@shared/deck.js';
-import { loadTheme } from './deckStore.js';
+import { loadTheme, resolveAsset } from './deckStore.js';
 
 /**
  * Export a deck as a self-contained folder that opens in any browser.
@@ -105,10 +105,17 @@ async function copyAssets(
     // anything in a subfolder -- `assets/figures/plot.png`, which every other
     // path in the app loads happily -- was skipped without a word, and would
     // have landed under a name the exported deck does not reference anyway.
-    const from = resolve(deckDir, rel);
-    // Never follow a reference out of the deck folder.
+    // Never follow a reference out of the deck folder -- lexically or through
+    // a symlink planted in `assets/`, which `resolveAsset` also refuses.
+    let from: string;
+    try {
+      from = resolveAsset(deckDir, rel);
+    } catch {
+      afterCopy?.();
+      continue;
+    }
     const within = relative(resolve(deckDir), from);
-    if (within.startsWith('..') || within === '') {
+    if (within === '') {
       afterCopy?.();
       continue;
     }

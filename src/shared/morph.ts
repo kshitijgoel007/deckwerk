@@ -1,18 +1,18 @@
 import type { SlideElement } from './deck.js';
 
-export type MagicMovePair = [SlideElement, SlideElement];
+export type MorphPair = [SlideElement, SlideElement];
 
 /**
  * Objects that are already visually identical need neither an explicit pair
  * nor an animation. Matching them keeps the target render continuously visible
  * while genuinely changed, unpaired objects switch on the timeline.
  */
-export function unchangedMagicMovePairs(
+export function unchangedMorphPairs(
   previous: SlideElement[],
   next: SlideElement[],
-): MagicMovePair[] {
+): MorphPair[] {
   const available = new Set(previous);
-  const pairs: MagicMovePair[] = [];
+  const pairs: MorphPair[] = [];
   for (const target of next) {
     const signature = visualSignature(target);
     const source = [...available].find((candidate) => visualSignature(candidate) === signature);
@@ -32,14 +32,14 @@ export function unchangedMagicMovePairs(
  * styling or content difference at all disqualifies a match, so whatever is
  * left unpaired is decisively a different object.
  */
-export function essentialMagicMovePairs(
+export function essentialMorphPairs(
   previous: SlideElement[],
   next: SlideElement[],
-): MagicMovePair[] {
+): MorphPair[] {
   const POSITION_EPSILON = 8;
   const ROTATION_EPSILON = 1;
   const available = new Set(previous);
-  const pairs: MagicMovePair[] = [];
+  const pairs: MorphPair[] = [];
   for (const target of next) {
     const signature = geometryFreeSignature(target);
     let best: { source: SlideElement; distance: number } | null = null;
@@ -77,21 +77,21 @@ export function essentialMagicMovePairs(
  * whichever happened to be last would let an object animate from the far side
  * of the slide, and a fly-in is far worse than a slightly odd short move.
  */
-export function explicitMagicMovePairs(
+export function explicitMorphPairs(
   previous: SlideElement[],
   next: SlideElement[],
-): MagicMovePair[] {
+): MorphPair[] {
   const sources = new Map<string, SlideElement[]>();
   for (const element of previous) {
-    if (!element.magicMoveId) continue;
-    const group = sources.get(element.magicMoveId);
+    if (!element.morphId) continue;
+    const group = sources.get(element.morphId);
     if (group) group.push(element);
-    else sources.set(element.magicMoveId, [element]);
+    else sources.set(element.morphId, [element]);
   }
   const claimed = new Set<SlideElement>();
-  return next.flatMap((target): MagicMovePair[] => {
-    if (!target.magicMoveId) return [];
-    const candidates = sources.get(target.magicMoveId);
+  return next.flatMap((target): MorphPair[] => {
+    if (!target.morphId) return [];
+    const candidates = sources.get(target.morphId);
     if (!candidates) return [];
     const free = candidates.filter((candidate) => !claimed.has(candidate));
     const source = nearest(free.length > 0 ? free : candidates, target);
@@ -119,14 +119,14 @@ function nearest(candidates: SlideElement[], target: SlideElement): SlideElement
  * excluded: the player keeps them continuously visible without a pair, so an
  * explicit pair would animate nothing and only clutter the pairing UI.
  */
-export function suggestMagicMovePairs(
+export function suggestMorphPairs(
   previous: SlideElement[],
   next: SlideElement[],
-): MagicMovePair[] {
+): MorphPair[] {
   const alreadyPaired = new Set([
-    ...explicitMagicMovePairs(previous, next).flat(),
-    ...unchangedMagicMovePairs(previous, next).flat(),
-    ...essentialMagicMovePairs(previous, next).flat(),
+    ...explicitMorphPairs(previous, next).flat(),
+    ...unchangedMorphPairs(previous, next).flat(),
+    ...essentialMorphPairs(previous, next).flat(),
   ]);
   const candidates: Array<{ source: SlideElement; target: SlideElement; score: number }> = [];
   for (const source of previous) {
@@ -140,7 +140,7 @@ export function suggestMagicMovePairs(
   candidates.sort((a, b) => b.score - a.score);
   const usedSource = new Set<string>();
   const usedTarget = new Set<string>();
-  const pairs: MagicMovePair[] = [];
+  const pairs: MorphPair[] = [];
   for (const candidate of candidates) {
     if (usedSource.has(candidate.source.id) || usedTarget.has(candidate.target.id)) continue;
     usedSource.add(candidate.source.id);
@@ -206,7 +206,7 @@ function jaccard(left: string, right: string): number {
 function geometryFreeSignature(element: SlideElement): string {
   const {
     id: _id,
-    magicMoveId: _magicMoveId,
+    morphId: _morphId,
     lineageId: _lineageId,
     z: _z,
     x: _x,
@@ -227,7 +227,7 @@ function geometryFreeSignature(element: SlideElement): string {
 function visualSignature(element: SlideElement): string {
   const {
     id: _id,
-    magicMoveId: _magicMoveId,
+    morphId: _morphId,
     lineageId: _lineageId,
     z: _z,
     ...visual

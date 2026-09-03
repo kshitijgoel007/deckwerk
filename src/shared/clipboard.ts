@@ -7,6 +7,7 @@ import {
   type SlideElement,
   type TimelineEntry,
 } from './deck.js';
+import { renameRetiredFields } from './fieldAliases.js';
 import { makeId } from './geometry.js';
 import type { ImportedAsset } from './ipc.js';
 
@@ -48,6 +49,13 @@ export const ClipboardPayloadSchema = z.discriminatedUnion('kind', [
     elements: z.array(ElementSchema).min(1),
     /** Timeline entries whose action targets a copied element. */
     timeline: z.array(TimelineEntrySchema).default([]),
+    /**
+     * The slide the elements were copied from, so paste can tell "somewhere
+     * else" (land at the original coordinates) from "right back here" (offset,
+     * or the copy hides under its original). Absent in payloads written by
+     * older builds, which then paste as a cross-slide paste.
+     */
+    sourceSlideId: z.string().nullable().default(null),
   }),
   z.object({
     ...envelopeBase,
@@ -68,13 +76,20 @@ export type AssetRef = z.infer<typeof AssetRefSchema>;
 
 /** What the renderer hands to the main process; assets are attached there. */
 export type ClipboardWriteRequest =
-  | { kind: 'elements'; elements: SlideElement[]; timeline: TimelineEntry[] }
+  | {
+    kind: 'elements';
+    elements: SlideElement[];
+    timeline: TimelineEntry[];
+    sourceSlideId: string | null;
+  }
   | { kind: 'slides'; slides: Slide[] };
 
 /** Parse untrusted clipboard bytes. Null rather than a throw: foreign or stale
  *  content on the pasteboard is normal, not an error. */
 export function parseClipboardPayload(raw: unknown): ClipboardPayload | null {
-  const result = ClipboardPayloadSchema.safeParse(raw);
+  // Pasting from an older build still spells retired field names; the
+  // schema would strip them rather than reject the payload.
+  const result = ClipboardPayloadSchema.safeParse(renameRetiredFields(raw));
   return result.success ? result.data : null;
 }
 
@@ -140,13 +155,13 @@ export function remapElementIds(
 ): void {
   const remap = new Map<string, string>();
   for (const el of elements) {
-    // Ancestry survives the copy so Magic Move auto-pair can still recognise
+    // Ancestry survives the copy so Morph auto-pair can still recognise
     // the element; the explicit pairing itself does not.
     el.lineageId = el.lineageId ?? el.id;
     const id = makeId(el.type);
     remap.set(el.id, id);
     el.id = id;
-    el.magicMoveId = null;
+    el.morphId = null;
   }
   for (const entry of timeline) {
     entry.id = makeId('t');
@@ -161,6 +176,6 @@ export function remapElementIds(
 /** Fresh ids for a pasted slide and everything in it. Mutates its argument. */
 export function remapSlideIds(slide: Slide): void {
   slide.id = makeId('slide');
-  slide.magicMoveFromPrevious = false;
+  slide.morphFromPrevious = false;
   remapElementIds(slide.elements, slide.timeline);
 }

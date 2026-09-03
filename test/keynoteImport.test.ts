@@ -10,7 +10,7 @@ import { loadDeck, loadTheme } from '../src/main/deckStore.js';
 import { writeHtmlScope } from '../src/main/htmlAuthoring.js';
 import { applySlideLayout } from '../src/renderer/editor/slideLayouts.js';
 import { EditorStore } from '../src/renderer/editor/store.js';
-import { suggestMagicMovePairs, unchangedMagicMovePairs } from '../src/shared/magicMove.js';
+import { suggestMorphPairs, unchangedMorphPairs } from '../src/shared/morph.js';
 
 /**
  * Import regression tests.
@@ -277,14 +277,14 @@ describe.skipIf(!ready)('keynote importer', () => {
       const deck = importBitterLesson();
       const previous = deck.slides[17].elements;
       const next = deck.slides[18].elements;
-      const unchangedImages = unchangedMagicMovePairs(previous, next)
+      const unchangedImages = unchangedMorphPairs(previous, next)
         .filter(([source, target]) => source.type === 'image' && target.type === 'image');
       expect(unchangedImages.map(([source, target]) => [
         source.type === 'image' ? source.src : '',
         target.type === 'image' ? target.src : '',
       ])).toContainEqual(['assets/method-12913.png', 'assets/method-12913.png']);
       // Auto-pair skips it: identical objects stay visible without a pair.
-      expect(suggestMagicMovePairs(previous, next).some(([source, target]) =>
+      expect(suggestMorphPairs(previous, next).some(([source, target]) =>
         source.type === 'image' && target.type === 'image' &&
         source.src === 'assets/method-12913.png' && target.src === source.src)).toBe(false);
     },

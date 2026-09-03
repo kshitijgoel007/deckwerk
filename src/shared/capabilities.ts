@@ -1,4 +1,5 @@
 import type { SlideElement, TimelineEntry } from './deck.js';
+import { MORPH_NAME } from './featureNames.js';
 
 /**
  * What this editor can do, as copy-pasteable JSON.
@@ -25,11 +26,11 @@ export interface Capability {
   /** Valid elements demonstrating the feature, on a 1920×1080 canvas. */
   elements: SlideElement[];
   timeline?: TimelineEntry[];
-  /** Slide-level fields the feature needs, e.g. a background or Magic Move. */
+  /** Slide-level fields the feature needs, e.g. a background or Morph. */
   slide?: {
     background?: { color: string | null; image: string | null };
-    magicMoveFromPrevious?: boolean;
-    magicMoveDuration?: number;
+    morphFromPrevious?: boolean;
+    morphDuration?: number;
   };
 }
 
@@ -177,7 +178,7 @@ export function capabilities(): Capability[] {
       what: 'Circular masks on images and video.',
       when: 'Headshots, logos, any figure that should read as a disc rather than a rectangle. Never fake it with a cropped image file.',
       notes: [
-        "maskShape: 'circle' clips the element box to its inscribed ellipse — a square box gives a true circle.",
+        "maskShape: 'circle' clips the element box to its inscribed ellipse, so pair it with a square box and a sourceBox to get a true circle rather than an oval.",
         "maskShape: 'rect', or leaving the field off, is the ordinary rectangular box.",
         'Images and video behave identically here.',
         'Combine with sourceBox to move and scale the picture behind the mask; the element box is the mask itself.',
@@ -358,32 +359,32 @@ export function capabilities(): Capability[] {
       ],
     },
     {
-      id: 'magic-move',
+      id: 'morph',
       what: 'Animated transitions between slides, pairing objects by identity.',
       when: 'A derivation, a growing diagram, a figure that moves and scales.',
       notes: [
-        'Give the same magicMoveId to the objects that are "the same thing" on both slides.',
-        'Set magicMoveFromPrevious: true on the *later* slide.',
-        'Unpaired objects cross-fade; magicMoveDuration on the later slide sets the timing.',
-        "deck.magicMoveEasing picks the motion curve: 'ease-in-out' (default), 'ease-out' (snappy start, soft landing), or 'linear'.",
+        'Give the same morphId to the objects that are "the same thing" on both slides.',
+        'Set morphFromPrevious: true on the *later* slide.',
+        'Unpaired objects cross-fade; morphDuration on the later slide sets the timing.',
+        "deck.morphEasing picks the motion curve: 'ease-in-out' (default), 'ease-out' (snappy start, soft landing), or 'linear'.",
       ],
       elements: [
-        text('cap-magic-title', 'Magic Move', TITLE, { class: ['role-title'] }),
-        text('cap-magic-term', '$E = mc^2$', { x: 260, y: 420, w: 700, h: 200 }, {
-          class: ['role-title'], magicMoveId: 'cap-magic-equation',
+        text('cap-morph-title', MORPH_NAME, TITLE, { class: ['role-title'] }),
+        text('cap-morph-term', '$E = mc^2$', { x: 260, y: 420, w: 700, h: 200 }, {
+          class: ['role-title'], morphId: 'cap-morph-equation',
         }),
       ],
     },
     {
-      id: 'magic-move-target',
+      id: 'morph-target',
       what: 'The second half of the pair: same identity, new position.',
       when: 'Always authored together with the slide before it.',
-      notes: ['This slide carries magicMoveFromPrevious: true and its own magicMoveDuration.'],
-      slide: { magicMoveFromPrevious: true, magicMoveDuration: 1000 },
+      notes: ['This slide carries morphFromPrevious: true and its own morphDuration.'],
+      slide: { morphFromPrevious: true, morphDuration: 1000 },
       elements: [
-        text('cap-magic2-title', 'The same object, moved', TITLE, { class: ['role-title'] }),
-        text('cap-magic2-term', '$E = mc^2$', { x: 1000, y: 640, w: 700, h: 200 }, {
-          class: ['role-title'], magicMoveId: 'cap-magic-equation',
+        text('cap-morph2-title', 'The same object, moved', TITLE, { class: ['role-title'] }),
+        text('cap-morph2-term', '$E = mc^2$', { x: 1000, y: 640, w: 700, h: 200 }, {
+          class: ['role-title'], morphId: 'cap-morph-equation',
         }),
       ],
     },

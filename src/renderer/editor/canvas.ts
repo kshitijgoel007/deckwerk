@@ -18,7 +18,10 @@ import { DecodedVideoPool, releaseDecodedVideo } from '../player/decodedVideoPoo
 import { ungateVideoLoad } from '../player/mediaLoadGate.js';
 import { openSlideLinkInNewTab, slideLinkFromEvent } from '../player/links.js';
 import { expandTimeline } from '@shared/timeline.js';
-import { sanitizePastedTextHtml } from '@shared/htmlSafety.js';
+import {
+  BASELINE_RUN_FONT_SIZE, isRelativeFontSize, sanitizePastedTextHtml,
+} from '@shared/htmlSafety.js';
+import { isBaselineFormat, type BaselineFormat, type InlineTextFormat } from './textFormatting.js';
 import { classifyMediaName, isPendingSrc, makePendingSrc, pendingToken } from '@shared/media.js';
 import {
   normalizeParagraphHtml,
@@ -52,9 +55,12 @@ import {
   clearPending,
   markPendingFailed,
   probeLocalFile,
+  probeRemoteImage,
   setPendingPreview,
   setPendingProgress,
 } from './pendingUploads.js';
+import { dragImageSource, type ClipboardImageSource } from '@shared/clipboardImages.js';
+import type { ImportedAsset } from '@shared/ipc.js';
 import { newComment, openCommentsPopover, openCount } from './comments.js';
 import { reportRenderDivergences } from './renderInvariants.js';
 import { reportSelectionViolations } from './selectionInvariants.js';
@@ -101,6 +107,16 @@ const SNAP_SCREEN_PX = 6;
 const LINE_HIT_SCREEN_PX = 8;
 /** Screen-pixel movement before a press becomes a drag rather than a click. */
 const DRAG_THRESHOLD_PX = 3;
+/**
+ * Double-click window and slop for `registerContentClick`.
+ *
+ * Chromium's own verdict is unavailable on the canvas (see
+ * `lastContentClick`), so these mirror the platform defaults: macOS's
+ * double-click slider tops out around half a second, and a hand holding still
+ * on a mouse drifts a pixel or two between the two presses.
+ */
+const DOUBLE_CLICK_MS = 500;
+const DOUBLE_CLICK_SLOP_PX = 4;
 /** Retain at most two typical 24 MP stills from the next slide. */
 const IMAGE_WARM_PIXEL_LIMIT = 48_000_000;
 const IMAGE_WARM_COUNT_LIMIT = 4;
@@ -259,6 +275,45 @@ function authoredTextHtml(body: HTMLElement): string {
   return normalizeParagraphHtml(clone.innerHTML);
 }
 
+/**
+ * The declaration pair one baseline choice writes on a run, and the pair that
+ * takes it back off. Both properties always travel together: a raised run that
+ * was never shrunk reads as a layout accident, and a shrunk run that stayed on
+ * the baseline is simply small text. `inherit` is the "off" size because the
+ * normalizer keeps one merged style span per run — there is no outer span left
+ * to fall back to once the property is dropped.
+ */
+const BASELINE_DECLARATIONS: Record<BaselineFormat | 'none', ReadonlyArray<
+  readonly [TextRunStyleProperty, string]
+>> = {
+  superscript: [['verticalAlign', 'super'], ['fontSize', BASELINE_RUN_FONT_SIZE]],
+  subscript: [['verticalAlign', 'sub'], ['fontSize', BASELINE_RUN_FONT_SIZE]],
+  none: [['verticalAlign', 'baseline'], ['fontSize', 'inherit']],
+};
+
+/** The inline style properties character formatting is allowed to author. */
+type TextRunStyleProperty = 'fontWeight' | 'fontFamily' | 'fontSize' | 'fontStyle'
+  | 'textDecorationLine' | 'color' | 'verticalAlign';
+
+/**
+ * The relative font size a text node inherits from the run styling it, if the
+ * nearest authored size in its chain is relative. `null` when the nearest
+ * authored size is a measurement, or when nothing in the run chain declares
+ * one. `.text-content` itself is excluded: the size sitting there is the box
+ * ceiling (or auto-fit's fitted result), not a run declaration.
+ */
+function relativeRunFontSize(text: Text, root: HTMLElement): string | null {
+  for (
+    let current = text.parentElement;
+    current && current !== root && root.contains(current);
+    current = current.parentElement
+  ) {
+    const declared = current.style.fontSize;
+    if (declared) return isRelativeFontSize(declared) ? declared : null;
+  }
+  return null;
+}
+
 /** True for the anonymous inline wrappers created by character formatting. */
 function isStyleOnlySpan(node: Element): node is HTMLSpanElement {
   return node.tagName === 'SPAN'
@@ -369,6 +424,12 @@ type DragMode =
       originRotation: number;
       lastAngle: number;
       accumulatedAngle: number;
+    }
+  | {
+      kind: 'mask-pan';
+      elementId: string;
+      startCanvas: { x: number; y: number };
+      origin: Rect;
     }
   | { kind: 'marquee'; startCanvas: { x: number; y: number } }
   | { kind: 'endpoint'; which: 'start' | 'end'; elementId: string }
@@ -482,8 +543,19 @@ export class EditorCanvas {
   private textEditRevertHtml: string | null = null;
   /** Ends the current run of typing so the next edit is its own undo step. */
   private sealTextChunk: (() => void) | null = null;
-  /** List style last reported to the panel, so the caret only redraws it once. */
-  private caretListStyle: 'None' | 'Bulleted' | 'Numbered' | null = null;
+  /**
+   * What the text panel last drew itself from, so a moving caret redraws it
+   * only when the answer changes. The panel reports the run under the
+   * selection — its size, family, weight, and list style — and whether that
+   * selection is expanded at all, since an expanded one addresses characters
+   * while a collapsed one addresses the box.
+   */
+  private caretPanelState: {
+    listStyle: 'None' | 'Bulleted' | 'Numbered' | null;
+    collapsed: boolean;
+    start: Element | null;
+    end: Element | null;
+  } | null = null;
   /** Last non-collapsed browser selection inside the active text element. */
   private textSelectionRange: Range | null = null;
   /** Rectangular cell range currently targeted in the live table editor. */
@@ -493,11 +565,25 @@ export class EditorCanvas {
     color: '#000000', width: 1, drawing: false,
   };
   private tableBorderPreview: { cell: HTMLTableCellElement; edge: TableBorderEdge } | null = null;
+  /**
+   * The previous click on slide content, for detecting a double-click.
+   *
+   * The browser's own click count is unreachable on this path. Pointer events
+   * carry none (`detail` is 0 by spec); the compatibility mouse events that do
+   * are suppressed by the `preventDefault` in `onPointerDown` which stops the
+   * browser sweep-selecting slide text; and `click`/`dblclick` are no help
+   * because opening a text edit replaces the markup the first click hit, so
+   * Chromium retargets the second click to the canvas host and restarts its
+   * count at one.
+   */
+  private lastContentClick: { x: number; y: number; time: number } | null = null;
   /** A click (not a drag) on an already-selected text box enters editing here. */
   private pendingTextEdit: {
     elementId: string;
     clientX: number;
     clientY: number;
+    /** The click was the second of a double-click: take the word under it. */
+    selectWord: boolean;
   } | null = null;
 
   /**
@@ -1636,6 +1722,25 @@ export class EditorCanvas {
     this.host.classList.toggle('command-rotate', active);
   }
 
+  /**
+   * Record a click on slide content and report whether it completes a
+   * double-click: near the previous one, inside the platform's interval.
+   *
+   * A detected pair also clears the record, so a triple-click's third press
+   * starts counting afresh rather than reading as another double.
+   */
+  private registerContentClick(ev: PointerEvent): boolean {
+    const previous = this.lastContentClick;
+    const isSecond = previous !== null
+      && ev.timeStamp - previous.time <= DOUBLE_CLICK_MS
+      && Math.abs(ev.clientX - previous.x) <= DOUBLE_CLICK_SLOP_PX
+      && Math.abs(ev.clientY - previous.y) <= DOUBLE_CLICK_SLOP_PX;
+    this.lastContentClick = isSecond
+      ? null
+      : { x: ev.clientX, y: ev.clientY, time: ev.timeStamp };
+    return isSecond;
+  }
+
   private onPointerDown(ev: PointerEvent): void {
     if (ev.button !== 0) return;
     // Authored links are interactive slide content. Let Chromium activate the
@@ -1669,6 +1774,7 @@ export class EditorCanvas {
       if (this.finishTextEdit) this.finishTextEdit(true);
       else this.commitTextEdit();
     }
+    const secondClick = this.registerContentClick(ev);
     const point = this.toCanvas(ev);
     // A click is also an authoritative cursor sample. This makes the remote
     // pointer appear at the selected object even on browsers which suppress
@@ -1806,6 +1912,32 @@ export class EditorCanvas {
       }
     }
 
+    // In mask mode the picture, not the object, is what a body drag moves:
+    // dragging slides the media around behind a window that stays put. That is
+    // the other half of cropping -- the handles size the window, this chooses
+    // which part of the picture the window shows.
+    if (this.maskingId) {
+      const masked = slide.elements.find((e) => e.id === this.maskingId);
+      if (
+        masked && (masked.type === 'image' || masked.type === 'video') &&
+        mediaMaskContainsPoint(masked, point)
+      ) {
+        // Uncropped media pans from the implicit full-box crop, so the whole
+        // gesture is one undoable step that restores `sourceBox: null`.
+        this.maskOrigin = masked.sourceBox
+          ? { ...masked.sourceBox }
+          : { x: 0, y: 0, w: masked.w, h: masked.h };
+        this.store.beginTransaction(`Move ${masked.type} in mask`);
+        this.drag = {
+          kind: 'mask-pan',
+          elementId: masked.id,
+          startCanvas: point,
+          origin: { ...this.maskOrigin },
+        };
+        return;
+      }
+    }
+
     // Topmost element under the cursor wins, matching what you see.
     const hit = this.hitTest(point);
     if (hit) {
@@ -1813,7 +1945,7 @@ export class EditorCanvas {
       this.pendingTextEdit = !ev.shiftKey
         && selection.has(hit.id)
         && (hit.type === 'text' || hit.type === 'html')
-        ? { elementId: hit.id, clientX: ev.clientX, clientY: ev.clientY }
+        ? { elementId: hit.id, clientX: ev.clientX, clientY: ev.clientY, selectWord: secondClick }
         : null;
       if (!selection.has(hit.id)) {
         this.store.select([hit.id], ev.shiftKey);
@@ -1939,6 +2071,43 @@ export class EditorCanvas {
         break;
       }
 
+      case 'mask-pan': {
+        const drag = this.drag;
+        const base = this.maskOrigin;
+        if (!base) break;
+        const target = slide.elements.find((e) => e.id === drag.elementId);
+        if (!target || (target.type !== 'image' && target.type !== 'video')) break;
+        let dx = point.x - drag.startCanvas.x;
+        let dy = point.y - drag.startCanvas.y;
+        // The crop lives in the element's own frame, so a rotated element's
+        // drag has to be brought back out of screen space first.
+        if (target.rot) {
+          const rad = (-target.rot * Math.PI) / 180;
+          const rx = dx * Math.cos(rad) - dy * Math.sin(rad);
+          const ry = dx * Math.sin(rad) + dy * Math.cos(rad);
+          dx = rx;
+          dy = ry;
+        }
+        // Shift constrains to the dominant axis, as everywhere else.
+        if (ev.shiftKey) {
+          if (Math.abs(dx) > Math.abs(dy)) dy = 0;
+          else dx = 0;
+        }
+        this.store.commit((deck) => {
+          const el = deck.slides[this.store.get().slideIndex].elements.find(
+            (e) => e.id === drag.elementId,
+          );
+          if (!el || (el.type !== 'image' && el.type !== 'video')) return;
+          el.sourceBox = {
+            w: base.w,
+            h: base.h,
+            x: Math.round(base.x + dx),
+            y: Math.round(base.y + dy),
+          };
+        });
+        break;
+      }
+
       case 'table-column-resize': {
         const drag = this.drag;
         const element = slide.elements.find((candidate) => candidate.id === drag.elementId);
@@ -2026,8 +2195,10 @@ export class EditorCanvas {
         // off (fit: fill) a resize genuinely stretches the picture.
         const keepAspect =
           (resizing?.type === 'image' || resizing?.type === 'video') &&
-          resizing.fit !== 'fill' &&
-          !resizing.sourceBox;
+          // A circular mask is square by construction; a free resize would
+          // stretch it back into the ellipse this is meant to avoid.
+          (resizing.maskShape === 'circle' ||
+            (resizing.fit !== 'fill' && !resizing.sourceBox));
         const constrained = ev.shiftKey || keepAspect;
         if (constrained) rect = constrainAspect(rect, o, edges, drag.aspect);
 
@@ -2192,7 +2363,7 @@ export class EditorCanvas {
     }
     this.host.releasePointerCapture?.(ev.pointerId);
     this.endDrag();
-    if (textEdit) this.beginTextEdit(textEdit.elementId, textEdit);
+    if (textEdit) this.beginTextEdit(textEdit.elementId, textEdit, textEdit.selectWord);
   }
 
   private endDrag(): void {
@@ -2309,7 +2480,19 @@ export class EditorCanvas {
     // load Chromium can deliver dblclick after the first click opened the
     // contenteditable without having expanded its caret to the word, though;
     // repair only that collapsed/missing native selection from the click point.
-    if (this.editingId && (ev.target as HTMLElement).closest('.editing')) {
+    //
+    // The DOM chain alone cannot answer "was this inside the edit". When the
+    // gesture *opened* the session, the pointerup that opened it replaced the
+    // box's markup with the authored source, so Chromium delivers dblclick
+    // against the node it hit-tested before — detached, with no `.editing`
+    // ancestor. Falling through then re-entered `beginTextEdit`, which
+    // discarded the word this gesture had just selected. Ask geometry too: a
+    // double-click inside the box being edited belongs to that edit.
+    const insideEdit = this.editingId !== null && (
+      Boolean((ev.target as HTMLElement).closest('.editing'))
+      || this.hitTest(this.toCanvas(ev as PointerEvent))?.id === this.editingId
+    );
+    if (this.editingId && insideEdit) {
       const body = this.slideLayer.querySelector<HTMLElement>(
         `[data-element-id="${CSS.escape(this.editingId)}"] .text-content`,
       );
@@ -2427,6 +2610,7 @@ export class EditorCanvas {
   beginTextEdit(
     elementId: string,
     caretPoint?: { clientX: number; clientY: number },
+    selectWord = false,
   ): void {
     // Re-entering text editing must replace the open session, not stack on it.
     // Each session installs its own beforeinput/keydown/input listeners on the
@@ -2505,6 +2689,13 @@ export class EditorCanvas {
       this.textSelectionRange = range.cloneRange();
     } else if (caretPoint) {
       this.textSelectionRange = this.placeCaretAtPoint(body, caretPoint);
+      // A double-click takes the word under it, exactly as it would inside an
+      // already-open box. The native gesture cannot do it here: this call
+      // replaced the markup its first click hit, so Chromium has no shared
+      // target left for a `dblclick` and never dispatches one. Without this,
+      // double-clicking an unselected text box left a bare caret and the
+      // word the author aimed at unselected.
+      if (selectWord) this.selectWordAtPoint(body, caretPoint);
     } else if (existingOffsets) {
       this.restoreTextRange(body, existingOffsets);
     } else {
@@ -3171,7 +3362,15 @@ export class EditorCanvas {
       // outside the new link, so the split still happens where it was asked
       // for.
       if (e.key === 'Enter' && !e.isComposing) linkifyTypedUrl();
-      if ((e.metaKey || e.ctrlKey) && ['b', 'i', 'u'].includes(e.key.toLowerCase())) {
+      // Shift keeps these clear of the browser's own Cmd/Ctrl +/- zoom, and
+      // the shifted characters are matched alongside the unshifted ones
+      // because a US layout reports "+"/"_" while others report "="/"-".
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && ['=', '+', '-', '_'].includes(e.key)) {
+        e.preventDefault();
+        this.toggleTextSelectionFormat(
+          e.key === '=' || e.key === '+' ? 'superscript' : 'subscript',
+        );
+      } else if ((e.metaKey || e.ctrlKey) && ['b', 'i', 'u'].includes(e.key.toLowerCase())) {
         e.preventDefault();
         const format = e.key.toLowerCase() === 'b'
           ? 'bold'
@@ -3299,16 +3498,7 @@ export class EditorCanvas {
     point: { clientX: number; clientY: number },
   ): Range | null {
     const doc = body.ownerDocument;
-    let range: Range | null = null;
-    const position = doc.caretPositionFromPoint?.(point.clientX, point.clientY);
-    if (position && body.contains(position.offsetNode)) {
-      range = doc.createRange();
-      range.setStart(position.offsetNode, position.offset);
-      range.collapse(true);
-    } else {
-      const legacyRange = doc.caretRangeFromPoint?.(point.clientX, point.clientY) ?? null;
-      if (legacyRange && body.contains(legacyRange.startContainer)) range = legacyRange;
-    }
+    const range = this.caretRangeAtPoint(body, point) ?? this.nearestCaretRange(body, point);
     if (!range) return null;
     const selection = doc.defaultView?.getSelection();
     selection?.removeAllRanges();
@@ -3316,7 +3506,90 @@ export class EditorCanvas {
     return range.cloneRange();
   }
 
-  /** Fallback for a native double-click that left only a caret under load. */
+  /** The browser's own text position for a point, constrained to this body. */
+  private caretRangeAtPoint(
+    body: HTMLElement,
+    point: { clientX: number; clientY: number },
+  ): Range | null {
+    const doc = body.ownerDocument;
+    const position = doc.caretPositionFromPoint?.(point.clientX, point.clientY);
+    if (position && body.contains(position.offsetNode)) {
+      const range = doc.createRange();
+      range.setStart(position.offsetNode, position.offset);
+      range.collapse(true);
+      return range;
+    }
+    const legacyRange = doc.caretRangeFromPoint?.(point.clientX, point.clientY) ?? null;
+    if (legacyRange && body.contains(legacyRange.startContainer)) return legacyRange;
+    return null;
+  }
+
+  /**
+   * Caret at the glyph nearest a click that hit no text.
+   *
+   * A text box is nearly always taller and wider than its glyphs: the blank
+   * area under the last line, the ragged space right of a short line, and the
+   * box's own padding all belong to the box but to no character. Chromium
+   * answers `caretPositionFromPoint` there with the wrapper element rather
+   * than a text position, and having nothing to install left the freshly
+   * focused contenteditable with its default caret — offset 0. Clicking the
+   * empty half of a box therefore put the caret at the very beginning of the
+   * text instead of by the words you clicked next to.
+   *
+   * Lines are located first, per text node, from `Range#getClientRects` (one
+   * rect per line box), then the point is clamped into the winning line and
+   * handed back to the browser's own hit test, so the exact glyph and its
+   * leading/trailing side stay Chromium's decision rather than ours.
+   */
+  private nearestCaretRange(
+    body: HTMLElement,
+    point: { clientX: number; clientY: number },
+  ): Range | null {
+    const doc = body.ownerDocument;
+    const probe = doc.createRange();
+    const walker = doc.createTreeWalker(body, NodeFilter.SHOW_TEXT);
+    let best: { node: Text; rect: DOMRect; score: number } | null = null;
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      const text = node as Text;
+      if (text.data.length === 0) continue;
+      probe.setStart(text, 0);
+      probe.setEnd(text, text.data.length);
+      // jsdom's Range has no getClientRects, and its DOMRectList is not
+      // iterable where it does exist.
+      for (const rect of Array.from(probe.getClientRects?.() ?? [])) {
+        if (rect.width === 0 && rect.height === 0) continue;
+        const dx = Math.max(rect.left - point.clientX, point.clientX - rect.right, 0);
+        const dy = Math.max(rect.top - point.clientY, point.clientY - rect.bottom, 0);
+        // A line the click is level with always beats a nearer glyph on
+        // another line — clicking past the end of a line means that line.
+        const score = dy * 10_000 + dx;
+        if (!best || score < best.score) best = { node: text, rect, score };
+      }
+    }
+    if (!best) return null;
+
+    const clamped = {
+      clientX: Math.min(Math.max(point.clientX, best.rect.left + 1), best.rect.right - 1),
+      clientY: best.rect.top + best.rect.height / 2,
+    };
+    const range = this.caretRangeAtPoint(body, clamped);
+    if (range) return range;
+    // Nothing hit-testable even over the glyphs (an overlay sitting on top of
+    // the text, say). Fall back to the near end of the winning line.
+    const fallback = doc.createRange();
+    const atEnd = point.clientX > best.rect.left + best.rect.width / 2;
+    fallback.setStart(best.node, atEnd ? best.node.data.length : 0);
+    fallback.collapse(true);
+    return fallback;
+  }
+
+  /**
+   * Take the word at a point, the way a double-click does.
+   *
+   * Used both for the double-click that opens a box — Chromium dispatches no
+   * `dblclick` for it, so the native gesture cannot — and to repair a
+   * double-click inside an open box that left only a caret under load.
+   */
   private selectWordAtPoint(
     body: HTMLElement,
     point: { clientX: number; clientY: number },
@@ -3324,19 +3597,46 @@ export class EditorCanvas {
     const caret = this.placeCaretAtPoint(body, point);
     const offsets = caret ? this.textOffsetsForRange(body, caret) : null;
     const text = body.textContent ?? '';
-    if (!offsets || text.length === 0) return;
+    if (!caret || !offsets || text.length === 0) return;
 
     const wordCharacter = (value: string | undefined) =>
       value !== undefined && /[\p{L}\p{N}_]/u.test(value);
-    let at = Math.min(offsets.start, text.length - 1);
-    if (!wordCharacter(text[at]) && at > 0 && wordCharacter(text[at - 1])) at -= 1;
-    if (!wordCharacter(text[at])) return;
+    // `body.textContent` runs the blocks together with no separator, so a
+    // word scan over it walks straight out of the clicked paragraph: the last
+    // word of one and the first of the next came back as one word
+    // ("foxtrot" + "golf"). Confine the scan to the clicked block.
+    const { low, high } = this.blockTextBounds(body, caret) ?? { low: 0, high: text.length };
+    let at = Math.min(offsets.start, high - 1);
+    if (!wordCharacter(text[at]) && at > low && wordCharacter(text[at - 1])) at -= 1;
+    if (at < low || !wordCharacter(text[at])) return;
 
     let start = at;
     let end = at + 1;
-    while (start > 0 && wordCharacter(text[start - 1])) start -= 1;
-    while (end < text.length && wordCharacter(text[end])) end += 1;
+    while (start > low && wordCharacter(text[start - 1])) start -= 1;
+    while (end < high && wordCharacter(text[end])) end += 1;
     this.restoreTextRange(body, { start, end });
+  }
+
+  /**
+   * Flat text offsets spanned by the block a range starts in, so a word scan
+   * over `body.textContent` can stay inside the clicked paragraph, list item
+   * or table cell.
+   */
+  private blockTextBounds(
+    body: HTMLElement,
+    range: Range,
+  ): { low: number; high: number } | null {
+    const node = range.startContainer;
+    const element = node.nodeType === Node.ELEMENT_NODE
+      ? node as Element
+      : node.parentElement;
+    const block = element?.closest(TEXT_BLOCKS) ?? null;
+    if (!block || !body.contains(block) || block === body) return null;
+    const before = body.ownerDocument.createRange();
+    before.setStart(body, 0);
+    before.setEndBefore(block);
+    const low = before.toString().length;
+    return { low, high: low + (block.textContent ?? '').length };
   }
 
   private textOffsetsForRange(root: HTMLElement, range: Range): { start: number; end: number } | null {
@@ -3563,8 +3863,7 @@ export class EditorCanvas {
   private applyCollapsedTypingStyle(
     content: HTMLElement,
     originalRange: Range,
-    property: 'fontWeight' | 'fontFamily' | 'fontSize' | 'fontStyle' | 'textDecorationLine' | 'color',
-    value: string,
+    declarations: ReadonlyArray<readonly [TextRunStyleProperty, string]>,
   ): boolean {
     const offsets = this.textOffsetsForRange(content, originalRange);
     if (!offsets) return false;
@@ -3575,7 +3874,7 @@ export class EditorCanvas {
     const existing = container?.closest<HTMLElement>('[data-editor-typing-style]') ?? null;
     if (existing && content.contains(existing)) {
       if ((existing.textContent ?? '') === TYPING_STYLE_SENTINEL) {
-        existing.style[property] = value;
+        for (const [property, value] of declarations) existing.style[property] = value;
         const text = existing.firstChild;
         if (text instanceof Text) {
           const caret = document.createRange();
@@ -3600,7 +3899,7 @@ export class EditorCanvas {
 
     const marker = document.createElement('span');
     marker.dataset.editorTypingStyle = 'true';
-    marker.style[property] = value;
+    for (const [property, value] of declarations) marker.style[property] = value;
     const sentinel = document.createTextNode(TYPING_STYLE_SENTINEL);
     marker.appendChild(sentinel);
     range.insertNode(marker);
@@ -3898,7 +4197,7 @@ export class EditorCanvas {
   }
 
   /** Toggle a standard inline format on the active selection. */
-  toggleTextSelectionFormat(format: 'bold' | 'italic' | 'underline'): boolean {
+  toggleTextSelectionFormat(format: InlineTextFormat): boolean {
     if (!this.editingId) return false;
     const content = this.slideLayer.querySelector<HTMLElement>(
       `[data-element-id="${CSS.escape(this.editingId)}"] .text-content`,
@@ -3915,10 +4214,19 @@ export class EditorCanvas {
     const active = this.textSelectionFormatState(format);
     if (format === 'bold') return this.applyTextSelectionStyle('fontWeight', active ? '400' : '700');
     if (format === 'italic') return this.applyTextSelectionStyle('fontStyle', active ? 'normal' : 'italic');
+    if (isBaselineFormat(format)) {
+      // Superscript and subscript are exclusive, so switching between them
+      // needs no separate "clear the other one" step: the winning choice
+      // overwrites both declarations of the losing one.
+      return this.applyTextSelectionStyles(
+        BASELINE_DECLARATIONS[active ? 'none' : format],
+        `${active ? 'Remove' : 'Apply'} ${format}`,
+      );
+    }
     return this.applyTextSelectionStyle('textDecorationLine', active ? 'none' : 'underline');
   }
 
-  textSelectionFormatState(format: 'bold' | 'italic' | 'underline'): boolean {
+  textSelectionFormatState(format: InlineTextFormat): boolean {
     if (!this.editingId) return false;
     const content = this.slideLayer.querySelector<HTMLElement>(
       `[data-element-id="${CSS.escape(this.editingId)}"] .text-content`,
@@ -4380,9 +4688,17 @@ export class EditorCanvas {
   private textNodeFormatState(
     text: Text,
     root: HTMLElement,
-    format: 'bold' | 'italic' | 'underline',
+    format: InlineTextFormat,
   ): boolean {
+    const baseline = format === 'superscript' ? 'super' : format === 'subscript' ? 'sub' : null;
     for (let node = text.parentElement; node && node !== root; node = node.parentElement) {
+      if (baseline) {
+        // Any authored baseline decides the answer, including the other one:
+        // a run inside a subscript is not a superscript.
+        if (node.style.verticalAlign) return node.style.verticalAlign === baseline;
+        if (node.matches('sup, sub')) return node.matches(baseline === 'super' ? 'sup' : 'sub');
+        continue;
+      }
       if (format === 'bold' && node.style.fontWeight) {
         const weight = Number.parseInt(node.style.fontWeight, 10);
         return node.style.fontWeight === 'bold' || weight >= 600;
@@ -4398,6 +4714,7 @@ export class EditorCanvas {
       if (format === 'underline' && node.matches('u')) return true;
     }
     const computed = text.parentElement ? getComputedStyle(text.parentElement) : null;
+    if (baseline) return computed?.verticalAlign === baseline;
     if (format === 'bold') {
       const weight = Number.parseInt(computed?.fontWeight ?? '', 10);
       return computed?.fontWeight === 'bold' || weight >= 600;
@@ -4406,9 +4723,20 @@ export class EditorCanvas {
     return computed?.textDecorationLine.includes('underline') === true;
   }
 
-  private applyTextSelectionStyle(
-    property: 'fontWeight' | 'fontFamily' | 'fontSize' | 'fontStyle' | 'textDecorationLine' | 'color',
-    value: string,
+  private applyTextSelectionStyle(property: TextRunStyleProperty, value: string): boolean {
+    const label = property === 'fontFamily' ? 'Change selected text font'
+      : property === 'fontSize' ? 'Change selected text size'
+        : property === 'color' ? 'Change selected text colour'
+          : property === 'fontWeight' ? 'Change selected text weight'
+            : property === 'fontStyle' ? 'Change selected text italic'
+              : property === 'verticalAlign' ? 'Change selected text baseline'
+                : 'Change selected text underline';
+    return this.applyTextSelectionStyles([[property, value]], label);
+  }
+
+  private applyTextSelectionStyles(
+    declarations: ReadonlyArray<readonly [TextRunStyleProperty, string]>,
+    label: string,
   ): boolean {
     if (!this.editingId) return false;
     const content = this.slideLayer.querySelector<HTMLElement>(
@@ -4420,7 +4748,7 @@ export class EditorCanvas {
       return false;
     }
     if (range.collapsed) {
-      return this.applyCollapsedTypingStyle(content, range, property, value);
+      return this.applyCollapsedTypingStyle(content, range, declarations);
     }
 
     const offsets = this.textOffsetsForRange(content, range);
@@ -4434,23 +4762,39 @@ export class EditorCanvas {
     const slices = this.textSlicesForOffsets(content, offsets);
     if (slices.length === 0) return false;
 
-    for (const { text, start, end } of slices) {
+    // A measured size replaces measured sizes, never proportional ones. A
+    // selection dragged across a word and the superscript beside it asks for
+    // the word's size; the raised digit is written `0.7em` precisely so it
+    // follows whatever it sits next to. Flattening it to the same measurement
+    // blows it up to full size — and in an auto-fitting box that overflow is
+    // absorbed by shrinking every other line, which is how "make this word
+    // smaller" ends up shrinking the whole slide. A selection made *entirely*
+    // of proportional runs has no such context to preserve, so there the
+    // requested measurement is applied as asked.
+    const absoluteSize = declarations.some(
+      ([property, value]) => property === 'fontSize' && !isRelativeFontSize(value)
+        && value !== 'inherit',
+    );
+    const proportional = absoluteSize
+      ? slices.map(({ text }) => relativeRunFontSize(text, content) !== null)
+      : [];
+    const keepProportional = absoluteSize && proportional.some((value) => !value);
+
+    slices.forEach(({ text, start, end }, index) => {
+      const applied = keepProportional && proportional[index]
+        ? declarations.filter(([property]) => property !== 'fontSize')
+        : declarations;
+      if (applied.length === 0) return;
       if (end < text.data.length) text.splitText(end);
       const selected = start > 0 ? text.splitText(start) : text;
       const span = document.createElement('span');
-      span.style[property] = value;
+      for (const [property, value] of applied) span.style[property] = value;
       selected.replaceWith(span);
       span.appendChild(selected);
-    }
+    });
     normalizeInlineStyleSpans(content);
     this.restoreTextRange(content, offsets);
     this.focusTextSurface(content);
-    const label = property === 'fontFamily' ? 'Change selected text font'
-      : property === 'fontSize' ? 'Change selected text size'
-        : property === 'color' ? 'Change selected text colour'
-      : property === 'fontWeight' ? 'Change selected text weight'
-        : property === 'fontStyle' ? 'Change selected text italic'
-          : 'Change selected text underline';
     this.commitLiveTextDom(label);
     return true;
   }
@@ -4665,9 +5009,40 @@ export class EditorCanvas {
     return true;
   }
 
-  toggleTableCellTextFormat(format: 'bold' | 'italic' | 'underline'): boolean {
+  /**
+   * Give every run inside a cell one baseline choice. The cell element itself
+   * is off limits: `vertical-align` on a `<td>` is the cell's own vertical
+   * alignment control, so writing the run's baseline there would silently
+   * move the text to the top or bottom of the cell instead.
+   */
+  private applyCellBaseline(cell: HTMLElement, choice: BaselineFormat | 'none'): void {
+    const walker = document.createTreeWalker(cell, NodeFilter.SHOW_TEXT);
+    const texts: Text[] = [];
+    for (let current = walker.nextNode(); current; current = walker.nextNode()) {
+      if ((current as Text).data) texts.push(current as Text);
+    }
+    for (const text of texts) {
+      let host = text.parentElement;
+      if (!host || !isStyleOnlySpan(host)) {
+        const span = document.createElement('span');
+        text.replaceWith(span);
+        span.appendChild(text);
+        host = span;
+      }
+      for (const [property, value] of BASELINE_DECLARATIONS[choice]) host.style[property] = value;
+    }
+    normalizeInlineStyleSpans(cell);
+  }
+
+  toggleTableCellTextFormat(format: InlineTextFormat): boolean {
     const cells = this.selectedTableCells();
     if (cells.length === 0) return false;
+    if (isBaselineFormat(format)) {
+      const raised = this.tableCellTextFormatState(format);
+      for (const cell of cells) this.applyCellBaseline(cell, raised ? 'none' : format);
+      this.commitTableDom('Change table cell typography');
+      return true;
+    }
     const property = format === 'bold' ? 'fontWeight'
       : format === 'italic' ? 'fontStyle' : 'textDecorationLine';
     const active = cells.every((cell) => format === 'bold'
@@ -4681,9 +5056,24 @@ export class EditorCanvas {
     return this.applyTableCellTextStyle(property, value);
   }
 
-  tableCellTextFormatState(format: 'bold' | 'italic' | 'underline'): boolean {
+  tableCellTextFormatState(format: InlineTextFormat): boolean {
     const cells = this.selectedTableCells();
     if (cells.length === 0) return false;
+    if (isBaselineFormat(format)) {
+      // A cell with no text at all cannot be raised, so it must not vote
+      // "yes" and make an empty column read as a superscript.
+      return cells.every((cell) => {
+        const walker = document.createTreeWalker(cell, NodeFilter.SHOW_TEXT);
+        let sawText = false;
+        for (let current = walker.nextNode(); current; current = walker.nextNode()) {
+          const text = current as Text;
+          if (!text.data.trim()) continue;
+          sawText = true;
+          if (!this.textNodeFormatState(text, cell, format)) return false;
+        }
+        return sawText;
+      });
+    }
     return cells.every((cell) => format === 'bold'
       ? Number.parseInt(cell.style.fontWeight, 10) >= 600
       : format === 'italic'
@@ -4847,12 +5237,32 @@ export class EditorCanvas {
         if (marker !== activeMarker) this.clearTypingStyleMarker(marker);
       });
       this.textSelectionRange = range.cloneRange();
-      // The List control reads the caret, so moving it between a bullet and a
-      // plain paragraph changes what the panel should show. Only a real change
-      // redraws it: a selection change fires on every arrow key.
-      const listStyle = this.textSelectionListStyle();
-      if (listStyle !== this.caretListStyle) {
-        this.caretListStyle = listStyle;
+      // The panel reads the caret: moving it between a bullet and a plain
+      // paragraph changes the List control, and moving it into a differently
+      // styled run changes the typography fields. Leaving those stale is not
+      // cosmetic — the size steppers compute their next value from the number
+      // in the field, so a stale one steps away from a size the selected
+      // characters never had. Only a real change redraws the panel, though: a
+      // selection change fires on every arrow key, and moving within one run
+      // cannot change any of this.
+      const runOf = (node: Node): Element | null => (node instanceof Element
+        ? node
+        : node.parentElement);
+      const next = {
+        listStyle: this.textSelectionListStyle(),
+        collapsed: range.collapsed,
+        start: runOf(range.startContainer),
+        end: runOf(range.endContainer),
+      };
+      const previous = this.caretPanelState;
+      this.caretPanelState = next;
+      if (
+        !previous
+        || previous.listStyle !== next.listStyle
+        || previous.collapsed !== next.collapsed
+        || previous.start !== next.start
+        || previous.end !== next.end
+      ) {
         this.onTextFormatStateChange?.();
       }
     }
@@ -5001,10 +5411,6 @@ export class EditorCanvas {
     this.host.addEventListener('drop', async (e) => {
       stop(e);
       this.host.classList.remove('drop-active');
-      const files = [...(e.dataTransfer?.files ?? [])]
-        .map((file) => ({ file, kind: classifyMediaName(file.name) }))
-        .filter((f): f is { file: File; kind: 'image' | 'video' } => f.kind !== null);
-      if (files.length === 0) return;
 
       const { deck } = this.store.get();
       const r = this.stage.getBoundingClientRect();
@@ -5012,6 +5418,16 @@ export class EditorCanvas {
         x: (e.clientX - r.left) / this.scale,
         y: (e.clientY - r.top) / this.scale,
       };
+
+      const files = [...(e.dataTransfer?.files ?? [])]
+        .map((file) => ({ file, kind: classifyMediaName(file.name) }))
+        .filter((f): f is { file: File; kind: 'image' | 'video' } => f.kind !== null);
+      // A drag out of a web page carries no file at all -- only markup and the
+      // image's URL -- so it takes the fetch-the-bytes path instead.
+      if (files.length === 0) {
+        await this.dropWebImage(e.dataTransfer, dropPoint);
+        return;
+      }
 
       // Natural size and a preview frame are read from the local bytes before
       // anything uploads, so the placeholder lands with the right aspect and
@@ -5098,6 +5514,78 @@ export class EditorCanvas {
     });
   }
 
+  /**
+   * Drop an image dragged out of a web page.
+   *
+   * A cross-application drag from a browser puts no file on the pasteboard:
+   * it offers the `<img>` markup and the image's URL, and whoever owns the
+   * deck folder has to go and fetch the bytes. The placeholder still appears
+   * straight away -- the browser can decode a remote image for display, so
+   * its natural size and a live preview are known before the fetch lands.
+   */
+  private async dropWebImage(
+    data: DataTransfer | null,
+    dropPoint: { x: number; y: number },
+  ): Promise<void> {
+    // `getData` only answers during the event's own dispatch, so read the
+    // whole drag before the first await.
+    if (!data) return;
+    const source = dragImageSource(
+      data.getData('text/html'),
+      data.getData('text/uri-list'),
+      data.getData('text/plain'),
+    );
+    if (!source || !window.api.importImageUrl) return;
+
+    const href = source.kind === 'url'
+      ? source.url
+      : `data:${source.mime};base64,${source.base64}`;
+    const probe = await probeRemoteImage(href);
+    const { deck } = this.store.get();
+    const naturalW = probe.width ?? 1600;
+    const naturalH = probe.height ?? 900;
+    const scale = Math.min(1, (deck.canvas.w * 0.6) / naturalW);
+    const w = Math.round(naturalW * scale);
+    const h = Math.round(naturalH * scale);
+
+    const id = makeId('image');
+    this.store.commit((d) => {
+      const slide = d.slides[this.store.get().slideIndex];
+      if (!slide) return;
+      slide.elements.push({
+        id,
+        type: 'image',
+        x: Math.round(dropPoint.x - w / 2),
+        y: Math.round(dropPoint.y - h / 2),
+        w,
+        h,
+        rot: 0,
+        z: slide.elements.reduce((m, el) => Math.max(m, el.z), 0) + 1,
+        opacity: 1,
+        class: [],
+        style: {},
+        src: makePendingSrc(id, webImageName(source)),
+        fit: 'contain',
+        alt: webImageName(source),
+        sourceBox: null,
+      });
+    }, { label: 'Drop image' });
+    this.store.select([id]);
+    // The remote image itself stands in while the host fetches it.
+    setPendingPreview(id, href);
+    applyPendingHud(this.slideLayer);
+
+    try {
+      const asset = await window.api.importImageUrl(source);
+      if (!asset) throw new Error('the image could not be fetched');
+      this.resolvePendingAsset(id, w, h, asset);
+    } catch (err) {
+      console.error('Import failed for the dropped web image:', err);
+      markPendingFailed(id);
+      applyPendingHud(this.slideLayer);
+    }
+  }
+
   /** Upload/import one dropped file and resolve its pending placeholder. */
   private async importDroppedFile(drop: {
     file: File;
@@ -5117,39 +5605,62 @@ export class EditorCanvas {
           );
       const asset = assets[0];
       if (!asset) throw new Error('unsupported or unreadable file');
-
-      clearPending(drop.id);
-      this.store.commit((d) => {
-        // Every element still holding this upload's placeholder src, not just
-        // the one that was dropped. Duplicating (or copy-pasting) an element
-        // mid-upload clones the `pending:` src under a fresh id, and resolving
-        // by id alone left the copy a placeholder for good -- saved into the
-        // deck, so it stayed broken after a reload too.
-        for (const slide of d.slides) {
-          for (const el of slide.elements) {
-            if (el.type !== 'image' && el.type !== 'video') continue;
-            if (pendingToken(el.src) !== drop.id) continue;
-            el.src = asset.src;
-            // If the box is untouched and the real dimensions differ from the
-            // local guess (a PDF, or an undecodable codec), refit it in place.
-            if (el.w === drop.w && el.h === drop.h && asset.width && asset.height) {
-              const maxW = d.canvas.w * 0.6;
-              const scale = Math.min(1, maxW / asset.width);
-              const w = Math.round(asset.width * scale);
-              const h = Math.round(asset.height * scale);
-              el.x = Math.round(el.x + (el.w - w) / 2);
-              el.y = Math.round(el.y + (el.h - h) / 2);
-              el.w = w;
-              el.h = h;
-            }
-          }
-        }
-      });
+      this.resolvePendingAsset(drop.id, drop.w, drop.h, asset);
     } catch (err) {
       console.error(`Import failed for ${drop.file.name}:`, err);
       markPendingFailed(drop.id);
       applyPendingHud(this.slideLayer);
     }
+  }
+
+  /**
+   * Swap a resolved import into every element still holding its placeholder.
+   */
+  private resolvePendingAsset(
+    token: string,
+    w: number,
+    h: number,
+    asset: ImportedAsset,
+  ): void {
+    clearPending(token);
+    this.store.commit((d) => {
+      // Every element still holding this upload's placeholder src, not just
+      // the one that was dropped. Duplicating (or copy-pasting) an element
+      // mid-upload clones the `pending:` src under a fresh id, and resolving
+      // by id alone left the copy a placeholder for good -- saved into the
+      // deck, so it stayed broken after a reload too.
+      for (const slide of d.slides) {
+        for (const el of slide.elements) {
+          if (el.type !== 'image' && el.type !== 'video') continue;
+          if (pendingToken(el.src) !== token) continue;
+          el.src = asset.src;
+          // If the box is untouched and the real dimensions differ from the
+          // local guess (a PDF, or an undecodable codec), refit it in place.
+          if (el.w === w && el.h === h && asset.width && asset.height) {
+            const maxW = d.canvas.w * 0.6;
+            const scale = Math.min(1, maxW / asset.width);
+            const fitW = Math.round(asset.width * scale);
+            const fitH = Math.round(asset.height * scale);
+            el.x = Math.round(el.x + (el.w - fitW) / 2);
+            el.y = Math.round(el.y + (el.h - fitH) / 2);
+            el.w = fitW;
+            el.h = fitH;
+          }
+        }
+      }
+    });
+  }
+}
+
+/** A readable name for a dropped web image: its file name where the URL has
+ *  one, and a plain label for `data:` payloads and extensionless URLs. */
+function webImageName(source: ClipboardImageSource): string {
+  if (source.kind !== 'url') return 'Dropped image';
+  try {
+    const file = new URL(source.url).pathname.split('/').filter(Boolean).pop();
+    return file ? decodeURIComponent(file) : 'Dropped image';
+  } catch {
+    return 'Dropped image';
   }
 }
 

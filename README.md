@@ -79,7 +79,7 @@ DeckWerk is an open-source Electron application under the MIT license. Developme
 
 The user manual covers the workflows that make DeckWerk distinctive:
 
-- [Magic Move](manual/01-magic-move.md)
+- [Morph](manual/01-morph.md)
 - [Video and images](manual/02-video-and-images.md)
 - [Layout](manual/03-layout.md)
 - [Collaborating with humans](manual/04-collaborating-with-humans.md)

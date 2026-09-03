@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { copyFile, cp, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
-import { basename, extname, join, resolve, sep } from 'node:path';
+import { basename, dirname, extname, join, resolve, sep } from 'node:path';
 import { type Deck, emptyDeck, parseDeck } from '@shared/deck.js';
 import type { ImportedAsset } from '@shared/ipc.js';
 import { classifyMediaName, CONVERTED_IMAGE_EXTS } from '@shared/media.js';
@@ -314,14 +314,53 @@ export async function derivedAssetPath(
   }
 }
 
-/** Resolve a deck-relative asset path, refusing anything that escapes the deck. */
+/**
+ * Resolve a deck-relative asset path, refusing anything that escapes the deck.
+ *
+ * Lexical containment is not enough. A symlink planted inside `assets/`
+ * resolves to a path that *looks* inside the deck while pointing anywhere on
+ * disk, and the collab server streams whatever the link targets to every
+ * viewer on the network (see `serveFileWithRanges`). So the real paths are
+ * compared too — of the deepest existing ancestor, so a derived asset that has
+ * not been written yet (`derivedAssetPath`) still resolves.
+ *
+ * The returned path is the lexical one, not the real one: callers layer their
+ * own `deckDir`-relative prefix checks on top of it, and those would break for
+ * a deck folder that itself lives under a symlink.
+ */
 export function resolveAsset(deckDir: string, src: string): string {
   const abs = resolve(deckDir, src);
   const root = resolve(deckDir);
-  if (abs !== root && !abs.startsWith(root + '/')) {
-    throw new Error(`Asset path escapes the deck folder: ${src}`);
+  if (!contains(root, abs)) throw new Error(`Asset path escapes the deck folder: ${src}`);
+  if (!contains(realPath(root), realPath(abs))) {
+    throw new Error(`Asset path escapes the deck folder through a symlink: ${src}`);
   }
   return abs;
+}
+
+function contains(root: string, target: string): boolean {
+  return target === root || target.startsWith(root + sep);
+}
+
+/**
+ * `realpathSync`, but tolerant of a path that does not exist yet: the deepest
+ * existing ancestor is resolved and the missing tail appended. `resolve()` has
+ * already collapsed any `..`, so the tail cannot walk back out.
+ */
+function realPath(target: string): string {
+  const missing: string[] = [];
+  for (let current = target; ; ) {
+    try {
+      return join(realpathSync(current), ...missing);
+    } catch {
+      const parent = dirname(current);
+      // No existing ancestor at all (or an unreadable one): the lexical path is
+      // the best answer available, and the caller's own check already saw it.
+      if (parent === current) return target;
+      missing.unshift(basename(current));
+      current = parent;
+    }
+  }
 }
 
 function sanitize(name: string): string {

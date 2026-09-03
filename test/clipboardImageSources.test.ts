@@ -3,6 +3,7 @@ import {
   bestClipboardImageMime,
   clipboardImageName,
   clipboardImageSource,
+  dragImageSource,
   imageMimeExtension,
   isSupportedImageMime,
   urlLooksLikeImage,
@@ -111,5 +112,49 @@ describe('image-only clipboards that carry no pixels', () => {
     expect(urlLooksLikeImage('https://x.test/a.png?download=1')).toBe(true);
     expect(urlLooksLikeImage('https://x.test/a.mp4')).toBe(false);
     expect(urlLooksLikeImage('not a url')).toBe(false);
+  });
+});
+
+
+/**
+ * Dragging an image out of a web page.
+ *
+ * The bug these cover: a drag from a browser was silently ignored, because
+ * the drop handler only looked at `dataTransfer.files` — and a
+ * cross-application drag from a browser carries no file at all, only the
+ * markup and the image's URL.
+ */
+describe('images dragged out of a web page', () => {
+  it('finds the image behind a Chromium image drag', () => {
+    // Chromium's exact drag payload: a charset meta, the <img>, and the
+    // image URL in text/uri-list.
+    const url = 'https://upload.wikimedia.org/wikipedia/commons/4/4c/Bird.jpg'
+      + '?utm_source=en.wikipedia.org';
+    expect(dragImageSource(`<meta charset='utf-8'><img src="${url}" alt="A bird">`, `${url}\n`, url))
+      .toEqual({ kind: 'url', url });
+  });
+
+  it('takes the first real entry of a multi-line uri-list', () => {
+    const list = '# a comment\r\nhttps://x.test/first.png\r\nhttps://x.test/second.png\r\n';
+    expect(dragImageSource('', list)).toEqual({ kind: 'url', url: 'https://x.test/first.png' });
+  });
+
+  it('prefers the uri-list over the page URL browsers write as plain text', () => {
+    // Dragging an image out of a gallery writes the *page* as text/plain;
+    // taking that would import the HTML document instead of the picture.
+    expect(dragImageSource('', 'https://x.test/photo.png', 'https://x.test/gallery'))
+      .toEqual({ kind: 'url', url: 'https://x.test/photo.png' });
+  });
+
+  it('carries an inline data: image across a drag', () => {
+    const source = dragImageSource('<img src="data:image/png;base64,iVBORw0KGgo=">');
+    expect(source).toEqual({ kind: 'data', mime: 'image/png', base64: 'iVBORw0KGgo=' });
+  });
+
+  it('ignores drags that are not images', () => {
+    // Dragging a link, or selected text, must not turn into an image drop.
+    expect(dragImageSource('', 'https://x.test/article', 'https://x.test/article')).toBeNull();
+    expect(dragImageSource('<p>selected words</p>', '', 'selected words')).toBeNull();
+    expect(dragImageSource('', '', '')).toBeNull();
   });
 });

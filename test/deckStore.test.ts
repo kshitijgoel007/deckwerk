@@ -338,18 +338,67 @@ describe('resolving a deck-relative asset path', () => {
     }
   });
 
-  it('resolves a symlink inside the deck to its real target', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'deck-asset-symlink-'));
-    const deck = join(root, 'Talk');
-    await mkdir(join(deck, 'assets'), { recursive: true });
-    await writeFile(join(root, 'outside.txt'), 'not part of the deck', 'utf8');
-    await symlink(join(root, 'outside.txt'), join(deck, 'assets', 'link.txt'));
+  describe('through symlinks', () => {
+    const cleanup: string[] = [];
 
-    // Documents today's behaviour, which is path-based only: a symlink planted
-    // in assets/ still resolves to a path inside the deck, so the guard lets
-    // it through and the server would serve the file it points at.
-    expect(resolveAsset(deck, 'assets/link.txt')).toBe(join(deck, 'assets', 'link.txt'));
+    afterEach(async () => {
+      await Promise.all(cleanup.splice(0).map((path) => rm(path, { recursive: true, force: true })));
+    });
 
-    await rm(root, { recursive: true, force: true });
+    async function deck(prefix: string): Promise<{ root: string; dir: string }> {
+      const root = await mkdtemp(join(tmpdir(), prefix));
+      cleanup.push(root);
+      const dir = join(root, 'Deck');
+      await createDeck(dir, 'Deck');
+      return { root, dir };
+    }
+
+    it('resolves an ordinary asset, and a derived one that is not written yet', async () => {
+      const { dir } = await deck('deck-asset-');
+      await writeFile(join(dir, 'assets', 'figure.svg'), '<svg/>', 'utf8');
+
+      expect(resolveAsset(dir, 'assets/figure.svg')).toBe(join(dir, 'assets', 'figure.svg'));
+      // derivedAssetPath hands back names before the file exists; realpath-ing the
+      // deepest existing ancestor has to leave those working.
+      expect(resolveAsset(dir, 'assets/figure.crop1.png')).toBe(join(dir, 'assets', 'figure.crop1.png'));
+    });
+
+    it('refuses a symlink inside the deck that points outside it', async () => {
+      const { root, dir } = await deck('deck-asset-symlink-');
+      await writeFile(join(root, 'secret.txt'), 'private', 'utf8');
+      // The link resolves to a path that is lexically inside the deck, which is
+      // exactly why the lexical check alone is not a boundary: the collab server
+      // streams this file to anyone on the network the host is sharing with.
+      await symlink(join(root, 'secret.txt'), join(dir, 'assets', 'escape.txt'));
+
+      expect(() => resolveAsset(dir, 'assets/escape.txt')).toThrow(/escapes the deck folder/);
+    });
+
+    it('refuses an asset reached through a symlinked directory inside the deck', async () => {
+      const { root, dir } = await deck('deck-asset-symdir-');
+      await writeFile(join(root, 'secret.txt'), 'private', 'utf8');
+      await symlink(root, join(dir, 'assets', 'out'));
+
+      expect(() => resolveAsset(dir, 'assets/out/secret.txt')).toThrow(/escapes the deck folder/);
+    });
+
+    it('still resolves assets when the deck folder itself lives under a symlink', async () => {
+      const { root, dir } = await deck('deck-asset-symroot-');
+      await writeFile(join(dir, 'assets', 'figure.svg'), '<svg/>', 'utf8');
+      const link = join(root, 'link');
+      await symlink(dir, link);
+
+      // Both sides are realpath-ed, so a deck opened through a symlinked path
+      // (macOS /var, a synced-folder alias) is not mistaken for an escape.
+      expect(resolveAsset(link, 'assets/figure.svg')).toBe(join(link, 'assets', 'figure.svg'));
+    });
+
+    it('allows a symlink inside the deck that points back into the deck', async () => {
+      const { dir } = await deck('deck-asset-inward-');
+      await writeFile(join(dir, 'assets', 'figure.svg'), '<svg/>', 'utf8');
+      await symlink(join(dir, 'assets', 'figure.svg'), join(dir, 'assets', 'alias.svg'));
+
+      expect(resolveAsset(dir, 'assets/alias.svg')).toBe(join(dir, 'assets', 'alias.svg'));
+    });
   });
 });

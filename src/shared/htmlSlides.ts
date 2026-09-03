@@ -22,7 +22,7 @@ import {
  * rather than asking for coordinates, we take HTML and CSS, let a real browser
  * lay it out, and bake the geometry it computed into ordinary deck objects.
  * What comes out is not a blob — it is the same draggable, snappable,
- * Magic-Move-pairable objects you get by placing them by hand.
+ * Morph-pairable objects you get by placing them by hand.
  *
  * This module is the pure half: the browser reports what it measured
  * (`MeasuredNode`), and everything here maps those facts onto the deck format
@@ -69,8 +69,8 @@ export interface MeasuredSlide {
   name: string;
   notes: string;
   background: { color: string | null; image: string | null };
-  magicMoveFromPrevious: boolean;
-  magicMoveDuration?: number;
+  morphFromPrevious: boolean;
+  morphDuration?: number;
   nodes: MeasuredNode[];
   /**
    * Inline style the browser silently refused: a segment with no colon, or a
@@ -438,13 +438,28 @@ export const PRESENTATIONAL_STYLE = new Set([
   'background-clip', '-webkit-background-clip', '-webkit-text-fill-color',
   'text-shadow', '-webkit-text-stroke', '-webkit-text-stroke-width',
   '-webkit-text-stroke-color', 'border', 'border-radius', 'border-color', 'border-width',
-  'border-style', 'box-shadow', 'filter', 'mix-blend-mode', 'padding',
+  'border-style', 'border-top', 'border-right', 'border-bottom', 'border-left',
+  'box-shadow', 'filter', 'mix-blend-mode', 'padding',
   'padding-top', 'padding-right', 'padding-bottom', 'padding-left',
   'overflow', 'object-position', 'white-space', 'word-break', 'overflow-wrap',
   'writing-mode', 'text-orientation', 'list-style-type', 'list-style-position',
 ]);
 
-const TEXT_TAGS = new Set(['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'blockquote', 'li', 'span', 'div', 'figcaption', 'pre', 'code', 'ul', 'ol']);
+/**
+ * Tags that are never text, whatever they contain.
+ *
+ * The rule used to be the other way round — an allow-list of a dozen tags —
+ * and every other element an author wrote came back as an inert HTML fallback:
+ * a `<dt>`, a `<figure>`, an `<article>`, a `<small>` credit line. HTML has
+ * around a hundred text-bearing elements and there is nothing special about
+ * the twelve that happened to be listed, so the exceptions are enumerated
+ * instead: embedded content, form controls, and the tags with their own
+ * mapping above.
+ */
+const NON_TEXT_TAGS = new Set([
+  'svg', 'canvas', 'iframe', 'object', 'embed', 'math', 'table',
+  'img', 'video', 'audio', 'input', 'select', 'textarea', 'button', 'form',
+]);
 
 /**
  * Turn a measured page into deck slides, against the deck they are destined for.
@@ -498,8 +513,8 @@ export function slideFromMeasured(
     name: measured.name,
     notes: measured.notes,
     background: measured.background,
-    ...(measured.magicMoveFromPrevious ? { magicMoveFromPrevious: true } : {}),
-    ...(measured.magicMoveDuration !== undefined ? { magicMoveDuration: measured.magicMoveDuration } : {}),
+    ...(measured.morphFromPrevious ? { morphFromPrevious: true } : {}),
+    ...(measured.morphDuration !== undefined ? { morphDuration: measured.morphDuration } : {}),
     elements,
     timeline,
   };
@@ -524,8 +539,8 @@ export function elementFromNode(
     opacity: node.opacity,
     class: node.classes,
     style: pickStyle(node.style),
-    ...(node.dataset.magicMove !== undefined
-      ? { magicMoveId: node.dataset.magicMove || null } : {}),
+    ...(node.dataset.morph !== undefined
+      ? { morphId: node.dataset.morph || null } : {}),
     ...(node.dataset.lineageId !== undefined
       ? { lineageId: node.dataset.lineageId || null } : {}),
   };
@@ -667,7 +682,7 @@ export function elementFromNode(
   // chart, a gradient panel, a table — is preserved verbatim rather than
   // dropped or flattened to a picture. It still drags and resizes; only its
   // innards are not individually editable.
-  if (node.verbatim || node.dataset.element === 'html' || !TEXT_TAGS.has(node.tag)) {
+  if (node.verbatim || node.dataset.element === 'html' || NON_TEXT_TAGS.has(node.tag)) {
     return {
       ...base,
       type: 'html',
@@ -766,8 +781,8 @@ export function slideToHtml(slide: Slide, canvas: { w: number; h: number }): str
   return `<section class="slide" data-slide-id="${escape(slide.id)}"`
     + ` data-canvas="${canvas.w}x${canvas.h}"`
     + (slide.name ? ` data-name="${escape(slide.name)}"` : '')
-    + (slide.magicMoveFromPrevious ? ' data-magic-move-from-previous="true"' : '')
-    + (slide.magicMoveDuration !== undefined ? ` data-magic-move-duration="${slide.magicMoveDuration}"` : '')
+    + (slide.morphFromPrevious ? ' data-morph-from-previous="true"' : '')
+    + (slide.morphDuration !== undefined ? ` data-morph-duration="${slide.morphDuration}"` : '')
     + `${background}>\n${body}\n</section>\n`;
 }
 
@@ -786,8 +801,8 @@ function elementToHtml(element: SlideElement, build?: TimelineEntry): string {
     // player's structural classes.
     element.class.length > 0 && element.type !== 'text'
       ? `class="${escape(element.class.join(' '))}"` : '',
-    element.magicMoveId !== undefined
-      ? `data-magic-move="${escape(element.magicMoveId ?? '')}"` : '',
+    element.morphId !== undefined
+      ? `data-morph="${escape(element.morphId ?? '')}"` : '',
     element.lineageId !== undefined
       ? `data-lineage-id="${escape(element.lineageId ?? '')}"` : '',
     build ? `data-build="${build.trigger.on}${build.trigger.delay ? `+${build.trigger.delay}` : ''}"` : '',

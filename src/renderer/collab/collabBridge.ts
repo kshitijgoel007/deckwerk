@@ -1,3 +1,4 @@
+import { renameRetiredFields } from '@shared/fieldAliases.js';
 import type { AgentOperation } from '@shared/agent.js';
 import { applyOpsLenient } from '@shared/collabApply.js';
 import {
@@ -85,9 +86,18 @@ export class CollabBridge {
 
   constructor(
     private readonly url: string,
-    private readonly name: string | undefined,
+    private name: string | undefined,
     private readonly hooks: CollabBridgeHooks,
   ) {}
+
+  /**
+   * Set the hello name before connect(). On an access-controlled server the
+   * name is server-assigned from the tailnet identity, so the client only
+   * supplies one once it has asked /api/config which kind of server this is.
+   */
+  setName(name: string | undefined): void {
+    this.name = name;
+  }
 
   connect(): void {
     this.closed = false;
@@ -104,9 +114,17 @@ export class CollabBridge {
         console.error('collab: bad server message', error);
       }
     });
-    socket.addEventListener('close', () => {
+    socket.addEventListener('close', (event) => {
       if (this.closed) return;
       this.hooks.onConnectionChange?.(false);
+      // 4003 is the server refusing this identity (access revoked, or never
+      // granted): retrying would only produce the same answer every few
+      // seconds, so stop and say why.
+      if (event.code === 4003) {
+        this.closed = true;
+        this.hooks.onStatus(event.reason || 'You no longer have access to this presentation');
+        return;
+      }
       this.hooks.onStatus(`Disconnected — retrying in ${Math.round(this.reconnectDelay / 1000)}s`);
       this.reconnectTimer = setTimeout(() => {
         this.reconnectTimer = null;
@@ -219,7 +237,7 @@ export class CollabBridge {
   }
 
   private handle(raw: unknown): void {
-    const message = ServerMessageSchema.parse(raw);
+    const message = ServerMessageSchema.parse(renameRetiredFields(raw));
     switch (message.kind) {
       case 'welcome': {
         this.clientId = message.clientId;

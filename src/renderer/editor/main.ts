@@ -13,6 +13,7 @@ import { rangeForSlideSelection } from '@shared/presentationRange.js';
 import {
   themeById,
   themeCss,
+  deckThemes,
   themeStyleCss,
   withThemeBlock,
 } from '@shared/themes.js';
@@ -114,7 +115,7 @@ setSelectionInvariantChecks(import.meta.env.DEV);
 const canvas = new EditorCanvas(el('canvas'), store);
 // A presentation window occludes this one, and a hidden page's media buffers
 // are Chromium's to reclaim -- closing Present used to leave canvas, rail and
-// Magic Move previews black until something happened to touch them.
+// Morph previews black until something happened to touch them.
 trackPreviewFrameRecovery(el('canvas'), document.body);
 const inspector = new Inspector(el('inspector'), store);
 new TimelinePanel(el('timeline'), store);
@@ -165,7 +166,13 @@ const persistThemeCss = (css: string): Promise<void> | void => {
   return window.api.saveTheme(css);
 };
 const cssEditor = new CssEditor(el('theme'), persistThemeCss);
-cssEditor.onChange = () => canvas.refitAutoText();
+// A theme.css change moves what the inspector reports as the theme value for
+// font family, size, weight and paragraph spacing — those readouts are computed
+// styles, so they go stale the moment the stylesheet does.
+cssEditor.onChange = () => {
+  canvas.refitAutoText();
+  inspector.noteThemeChanged();
+};
 let mainSessionPersistence: Promise<void> = Promise.resolve();
 function queueMainSessionPersistence(
   deck: Deck,
@@ -720,7 +727,7 @@ const themePanel = createThemePanel({
   save,
   setStatusMessage,
   saveThemeCss: (css) => void persistThemeCss(css),
-  onThemePreview: (theme) => designWorkspace.show(theme),
+  onThemePreview: (theme) => (theme ? designWorkspace.show(theme) : designWorkspace.hide()),
   onEditLayouts: () => designWorkspace.openLayoutEditor(
     (store.slide?.layout ?? 'freeform'),
   ),
@@ -781,7 +788,7 @@ function showPanel(id: string): void {
   canvas.setBuildBadgesVisible(id === 'timeline');
 }
 
-/** Multi-slide selection is a deck-level editing context: Theme and Props (Magic Move) apply. */
+/** Multi-slide selection is a deck-level editing context: Theme and Props (Morph) apply. */
 function syncSlideSelectionContext(): void {
   const count = store.get().slideSelection.size;
   const multiple = count > 1;
@@ -870,7 +877,7 @@ async function adopt(
   welcome.setVisible(false);
   operation?.update(`Reading ${deck.theme}`, 0.85);
   const loadedCss = await window.api.loadTheme();
-  const installedTheme = themeById(deck.themePreset);
+  const installedTheme = themeById(deck.themePreset, deckThemes(deck));
   // The marked block belongs to the app. Refresh it when preset definitions
   // evolve, while preserving every hand-written rule outside that block.
   const refreshedCss = deck.themeStyle

@@ -161,7 +161,7 @@ describe('cross-instance copy/paste', () => {
     expect(pasted.elements.map((el) => el.id)).not.toContain('image-1');
     const image = pasted.elements.find((el) => el.lineageId === 'image-1')!;
     expect(pasted.timeline[0].action.target).toBe(image.id);
-    expect(pasted.magicMoveFromPrevious).toBe(false);
+    expect(pasted.morphFromPrevious).toBe(false);
   });
 
   it('pasting twice mints distinct ids each time', async () => {
@@ -174,6 +174,46 @@ describe('cross-instance copy/paste', () => {
     const [second] = [...store.get().selection];
     expect(first).not.toBe(second);
     expect(store.slide!.elements).toHaveLength(5);
+  });
+
+  it('pastes onto another slide at the coordinates the elements were copied from', async () => {
+    const source = new EditorStore(sampleDeck(), '/src-deck');
+    source.select(['image-1', 'video-1']);
+    await copySelectionToClipboard(source);
+
+    const dest = new EditorStore(sampleDeck(), '/dest-deck');
+    dest.selectSlide(1);
+    await pasteFromClipboard(dest);
+
+    const pasted = dest.slide!.elements;
+    expect(pasted.map((el) => [el.x, el.y])).toEqual([[10, 10], [20, 20]]);
+  });
+
+  it('offsets a paste back onto the slide it was copied from, cascading on repeat', async () => {
+    const store = new EditorStore(sampleDeck(), '/src-deck');
+    store.select(['image-1']);
+    await copySelectionToClipboard(store);
+
+    await pasteFromClipboard(store);
+    const first = store.slide!.elements.at(-1)!;
+    expect([first.x, first.y]).toEqual([34, 34]);
+
+    await pasteFromClipboard(store);
+    const second = store.slide!.elements.at(-1)!;
+    expect([second.x, second.y]).toEqual([58, 58]);
+  });
+
+  it('cascades repeated pastes onto another slide so copies do not stack', async () => {
+    const source = new EditorStore(sampleDeck(), '/src-deck');
+    source.select(['image-1']);
+    await copySelectionToClipboard(source);
+
+    const dest = new EditorStore(sampleDeck(), '/dest-deck');
+    dest.selectSlide(1);
+    await pasteFromClipboard(dest);
+    await pasteFromClipboard(dest);
+
+    expect(dest.slide!.elements.map((el) => [el.x, el.y])).toEqual([[10, 10], [34, 34]]);
   });
 
   it('pastes an Excel or web table onto the slide as one editable object', async () => {

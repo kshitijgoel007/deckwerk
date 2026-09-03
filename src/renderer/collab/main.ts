@@ -33,7 +33,7 @@ import { createThemePanel } from '../editor/themePanel.js';
 import { TimelinePanel } from '../editor/timelinePanel.js';
 import { CollabBridge } from './collabBridge.js';
 import { createConnectionNotice } from './connectionNotice.js';
-import { createDeckOnServer, importKeynoteToServer, showDeckPicker } from './deckPicker.js';
+import { createDeckOnServer, importKeynoteToServer, showDeckPicker, showShareDialog } from './deckPicker.js';
 import { installNetApi } from './netApi.js';
 import { PresenceOverlay } from './presenceOverlay.js';
 import { installAgentWorkspace } from './agentWorkspace.js';
@@ -100,9 +100,11 @@ interface ServerConfig {
     canManageAccount: boolean;
     personal?: boolean;
   };
+  /** Present when the server runs with --access: who the server says we are. */
+  access?: null | { user: string; name: string; admin: boolean };
 }
 
-let serverConfig: ServerConfig = { hosted: false, deckId: null, urls: [], sharedAgent: null };
+let serverConfig: ServerConfig = { hosted: false, deckId: null, urls: [], sharedAgent: null, access: null };
 
 async function fetchServerConfig(): Promise<ServerConfig> {
   try {
@@ -111,7 +113,7 @@ async function fetchServerConfig(): Promise<ServerConfig> {
   } catch {
     // Older server without /api/config; behave like the multi-deck server.
   }
-  return { hosted: false, deckId: null, urls: [], sharedAgent: null };
+  return { hosted: false, deckId: null, urls: [], sharedAgent: null, access: null };
 }
 
 /* --- deck selection -------------------------------------------------------- */
@@ -158,7 +160,13 @@ if (!deckId) {
       return;
     }
     el('status').textContent = 'Choose a presentation to start.';
-    showDeckPicker({ dismissable: false, onStatus: setStatusMessage });
+    // Module init stops right below this block (`throw`), so the editor store
+    // never exists here: status goes straight to the DOM, not renderStatus().
+    showDeckPicker({
+      dismissable: false,
+      onStatus: (text) => { el('status').textContent = text; },
+      access: config.access ?? null,
+    });
   });
   throw new Error('no deck selected — showing picker');
 }
@@ -178,7 +186,7 @@ const canvas = new EditorCanvas(el('canvas'), store);
 // video is a black box, so overlay loading progress on the editing canvas.
 trackVideoLoading(el('canvas'));
 // Presenting hides this page, and a hidden page's media buffers are Chromium's
-// to reclaim: come back from Present and canvas, rail and Magic Move previews
+// to reclaim: come back from Present and canvas, rail and Morph previews
 // can all be black with nothing in flight. Re-queue them on the way back.
 trackPreviewFrameRecovery(el('canvas'), document.body);
 // Peers should watch each other type, not just see the result on blur.
@@ -194,7 +202,12 @@ const cssHost = document.createElement('div');
 cssHost.hidden = true;
 document.body.appendChild(cssHost);
 const cssEditor = new CssEditor(cssHost);
-cssEditor.onChange = () => canvas.refitAutoText();
+// See the desktop shell: the inspector reads theme values off the live
+// stylesheet, so it has to be rebuilt whenever that stylesheet changes.
+cssEditor.onChange = () => {
+  canvas.refitAutoText();
+  inspector.noteThemeChanged();
+};
 // The documented HTML-first surface and visible agent workspace share this
 // compiler and the live theme buffer.
 installAgentApi(store, deckId, { theme: () => cssEditor.getValue() });
@@ -216,7 +229,7 @@ const themePanel = createThemePanel({
   save: async () => {},
   setStatusMessage,
   saveThemeCss: (css) => bridge.sendTheme(css),
-  onThemePreview: (theme) => designWorkspace.show(theme),
+  onThemePreview: (theme) => (theme ? designWorkspace.show(theme) : designWorkspace.hide()),
   onEditLayouts: () => designWorkspace.openLayoutEditor(
     (store.slide?.layout ?? 'freeform'),
   ),
@@ -264,7 +277,10 @@ const connectionNotice = createConnectionNotice({
 });
 
 const wsUrl = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws?deck=${encodeURIComponent(deckId)}`;
-const bridge = new CollabBridge(wsUrl, userName() || undefined, {
+// The hello name is set just before connect(): an access-controlled server
+// assigns names from the tailnet identity, so prompting for one would be
+// asking a question whose answer the server ignores.
+const bridge = new CollabBridge(wsUrl, undefined, {
   onWelcome: (welcome) => {
     // Presence messages are intentionally not queued while disconnected. A
     // reconnect therefore establishes a fresh deduplication epoch: the same
@@ -550,7 +566,11 @@ function buildToolbar(): void {
         void createDeckOnServer().catch((error) =>
           setStatusMessage(`Create failed: ${error instanceof Error ? error.message : error}`));
       }),
-      barButton('Open', () => showDeckPicker({ dismissable: true, onStatus: setStatusMessage })),
+      barButton('Open', () => showDeckPicker({
+        dismissable: true,
+        onStatus: setStatusMessage,
+        access: serverConfig.access ?? null,
+      })),
       createToolbarPicker('Import…', [
         { label: 'Keynote…', action: () => importKeynoteToServer(setStatusMessage) },
       ]),
@@ -591,6 +611,11 @@ function buildToolbar(): void {
 
   const right = document.createElement('div');
   right.className = 'bar-group bar-right';
+  // Access-controlled server: the sharing dialog handles both cases — owners
+  // and the admin get controls, everyone else a read-only summary.
+  if (serverConfig.access) {
+    right.append(barButton('Share…', () => showShareDialog(deckId!, setStatusMessage)));
+  }
   if (serverConfig.sharedAgent?.enabled) {
     const agent = barButton(
       serverConfig.sharedAgent.personal ? 'Agent…' : 'Shared Agent',
@@ -740,11 +765,14 @@ void fetchServerConfig().then((config) => {
   }
   buildToolbar();
   renderStatus();
+  // Connect only after the config answers whether the server assigns names
+  // (access control) or the client supplies one (possibly via a prompt).
+  if (!config.access) bridge.setName(userName() || undefined);
+  bridge.connect();
 });
 buildTabs();
 syncSlideSelectionContext();
 renderStatus();
-bridge.connect();
 
 // Console access for debugging and driving a session from devtools.
 Object.assign(window, { store, canvas, rail, bridge });

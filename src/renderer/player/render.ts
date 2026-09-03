@@ -29,7 +29,7 @@ export interface RenderOptions {
    *
    * 'auto' — the player, where playback is imminent and buffering ahead is the
    * point. 'metadata' — every preview surface (editor canvas, slide rail,
-   * Magic Move panel, PDF pages): fetch the container header, then seek one
+   * Morph panel, PDF pages): fetch the container header, then seek one
    * frame so the element shows a picture. The distinction is not a tuning
    * detail. A deck that reuses one clip across N elements otherwise issues N
    * full downloads of the same file the moment it opens; those transfers
@@ -406,8 +406,9 @@ export function applyTextRenderState(
 /**
  * The CSS corner radius for a media element, or '' for square corners.
  *
- * A circular mask clips the box to its inscribed ellipse and wins over a
- * numeric corner radius; a raw `border-radius` in the element's own style is
+ * A circular mask clips the box to its inscribed ellipse — the editor squares
+ * the box when it turns the mask on, so the crop is a circle — and wins over
+ * a numeric corner radius; a raw `border-radius` in the element's own style is
  * honoured as authored.
  */
 export function mediaRadius(

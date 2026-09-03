@@ -3,15 +3,15 @@ import { readFileSync } from 'node:fs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { emptyDeck, parseDeck, type SlideElement } from '../src/shared/deck.js';
 import {
-  essentialMagicMovePairs,
-  explicitMagicMovePairs,
-  suggestMagicMovePairs,
-  unchangedMagicMovePairs,
-} from '../src/shared/magicMove.js';
-import { MagicMovePanel } from '../src/renderer/editor/magicMovePanel.js';
+  essentialMorphPairs,
+  explicitMorphPairs,
+  suggestMorphPairs,
+  unchangedMorphPairs,
+} from '../src/shared/morph.js';
+import { MorphPanel } from '../src/renderer/editor/morphPanel.js';
 import { Inspector } from '../src/renderer/editor/inspector.js';
 import { EditorStore } from '../src/renderer/editor/store.js';
-import { Player, matchMagicMoveElements } from '../src/renderer/player/player.js';
+import { Player, matchMorphElements } from '../src/renderer/player/player.js';
 
 const text = (id: string, html: string, x = 0): SlideElement => ({
   id, type: 'text', x, y: 0, w: 300, h: 80, rot: 0, z: 1,
@@ -19,7 +19,7 @@ const text = (id: string, html: string, x = 0): SlideElement => ({
 });
 
 function twoSlideDeck() {
-  const deck = emptyDeck('Magic');
+  const deck = emptyDeck('Morph');
   deck.slides[0].elements = [text('source', 'A shared title')];
   deck.slides.push({
     id: 'slide-2', name: '', background: { color: null, image: null }, notes: '',
@@ -28,7 +28,7 @@ function twoSlideDeck() {
   return deck;
 }
 
-describe('Magic Move matching', () => {
+describe('Morph matching', () => {
   beforeEach(() => {
     document.body.replaceChildren();
     (globalThis as unknown as { window: Window }).window.api = {
@@ -46,7 +46,7 @@ describe('Magic Move matching', () => {
   it('keeps modal object hover transparent despite the global button hover', () => {
     const css = readFileSync('src/renderer/editor/editor.css', 'utf8');
     const globalHover = css.lastIndexOf('button:hover:not(:disabled)');
-    const objectHover = css.lastIndexOf('button.magic-object-hit:hover:not(:disabled)');
+    const objectHover = css.lastIndexOf('button.morph-object-hit:hover:not(:disabled)');
     expect(objectHover).toBeGreaterThan(globalHover);
     expect(css.slice(objectHover, objectHover + 180)).toContain('rgb(245 158 11 / 3%)');
   });
@@ -67,20 +67,20 @@ describe('Magic Move matching', () => {
       arrow('moved-dst', 611.75, 564.07, 329.8, 90.07),
       { ...arrow('restyled-dst', 367.5, 643.62, 167.35, 90.1), stroke: '#ff0000' },
     ];
-    expect(essentialMagicMovePairs(previous, next).map((pair) => pair.map((el) => el.id)))
+    expect(essentialMorphPairs(previous, next).map((pair) => pair.map((el) => el.id)))
       .toEqual([['drifted-src', 'drifted-dst']]);
   });
 
   it('pairs nothing by default, even when visible content is identical', () => {
     const deck = twoSlideDeck();
-    expect(matchMagicMoveElements(deck.slides[0].elements, deck.slides[1].elements)).toEqual([]);
+    expect(matchMorphElements(deck.slides[0].elements, deck.slides[1].elements)).toEqual([]);
   });
 
   it('animates only objects sharing an explicit pairing id', () => {
     const deck = twoSlideDeck();
-    deck.slides[0].elements[0].magicMoveId = 'pair-1';
-    deck.slides[1].elements[0].magicMoveId = 'pair-1';
-    expect(explicitMagicMovePairs(deck.slides[0].elements, deck.slides[1].elements))
+    deck.slides[0].elements[0].morphId = 'pair-1';
+    deck.slides[1].elements[0].morphId = 'pair-1';
+    expect(explicitMorphPairs(deck.slides[0].elements, deck.slides[1].elements))
       .toEqual([[deck.slides[0].elements[0], deck.slides[1].elements[0]]]);
   });
 
@@ -91,21 +91,21 @@ describe('Magic Move matching', () => {
       text('far', 'Duplicated id', 1600),
       text('near', 'Duplicated id', 20),
     ];
-    previous[0].magicMoveId = 'dup';
-    previous[1].magicMoveId = 'dup';
+    previous[0].morphId = 'dup';
+    previous[1].morphId = 'dup';
     const target = text('landing', 'Duplicated id', 40);
-    target.magicMoveId = 'dup';
+    target.morphId = 'dup';
 
-    expect(explicitMagicMovePairs(previous, [target])).toEqual([[previous[1], target]]);
+    expect(explicitMorphPairs(previous, [target])).toEqual([[previous[1], target]]);
   });
 
   it('gives two objects sharing one id a source each rather than one twice', () => {
     const previous = [text('left', 'Split', 0), text('right', 'Split', 900)];
-    for (const element of previous) element.magicMoveId = 'dup';
+    for (const element of previous) element.morphId = 'dup';
     const targets = [text('to-right', 'Split', 940), text('to-left', 'Split', 60)];
-    for (const element of targets) element.magicMoveId = 'dup';
+    for (const element of targets) element.morphId = 'dup';
 
-    expect(explicitMagicMovePairs(previous, targets)).toEqual([
+    expect(explicitMorphPairs(previous, targets)).toEqual([
       [previous[1], targets[0]],
       [previous[0], targets[1]],
     ]);
@@ -114,13 +114,13 @@ describe('Magic Move matching', () => {
   it('skips objects that are visually identical and therefore never animate', () => {
     const source = [text('a', 'The same title')];
     const target = [text('c', 'The same title')];
-    expect(suggestMagicMovePairs(source, target)).toEqual([]);
+    expect(suggestMorphPairs(source, target)).toEqual([]);
   });
 
   it('suggests strong matches without pairing unrelated same-type objects', () => {
     const source = [text('a', 'The same title'), text('b', 'Completely unrelated')];
     const target = [text('c', 'The same title', 600), text('d', 'Nothing in common', 600)];
-    expect(suggestMagicMovePairs(source, target).map(([a, b]) => [a.id, b.id]))
+    expect(suggestMorphPairs(source, target).map(([a, b]) => [a.id, b.id]))
       .toEqual([['a', 'c']]);
   });
 
@@ -142,7 +142,7 @@ describe('Magic Move matching', () => {
     ];
     // shape-590 → shape-604 is a sub-epsilon drift the essential matcher
     // already glides at runtime, so it needs no explicit pair suggestion.
-    expect(suggestMagicMovePairs(previous, next).map(([source, target]) =>
+    expect(suggestMorphPairs(previous, next).map(([source, target]) =>
       [source.id, target.id])).toEqual([
       ['shape-591', 'shape-605'],
     ]);
@@ -152,7 +152,7 @@ describe('Magic Move matching', () => {
    * A `<video>` paints nothing until a frame is decoded, so a preview surface
    * that is rebuilt goes black until its poster-frame seek lands again --
    * seconds, on a remote session. Every pairing click re-renders this panel,
-   * which is why the Magic Move previews used to flash (and, behind the load
+   * which is why the Morph previews used to flash (and, behind the load
    * gate, sometimes stay) black. The surfaces must be reconciled, not rebuilt.
    */
   describe('preview surfaces keep their decoded videos', () => {
@@ -188,40 +188,40 @@ describe('Magic Move matching', () => {
     }
 
     it('reuses the same elements when only the selection changed', () => {
-      const store = new EditorStore(videoDeck(), '/tmp/magic');
+      const store = new EditorStore(videoDeck(), '/tmp/morph');
       const host = document.createElement('div');
       document.body.appendChild(host);
-      new MagicMovePanel(host, store);
-      host.querySelector<HTMLButtonElement>('.magic-open')!.click();
-      const modal = document.querySelector('.magic-modal')!;
+      new MorphPanel(host, store);
+      host.querySelector<HTMLButtonElement>('.morph-open')!.click();
+      const modal = document.querySelector('.morph-modal')!;
       const before = markDecoded(modal);
       expect(before).toHaveLength(2);
 
       // Selecting a source object re-renders the panel and the modal.
-      modal.querySelector<HTMLButtonElement>('.magic-list-pick[data-side="source"][data-element-id="vid-a"]')!.click();
+      modal.querySelector<HTMLButtonElement>('.morph-list-pick[data-side="source"][data-element-id="vid-a"]')!.click();
 
       // Identity, not structure: a rebuilt element looks identical in the DOM
       // and is exactly the black-preview bug.
-      const after = [...document.querySelectorAll('.magic-modal video')];
+      const after = [...document.querySelectorAll('.morph-modal video')];
       expect(after.length).toBe(before.length);
       expect(after.every((video, i) => video === before[i])).toBe(true);
-      document.querySelector<HTMLButtonElement>('.magic-modal-close')!.click();
+      document.querySelector<HTMLButtonElement>('.morph-modal-close')!.click();
       host.remove();
     });
 
     it('adopts the decoded elements when an edit rebuilds the surface', () => {
-      const store = new EditorStore(videoDeck(), '/tmp/magic');
+      const store = new EditorStore(videoDeck(), '/tmp/morph');
       const host = document.createElement('div');
       document.body.appendChild(host);
-      new MagicMovePanel(host, store);
+      new MorphPanel(host, store);
       const before = markDecoded(host);
       expect(before).toHaveLength(2);
 
       // A commit clones the deck, so the surfaces are rebuilt around new
       // slide objects -- the decoded elements must come along.
       store.commit((deck) => {
-        deck.slides[1].magicMoveFromPrevious = true;
-      }, { label: 'Enable Magic Move' });
+        deck.slides[1].morphFromPrevious = true;
+      }, { label: 'Enable Morph' });
 
       const after = [...host.querySelectorAll('video')];
       expect(after).toHaveLength(2);
@@ -233,126 +233,126 @@ describe('Magic Move matching', () => {
     });
   });
 
-  it('enables Magic Move from the panel button even with no matches to pair', () => {
-    const store = new EditorStore(twoSlideDeck(), '/tmp/magic');
+  it('enables Morph from the panel button even with no matches to pair', () => {
+    const store = new EditorStore(twoSlideDeck(), '/tmp/morph');
     const host = document.createElement('div');
     document.body.appendChild(host);
-    new MagicMovePanel(host, store);
-    expect(host.querySelector('.magic-enable .field-check, .magic-enable')!.textContent)
+    new MorphPanel(host, store);
+    expect(host.querySelector('.morph-enable .field-check, .morph-enable')!.textContent)
       .toContain('Enabled');
-    host.querySelector<HTMLButtonElement>('.magic-enable-pair')!.click();
-    expect(store.get().deck.slides[1].magicMoveFromPrevious).toBe(true);
-    expect(host.textContent).toContain('Enabled Magic Move');
+    host.querySelector<HTMLButtonElement>('.morph-enable-pair')!.click();
+    expect(store.get().deck.slides[1].morphFromPrevious).toBe(true);
+    expect(host.textContent).toContain('Enabled Morph');
     host.remove();
   });
 
   it('pairs objects by clicking the two large slide previews in the modal', () => {
-    const store = new EditorStore(twoSlideDeck(), '/tmp/magic');
+    const store = new EditorStore(twoSlideDeck(), '/tmp/morph');
     const host = document.createElement('div');
     document.body.appendChild(host);
-    new MagicMovePanel(host, store);
-    host.querySelector<HTMLButtonElement>('.magic-open')!.click();
+    new MorphPanel(host, store);
+    host.querySelector<HTMLButtonElement>('.morph-open')!.click();
 
-    const modal = document.querySelector('.magic-modal')!;
-    expect(modal.querySelectorAll('.magic-preview')).toHaveLength(2);
+    const modal = document.querySelector('.morph-modal')!;
+    expect(modal.querySelectorAll('.morph-preview')).toHaveLength(2);
     modal.querySelector<HTMLButtonElement>('[data-side="source"][data-element-id="source"]')!.click();
     expect(modal.textContent).toContain('Now choose its partner');
-    document.querySelector<HTMLButtonElement>('.magic-modal [data-side="target"][data-element-id="target"]')!.click();
+    document.querySelector<HTMLButtonElement>('.morph-modal [data-side="target"][data-element-id="target"]')!.click();
 
     const source = store.get().deck.slides[0].elements[0];
     const target = store.get().deck.slides[1].elements[0];
-    expect(source.magicMoveId).toBeTruthy();
-    expect(target.magicMoveId).toBe(source.magicMoveId);
-    expect(store.get().deck.slides[1].magicMoveFromPrevious).toBe(true);
-    const lists = document.querySelectorAll<HTMLElement>('.magic-modal .magic-list');
+    expect(source.morphId).toBeTruthy();
+    expect(target.morphId).toBe(source.morphId);
+    expect(store.get().deck.slides[1].morphFromPrevious).toBe(true);
+    const lists = document.querySelectorAll<HTMLElement>('.morph-modal .morph-list');
     expect(lists).toHaveLength(2);
-    const firstRow = lists[0].querySelector('.magic-list-item')!;
+    const firstRow = lists[0].querySelector('.morph-list-item')!;
     expect(firstRow.classList.contains('paired')).toBe(true);
-    expect(firstRow.querySelector('.magic-list-badge')!.textContent).toBe('1');
-    document.querySelector<HTMLButtonElement>('.magic-modal-close')!.click();
+    expect(firstRow.querySelector('.morph-list-badge')!.textContent).toBe('1');
+    document.querySelector<HTMLButtonElement>('.morph-modal-close')!.click();
   });
 
   it('pairs objects by clicking the element lists below the previews', () => {
-    const store = new EditorStore(twoSlideDeck(), '/tmp/magic');
+    const store = new EditorStore(twoSlideDeck(), '/tmp/morph');
     const host = document.createElement('div');
     document.body.appendChild(host);
-    new MagicMovePanel(host, store);
-    host.querySelector<HTMLButtonElement>('.magic-open')!.click();
+    new MorphPanel(host, store);
+    host.querySelector<HTMLButtonElement>('.morph-open')!.click();
 
     const pick = (side: string, id: string) => document
-      .querySelector<HTMLButtonElement>(`.magic-modal .magic-list-pick[data-side="${side}"][data-element-id="${id}"]`)!;
+      .querySelector<HTMLButtonElement>(`.morph-modal .morph-list-pick[data-side="${side}"][data-element-id="${id}"]`)!;
     pick('source', 'source').click();
-    expect(document.querySelector('.magic-modal .magic-list-item.selected-source')).not.toBeNull();
+    expect(document.querySelector('.morph-modal .morph-list-item.selected-source')).not.toBeNull();
     pick('target', 'target').click();
 
     const source = store.get().deck.slides[0].elements[0];
-    expect(source.magicMoveId).toBeTruthy();
-    expect(store.get().deck.slides[1].elements[0].magicMoveId).toBe(source.magicMoveId);
-    document.querySelector<HTMLButtonElement>('.magic-modal-close')!.click();
+    expect(source.morphId).toBeTruthy();
+    expect(store.get().deck.slides[1].elements[0].morphId).toBe(source.morphId);
+    document.querySelector<HTMLButtonElement>('.morph-modal-close')!.click();
   });
 
   it('opens a large horizontal two-slide editor from Props', () => {
-    const store = new EditorStore(twoSlideDeck(), '/tmp/magic');
+    const store = new EditorStore(twoSlideDeck(), '/tmp/morph');
     const host = document.createElement('div');
     document.body.appendChild(host);
     new Inspector(host, store);
 
-    const section = host.querySelector('.magic-move-section')!;
-    const compactPreviews = section.querySelectorAll<HTMLElement>('.magic-compact-preview');
+    const section = host.querySelector('.morph-section')!;
+    const compactPreviews = section.querySelectorAll<HTMLElement>('.morph-compact-preview');
     expect(compactPreviews).toHaveLength(2);
-    expect(section.querySelectorAll('.magic-object-hit-readonly')).toHaveLength(2);
+    expect(section.querySelectorAll('.morph-object-hit-readonly')).toHaveLength(2);
     compactPreviews[0].click();
-    const modal = document.querySelector('.magic-modal')!;
-    const previews = [...modal.querySelectorAll<HTMLElement>('.magic-preview')];
+    const modal = document.querySelector('.morph-modal')!;
+    const previews = [...modal.querySelectorAll<HTMLElement>('.morph-preview')];
     expect(previews).toHaveLength(2);
     expect(previews.map((preview) => preview.style.width)).toEqual(['', '']);
-    expect([...modal.querySelectorAll<HTMLElement>('.magic-preview-label')]
+    expect([...modal.querySelectorAll<HTMLElement>('.morph-preview-label')]
       .map((label) => label.textContent)).toEqual(['Source · Slide 1', 'Target · Slide 2']);
     expect(modal.getAttribute('aria-modal')).toBe('true');
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-    expect(document.querySelector('.magic-modal')).toBeNull();
+    expect(document.querySelector('.morph-modal')).toBeNull();
   });
 
-  it('removes Magic Move, including its modal, as soon as an object is selected', () => {
-    const store = new EditorStore(twoSlideDeck(), '/tmp/magic');
+  it('removes Morph, including its modal, as soon as an object is selected', () => {
+    const store = new EditorStore(twoSlideDeck(), '/tmp/morph');
     const host = document.createElement('div');
     document.body.appendChild(host);
     new Inspector(host, store);
-    host.querySelector<HTMLElement>('.magic-compact-preview')!.click();
-    expect(document.querySelector('.magic-modal')).not.toBeNull();
+    host.querySelector<HTMLElement>('.morph-compact-preview')!.click();
+    expect(document.querySelector('.morph-modal')).not.toBeNull();
 
     store.select(['source']);
 
-    expect(host.querySelector('.magic-move-section')).toBeNull();
-    expect(document.querySelector('.magic-modal')).toBeNull();
+    expect(host.querySelector('.morph-section')).toBeNull();
+    expect(document.querySelector('.morph-modal')).toBeNull();
   });
 
   it('auto-pairs likely matches only when the author requests it', () => {
-    const store = new EditorStore(twoSlideDeck(), '/tmp/magic');
+    const store = new EditorStore(twoSlideDeck(), '/tmp/morph');
     const host = document.createElement('div');
     document.body.appendChild(host);
-    new MagicMovePanel(host, store);
-    host.querySelector<HTMLButtonElement>('.magic-open')!.click();
-    expect(explicitMagicMovePairs(store.get().deck.slides[0].elements, store.get().deck.slides[1].elements))
+    new MorphPanel(host, store);
+    host.querySelector<HTMLButtonElement>('.morph-open')!.click();
+    expect(explicitMorphPairs(store.get().deck.slides[0].elements, store.get().deck.slides[1].elements))
       .toHaveLength(0);
 
-    [...document.querySelectorAll<HTMLButtonElement>('.magic-modal button')]
+    [...document.querySelectorAll<HTMLButtonElement>('.morph-modal button')]
       .find((button) => button.textContent === 'Auto-pair')!.click();
 
-    expect(explicitMagicMovePairs(store.get().deck.slides[0].elements, store.get().deck.slides[1].elements))
+    expect(explicitMorphPairs(store.get().deck.slides[0].elements, store.get().deck.slides[1].elements))
       .toHaveLength(1);
-    expect(document.querySelector('.magic-modal')!.textContent).toContain('Auto-paired 1 object');
-    document.querySelector<HTMLButtonElement>('.magic-modal-close')!.click();
+    expect(document.querySelector('.morph-modal')!.textContent).toContain('Auto-paired 1 object');
+    document.querySelector<HTMLButtonElement>('.morph-modal-close')!.click();
   });
 
   it('runs paired movement and edge-window unpaired fades on one timeline', async () => {
     const deck = twoSlideDeck();
-    deck.slides[1].magicMoveDuration = 1350;
-    deck.slides[0].elements[0].magicMoveId = 'pair';
-    deck.slides[1].elements[0].magicMoveId = 'pair';
+    deck.slides[1].morphDuration = 1350;
+    deck.slides[0].elements[0].morphId = 'pair';
+    deck.slides[1].elements[0].morphId = 'pair';
     deck.slides[0].elements.push(text('disappears', 'Disappears', 900));
     deck.slides[1].elements.push(text('appears', 'Appears', 1100));
-    deck.slides[1].magicMoveFromPrevious = true;
+    deck.slides[1].morphFromPrevious = true;
     const host = document.createElement('div');
     document.body.appendChild(host);
     const animate = vi.fn((
@@ -386,10 +386,10 @@ describe('Magic Move matching', () => {
       expect.objectContaining({ easing: 'linear' }),
       expect.objectContaining({ easing: 'linear' }),
     ]);
-    expect(host.querySelector('.magic-move-ghost')).not.toBeNull();
+    expect(host.querySelector('.morph-ghost')).not.toBeNull();
     await Promise.resolve();
     await Promise.resolve();
-    expect(host.querySelector('.magic-move-ghost')).toBeNull();
+    expect(host.querySelector('.morph-ghost')).toBeNull();
     player.destroy();
   });
 
@@ -397,8 +397,8 @@ describe('Magic Move matching', () => {
     const deck = twoSlideDeck();
     const source = deck.slides[0].elements[0] as Extract<SlideElement, { type: 'text' }>;
     const target = deck.slides[1].elements[0] as Extract<SlideElement, { type: 'text' }>;
-    source.magicMoveId = 'pair';
-    target.magicMoveId = 'pair';
+    source.morphId = 'pair';
+    target.morphId = 'pair';
     source.style = { 'font-size': '48px' };
     target.style = { 'font-size': '48px' };
     source.w = 949.55;
@@ -423,8 +423,8 @@ describe('Magic Move matching', () => {
     const deck = twoSlideDeck();
     const source = deck.slides[0].elements[0] as Extract<SlideElement, { type: 'text' }>;
     const target = deck.slides[1].elements[0] as Extract<SlideElement, { type: 'text' }>;
-    source.magicMoveId = 'pair';
-    target.magicMoveId = 'pair';
+    source.morphId = 'pair';
+    target.morphId = 'pair';
     source.style = { 'font-size': '80px' };
     target.style = { 'font-size': '40px' };
     source.align = 'center';
@@ -456,11 +456,11 @@ describe('Magic Move matching', () => {
       id, type: 'shape', shape: 'arrow', x, y, w: 200, h: 2, rot, z: 1, opacity: 1,
       class: [], style: {}, fill: null, stroke: '#000000', strokeWidth: 6,
       radius: 0, path: null, pathSize: null, arrowStart: false, arrowEnd: true,
-      magicMoveId: 'arrow-pair',
+      morphId: 'arrow-pair',
     });
     deck.slides[0].elements = [arrow('arrow-src', 10, 20, 90)];
     deck.slides[1].elements = [arrow('arrow-dst', 14, 24, 91)];
-    deck.slides[1].magicMoveFromPrevious = true;
+    deck.slides[1].morphFromPrevious = true;
     const host = document.createElement('div');
     document.body.appendChild(host);
     const animate = vi.fn((
@@ -485,8 +485,8 @@ describe('Magic Move matching', () => {
 
   it('keeps a mover above a removed backdrop it outranked on the source slide', () => {
     const deck = twoSlideDeck();
-    deck.slides[0].elements[0].magicMoveId = 'pair';
-    deck.slides[1].elements[0].magicMoveId = 'pair';
+    deck.slides[0].elements[0].morphId = 'pair';
+    deck.slides[1].elements[0].morphId = 'pair';
     deck.slides[0].elements[0].z = 5;
     const backdrop: SlideElement = {
       id: 'backdrop', type: 'shape', shape: 'rect', x: 0, y: 0, w: 1920, h: 1080,
@@ -529,10 +529,10 @@ describe('Magic Move matching', () => {
     });
     deck.slides[0].elements = [image('image-slide-18')];
     deck.slides[1].elements = [image('image-slide-19')];
-    deck.slides[1].magicMoveFromPrevious = true;
-    expect(unchangedMagicMovePairs(deck.slides[0].elements, deck.slides[1].elements))
+    deck.slides[1].morphFromPrevious = true;
+    expect(unchangedMorphPairs(deck.slides[0].elements, deck.slides[1].elements))
       .toHaveLength(1);
-    expect(suggestMagicMovePairs(deck.slides[0].elements, deck.slides[1].elements))
+    expect(suggestMorphPairs(deck.slides[0].elements, deck.slides[1].elements))
       .toHaveLength(0);
     const host = document.createElement('div');
     document.body.appendChild(host);
@@ -547,31 +547,31 @@ describe('Magic Move matching', () => {
     player.destroy();
   });
 
-  it('toggles Magic Move independently of whether anything is paired', () => {
-    const store = new EditorStore(twoSlideDeck(), '/tmp/magic');
+  it('toggles Morph independently of whether anything is paired', () => {
+    const store = new EditorStore(twoSlideDeck(), '/tmp/morph');
     const host = document.createElement('div');
     document.body.appendChild(host);
-    new MagicMovePanel(host, store);
-    const enabled = host.querySelector<HTMLInputElement>('.magic-enable input')!;
+    new MorphPanel(host, store);
+    const enabled = host.querySelector<HTMLInputElement>('.morph-enable input')!;
     expect(enabled.checked).toBe(false);
     enabled.checked = true;
     enabled.dispatchEvent(new Event('change', { bubbles: true }));
-    expect(store.get().deck.slides[1].magicMoveFromPrevious).toBe(true);
-    expect(explicitMagicMovePairs(store.get().deck.slides[0].elements, store.get().deck.slides[1].elements))
+    expect(store.get().deck.slides[1].morphFromPrevious).toBe(true);
+    expect(explicitMorphPairs(store.get().deck.slides[0].elements, store.get().deck.slides[1].elements))
       .toHaveLength(0);
   });
 
   it('uses the destination slide duration for every paired animation', () => {
     const deck = twoSlideDeck();
-    deck.slides[1].magicMoveDuration = 1250;
-    deck.slides[0].elements[0].magicMoveId = 'pair';
-    deck.slides[1].elements[0].magicMoveId = 'pair';
+    deck.slides[1].morphDuration = 1250;
+    deck.slides[0].elements[0].morphId = 'pair';
+    deck.slides[1].elements[0].morphId = 'pair';
     const third = structuredClone(deck.slides[1]);
     third.id = 'slide-3';
     third.elements[0].id = 'target-3';
     third.elements[0].x = 900;
-    third.magicMoveFromPrevious = true;
-    third.magicMoveDuration = 650;
+    third.morphFromPrevious = true;
+    third.morphDuration = 650;
     deck.slides.push(third);
     const host = document.createElement('div');
     document.body.appendChild(host);
@@ -590,12 +590,12 @@ describe('Magic Move matching', () => {
     player.destroy();
   });
 
-  it('leaves every object identical to a direct target-slide render after Magic Move', async () => {
+  it('leaves every object identical to a direct target-slide render after Morph', async () => {
     const deck = twoSlideDeck();
     const source = deck.slides[0].elements[0];
     const target = deck.slides[1].elements[0];
-    source.magicMoveId = 'pair';
-    target.magicMoveId = 'pair';
+    source.morphId = 'pair';
+    target.morphId = 'pair';
     source.rot = -18;
     target.rot = 27;
     target.opacity = 0.65;
@@ -615,7 +615,7 @@ describe('Magic Move matching', () => {
 
     const directDeck = structuredClone(deck);
     for (const slide of directDeck.slides) {
-      for (const element of slide.elements) element.magicMoveId = null;
+      for (const element of slide.elements) element.morphId = null;
     }
     const directHost = document.createElement('div');
     document.body.appendChild(directHost);
@@ -631,26 +631,26 @@ describe('Magic Move matching', () => {
   });
 
   it('edits the selected transition duration from the dedicated panel', () => {
-    const store = new EditorStore(twoSlideDeck(), '/tmp/magic');
+    const store = new EditorStore(twoSlideDeck(), '/tmp/morph');
     const host = document.createElement('div');
     document.body.appendChild(host);
-    new MagicMovePanel(host, store);
-    const input = host.querySelector<HTMLInputElement>('.magic-duration input')!;
+    new MorphPanel(host, store);
+    const input = host.querySelector<HTMLInputElement>('.morph-duration input')!;
     expect(input.value).toBe('1000');
     input.value = '1450';
     input.dispatchEvent(new Event('change', { bubbles: true }));
-    expect(store.get().deck.slides[1].magicMoveDuration).toBe(1450);
+    expect(store.get().deck.slides[1].morphDuration).toBe(1450);
     expect(host.textContent).toContain('Duration');
     expect(host.textContent).not.toContain('Duration for deck');
   });
 
   it('migrates a legacy deck-wide duration onto every slide', () => {
     const legacy = parseDeck({
-      ...emptyDeck('Legacy Magic Move'),
-      magicMoveDuration: 1750,
-      slides: [{ id: 'slide-1' }, { id: 'slide-2', magicMoveDuration: 900 }],
+      ...emptyDeck('Legacy Morph'),
+      morphDuration: 1750,
+      slides: [{ id: 'slide-1' }, { id: 'slide-2', morphDuration: 900 }],
     });
-    expect(legacy.slides.map((slide) => slide.magicMoveDuration)).toEqual([1750, 900]);
-    expect(legacy).not.toHaveProperty('magicMoveDuration');
+    expect(legacy.slides.map((slide) => slide.morphDuration)).toEqual([1750, 900]);
+    expect(legacy).not.toHaveProperty('morphDuration');
   });
 });

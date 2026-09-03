@@ -36,9 +36,9 @@ describe('native surgical edits', () => {
       expect(contract.element.byType).toHaveProperty(type);
     }
     expect(contract.slide.map((row: any) => row.path)).toContain('timeline');
-    expect(contract.slide.map((row: any) => row.path)).toContain('magicMoveDuration');
+    expect(contract.slide.map((row: any) => row.path)).toContain('morphDuration');
     expect(contract.deck.map((row: any) => row.path)).toContain('themeStyle.fonts.<role>.<property>');
-    expect(contract.deck.map((row: any) => row.path)).not.toContain('magicMoveDuration');
+    expect(contract.deck.map((row: any) => row.path)).not.toContain('morphDuration');
   });
 
   it('patches broad UI properties in one lossless operation batch', () => {
@@ -74,12 +74,12 @@ describe('native surgical edits', () => {
       },
       {
         target: 'slide', slideId: 's1',
-        set: { name: 'Unified', 'background.color': '#101218', layout: 'standard', magicMoveFromPrevious: true, magicMoveDuration: 850, skipped: false },
+        set: { name: 'Unified', 'background.color': '#101218', layout: 'standard', morphFromPrevious: true, morphDuration: 850, skipped: false },
         unset: [],
       },
       {
         target: 'deck',
-        set: { title: 'Unified deck', magicMoveEasing: 'ease-out', 'themeStyle.fonts.title.family': 'Inter' },
+        set: { title: 'Unified deck', morphEasing: 'ease-out', 'themeStyle.fonts.title.family': 'Inter' },
         unset: [],
       },
     ]);
@@ -105,8 +105,8 @@ describe('native surgical edits', () => {
     expect(slide.elements[1]).toEqual(untouchedBody);
     expect(slide.comments).toEqual(before.slides[0].comments);
     expect(slide.timeline).toEqual(before.slides[0].timeline);
-    expect(slide).toMatchObject({ name: 'Unified', background: { color: '#101218', image: null }, layout: 'standard', magicMoveFromPrevious: true, magicMoveDuration: 850, skipped: false });
-    expect(result.deck).toMatchObject({ title: 'Unified deck', magicMoveEasing: 'ease-out' });
+    expect(slide).toMatchObject({ name: 'Unified', background: { color: '#101218', image: null }, layout: 'standard', morphFromPrevious: true, morphDuration: 850, skipped: false });
+    expect(result.deck).toMatchObject({ title: 'Unified deck', morphEasing: 'ease-out' });
     expect(result.deck.themeStyle?.fonts.title.family).toBe('Inter');
     expect(result.operations.map((operation) => operation.op)).toEqual(expect.arrayContaining(['updateDeck', 'setSlideProperties', 'replaceElement']));
     expect(result.affectedElementIds).toEqual(['title', 'image', 'video', 'shape']);

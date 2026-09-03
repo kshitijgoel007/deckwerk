@@ -8,6 +8,7 @@ import {
   emptyDeckHistory,
   type DeckHistoryDocument,
 } from '@shared/deckHistory.js';
+import { renameRetiredFields } from '@shared/fieldAliases.js';
 
 /**
  * Kept separate from deck.json so revisions never alter the presentation.
@@ -29,7 +30,9 @@ export async function loadDeckHistory(dir: string): Promise<DeckHistoryDocument>
   try {
     const compressed = await readFile(join(dir, DECK_HISTORY_FILE));
     const raw = await gunzipAsync(compressed);
-    const parsed = DeckHistoryDocumentSchema.safeParse(JSON.parse(raw.toString('utf8')));
+    // A sidecar written before a field rename still spells the old names in
+    // its base deck and operations; the schema would silently strip them.
+    const parsed = DeckHistoryDocumentSchema.safeParse(renameRetiredFields(JSON.parse(raw.toString('utf8'))));
     return parsed.success ? parsed.data : emptyDeckHistory();
   } catch {
     return emptyDeckHistory();

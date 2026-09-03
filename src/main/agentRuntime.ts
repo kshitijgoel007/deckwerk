@@ -4,6 +4,7 @@ import { mkdir, readFile, readdir, rename, unlink, writeFile } from 'node:fs/pro
 import { homedir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import type { BrowserWindow } from 'electron';
+import { renameRetiredFields } from '@shared/fieldAliases.js';
 import {
   AgentContextSchema,
   AgentRequestSchema,
@@ -118,7 +119,9 @@ export class AgentRuntime {
       this.processing.add(name);
       try {
         const path = join(paths.inbox, name);
-        const request = AgentRequestSchema.parse(JSON.parse(await readFile(path, 'utf8')));
+        // The schema strips keys it does not know, so a request written against
+        // retired field names is canonicalised before it is parsed.
+        const request = AgentRequestSchema.parse(renameRetiredFields(JSON.parse(await readFile(path, 'utf8'))));
         const win = this.editor();
         if (!win || win.isDestroyed()) {
           await this.respond({

@@ -8,7 +8,7 @@ The editor again uses the layout and styling from commit `7b8cacf`:
 - Text and Shape remain separate controls in the center.
 - Agent, Collaborate, and Present remain direct controls at the right.
 - Props, Theme, Build, and History are the sidebar tabs.
-- Layout and Magic Move are back in Props.
+- Layout and Morph are back in Props.
 - The slide rail again shows Slide, Duplicate, Hide, and Delete directly.
 
 The file-format actions are consolidated under **Save As…**. Its menu contains

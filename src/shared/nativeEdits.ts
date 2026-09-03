@@ -1,6 +1,8 @@
 import { z } from 'zod';
 import { DeckSchema, ElementSchema, SlideSchema, parseDeck, type Deck, type SlideElement } from './deck.js';
 import { diffDecks } from './deckDiff.js';
+import { canonicalFieldPath } from './fieldAliases.js';
+import { MORPH_NAME } from './featureNames.js';
 import type { AgentOperation } from './agent.js';
 
 const SetValuesSchema = z.record(z.unknown()).default({});
@@ -76,7 +78,7 @@ const COMMON_ELEMENT_PROPERTIES: PropertyDoc[] = [
     description: 'Inline CSS written exactly as the editor does. Use kebab-case names such as font-family, font-size, font-weight, color, line-height, letter-spacing, background-color, text-transform, and text-decoration.',
     example: 'Inter', unset: 'Unset a style property to restore the class/theme value.',
   },
-  { path: 'magicMoveId', type: 'string|null', description: 'Explicit Magic Move pairing identity.', example: 'hero-title' },
+  { path: 'morphId', type: 'string|null', description: `Explicit ${MORPH_NAME} pairing identity.`, example: 'hero-title' },
 ];
 
 const ELEMENT_PROPERTIES: Record<SlideElement['type'], PropertyDoc[]> = {
@@ -147,8 +149,8 @@ const SLIDE_PROPERTIES: PropertyDoc[] = [
   { path: 'background.image', type: 'deck-relative asset path|null', description: 'Slide background image.', example: 'assets/background.png' },
   { path: 'notes', type: 'string', description: 'Speaker notes.', example: 'Emphasize the scaling result.' },
   { path: 'layout', type: 'enum', values: ['freeform', 'standard', 'title'], description: 'Slide layout identity.', example: 'standard' },
-  { path: 'magicMoveFromPrevious', type: 'boolean', description: 'Animate from the preceding slide.', example: true },
-  { path: 'magicMoveDuration', type: 'number 100..5000', description: 'Magic Move duration from the preceding slide, in milliseconds.', example: 900 },
+  { path: 'morphFromPrevious', type: 'boolean', description: 'Animate from the preceding slide.', example: true },
+  { path: 'morphDuration', type: 'number 100..5000', description: `${MORPH_NAME} duration from the preceding slide, in milliseconds.`, example: 900 },
   { path: 'skipped', type: 'boolean', description: 'Keep the slide but skip it during presentation.', example: false },
   { path: 'timeline', type: 'timeline entry[]', description: 'Complete object-build sequence. Targets must remain on this slide.', example: [] },
 ];
@@ -161,7 +163,7 @@ const DECK_PROPERTIES: PropertyDoc[] = [
   { path: 'themeStyle.fonts.<role>.<property>', type: 'theme font value', description: 'Theme typography for title, heading, body, caption, or base: family, size, weight, lineHeight, letterSpacing, and optional color.', example: 'Inter' },
   { path: 'themeStyle.colors.<role>', type: 'CSS color', description: 'Theme background, text, muted, or accent color.', example: '#f7f7f8' },
   { path: 'themeStyle.palette', type: 'CSS color[]', description: 'Theme color palette.', example: ['#101218', '#f7f7f8', '#6ea8fe'] },
-  { path: 'magicMoveEasing', type: 'enum', values: ['ease-in-out', 'ease-out', 'linear'], description: 'Deck-wide Magic Move easing.', example: 'ease-in-out' },
+  { path: 'morphEasing', type: 'enum', values: ['ease-in-out', 'ease-out', 'linear'], description: `Deck-wide ${MORPH_NAME} easing.`, example: 'ease-in-out' },
 ];
 
 export function nativeEditContract(): Record<string, unknown> {
@@ -256,12 +258,16 @@ function patchObject(
   allowed: (path: string) => boolean,
 ): void {
   const claimed = new Set<string>();
-  for (const path of Object.keys(set)) {
+  // An agent working from an older brief still names retired properties, so
+  // every path is canonicalised before it is validated, claimed or applied.
+  for (const raw of Object.keys(set)) {
+    const path = canonicalFieldPath(raw);
     validatePath(path, allowed);
     claimPath(claimed, path);
-    setPath(target, path, structuredClone(set[path]));
+    setPath(target, path, structuredClone(set[raw]));
   }
-  for (const path of unset) {
+  for (const raw of unset) {
+    const path = canonicalFieldPath(raw);
     validatePath(path, allowed);
     claimPath(claimed, path);
     unsetPath(target, path);
@@ -309,16 +315,16 @@ function unsetPath(target: Record<string, unknown>, path: string): void {
 }
 
 function allowedDeckPath(path: string): boolean {
-  return ['title', 'themePreset', 'magicMoveEasing', 'canvas.w', 'canvas.h'].includes(path)
+  return ['title', 'themePreset', 'morphEasing', 'canvas.w', 'canvas.h'].includes(path)
     || path.startsWith('themeStyle.');
 }
 
 function allowedSlidePath(path: string): boolean {
-  return ['name', 'background.color', 'background.image', 'notes', 'layout', 'magicMoveFromPrevious', 'magicMoveDuration', 'skipped', 'timeline'].includes(path);
+  return ['name', 'background.color', 'background.image', 'notes', 'layout', 'morphFromPrevious', 'morphDuration', 'skipped', 'timeline'].includes(path);
 }
 
 function allowedElementPath(type: SlideElement['type'], path: string): boolean {
-  const common = new Set(['x', 'y', 'w', 'h', 'rot', 'z', 'opacity', 'class', 'magicMoveId']);
+  const common = new Set(['x', 'y', 'w', 'h', 'rot', 'z', 'opacity', 'class', 'morphId']);
   if (common.has(path) || path.startsWith('style.')) return true;
   if (type === 'text' && path.startsWith('contentStyle.')) return true;
   const typePaths = new Set(ELEMENT_PROPERTIES[type].map((property) => property.path.replace(/\.<[^>]+>$/, '')));

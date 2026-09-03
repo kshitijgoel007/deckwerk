@@ -152,7 +152,7 @@ deck before deciding what to change. To *show* the deck to a human, run
 `slide-agent preview . --open` in the background: it serves the deck through
 the real player on localhost and prints the URL.
 
-`slide-agent capabilities` documents builds, Magic Move, crops, video trim
+`slide-agent capabilities` documents builds, Morph, crops, video trim
 and KaTeX, each with working markup. `slide-agent docs` has the full guide.
 The older JSON transaction API is still there for tooling with no browser, but
 it is not how slides are authored any more.

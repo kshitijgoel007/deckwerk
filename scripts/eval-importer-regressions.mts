@@ -30,6 +30,30 @@ const fixtures = [
     }],
   },
   {
+    // Every region on these two slides has a native deck object waiting for
+    // it: one-primitive SVG, framed media, a hand-authored table, semantic
+    // text, and paint that only a pseudo-element carries. A fallback here is
+    // a regression in editability, which is what `minNativeRatio: 1` says.
+    file: 'native-conversion.html',
+    slides: [
+      {
+        id: 'native-shapes', sourceNumber: 1, minNativeRatio: 1,
+        maxPixelDifference: 0.005, maxOverflowCount: 1,
+      },
+      {
+        id: 'native-media', sourceNumber: 2, minNativeRatio: 1,
+        maxPixelDifference: 0.03, maxOverflowCount: 2,
+      },
+      {
+        // Pictures framed by object-fit/object-position inside shaped
+        // windows. The pixel bar is what proves the crop was read correctly:
+        // a mis-read framing shows the wrong part of the photograph.
+        id: 'native-crops', sourceNumber: 3, minNativeRatio: 1,
+        maxPixelDifference: 0.002, maxOverflowCount: 1,
+      },
+    ],
+  },
+  {
     file: 'agent-paper-showcase.html',
     slides: [
       {

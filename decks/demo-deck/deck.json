@@ -6,6 +6,25 @@
     "h": 1080
   },
   "theme": "theme.css",
+  "themePreset": null,
+  "themeStyle": null,
+  "themeSelection": {
+    "preset": "poster",
+    "roles": [
+      "title",
+      "heading",
+      "body",
+      "caption"
+    ],
+    "fontFamily": true,
+    "fontWeight": true,
+    "typeScale": false,
+    "textColor": false,
+    "objectColors": false
+  },
+  "customThemes": [],
+  "layoutMasters": null,
+  "morphEasing": "ease-in-out",
   "slides": [
     {
       "id": "slide-1",
@@ -116,7 +135,8 @@
           "controls": false,
           "start": 0,
           "end": null,
-          "poster": null
+          "poster": null,
+          "sourceBox": null
         }
       ],
       "timeline": [
@@ -158,7 +178,8 @@
           "type": "image",
           "src": "assets/swatch.png",
           "fit": "contain",
-          "alt": "Blue swatch"
+          "alt": "Blue swatch",
+          "sourceBox": null
         },
         {
           "id": "shape-box",
@@ -176,7 +197,11 @@
           "fill": "#f59e0b",
           "stroke": "#111827",
           "strokeWidth": 4,
-          "radius": 16
+          "radius": 16,
+          "path": null,
+          "pathSize": null,
+          "arrowStart": false,
+          "arrowEnd": false
         },
         {
           "id": "unsupported-demo",

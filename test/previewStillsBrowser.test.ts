@@ -23,7 +23,7 @@ import { collabClientDir } from './support/collabClient.js';
  * Preview surfaces must show a picture that cannot be taken away.
  *
  * Reported three times over one deck (rhoda_intro_2: five slides, one clip
- * across sixteen elements): rail thumbnails and Magic Move previews show black
+ * across sixteen elements): rail thumbnails and Morph previews show black
  * rectangles. Scrolling the rail away and back brings them back black; so does
  * presenting and closing the presentation. The cause is that a `<video>` paints
  * nothing until a frame is decoded, and the decoded frames of a page that is
@@ -161,7 +161,7 @@ describe.skipIf(!electronBinary || !ffmpeg)('preview surfaces show stills', () =
     const survey = () => editor!.evaluate<Survey>(`(() => {
       const stills = [...document.querySelectorAll('img[data-preview-still]')];
       const previewVideo = (video) =>
-        video.closest('.rail-thumb') || video.closest('.magic-preview');
+        video.closest('.rail-thumb') || video.closest('.morph-preview');
       const all = [...document.querySelectorAll('video')];
       return {
         stills: stills.length,
@@ -171,7 +171,7 @@ describe.skipIf(!electronBinary || !ffmpeg)('preview surfaces show stills', () =
       };
     })()`);
 
-    // Sixteen rail elements plus the Magic Move panel's two previews.
+    // Sixteen rail elements plus the Morph panel's two previews.
     const settled = await eventually(
       survey,
       'the previews never became painted stills',

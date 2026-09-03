@@ -17,10 +17,12 @@ import type {
 import { type AlignMode, alignElements } from './align.js';
 import type { EditorStore } from './store.js';
 import { LAYOUT_LABELS, applySlideLayout, type SlideLayout } from './slideLayouts.js';
-import { MagicMovePanel } from './magicMovePanel.js';
+import { MorphPanel } from './morphPanel.js';
 import { fontFamilyField, primaryFamily } from './fontPicker.js';
-import { themeById } from '@shared/themes.js';
+import { deckTheme, deckThemes, themeById } from '@shared/themes.js';
 import { colorField, colorForInput } from './colorPicker.js';
+import { setCircularMask } from '@shared/mediaMask.js';
+import { mediaNaturalSize } from './mediaNatural.js';
 import {
   cssMediaBorder,
   cssMediaRadius,
@@ -35,6 +37,9 @@ import {
   setWholeTextParagraphSpacing,
   setWholeTextStyle,
   wholeTextFormatState,
+  applyTextRole,
+  isBaselineFormat,
+  type InlineTextFormat,
 } from './textFormatting.js';
 
 interface TextPaintInfo {
@@ -91,10 +96,17 @@ export class Inspector {
   onEditText?: (elementId: string) => void;
   /** Whether the canvas currently owns a live text selection. */
   editingText?: () => boolean;
+  /**
+   * Whether the typography controls address something narrower than the whole
+   * box — an expanded character selection or a selected table cell. The box's
+   * authored declarations are then only the backdrop those characters inherit
+   * from, so the fields must read the selection rather than the box.
+   */
+  textStyleTargetsSelection?: () => boolean;
   /** Apply weight to only the selected characters in the live text edit. */
   onApplyTextSelectionWeight?: (weight: number) => boolean;
-  onToggleTextSelectionFormat?: (format: 'bold' | 'italic' | 'underline') => boolean;
-  textSelectionFormatState?: (format: 'bold' | 'italic' | 'underline') => boolean;
+  onToggleTextSelectionFormat?: (format: InlineTextFormat) => boolean;
+  textSelectionFormatState?: (format: InlineTextFormat) => boolean;
   /** Apply a family to only the selected characters in the live text edit. */
   onApplyTextSelectionFontFamily?: (value: string) => boolean;
   onApplyTextSelectionFontSize?: (value: number) => boolean;
@@ -151,8 +163,8 @@ export class Inspector {
   private lastSlideSelection = '';
   /** Keep the opacity slider mounted while its live drag updates the deck. */
   private changingOpacity = false;
-  private magicMoveHost = document.createElement('section');
-  private magicMovePanel: MagicMovePanel;
+  private morphHost = document.createElement('section');
+  private morphPanel: MorphPanel;
   /** Enter the dedicated editor for the three fixed layout masters. */
   onEditLayouts?: (layout: SlideLayout) => void;
 
@@ -160,8 +172,8 @@ export class Inspector {
     this.host = host;
     this.host.classList.add('editor-inspector');
     this.store = store;
-    this.magicMoveHost.className = 'magic-move-section';
-    this.magicMovePanel = new MagicMovePanel(this.magicMoveHost, store, false);
+    this.morphHost.className = 'morph-section';
+    this.morphPanel = new MorphPanel(this.morphHost, store, false);
     // Only re-render when the deck, selection or slide actually changed. The
     // store also emits for bookkeeping (autosave's markClean among them), and
     // rebuilding then destroys whatever control the user is holding — the trim
@@ -214,6 +226,19 @@ export class Inspector {
     this.restoreFocusedControl(focused);
   }
 
+  /**
+   * The stylesheet changed under the panel. Font family, size, weight and
+   * paragraph spacing readouts for the selected elements are computed styles,
+   * so they go stale the moment theme.css does — but only the element sections
+   * read them. With nothing selected the panel shows slide layout and the
+   * Morph previews, and rebuilding those re-mounts every preview video: the
+   * torn-down surfaces keep fetching until the load gate's watchdog notices,
+   * so for a moment twice the budgeted videos are on the wire.
+   */
+  noteThemeChanged(): void {
+    if (this.store.selectedElements().length > 0) this.render();
+  }
+
   private static controlKey(node: Element): string {
     const label = node.closest('label, .field-number, .field')?.querySelector('span')
       ?.textContent
@@ -225,7 +250,7 @@ export class Inspector {
   /** The deck theme's font families (title→base order), primary names only. */
   private deckThemeFamilies(): string[] {
     const deck = this.store.get().deck;
-    const fonts = deck.themeStyle?.fonts ?? themeById(deck.themePreset)?.fonts;
+    const fonts = deck.themeStyle?.fonts ?? themeById(deck.themePreset, deckThemes(deck))?.fonts;
     if (!fonts) return [];
     const roles = [fonts.title, fonts.heading, fonts.body, fonts.caption, fonts.base];
     return [...new Set(roles.map((role) => primaryFamily(role.family)).filter(Boolean))];
@@ -280,12 +305,12 @@ export class Inspector {
     this.lastSlideSelection = [...slideSelection].sort().join(',');
     const selected = this.store.selectedElements();
     this.host.replaceChildren();
-    if (selected.length > 0) this.magicMovePanel.dismiss();
+    if (selected.length > 0) this.morphPanel.dismiss();
     if (slideSelection.size > 1 && selected.length === 0) {
       this.host.appendChild(sectionTitle('slides'));
       this.host.appendChild(hint(`${slideSelection.size} slides selected`));
       this.host.appendChild(this.slideLayoutSection(this.store.selectedSlides()));
-      this.appendMagicMove();
+      this.appendMorph();
       return;
     }
 
@@ -293,7 +318,7 @@ export class Inspector {
       this.host.appendChild(sectionTitle('slide'));
       const slide = deck.slides[slideIndex];
       if (slide) this.host.appendChild(this.slideLayoutSection([slide]));
-      this.appendMagicMove();
+      this.appendMorph();
       return;
     }
     if (selected.length > 1) {
@@ -335,9 +360,9 @@ export class Inspector {
     if (specific) this.host.appendChild(specific);
   }
 
-  private appendMagicMove(): void {
-    this.magicMovePanel.render();
-    this.host.appendChild(this.magicMoveHost);
+  private appendMorph(): void {
+    this.morphPanel.render();
+    this.host.appendChild(this.morphHost);
   }
 
   /** Slide-level controls apply uniformly to every slide selected in the rail. */
@@ -453,7 +478,14 @@ export class Inspector {
         '×',
         'Reset mask',
         () => this.store.updateSelected((target) => {
-          if (target.type === 'image' || target.type === 'video') target.sourceBox = null;
+          if (target.type !== 'image' && target.type !== 'video') return;
+          target.sourceBox = null;
+          // A circle has no corners to fill, so dropping the crop entirely
+          // would leave slide showing through it. Re-centre the picture in the
+          // circle instead -- that is what "the whole frame" means here.
+          if (target.maskShape === 'circle') {
+            setCircularMask(target, true, mediaNaturalSize(target.id));
+          }
         }, { label: 'Reset mask' }),
       );
       reset.classList.add('primary', 'mask-reset-segment');
@@ -482,8 +514,9 @@ export class Inspector {
           }
         })),
     );
-    // Circle clips the element box to its inscribed ellipse. Mask editing then
-    // moves and scales the media behind that fixed window.
+    // Circle squares the window and crops the picture to it, so the mask is a
+    // true circle whatever the media's aspect ratio. Mask editing then drags
+    // the picture around behind that fixed window.
     settings.appendChild(
       checkboxField('Circular mask', editableCircularMask(el), (on) =>
         this.store.updateSelected((target) => {
@@ -898,11 +931,14 @@ export class Inspector {
     wrap.appendChild(mixedSelectField(
       'Role', ['none', 'role-title', 'role-body', 'role-caption'],
       commonValue(roles),
-      (value) => this.store.updateSelected((element) => {
-        if (element.type !== 'text') return;
-        element.class = element.class.filter((name) => !name.startsWith('role-'));
-        if (value !== 'none') element.class.push(value);
-      }),
+      (value) => {
+        const role = value === 'none' ? null : value.slice(5);
+        const defaults = this.roleTypeDefaults(role);
+        this.store.updateSelected((element) => {
+          if (element.type !== 'text') return;
+          applyTextRole(element, role, defaults);
+        }, { label: role ? `Set role to ${role}` : 'Clear role' });
+      },
     ));
 
     wrap.appendChild(mixedSelectField(
@@ -1212,7 +1248,13 @@ export class Inspector {
         }
 
         const computedTypography = this.textComputedTypography?.(el.id);
-        const authoredFamily = el.style['font-family'] ?? '';
+        // A character selection (or a selected cell) reads its own typography.
+        // The box declaration is what those characters inherit when they
+        // declare nothing themselves, so letting it win here would report a
+        // size the selection does not have — and every edit would then be
+        // computed from, and snap back to, the box's number.
+        const scoped = this.textStyleTargetsSelection?.() ?? false;
+        const authoredFamily = scoped ? '' : el.style['font-family'] ?? '';
         const displayedFamily = authoredFamily
           || (computedTypography?.fontFamilyExplicit ? computedTypography.fontFamily ?? '' : '');
         typography.content.appendChild(fontFamilyField(
@@ -1230,10 +1272,14 @@ export class Inspector {
           },
         ));
 
-        const authoredSize = Number.parseFloat(el.style['font-size'] ?? '') || null;
+        const authoredSize = scoped
+          ? null
+          : Number.parseFloat(el.style['font-size'] ?? '') || null;
         const displayedSize = authoredSize
           ?? (computedTypography?.fontSizeExplicit ? computedTypography.fontSize : null);
-        const authoredWeight = Number.parseFloat(el.style['font-weight'] ?? '') || null;
+        const authoredWeight = scoped
+          ? null
+          : Number.parseFloat(el.style['font-weight'] ?? '') || null;
         const displayedWeight = authoredWeight
           ?? (computedTypography?.fontWeightExplicit ? computedTypography.fontWeight : null);
         const fontMetrics = document.createElement('div');
@@ -1303,7 +1349,11 @@ export class Inspector {
         ));
         typography.content.appendChild(fontMetrics);
 
-        if (this.editingText?.()) {
+        // Shown whether or not a live edit is open: with a caret/selection the
+        // buttons format the selected characters, and with the box merely
+        // selected they fall through to the whole-box toggle below.
+        {
+          const editing = this.editingText?.() ?? false;
           const selectionStyle = document.createElement('div');
           selectionStyle.className = 'text-selection-style';
           const formatButtons = document.createElement('div');
@@ -1312,9 +1362,14 @@ export class Inspector {
             ['bold', 'B', 'Bold (Cmd/Ctrl+B)'],
             ['italic', 'I', 'Italic (Cmd/Ctrl+I)'],
             ['underline', 'U', 'Underline (Cmd/Ctrl+U)'],
+            ['superscript', 'x²', 'Superscript (Cmd/Ctrl+Shift+=)'],
+            ['subscript', 'x₂', 'Subscript (Cmd/Ctrl+Shift+-)'],
           ] as const) {
             const choice = button(label, () => {
               if (this.onToggleTextSelectionFormat?.(format)) return;
+              // A baseline shift describes a run, never a whole block, so
+              // there is no box-level fallback to fall through to.
+              if (isBaselineFormat(format)) return;
               const active = wholeTextFormatState(el, format);
               this.store.updateSelected((target) => {
                 if (target.type === 'text') setWholeTextFormat(target, format, !active);
@@ -1325,8 +1380,17 @@ export class Inspector {
             choice.setAttribute('aria-label', title);
             choice.setAttribute(
               'aria-pressed',
-              String(this.textSelectionFormatState?.(format) ?? false),
+              String(
+                editing
+                  ? this.textSelectionFormatState?.(format) ?? false
+                  : !isBaselineFormat(format) && wholeTextFormatState(el, format),
+              ),
             );
+            if (!editing && isBaselineFormat(format)) {
+              // Raised/lowered describes a run, so it needs a caret to act on.
+              choice.disabled = true;
+              choice.title = `${title} — select characters in the text first`;
+            }
             choice.addEventListener('pointerdown', (event) => event.preventDefault());
             formatButtons.appendChild(choice);
           }
@@ -1356,13 +1420,16 @@ export class Inspector {
           roleDrop.appendChild(opt);
         }
         roleDrop.value = current;
-        roleDrop.addEventListener('change', () =>
+        roleDrop.addEventListener('change', () => {
+          const role = roleDrop.value ? roleDrop.value.slice(5) : null;
+          const defaults = this.roleTypeDefaults(role);
           this.store.updateSelected((e) => {
-            e.class = e.class.filter((c) => !c.startsWith('role-'));
-            if (roleDrop.value) e.class.push(roleDrop.value);
-          }),
-        );
+            if (e.type !== 'text') return;
+            applyTextRole(e, role, defaults);
+          }, { label: role ? `Set role to ${role}` : 'Clear role' });
+        });
         roleSelect.append(roleSpan, roleDrop);
+        roleSelect.classList.add('text-role');
         typography.content.appendChild(roleSelect);
 
         // One mutually-exclusive list style control. When a live selection is
@@ -1641,6 +1708,28 @@ export class Inspector {
         return wrap;
       }
     }
+  }
+
+  /**
+   * The current theme's type for a role, or `null` when the deck wears no
+   * theme at all.
+   *
+   * `deckTheme` is how every other surface — the theme card, the layout master
+   * preview, a newly created slide — answers "which theme is this deck
+   * wearing", including the deck's own edits to it. Resolving the role's type
+   * anywhere else is how the control came to dress a box in whichever theme
+   * happened to be installed in theme.css when the deck was made.
+   */
+  private roleTypeDefaults(role: string | null): {
+    family: string;
+    size: number;
+    weight: number;
+    lineHeight: number;
+    letterSpacing: string;
+  } | null {
+    if (!role) return null;
+    const theme = deckTheme(this.store.get().deck);
+    return theme?.fonts[role as keyof typeof theme.fonts] ?? null;
   }
 
   /** The solid colour reported by the live canvas after the full CSS cascade. */
@@ -2031,12 +2120,7 @@ function setMediaMask(
   element: Extract<SlideElement, { type: 'image' | 'video' }>,
   circular: boolean,
 ): void {
-  const style = { ...element.style };
-  delete style['border-radius'];
-  element.style = style;
-  // `rect` is deliberately explicit: it prevents an old CSS 50% radius from
-  // reappearing after the checkbox is turned off.
-  element.maskShape = circular ? 'circle' : 'rect';
+  setCircularMask(element, circular, mediaNaturalSize(element.id));
 }
 
 function editableMediaBorder(
@@ -2526,7 +2610,7 @@ function trimRangeSlider(
   return wrap;
 }
 
-function button(label: string, onClick: () => void, variant = ''): HTMLElement {
+function button(label: string, onClick: () => void, variant = ''): HTMLButtonElement {
   const b = document.createElement('button');
   b.textContent = label;
   if (variant) b.className = variant;

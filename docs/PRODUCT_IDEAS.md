@@ -10,7 +10,7 @@ Notes collected while exercising real imported decks and building the editor.
   safe “remove unused assets” action.
 - Add reusable symbols/components for recurring logos, footers, citations and
   diagram nodes, with deck-wide editing.
-- Extend Magic Move with a manual match inspector when content heuristics find
+- Extend Morph with a manual match inspector when content heuristics find
   several plausible counterparts.
 - Add animation rehearsal controls: scrub build steps, preview one transition,
   and display click groups directly on the canvas.

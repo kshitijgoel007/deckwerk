@@ -8,6 +8,7 @@ import { Inspector } from '../src/renderer/editor/inspector.js';
 import { wireCanvasInspector } from '../src/renderer/editor/shellWiring.js';
 import { EditorStore } from '../src/renderer/editor/store.js';
 import { closePopover } from '../src/renderer/editor/ui.js';
+import { themeById, themeStyleOf } from '../src/shared/themes.js';
 
 /**
  * Text formatting driven the way an author drives it: every assertion below
@@ -212,7 +213,7 @@ describe('text formatting from the inspector controls', () => {
       'Auto-fit text to box', 'Disable automatic line breaks', 'List',
       'Align', 'Vertical', 'Paragraph spacing',
     ]);
-    expect(labels('.text-format-buttons button')).toEqual(['B', 'I', 'U']);
+    expect(labels('.text-format-buttons button')).toEqual(['B', 'I', 'U', 'x²', 'x₂']);
     expect(labels('.number-step-buttons button')).toEqual(['▲', '▼', '▲', '▼', '▲', '▼']);
 
     const table = setup([textElement('table-1', {
@@ -497,6 +498,8 @@ describe('text formatting from the inspector controls', () => {
     ['Bold (Cmd/Ctrl+B)', 'fontWeight', '700'],
     ['Italic (Cmd/Ctrl+I)', 'fontStyle', 'italic'],
     ['Underline (Cmd/Ctrl+U)', 'textDecorationLine', 'underline'],
+    ['Superscript (Cmd/Ctrl+Shift+=)', 'verticalAlign', 'super'],
+    ['Subscript (Cmd/Ctrl+Shift+-)', 'verticalAlign', 'sub'],
   ] as const)('formats one selected word with the %s button and undoes it', (
     label, property, expected,
   ) => {
@@ -535,6 +538,161 @@ describe('text formatting from the inspector controls', () => {
     expect(window.getSelection()!.isCollapsed).toBe(false);
     expect(inspectorHost.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!
       .getAttribute('aria-pressed')).toBe('false');
+  });
+
+  it.each([
+    ['=', 'superscript', 'super'],
+    ['+', 'superscript', 'super'],
+    ['-', 'subscript', 'sub'],
+    ['_', 'subscript', 'sub'],
+  ] as const)('applies Cmd/Ctrl+Shift+%s as %s and undoes it once', (key, _name, alignment) => {
+    const original = '<p>First paragraph</p><p>Second paragraph</p>';
+    const { store, canvas, canvasHost } = setup([textElement('text-1', { html: original })]);
+    canvas.beginTextEdit('text-1');
+    const content = contentOf(canvasHost, 'text-1');
+    const text = content.querySelector('p')!.firstChild!;
+    const range = document.createRange();
+    range.setStart(text, 0);
+    range.setEnd(text, 5);
+    window.getSelection()!.removeAllRanges();
+    window.getSelection()!.addRange(range);
+
+    const shortcut = new KeyboardEvent('keydown', {
+      key, metaKey: true, shiftKey: true, bubbles: true, cancelable: true,
+    });
+    content.dispatchEvent(shortcut);
+    expect(shortcut.defaultPrevented).toBe(true);
+
+    // The raised run is shrunk in the same step: a full-size character sitting
+    // above the line is a layout accident, not a superscript.
+    const html = textOf(store, 'text-1').html;
+    expect(html).toContain(`vertical-align: ${alignment}`);
+    expect(html).toContain('font-size: 0.7em');
+    expect(content.querySelectorAll('p')).toHaveLength(2);
+
+    content.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'z', metaKey: true, bubbles: true, cancelable: true,
+    }));
+    expect(textOf(store, 'text-1').html).toBe(original);
+  });
+
+  it('treats superscript and subscript as one exclusive baseline choice', () => {
+    const { store, canvas, canvasHost, inspectorHost } = setup([
+      textElement('text-1', { html: '<p>First paragraph</p>' }),
+    ]);
+    canvas.beginTextEdit('text-1');
+    const content = contentOf(canvasHost, 'text-1');
+    const select = () => {
+      // Re-query: each toggle rewrites the paragraph's children, so the first
+      // word lives in a fresh text node inside a fresh run every time.
+      const walker = document.createTreeWalker(
+        content.querySelector('p')!, NodeFilter.SHOW_TEXT,
+      );
+      const text = walker.nextNode()!;
+      const range = document.createRange();
+      range.setStart(text, 0);
+      range.setEnd(text, 5);
+      window.getSelection()!.removeAllRanges();
+      window.getSelection()!.addRange(range);
+      document.dispatchEvent(new Event('selectionchange'));
+    };
+    const choice = (label: string) =>
+      inspectorHost.querySelector<HTMLButtonElement>(`button[aria-label^="${label}"]`)!;
+    const pressed = () =>
+      [choice('Superscript'), choice('Subscript')].map((b) => b.getAttribute('aria-pressed'));
+
+    select();
+    choice('Superscript').click();
+    expect(content.querySelectorAll('p span')).toHaveLength(1);
+    expect(content.querySelector<HTMLElement>('p span')!.style.verticalAlign).toBe('super');
+    expect(pressed()).toEqual(['true', 'false']);
+
+    // Switching sides overwrites the losing baseline rather than nesting a
+    // second run inside the first.
+    select();
+    choice('Subscript').click();
+    expect(content.querySelectorAll('p span')).toHaveLength(1);
+    expect(content.querySelector<HTMLElement>('p span')!.style.verticalAlign).toBe('sub');
+    expect(pressed()).toEqual(['false', 'true']);
+
+    select();
+    choice('Subscript').click();
+    const cleared = content.querySelector<HTMLElement>('p span')!;
+    expect(cleared.style.verticalAlign).toBe('baseline');
+    expect(cleared.style.fontSize).toBe('inherit');
+    expect(pressed()).toEqual(['false', 'false']);
+    expect(content.textContent).toBe('First paragraph');
+    expect(store.canUndo()).toBe(true);
+  });
+
+  it('starts a superscript run at a collapsed caret so the next characters are raised', () => {
+    const { canvas, canvasHost, inspectorHost } = setup([
+      textElement('text-1', { html: '<p>x</p>' }),
+    ]);
+    canvas.beginTextEdit('text-1');
+    const content = contentOf(canvasHost, 'text-1');
+    const caret = document.createRange();
+    caret.selectNodeContents(content.querySelector('p')!);
+    caret.collapse(false);
+    window.getSelection()!.removeAllRanges();
+    window.getSelection()!.addRange(caret);
+    document.dispatchEvent(new Event('selectionchange'));
+
+    inspectorHost.querySelector<HTMLButtonElement>('button[aria-label^="Superscript"]')!.click();
+    const marker = content.querySelector<HTMLElement>('[data-editor-typing-style]')!;
+    expect(marker.style.verticalAlign).toBe('super');
+    expect(marker.style.fontSize).toBe('0.7em');
+
+    content.dispatchEvent(new InputEvent('beforeinput', {
+      bubbles: true, cancelable: true, inputType: 'insertText', data: '2',
+    }));
+    expect(content.querySelector<HTMLElement>('[data-editor-typing-style]')!.textContent)
+      .toContain('2');
+    expect(content.textContent?.replace(/[\u2060\ufeff]/g, '')).toBe('x2');
+  });
+
+  it('raises the runs inside selected table cells without moving the cell text', () => {
+    const { store, canvas, canvasHost, inspectorHost } = setup([
+      textElement('text-1', { html: TABLE_WORD_HTML }),
+    ]);
+    canvas.beginTextEdit('text-1');
+    const content = contentOf(canvasHost, 'text-1');
+    const cell = content.querySelector<HTMLTableCellElement>('td')!;
+    cell.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+    const caret = document.createRange();
+    caret.setStart(cell.firstChild!, 0);
+    caret.collapse(true);
+    window.getSelection()!.removeAllRanges();
+    window.getSelection()!.addRange(caret);
+    document.dispatchEvent(new Event('selectionchange'));
+    expect(canvas.tableSelectionInfo()).toMatchObject({ row: 0, column: 0 });
+
+    const choice = () =>
+      inspectorHost.querySelector<HTMLButtonElement>('button[aria-label^="Superscript"]')!;
+    choice().click();
+
+    let saved = savedTable(store);
+    const raised = saved.querySelector<HTMLElement>('td span')!;
+    expect(raised.textContent).toBe('alpha beta');
+    expect(raised.style.verticalAlign).toBe('super');
+    // `vertical-align` on the cell itself is the cell's own alignment control,
+    // so writing the run's baseline there would move the text instead.
+    expect([...saved.querySelectorAll<HTMLElement>('td')]
+      .every((tableCell) => !tableCell.style.verticalAlign)).toBe(true);
+    expect(saved.querySelectorAll('td')[1].textContent).toBe('gamma');
+    expect(saved.querySelectorAll('td')[1].querySelector('span')).toBeNull();
+    expect(choice().getAttribute('aria-pressed')).toBe('true');
+
+    choice().click();
+    saved = savedTable(store);
+    expect(saved.querySelector<HTMLElement>('td span')!.style.verticalAlign).toBe('baseline');
+    expect(choice().getAttribute('aria-pressed')).toBe('false');
+
+    // One undoable step per click, and the pair returns the cells to the
+    // markup they were authored with.
+    store.undo();
+    store.undo();
+    expect(textOf(store, 'text-1').html).toBe(TABLE_WORD_HTML);
   });
 
   it('shows computed theme font size and weight until an override is authored', () => {
@@ -653,6 +811,108 @@ describe('text formatting from the inspector controls', () => {
     expect(status.title).toBe(
       'Auto-fit reduced the displayed text from 46 px to 19.9 px to fit this box.',
     );
+  });
+
+  /**
+   * A title as `decks/deckwerk_intro` authors one: an auto-fitting box that
+   * declares its own ceiling size, a lead word sized absolutely, the raised
+   * footnote marker the editor writes `em`-relative so it tracks its
+   * surroundings, and a proportionally scaled tail.
+   */
+  const MIXED_TITLE_HTML = '<p style="margin:0;">'
+    + '<span style="font-size: 87px; font-weight: 700;">DeckWerk</span>'
+    + '<span style="font-size: 0.7em; vertical-align: super;">1</span>'
+    + '<span style="font-size: 0.84em;"> is presentation software.</span>'
+    + '</p>';
+
+  const mixedTitle = () => setup([textElement('text-1', {
+    autoFit: true, style: { 'font-size': '88px' }, html: MIXED_TITLE_HTML,
+  })]);
+
+  /** Select whole runs by index, the way a double-click or a drag selects. */
+  function selectRuns(content: HTMLElement, first: number, last = first): void {
+    const runs = content.querySelectorAll<HTMLElement>('span');
+    const range = document.createRange();
+    range.setStart(runs[first].firstChild!, 0);
+    range.setEnd(runs[last].firstChild!, runs[last].textContent!.length);
+    window.getSelection()!.removeAllRanges();
+    window.getSelection()!.addRange(range);
+    document.dispatchEvent(new Event('selectionchange'));
+  }
+
+  const sizeInput = (host: HTMLElement): HTMLInputElement =>
+    field(host, 'Font size').querySelector<HTMLInputElement>('input')!;
+  const sizeStep = (host: HTMLElement, direction: 'up' | 'down'): HTMLButtonElement =>
+    field(host, 'Font size').querySelector<HTMLButtonElement>(`.number-step-${direction}`)!;
+  const runSizes = (store: EditorStore): string[] => {
+    const saved = document.createElement('div');
+    saved.innerHTML = textOf(store, 'text-1').html;
+    return [...saved.querySelectorAll<HTMLElement>('span')].map((run) => run.style.fontSize);
+  };
+
+  it('steps a selected run down from its own size instead of the box ceiling', () => {
+    const { store, canvas, canvasHost, inspectorHost } = mixedTitle();
+    canvas.beginTextEdit('text-1');
+    selectRuns(contentOf(canvasHost, 'text-1'), 0);
+
+    // The box declares 88px; the selected run declares 87px. The field must
+    // report what the selection is, or every step is computed from — and
+    // snaps back to — a number the selected characters never had.
+    expect(sizeInput(inspectorHost).value).toBe('87');
+
+    for (const expected of ['86', '85', '84']) {
+      sizeStep(inspectorHost, 'down').click();
+      expect(sizeInput(inspectorHost).value).toBe(expected);
+      expect(runSizes(store)[0]).toBe(`${expected}px`);
+    }
+    sizeStep(inspectorHost, 'up').click();
+    expect(sizeInput(inspectorHost).value).toBe('85');
+
+    // Only the selected run moved: the box keeps its ceiling and the two
+    // proportional runs keep their ratios.
+    expect(textOf(store, 'text-1').style['font-size']).toBe('88px');
+    expect(runSizes(store)).toEqual(['85px', '0.7em', '0.84em']);
+    expect(contentOf(canvasHost, 'text-1').textContent)
+      .toBe('DeckWerk1 is presentation software.');
+  });
+
+  it('keeps a proportional run proportional when the selection spans past it', () => {
+    const { store, canvas, canvasHost, inspectorHost } = mixedTitle();
+    canvas.beginTextEdit('text-1');
+    // A double-click that catches the footnote marker along with the word.
+    selectRuns(contentOf(canvasHost, 'text-1'), 0, 1);
+
+    sizeStep(inspectorHost, 'down').click();
+
+    // The raised marker is written `em` so it tracks the text it sits beside.
+    // Flattening it to 86px would balloon it to full size, and auto-fit would
+    // then shrink every other line to make room — the whole box changing size
+    // because one word was nudged down.
+    expect(runSizes(store)).toEqual(['86px', '0.7em', '0.84em']);
+    expect(contentOf(canvasHost, 'text-1').textContent)
+      .toBe('DeckWerk1 is presentation software.');
+  });
+
+  it('sizes a proportional run absolutely when the selection holds nothing else', () => {
+    const { store, canvas, canvasHost, inspectorHost } = mixedTitle();
+    canvas.beginTextEdit('text-1');
+    selectRuns(contentOf(canvasHost, 'text-1'), 1);
+
+    // Nothing else is selected, so there is no surrounding size to stay in
+    // proportion to: the author is sizing this run and means it.
+    type(sizeInput(inspectorHost), '40');
+    expect(runSizes(store)).toEqual(['87px', '40px', '0.84em']);
+  });
+
+  it('keeps proportional runs proportional when the whole box is resized', () => {
+    const { store, inspectorHost } = mixedTitle();
+
+    type(sizeInput(inspectorHost), '60');
+
+    // Auto-fit owns the rendered size, so absolute run overrides are cleared
+    // to let the new ceiling through — but a ratio is not an override.
+    expect(textOf(store, 'text-1').style['font-size']).toBe('60px');
+    expect(runSizes(store)).toEqual(['', '0.7em', '0.84em']);
   });
 
   it.each([
@@ -942,6 +1202,8 @@ describe('text formatting from the inspector controls', () => {
     ['Bold (Cmd/Ctrl+B)', 'fontWeight', '700'],
     ['Italic (Cmd/Ctrl+I)', 'fontStyle', 'italic'],
     ['Underline (Cmd/Ctrl+U)', 'textDecorationLine', 'underline'],
+    ['Superscript (Cmd/Ctrl+Shift+=)', 'verticalAlign', 'super'],
+    ['Subscript (Cmd/Ctrl+Shift+-)', 'verticalAlign', 'sub'],
   ] as const)('formats only a highlighted table word with the %s button and undoes it', (
     label, property, expected,
   ) => {
@@ -1403,9 +1665,23 @@ describe('inline run formatting while editing text', () => {
     expect(applied).toEqual([700]);
   });
 
-  it('hides the run controls when no text is being edited', () => {
-    const { inspectorHost } = setup([textElement('text-1')]);
-    expect(inspectorHost.querySelector('.text-selection-style')).toBeNull();
+  it('offers whole-box bold/italic/underline when the box is selected but not edited', () => {
+    const { store, inspectorHost } = setup([textElement('text-1', { html: '<p>Plain</p>' })]);
+    const buttons = (label: string) =>
+      inspectorHost.querySelector<HTMLButtonElement>(`.text-format-buttons button[aria-label="${label}"]`)!;
+
+    // Raised/lowered describes a run, so it stays out of reach without a caret.
+    expect(buttons('Superscript (Cmd/Ctrl+Shift+=)').disabled).toBe(true);
+    expect(buttons('Subscript (Cmd/Ctrl+Shift+-)').disabled).toBe(true);
+
+    const bold = buttons('Bold (Cmd/Ctrl+B)');
+    expect(bold.disabled).toBe(false);
+    expect(bold.getAttribute('aria-pressed')).toBe('false');
+    bold.click();
+    expect(textOf(store, 'text-1').style['font-weight']).toBe('700');
+    expect(buttons('Bold (Cmd/Ctrl+B)').getAttribute('aria-pressed')).toBe('true');
+    buttons('Bold (Cmd/Ctrl+B)').click();
+    expect(textOf(store, 'text-1').style['font-weight']).toBe('400');
   });
 });
 
@@ -1519,5 +1795,233 @@ describe('the layout preset as formatting', () => {
     expect({ x: title.x, y: title.y, w: title.w, h: title.h }).toEqual(geometry);
     expect(store.get().deck.slides[0].layout).toBe('standard');
     expect(title.html).toBe('Authored title');
+  });
+});
+
+describe('the semantic role as formatting', () => {
+  beforeEach(() => {
+    closePopover();
+    document.body.replaceChildren();
+  });
+
+  const roleSelect = (host: HTMLElement): HTMLSelectElement =>
+    field(host, 'Role').querySelector<HTMLSelectElement>('select')!;
+
+  const IMPORTED = {
+    class: ['role-body'],
+    style: {
+      'font-family': 'Papyrus',
+      'font-size': '18px',
+      'font-weight': '300',
+      'line-height': '2',
+      'letter-spacing': '0.4em',
+      color: '#ff0000',
+    },
+    html: '<p style="font-size: 18px; color: #ff0000">Imported</p>',
+  };
+
+  it('sets the box in the current theme, not whatever theme.css still holds', () => {
+    const { store, inspectorHost, canvas } = setup(
+      [textElement('text-1', { ...IMPORTED, contentStyle: { 'font-size': '18px' } })],
+      (deck) => {
+        deck.themePreset = 'editorial';
+        deck.themeStyle = themeStyleOf(themeById('editorial')!);
+      },
+    );
+    canvas.beginTextEdit('text-1');
+    pick(roleSelect(inspectorHost), 'role-title');
+
+    const title = themeById('editorial')!.fonts.title;
+    const text = textOf(store, 'text-1');
+    expect(text.class).toEqual(['role-title']);
+    expect(text.style['font-family']).toBe(title.family);
+    expect(text.style['font-size']).toBe(`${title.size}px`);
+    expect(text.style['font-weight']).toBe(String(title.weight));
+    expect(text.style['line-height']).toBe(String(title.lineHeight));
+    expect(text.style['letter-spacing']).toBe(title.letterSpacing);
+    // Every stale declaration is gone from every level, or the ones on
+    // `.text-content` and on the runs would outrank what was just written.
+    expect(text.contentStyle).toBeUndefined();
+    expect(text.html).not.toMatch(/font-size/);
+  });
+
+  /**
+   * The shape a deck has right after "Apply theme": the chosen preset is
+   * recorded in `themeSelection`, nothing is installed in theme.css, and the
+   * deck's own stylesheet still carries the `.role-title` rule it was created
+   * with. `decks/deckwerk_intro` is exactly this, and switching a title to
+   * body and back there has to come back in the applied theme's type — the
+   * same 108px Charter its fourteen sibling titles wear — not the
+   * stylesheet's 92px.
+   */
+  it('uses the theme an Apply recorded, with nothing installed in theme.css', () => {
+    const { store, inspectorHost, canvas } = setup(
+      [textElement('text-1', { class: ['role-title'], style: { color: '#191918' }, html: 'Acknowledgments.' })],
+      (deck) => {
+        deck.themeSelection = {
+          preset: 'basic',
+          roles: ['title', 'heading', 'body', 'caption'],
+          fontFamily: true,
+          fontWeight: true,
+          typeScale: true,
+          textColor: true,
+          objectColors: true,
+        };
+      },
+    );
+    canvas.beginTextEdit('text-1');
+    pick(roleSelect(inspectorHost), 'role-body');
+    pick(roleSelect(inspectorHost), 'role-title');
+
+    const title = themeById('basic')!.fonts.title;
+    const text = textOf(store, 'text-1');
+    expect(text.class).toEqual(['role-title']);
+    expect(text.style).toEqual({
+      color: '#191918',
+      'font-family': title.family,
+      'font-size': `${title.size}px`,
+      'font-weight': String(title.weight),
+      'line-height': String(title.lineHeight),
+      'letter-spacing': title.letterSpacing,
+    });
+  });
+
+  /**
+   * The deck's own edits to its theme are part of the current theme —
+   * `deckTheme` folds them in, and this control has to read the same answer as
+   * the theme card and the layout master preview.
+   */
+  it('follows the deck\u2019s edits to its theme', () => {
+    const edited = themeStyleOf(themeById('editorial')!);
+    edited.fonts.title.size = 77;
+    edited.fonts.title.family = 'Fixture Display, serif';
+    const { store, inspectorHost, canvas } = setup(
+      [textElement('text-1', IMPORTED)],
+      (deck) => {
+        deck.themePreset = 'editorial';
+        deck.themeStyle = edited;
+      },
+    );
+    canvas.beginTextEdit('text-1');
+    pick(roleSelect(inspectorHost), 'role-title');
+
+    const text = textOf(store, 'text-1');
+    expect(text.style['font-size']).toBe('77px');
+    expect(text.style['font-family']).toBe('Fixture Display, serif');
+  });
+
+  /**
+   * The theme the author has *chosen* outranks the one still installed in
+   * theme.css — choosing a preset and then retagging a box was the report:
+   * the box came back wearing the deck's original theme.
+   */
+  it('prefers the chosen theme over the one still installed', () => {
+    const { store, inspectorHost, canvas } = setup(
+      [textElement('text-1', IMPORTED)],
+      (deck) => {
+        deck.themePreset = 'editorial';
+        deck.themeStyle = themeStyleOf(themeById('editorial')!);
+        deck.themeSelection = {
+          preset: 'poster',
+          roles: ['title', 'heading', 'body', 'caption', 'base'],
+          fontFamily: true,
+          fontWeight: true,
+          typeScale: true,
+          textColor: true,
+          objectColors: false,
+        };
+      },
+    );
+    canvas.beginTextEdit('text-1');
+    pick(roleSelect(inspectorHost), 'role-title');
+
+    const poster = themeById('poster')!.fonts.title;
+    const text = textOf(store, 'text-1');
+    expect(text.style['font-size']).toBe(`${poster.size}px`);
+    expect(text.style['font-family']).toBe(poster.family);
+  });
+
+  /**
+   * The regression that made a role switch look like it had deleted the text.
+   * An HTML-imported box carries an explicit colour chosen for what sits behind
+   * it — white over a dark photograph. Clearing it as part of the role handed
+   * the box back to `.slide { color: … }`, and near-black text on the
+   * photograph read as an empty box.
+   */
+  it('leaves paint chosen for the background alone', () => {
+    const { store, inspectorHost, canvas } = setup(
+      [textElement('text-1', {
+        class: ['kn-text'],
+        style: { 'font-size': '61px', color: 'rgb(255, 255, 255)', '-webkit-text-fill-color': 'rgb(255, 255, 255)' },
+        html: '<p style="color: rgb(255, 255, 255); font-size: 61px">Over a photograph</p>',
+      })],
+      (deck) => {
+        deck.slides[0].background = { color: '#101418', image: null };
+      },
+    );
+    canvas.beginTextEdit('text-1');
+    pick(roleSelect(inspectorHost), 'role-title');
+
+    const text = textOf(store, 'text-1');
+    expect(text.class).toEqual(['kn-text', 'role-title']);
+    expect(text.style.color).toBe('rgb(255, 255, 255)');
+    expect(text.style['-webkit-text-fill-color']).toBe('rgb(255, 255, 255)');
+    expect(text.style['font-size']).toBeUndefined();
+    expect(text.html).toContain('color: rgb(255, 255, 255)');
+    expect(text.html).not.toMatch(/font-size/);
+    expect(text.html).toContain('Over a photograph');
+  });
+
+  /**
+   * A deck that wears no theme has no "current theme" to impose, so its own
+   * hand-written theme.css stays the only authority: the switch clears the
+   * overrides that would hide `.role-caption` and writes nothing over it.
+   */
+  it('writes no type of its own on a deck with no theme', () => {
+    const { store, inspectorHost, canvas } = setup([textElement('text-1', IMPORTED)]);
+    canvas.beginTextEdit('text-1');
+    pick(roleSelect(inspectorHost), 'role-caption');
+
+    const text = textOf(store, 'text-1');
+    expect(text.class).toEqual(['role-caption']);
+    expect(text.style).toEqual({ color: '#ff0000' });
+    expect(text.html).not.toMatch(/font-size/);
+  });
+
+  it('clears the role and its type together', () => {
+    const { store, inspectorHost, canvas } = setup(
+      [textElement('text-1', IMPORTED)],
+      (deck) => {
+        deck.themePreset = 'editorial';
+        deck.themeStyle = themeStyleOf(themeById('editorial')!);
+      },
+    );
+    canvas.beginTextEdit('text-1');
+    pick(roleSelect(inspectorHost), '');
+
+    const text = textOf(store, 'text-1');
+    expect(text.class).toEqual([]);
+    // "None" is the absence of a role: no type is written for it, whatever the
+    // deck's theme is.
+    expect(text.style).toEqual({ color: '#ff0000' });
+  });
+
+  it('restyles every box in a multi-selection', () => {
+    const { store, inspectorHost } = setup(
+      [textElement('text-1', IMPORTED), textElement('text-2', IMPORTED)],
+      (deck) => {
+        deck.themePreset = 'editorial';
+        deck.themeStyle = themeStyleOf(themeById('editorial')!);
+      },
+    );
+    pick(roleSelect(inspectorHost), 'role-title');
+
+    const title = themeById('editorial')!.fonts.title;
+    for (const id of ['text-1', 'text-2']) {
+      const text = textOf(store, id);
+      expect(text.class).toEqual(['role-title']);
+      expect(text.style['font-size']).toBe(`${title.size}px`);
+      expect(text.style.color).toBe('#ff0000');
+    }
   });
 });

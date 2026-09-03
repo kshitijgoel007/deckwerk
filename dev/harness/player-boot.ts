@@ -5,7 +5,7 @@ import { Player } from '../../src/renderer/player/player.js';
 
 /**
  * Mounts the real Player against a deck folder served from the project root,
- * so magic-move transitions can be watched and inspected in a plain browser.
+ * so morph transitions can be watched and inspected in a plain browser.
  * Query params: ?deck=decks/animation-reference&duration=3000
  */
 const params = new URLSearchParams(location.search);
@@ -15,7 +15,7 @@ const raw = await (await fetch(`/${deckName}/deck.json`)).json();
 const deck = parseDeck(raw);
 const duration = Number(params.get('duration'));
 if (Number.isFinite(duration) && duration > 0) {
-  for (const slide of deck.slides) slide.magicMoveDuration = duration;
+  for (const slide of deck.slides) slide.morphDuration = duration;
 }
 
 const theme = document.createElement('style');

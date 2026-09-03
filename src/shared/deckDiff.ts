@@ -44,14 +44,14 @@ export function diffDecks(prev: Deck, next: Deck): AgentOperation[] {
 function diffDeckProps(prev: Deck, next: Deck): AgentOperation | null {
   const op: Record<string, unknown> = { op: 'updateDeck' };
   let changed = false;
-  const scalarKeys = ['title', 'theme', 'themePreset', 'magicMoveEasing'] as const;
+  const scalarKeys = ['title', 'theme', 'themePreset', 'morphEasing'] as const;
   for (const key of scalarKeys) {
     if (prev[key] !== next[key]) {
       op[key] = next[key];
       changed = true;
     }
   }
-  for (const key of ['canvas', 'themeStyle', 'themeSelection', 'layoutMasters'] as const) {
+  for (const key of ['canvas', 'themeStyle', 'themeSelection', 'themeHistory', 'customThemes', 'layoutMasters'] as const) {
     if (JSON.stringify(prev[key]) !== JSON.stringify(next[key])) {
       op[key] = structuredClone(next[key]);
       changed = true;

@@ -81,17 +81,17 @@ When neither `autoFit` nor `noWrap` is set, `applyGeometry` removes only `font-s
 
 The carry queue is keyed by the `src` attribute and consumed in the new slide's DOM (z) order, so when a file appears in more than one element the live playing element is adopted by whichever element paints first rather than by the element it belongs to; `applyState` then pauses the adopter (it is not in `state.playing`) and starts a freshly created element for the element that was actually playing.
 
-**Repro.** Two slides each holding two video elements with the SAME src: a hero (z=2, autoplay) and a thumbnail (z=1, autoplay false), paired across slides. Start playback of the hero on slide 1 (paused=false, currentTime>0) and advance. Because renderSlide emits elements sorted by ascending z, the thumbnail's <video> comes first in querySelectorAll order and shifts the live element off the src-keyed queue; the live element is grafted into the thumbnail wrapper and then paused by applyState, while the hero gets a newly created <video> that plays from 0. Magic Move is not required — the carry block runs on any slide change.
+**Repro.** Two slides each holding two video elements with the SAME src: a hero (z=2, autoplay) and a thumbnail (z=1, autoplay false), paired across slides. Start playback of the hero on slide 1 (paused=false, currentTime>0) and advance. Because renderSlide emits elements sorted by ascending z, the thumbnail's <video> comes first in querySelectorAll order and shifts the live element off the src-keyed queue; the live element is grafted into the thumbnail wrapper and then paused by applyState, while the hero gets a newly created <video> that plays from 0. Morph is not required — the carry block runs on any slide change.
 
-### Magic-move ghosts clone <video> nodes, which paint no frame — the video reads as vanished behind its border for the whole fade — fixed
+### Morph ghosts clone <video> nodes, which paint no frame — the video reads as vanished behind its border for the whole fade — fixed
 
 `src/renderer/player/player.ts:325` · severity medium
 
 Unpaired source elements are animated as `cloneNode(true)` copies taken in `goTo`; a cloned <video> carries no decoded frame and (unless the element has a poster) paints its CSS `background:#000` until it loads, while the cloned `.media-border-overlay` div paints immediately.
 
-**Repro.** Player on a slide whose next slide has magicMoveFromPrevious; slide 1 has a video element (poster null, border optional) that gets no magic-move pair — no shared magicMoveId and offset geometry so neither unchangedMagicMovePairs nor essentialMagicMovePairs match it. Advance: player.ts:158 has already cloned the wrapper, so the ghost appended at :332 contains a fresh <video> with no decoded frame and currentTime 0, and `.element video { background:#000 }` (player.css:48) makes it an opaque black rectangle for the whole 0→25% fade-out, with the cloned border overlay drawn around the black. Even after the clone's own load completes it would show frame 0, not the frame that was on screen. Fix direction: for ghosts, replace cloned <video> bodies with a canvas snapshot of the live element (drawn before replaceChildren) or a static frame image, or at minimum strip the #000 background on ghost videos.
+**Repro.** Player on a slide whose next slide has morphFromPrevious; slide 1 has a video element (poster null, border optional) that gets no morph pair — no shared morphId and offset geometry so neither unchangedMorphPairs nor essentialMorphPairs match it. Advance: player.ts:158 has already cloned the wrapper, so the ghost appended at :332 contains a fresh <video> with no decoded frame and currentTime 0, and `.element video { background:#000 }` (player.css:48) makes it an opaque black rectangle for the whole 0→25% fade-out, with the cloned border overlay drawn around the black. Even after the clone's own load completes it would show frame 0, not the frame that was on screen. Fix direction: for ghosts, replace cloned <video> bodies with a canvas snapshot of the live element (drawn before replaceChildren) or a static frame image, or at minimum strip the #000 background on ghost videos.
 
-## Magic Move runtime
+## Morph runtime
 
 ### Transition z-index puts movers in front of unchanged objects that should cover them — fixed
 
@@ -99,7 +99,7 @@ Unpaired source elements are animated as `cloneNode(true)` copies taken in `goTo
 
 renderSlide never writes z-index (paint order is DOM order, render.ts:44), but every mover and every fading-in object gets an explicit non-negative z-index for the whole transition, while visually-unchanged objects only get stacking keyframes when hasGhosts is true — so in a transition with no removed elements the animated objects paint above every static element regardless of authored z.
 
-**Repro.** Slide A elements: `bg` (full-bleed rect, z=1), `shape` (small rect at x=0, z=2, magicMoveId 'p'), `card` (large opaque rect covering x=400..1200, z=3). Slide B: same bg and card (unchanged, so they pair via unchangedMagicMovePairs), `shape` moved to x=700 (still z=2, magicMoveId 'p'), magicMoveFromPrevious true. Nothing removed -> hasGhosts stays false. Advance A->B: the mover's only animation is [zIndex "1" x4] (source rank 1, target dom rank 1), while `card` gets no animation and stays z-index:auto; the moving shape therefore travels visibly in front of the opaque card for the full magicMoveDuration and snaps behind it when the fill:'none' animation ends. Fix: run the `unchanged` stacking pass unconditionally (or give every non-participating target its domRank), not only when hasGhosts.
+**Repro.** Slide A elements: `bg` (full-bleed rect, z=1), `shape` (small rect at x=0, z=2, morphId 'p'), `card` (large opaque rect covering x=400..1200, z=3). Slide B: same bg and card (unchanged, so they pair via unchangedMorphPairs), `shape` moved to x=700 (still z=2, morphId 'p'), morphFromPrevious true. Nothing removed -> hasGhosts stays false. Advance A->B: the mover's only animation is [zIndex "1" x4] (source rank 1, target dom rank 1), while `card` gets no animation and stays z-index:auto; the moving shape therefore travels visibly in front of the opaque card for the full morphDuration and snaps behind it when the fill:'none' animation ends. Fix: run the `unchanged` stacking pass unconditionally (or give every non-participating target its domRank), not only when hasGhosts.
 
 ### An object paired to a target that is hidden until a later build step disappears with no fade — fixed
 
@@ -107,15 +107,15 @@ renderSlide never writes z-index (paint order is DOM order, render.ts:44), but e
 
 The mover loop does not check node.style.visibility (unlike the fade-in loop at line 309 and the unchanged loop at line 359), and the source is still added to pairedSources, so no ghost is created — the source object pops out instantly instead of animating or fading.
 
-**Repro.** Slide A has a title; slide B has a title with the same magicMoveId plus a timeline `appear` action on it (hidden at step 0). Navigate A -> B with magic move on: applyStaticSlideState sets B's title visibility:hidden (staticState.ts:25) before runMagicMove; the mover loop at player.ts:264 animates that hidden node with no visibility guard, and the A title being in pairedSources (player.ts:206) makes the ghost loop at player.ts:323 skip it — so A's title vanishes with no fade or motion. The next click reveals B's title with no animation.
+**Repro.** Slide A has a title; slide B has a title with the same morphId plus a timeline `appear` action on it (hidden at step 0). Navigate A -> B with morph on: applyStaticSlideState sets B's title visibility:hidden (staticState.ts:25) before runMorph; the mover loop at player.ts:264 animates that hidden node with no visibility guard, and the A title being in pairedSources (player.ts:206) makes the ghost loop at player.ts:323 skip it — so A's title vanishes with no fade or motion. The next click reveals B's title with no animation.
 
-### Clicking a distant slide in the rail plays a magic-move between unrelated slides — fixed
+### Clicking a distant slide in the rail plays a morph between unrelated slides — fixed
 
 `src/renderer/player/player.ts:121` · severity medium
 
-goTo only requires previousSlideIndex !== the new index — there is no adjacency check — so any jump (rail click, goToSlide, or pressing Left) runs the magic-move machinery between the slide you came from and the slide you land on.
+goTo only requires previousSlideIndex !== the new index — there is no adjacency check — so any jump (rail click, goToSlide, or pressing Left) runs the morph machinery between the slide you came from and the slide you land on.
 
-**Repro.** Give slide 5 `magicMoveFromPrevious: true` (or give slides 2 and 9 elements sharing a magicMoveId). Then: (a) sit on slide 1 and jump to slide 5 (rail click / goTo command / player.goToSlide(4)) — magicMove is true and runMagicMove(slide1, slide5) plays the 4->5 transition for a 1->5 jump; (b) from slide 5 press Left to slide 4 — magicMoveEnabled reads slide 4's flag, not slide 5's, so the reverse of the 4->5 transition does not animate while 4->5 does.
+**Repro.** Give slide 5 `morphFromPrevious: true` (or give slides 2 and 9 elements sharing a morphId). Then: (a) sit on slide 1 and jump to slide 5 (rail click / goTo command / player.goToSlide(4)) — morph is true and runMorph(slide1, slide5) plays the 4->5 transition for a 1->5 jump; (b) from slide 5 press Left to slide 4 — morphEnabled reads slide 4's flag, not slide 5's, so the reverse of the 4->5 transition does not animate while 4->5 does.
 
 ## Geometry and transforms
 
@@ -135,13 +135,13 @@ constrainAspect is applied to the rect and then snapResize adjusts a single edge
 
 **Repro.** Corner (or single-axis) resize where exactly one of the two dimensions gets snapped. Concretely, in the non-alt branch of the 'resize' case in canvas.ts: select an image with fit != 'fill' and no sourceBox (or hold Shift on any element), drag the SE handle so the right edge lands within `threshold` of another element's / the canvas's x-target while the bottom edge is NOT near any y-target. constrainAspect makes h = w/aspect, then snapResize overwrites w with `hit.at - out.x` and leaves h alone, so the element commits with w/h != drag.aspect (off by up to `threshold` on the width). The mirror case is a snapped bottom edge with an unsnapped right edge. Only the Option/alt path is unaffected, since line 1149 skips snapResize entirely when ev.altKey is set.
 
-### Magic Move start transform folds the anchor without the source rotation, so rotated text pairs fly in — fixed
+### Morph start transform folds the anchor without the source rotation, so rotated text pairs fly in — fixed
 
-`src/renderer/player/magicMoveTransform.ts:145` · severity medium
+`src/renderer/player/morphTransform.ts:145` · severity medium
 
 foldAnchor computes d = (A_s - A) + (1-S)(A - C), which is only exact when the source transform R is the identity; the transform list is translate(d) R scale(S) about C, mapping p to C + d + R*S*(p-C), so the residual error is (I-R)[S*(A_t-C_t) - (A_s-C_s)] — nonzero for any rotated source whose ink sits differently inside its box than the target's does (the module header's claim of rotation-independence holds only for the centre anchors used by non-text pairs).
 
-**Repro.** Pure-function repro (no DOM needed): from = text{x:200,y:300,w:400,h:160,rot:30,align:'left',valign:'top'}, to = same but w:200; measured ink identical on both sides (text did not move): {x:200,y:318,w:180,h:74}, fontScale 1, squeeze 1. magicMoveTransforms returns start = "translate(0px, 0px) rotate(30deg) scale(1, 1)"; applying it about center(to) puts the target ink's top-left at (244.40, 276.31) while the source painted it at (257.79, 226.31) — 51.8 slide px of drift (a visible jump/slide-in). With rot:90 and w 400 -> 100 the drift is 212 px. Fix: rotate the fold, e.g. d = C_f + R(A_s - C_f) - C_t - R·S·(A_t - C_t), which reduces to the current formula when R = I.
+**Repro.** Pure-function repro (no DOM needed): from = text{x:200,y:300,w:400,h:160,rot:30,align:'left',valign:'top'}, to = same but w:200; measured ink identical on both sides (text did not move): {x:200,y:318,w:180,h:74}, fontScale 1, squeeze 1. morphTransforms returns start = "translate(0px, 0px) rotate(30deg) scale(1, 1)"; applying it about center(to) puts the target ink's top-left at (244.40, 276.31) while the source painted it at (257.79, 226.31) — 51.8 slide px of drift (a visible jump/slide-in). With rot:90 and w 400 -> 100 the drift is 212 px. Fix: rotate the fold, e.g. d = C_f + R(A_s - C_f) - C_t - R·S·(A_t - C_t), which reduces to the current formula when R = I.
 
 ### Snap targets and guides are built from unrotated boxes, so guides do not match rotated elements on screen — fixed
 

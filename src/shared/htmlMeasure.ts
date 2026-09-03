@@ -1,3 +1,4 @@
+import { renameRetiredDataAttributes } from './fieldAliases.js';
 import { authoringCss, KATEX_PAGE_HTML, type MeasuredNode, type MeasuredSlide } from './htmlSlides.js';
 
 /**
@@ -39,7 +40,11 @@ export interface AuthoringPage {
  * A hand-written fragment gets the same page built around it instead, with the
  * theme passed in as text rather than fetched.
  */
-export function authoringPageHtml(page: AuthoringPage): string {
+export function authoringPageHtml(input: AuthoringPage): string {
+  // Retired `data-*` spellings are canonicalised here, on the way into the
+  // page, because `measureSlides` is stringified into that page and cannot
+  // import the alias table.
+  const page = { ...input, authored: renameRetiredDataAttributes(input.authored) };
   if (/<html[\s>]/i.test(page.authored)) {
     const structured = withStructuralCss(withBase(page.authored, page.base), page);
     const linkedTheme = themeLink(page.themeHref).test(structured);
@@ -200,22 +205,65 @@ export function measureSlides(doc: Document): MeasuredSlide[] {
     'border', 'box-shadow', 'filter', 'mix-blend-mode', 'overflow', 'object-position',
     'padding-top', 'padding-right', 'padding-bottom', 'padding-left',
   ];
+  // A computed style always answers, so most of what it reports is the CSS
+  // initial value rather than anything the author asked for. Baking those into
+  // the element is not merely noise: an inline `line-height:normal` outranks
+  // the deck's own typography for ever after, so a theme edit stops reaching
+  // the text. Only declarations that actually say something are kept.
+  // Only properties the deck's own baseline (`type.css`, and a theme's
+  // `.element-text` rules) never sets. An initial value that the deck *would*
+  // override is not noise but a measurement: dropping the browser's
+  // `line-height:normal` handed imported text the deck's 1.28 instead and
+  // moved every line on the slide.
+  const INITIAL_COMPUTED: Record<string, string[]> = {
+    'font-variant': ['normal'],
+    'font-variant-ligatures': ['normal'],
+    'text-shadow': ['none'],
+    'writing-mode': ['horizontal-tb'],
+    'text-orientation': ['mixed'],
+    'background-size': ['auto', 'auto auto'],
+    'background-position': ['0% 0%'],
+    'background-repeat': ['repeat', 'repeat repeat'],
+    'object-position': ['50% 50%'],
+    'mix-blend-mode': ['normal'],
+    'overflow': ['visible'],
+    'display': ['inline'],
+    '-webkit-background-clip': ['border-box'],
+    'background-clip': ['border-box'],
+    '-webkit-text-fill-color': ['currentcolor'],
+  };
   const ignorableComputed = (property: string, value: string): boolean => {
     if (!value) return true;
+    if (INITIAL_COMPUTED[property]?.includes(value)) return true;
     if (['background-image', 'box-shadow', 'filter'].includes(property) && value === 'none') return true;
-    if (property === 'mix-blend-mode' && value === 'normal') return true;
-    if (property === 'overflow' && value === 'visible') return true;
     if (property.startsWith('padding-') && parseFloat(value) === 0) return true;
     if (property === 'border-radius' && value.split(/\s+/).every((part) => parseFloat(part) === 0)) return true;
     if (property === 'background-color'
       && (/^rgba\(\s*0\s*,\s*0\s*,\s*0\s*,\s*0\s*\)$/.test(value) || value === 'transparent')) return true;
-    if ((property === 'background-clip' || property === '-webkit-background-clip') && value === 'border-box') return true;
-    if (property === '-webkit-text-fill-color' && value === 'currentcolor') return true;
-    if (property === 'object-position' && value === '50% 50%') return true;
+    // `text-decoration` computes to a four-part value whose first word is the
+    // line; "none solid rgb(...)" is simply the absence of one.
+    if (property === 'text-decoration' && /^none\b/.test(value)) return true;
+    // A zero-width border and a zero-width text stroke paint nothing, but they
+    // arrive carrying a colour that reads like a deliberate one.
+    if ((property === 'border' || property === '-webkit-text-stroke')
+      && /^0(?:px)?\s/.test(value)) return true;
+    if (property === '-webkit-text-stroke-width' && parseFloat(value) === 0) return true;
     if (property === 'display' && value === 'inline') return true;
     if (property.startsWith('margin-') && parseFloat(value) === 0) return true;
     return false;
   };
+  /**
+   * A computed `background-image` has already been resolved against the page,
+   * so `assets/cover.jpg` arrives as an absolute `file://` or `deck://` URL.
+   * Storing that in the deck breaks the moment the folder moves — the same
+   * reason the slide background is read from the authored declaration.
+   */
+  const deckRelativeUrls = (value: string): string => {
+    const base = doc.baseURI;
+    return value.replace(/url\((["']?)([^"')]+)\1\)/g, (whole, quote, url: string) =>
+      url.startsWith(base) ? `url(${quote}${url.slice(base.length)}${quote})` : whole);
+  };
+
   const computedPresentation = (node: HTMLElement, includeText: boolean): Record<string, string> => {
     if (!independent) return {};
     const style = computed(node);
@@ -223,11 +271,43 @@ export function measureSlides(doc: Document): MeasuredSlide[] {
     const properties = includeText
       ? [...COMPUTED_TEXT_STYLE, ...COMPUTED_BOX_STYLE]
       : COMPUTED_BOX_STYLE;
+    // The stroke colour only means anything with a width behind it, and the
+    // fill colour only when it differs from the text colour it shadows.
+    const strokeless = parseFloat(style.getPropertyValue('-webkit-text-stroke-width')) === 0;
     for (const property of properties) {
       const value = style.getPropertyValue(property).trim();
-      if (!ignorableComputed(property, value)) kept[property] = value;
+      if (strokeless && property.startsWith('-webkit-text-stroke')) continue;
+      if (property === '-webkit-text-fill-color'
+        && value === style.getPropertyValue('color').trim()) continue;
+      // The `border` shorthand serialises to nothing when the four sides
+      // disagree, which is exactly the case an accent rule (`border-left:6px
+      // solid`) or a CSS triangle is. Reading only the shorthand dropped both
+      // silently, so the sides answer when it cannot.
+      if (property === 'border' && !value) {
+        for (const side of ['top', 'right', 'bottom', 'left']) {
+          const width = style.getPropertyValue(`border-${side}-width`).trim();
+          const kind = style.getPropertyValue(`border-${side}-style`).trim();
+          if (!(parseFloat(width) > 0) || !kind || kind === 'none') continue;
+          kept[`border-${side}`] = `${width} ${kind} `
+            + `${style.getPropertyValue(`border-${side}-color`).trim()}`;
+        }
+        continue;
+      }
+      if (!ignorableComputed(property, value)) {
+        kept[property] = property === 'background-image' ? deckRelativeUrls(value) : value;
+      }
     }
     return kept;
+  };
+
+  const DEFAULT_DISPLAY: Record<string, string> = {
+    li: 'list-item', ul: 'block', ol: 'block', p: 'block', div: 'block',
+    h1: 'block', h2: 'block', h3: 'block', h4: 'block', h5: 'block', h6: 'block',
+    section: 'block', article: 'block', header: 'block', footer: 'block',
+    blockquote: 'block', figure: 'block', figcaption: 'block', pre: 'block',
+    dl: 'block', dd: 'block', dt: 'block', table: 'table', tr: 'table-row',
+    td: 'table-cell', th: 'table-cell', thead: 'table-header-group',
+    tbody: 'table-row-group', tfoot: 'table-footer-group',
   };
 
   const independentTextHtml = (node: HTMLElement): string => {
@@ -257,7 +337,18 @@ export function measureSlides(doc: Document): MeasuredSlide[] {
     copies.forEach((copy, index) => {
       copy.removeAttribute('class');
       if (index === 0) return;
+      // Only what this node changes about its parent. Everything else it
+      // reports is inherited, and stamping the inherited half onto every
+      // `<strong>` and `<span>` buried the actual emphasis in a hundred
+      // characters of repeated font stack — and froze the deck's typography
+      // one level deeper than the element style already does.
+      const inherited = originals[index].parentElement
+        ? computed(originals[index].parentElement!) : null;
+      const defaultDisplay = DEFAULT_DISPLAY[originals[index].tagName.toLowerCase()];
       for (const [property, value] of Object.entries(computedPresentation(originals[index], true))) {
+        if (inherited && inherited.getPropertyValue(property).trim() === value) continue;
+        // `display:list-item` on an `<li>` is not a style, it is the tag.
+        if (property === 'display' && value === defaultDisplay) continue;
         copy.style.setProperty(property, value);
       }
     });
@@ -293,6 +384,14 @@ export function measureSlides(doc: Document): MeasuredSlide[] {
     return style.display === 'none' || style.visibility === 'hidden';
   };
 
+  const clippedOrMasked = (node: HTMLElement): boolean => {
+    const style = computed(node);
+    const value = (property: string): string => style.getPropertyValue(property) || 'none';
+    return value('clip-path') !== 'none'
+      || value('mask-image') !== 'none'
+      || value('-webkit-mask-image') !== 'none';
+  };
+
   const complexClippedMediaFrame = (node: HTMLElement): boolean => {
     if (!independent || !supportsPseudoComputedStyle
       || !node.querySelector(':scope > img, :scope > video')) return false;
@@ -314,19 +413,103 @@ export function measureSlides(doc: Document): MeasuredSlide[] {
   };
 
   /**
+   * The one `<img>`/`<video>` a decorative frame exists to hold.
+   *
+   * `<div class="frame"><img></div>` is how a front-end author writes a
+   * bordered picture, and dissolving that frame into a separate ring shape
+   * gave the deck two objects that no longer move together: dragging the
+   * photograph left its frame behind. Media carries a typed border of its own,
+   * so the frame is folded onto the picture instead — but only when the
+   * picture really is the whole of the frame's content, or a caption or badge
+   * inside it would be swallowed by the fold.
+   */
+  const soleMediaChild = (node: HTMLElement): HTMLElement | null => {
+    if (!independent) return null;
+    const children = [...node.children] as HTMLElement[];
+    const visible = children.filter((child) => !hidden(child));
+    if (visible.length !== 1) return null;
+    const media = visible[0];
+    const tag = media.tagName.toLowerCase();
+    if (tag !== 'img' && tag !== 'video') return null;
+    if (node.textContent!.trim() !== '') return null;
+    const frame = node.getBoundingClientRect();
+    const inner = media.getBoundingClientRect();
+    const style = computed(node);
+    const border = parseFloat(style.borderTopWidth) || 0;
+    const pad = (side: string): number => parseFloat(style.getPropertyValue(`padding-${side}`)) || 0;
+    const fills = Math.abs(inner.width - (frame.width - border * 2 - pad('left') - pad('right'))) <= 1
+      && Math.abs(inner.height - (frame.height - border * 2 - pad('top') - pad('bottom'))) <= 1;
+    return fills ? media : null;
+  };
+
+  /**
+   * A frame whose whole paint the picture inside it can carry itself.
+   *
+   * `<div class="crop"><img></div>` — a round window with a ring around it —
+   * is the single most common way a page frames a photograph, and it used to
+   * import as two objects stacked exactly on top of each other: a shape
+   * holding the ring, and the picture. Selecting one and moving it left the
+   * other behind, and the deck cannot express "these two travel together".
+   * Media carries a border, a radius, a mask, a shadow and a backdrop colour
+   * of its own, so every one of those goes onto the picture instead.
+   */
+  const foldableMediaFrame = (node: HTMLElement): HTMLElement | null => {
+    const media = soleMediaChild(node);
+    if (!media) return null;
+    const style = computed(node);
+    const width = parseFloat(style.borderTopWidth) || 0;
+    const uniform = ['Top', 'Right', 'Bottom', 'Left'].every((side) =>
+      (parseFloat(style.getPropertyValue(`border-${side.toLowerCase()}-width`)) || 0) === width
+      && style.getPropertyValue(`border-${side.toLowerCase()}-style`) === style.borderTopStyle
+      && style.getPropertyValue(`border-${side.toLowerCase()}-color`) === style.borderTopColor);
+    if (width > 0 && (!uniform || style.borderTopStyle !== 'solid')) return null;
+    // A picture cannot carry a frame's own background *picture*, and padding
+    // is what makes a frame's colour visible around the one it holds.
+    if (!ignorableComputed('background-image', style.backgroundImage.trim())) return null;
+    if (['top', 'right', 'bottom', 'left']
+      .some((side) => parseFloat(style.getPropertyValue(`padding-${side}`)) > 0)) return null;
+    const carries = width > 0
+      || !ignorableComputed('box-shadow', style.boxShadow.trim())
+      || !ignorableComputed('border-radius', style.borderRadius.trim());
+    return carries ? media : null;
+  };
+
+  /**
    * Explicitly declared, media, an exported element wrapper, or a block with
    * no content anywhere inside it. The descent matters: a row of columns of
    * leaves has content two levels down, and stopping the check at the direct
    * children made whole layout trees read as one text object — the compiled
    * slide then reflowed an entire diagram inside a single box.
    */
-  const containsContent = (node: HTMLElement): boolean =>
-    [...node.children].some((child) =>
+  // `containsContent` asks `isContent` of every child, and `isContent` asks
+  // `containsContent` of the node again — twice, on some paths. Without a
+  // memo that is exponential in nesting depth: a chain of sixty wrapper divs,
+  // which a framework export produces without trying, took the compile
+  // minutes. The answers cannot change during a walk (the only mutation is
+  // `isContent` stamping `data-element` on a node it already decided is
+  // content), so each node is decided once.
+  const contentMemo = new Map<HTMLElement, boolean>();
+  const containsMemo = new Map<HTMLElement, boolean>();
+  const containsContent = (node: HTMLElement): boolean => {
+    const known = containsMemo.get(node);
+    if (known !== undefined) return known;
+    const result = [...node.children].some((child) =>
       !hidden(child as HTMLElement)
       && isBlock(child as HTMLElement)
       && (isContent(child as HTMLElement) || containsContent(child as HTMLElement)));
+    containsMemo.set(node, result);
+    return result;
+  };
 
   const isContent = (node: HTMLElement): boolean => {
+    const known = contentMemo.get(node);
+    if (known !== undefined) return known;
+    const result = decideContent(node);
+    contentMemo.set(node, result);
+    return result;
+  };
+
+  const decideContent = (node: HTMLElement): boolean => {
     if (node.dataset.element === 'none') return false;
     // A styled equation wrapper (padding/background/accent border around one
     // display equation) is itself the editable text object. Dissolving through
@@ -346,6 +529,16 @@ export function measureSlides(doc: Document): MeasuredSlide[] {
     if (complexClippedMediaFrame(node)) {
       node.dataset.element = 'html';
       node.dataset.fallbackReason = 'Clipped media frame with a CSS pseudo-element overlay';
+      return true;
+    }
+    // A clip path or a mask is the whole point of the element it is on, and
+    // neither a shape nor a text box can carry one. Reducing such a node to
+    // its paint alone turned a clipped triangle into a plain orange rectangle
+    // and a masked panel into a solid one — silently, which is worse than the
+    // conspicuous fallback.
+    if (independent && clippedOrMasked(node)) {
+      node.dataset.element = 'html';
+      node.dataset.fallbackReason = 'Clipped or masked CSS region';
       return true;
     }
     if (CONTENT_TAGS.has(tag)) return true;
@@ -516,6 +709,43 @@ export function measureSlides(doc: Document): MeasuredSlide[] {
     return out;
   };
 
+  /**
+   * CSS the deck cannot carry, reported rather than silently dropped.
+   *
+   * These are the cases where the import still produces a sensible object, so
+   * there is no conspicuous fallback to notice — the slide simply comes back
+   * subtly different. A warning goes back with the apply, which is the only
+   * moment an agent is looking.
+   */
+  const unsupportedCssWarnings = (root: HTMLElement): string[] => {
+    if (!independent) return [];
+    const out: string[] = [];
+    const describe = (node: Element): string => {
+      const classes = [...node.classList].slice(0, 2).map((name) => `.${name}`).join('');
+      return `<${node.tagName.toLowerCase()}${classes}>`;
+    };
+    for (const node of [root, ...root.querySelectorAll<HTMLElement>('*')]) {
+      const style = computed(node);
+      const matrix = style.transform.match(/matrix\(([^)]+)\)/);
+      if (matrix) {
+        const [a, b, c, d] = matrix[1].split(',').map(Number);
+        const scaleX = Math.hypot(a, b);
+        const scaleY = Math.hypot(c, d);
+        const skewed = Math.abs(a * c + b * d) > 0.001;
+        if (Math.abs(scaleX - 1) > 0.001 || Math.abs(scaleY - 1) > 0.001 || skewed) {
+          out.push(`${describe(node)}: only rotation survives a transform — the object is `
+            + 'baked at its untransformed size, so scale/skew is lost. Size it directly.');
+        }
+      }
+      if ((style.getPropertyValue('backdrop-filter') || 'none') !== 'none'
+        || (style.getPropertyValue('-webkit-backdrop-filter') || 'none') !== 'none') {
+        out.push(`${describe(node)}: backdrop-filter has no deck equivalent and is dropped; `
+          + 'use a translucent fill instead.');
+      }
+    }
+    return [...new Set(out)];
+  };
+
   const angleOf = (node: HTMLElement): number => {
     const transform = computed(node).transform;
     if (!transform || transform === 'none') return 0;
@@ -529,8 +759,186 @@ export function measureSlides(doc: Document): MeasuredSlide[] {
     const tag = node.tagName.toLowerCase();
     if (tag === 'img') return 'image';
     if (tag === 'video') return 'video';
+    // A converted table is a text element in the deck, and it needs the text
+    // half of the computed presentation: without the authored font size it
+    // came back rendered at the deck's default body size, columns and all.
+    if (node.dataset.element === 'table') return 'text';
     if (node.dataset.element === 'html' || CONTENT_TAGS.has(tag)) return 'html';
     return 'text';
+  };
+
+  /**
+   * An inline SVG that draws exactly one primitive, as a native deck shape.
+   *
+   * An arrow between two boxes, a rule, a circle, an icon path: front-end
+   * authors reach for SVG for all of them, and every one used to arrive as an
+   * inert HTML region that could be moved but never restyled, re-coloured or
+   * re-pointed. The deck's own shapes are rects, ellipses, lines, arrows and
+   * paths — the same primitives — so a one-primitive SVG converts exactly.
+   * Anything richer (a diagram of several primitives, text inside the SVG,
+   * gradients, clip paths) stays a fallback: it is a picture, not a shape.
+   */
+  const svgShape = (
+    svg: HTMLElement,
+    origin: DOMRect,
+    rotation: number,
+  ): MeasuredNode | null => {
+    const tag = (node: Element): string => node.tagName.toLowerCase();
+    if (!independent) return null;
+    if (svg.querySelector('text, image, foreignObject, use, tspan')) return null;
+    const drawn = [...svg.querySelectorAll<SVGGraphicsElement>(
+      'rect, circle, ellipse, line, path, polygon, polyline',
+    )].filter((node) => !node.closest('defs, marker, clipPath, mask, pattern, symbol'));
+    if (drawn.length !== 1) return null;
+    const shape = drawn[0];
+    const style = computed(shape as unknown as Element);
+    const paint = (value: string): string | null =>
+      !value || value === 'none' || value === 'rgba(0, 0, 0, 0)' ? null : value;
+    // An open stroke is not flood-filled; SVG's default black `fill` on a
+    // line means nothing and would arrive as a deck shape's fill colour.
+    const fill = tag(shape) === 'line' || tag(shape) === 'polyline' ? null : paint(style.fill);
+    const stroke = paint(style.stroke);
+    if (!fill && !stroke) return null;
+    if (style.getPropertyValue('clip-path') !== 'none'
+      || style.getPropertyValue('mask') !== 'none') return null;
+    // A gradient or pattern paint server is a URL reference; a deck shape
+    // holds a colour.
+    if ([fill, stroke].some((value) => value?.includes('url('))) return null;
+
+    const svgRect = svg.getBoundingClientRect();
+    const box = svg as unknown as SVGSVGElement;
+    const view = box.viewBox?.baseVal;
+    const scale = view && view.width > 0 ? svgRect.width / view.width : 1;
+    const strokeWidth = (parseFloat(style.strokeWidth) || 0) * (stroke ? 1 : 0);
+    const marker = (side: 'marker-start' | 'marker-end'): boolean => {
+      const value = style.getPropertyValue(side) || shape.getAttribute(side) || 'none';
+      return value !== 'none' && value.trim() !== '';
+    };
+    const common = {
+      tag: 'div',
+      elementId: svg.dataset.elementId ?? null,
+      classes: [],
+      rotation,
+      opacity: Number(computed(svg).opacity) || 1,
+      style: {},
+      html: '',
+      attrs: {},
+    };
+    const dataset = (extra: Record<string, string>): Record<string, string> => ({
+      ...svg.dataset as Record<string, string>,
+      element: 'shape',
+      ...(fill ? { fill } : {}),
+      ...(stroke ? { stroke } : {}),
+      ...(marker('marker-start') ? { arrowStart: 'true' } : {}),
+      ...(marker('marker-end') ? { arrowEnd: 'true' } : {}),
+      ...extra,
+    });
+    const relative = (rect: DOMRect) => ({
+      x: rect.left - origin.left,
+      y: rect.top - origin.top,
+      w: rect.width,
+      h: rect.height,
+    });
+
+    // A line keeps its own geometry rather than its bounding box: a diagonal
+    // connector's box says nothing about where the line runs, and the deck
+    // draws a line across its box horizontally, turned by `rot`.
+    if (tag(shape) === 'line') {
+      const matrix = shape.getScreenCTM?.();
+      if (!matrix) return null;
+      const point = (x: number, y: number) => ({
+        x: matrix.a * x + matrix.c * y + matrix.e,
+        y: matrix.b * x + matrix.d * y + matrix.f,
+      });
+      const geometry = shape as unknown as SVGLineElement;
+      const from = point(geometry.x1.baseVal.value, geometry.y1.baseVal.value);
+      const to = point(geometry.x2.baseVal.value, geometry.y2.baseVal.value);
+      const length = Math.hypot(to.x - from.x, to.y - from.y);
+      if (length <= 0) return null;
+      const thickness = Math.max(1, strokeWidth * scale);
+      const angle = Math.round(Math.atan2(to.y - from.y, to.x - from.x)
+        * (180 / Math.PI) * 100) / 100;
+      return {
+        ...common,
+        rotation: Math.round((rotation + angle) * 100) / 100,
+        dataset: dataset({
+          shape: marker('marker-start') || marker('marker-end') ? 'arrow' : 'line',
+          strokeWidth: String(Math.round(thickness * 100) / 100),
+        }),
+        // The stored box is the untransformed one, centred on the line's
+        // midpoint, exactly as a rotated element is stored everywhere else.
+        rect: {
+          x: (from.x + to.x) / 2 - length / 2 - origin.left,
+          y: (from.y + to.y) / 2 - thickness / 2 - origin.top,
+          w: length,
+          h: thickness,
+        },
+      };
+    }
+
+    if (['rect', 'circle', 'ellipse'].includes(tag(shape))) {
+      const radius = tag(shape) === 'rect'
+        ? (parseFloat(shape.getAttribute('rx') ?? style.getPropertyValue('rx')) || 0) * scale
+        : 0;
+      // A shape's bounding box excludes its stroke, which SVG centres on the
+      // geometry's edge; the deck draws a rect's or ellipse's stroke *inside*
+      // its box. So the box grows by half the stroke on every side, or the
+      // converted shape comes back a whole stroke width smaller than it was
+      // drawn. The SVG viewport clips its content by default, so what grew
+      // past the viewport was never visible and is trimmed back to it.
+      const half = (strokeWidth * scale) / 2;
+      const inner = shape.getBoundingClientRect();
+      const left = Math.max(inner.left - half, svgRect.left);
+      const top = Math.max(inner.top - half, svgRect.top);
+      const right = Math.min(inner.right + half, svgRect.right);
+      const bottom = Math.min(inner.bottom + half, svgRect.bottom);
+      return {
+        ...common,
+        dataset: dataset({
+          shape: tag(shape) === 'rect' ? 'rect' : 'ellipse',
+          strokeWidth: String(Math.round(strokeWidth * scale * 100) / 100),
+          ...(radius > 0 ? { radius: String(Math.round(radius * 100) / 100) } : {}),
+        }),
+        rect: {
+          x: left - origin.left,
+          y: top - origin.top,
+          w: Math.max(0, right - left),
+          h: Math.max(0, bottom - top),
+        },
+      };
+    }
+
+    // Paths keep their authored coordinates and are drawn into the element
+    // box through the viewBox the author already wrote, so the drawing scales
+    // with the object instead of being re-fitted to a bounding box.
+    const coordinates = (shape.getAttribute('points') ?? '')
+      .trim().split(/[\s,]+/).map(Number).filter((value) => Number.isFinite(value));
+    const vertices: string[] = [];
+    for (let index = 0; index + 1 < coordinates.length; index += 2) {
+      vertices.push(`${coordinates[index]},${coordinates[index + 1]}`);
+    }
+    const d = tag(shape) === 'path'
+      ? shape.getAttribute('d') ?? ''
+      : vertices.length >= 2
+        ? `M${vertices.join(' L')}${tag(shape) === 'polygon' ? ' Z' : ''}`
+        : '';
+    if (!d.trim()) return null;
+    // The deck draws a path into `0 0 w h`; a viewBox that starts elsewhere
+    // would shift every coordinate, so such an SVG stays a fallback.
+    if (view && (view.x !== 0 || view.y !== 0)) return null;
+    const width = view?.width || svgRect.width;
+    const height = view?.height || svgRect.height;
+    if (!(width > 0) || !(height > 0)) return null;
+    return {
+      ...common,
+      dataset: dataset({
+        shape: 'path',
+        path: d,
+        pathSize: `${width},${height}`,
+        strokeWidth: String(Math.round(strokeWidth * 100) / 100),
+      }),
+      rect: relative(svgRect),
+    };
   };
 
   const measure = (
@@ -542,6 +950,10 @@ export function measureSlides(doc: Document): MeasuredSlide[] {
     const rect = node.getBoundingClientRect();
     const style = computed(node);
     const tag = node.tagName.toLowerCase();
+    if (tag === 'svg') {
+      const shape = svgShape(node, origin, rotation);
+      if (shape) return shape;
+    }
     // Inline declarations only, never computed ones. A computed style is
     // mostly inherited theme values, and baking those into the element would
     // freeze the deck's typography at compile time: editing theme.css
@@ -551,9 +963,13 @@ export function measureSlides(doc: Document): MeasuredSlide[] {
     // Read the raw declarations rather than the parsed CSSOM: going through
     // node.style would hand back a normalised value, turning every authored
     // #000000 into rgb(0, 0, 0) and churning the deck on every round trip.
+    // The snapshot, never the live attribute: by now the walk has parked
+    // `transform:none` on the node, and a node that had no `style` of its own
+    // (`rawStyle === null`) must not pick that scaffolding up as authored CSS.
+    const authored = inlineDeclarations(node, rawStyle ?? '');
     const kept = independent
-      ? { ...computedPresentation(node, typeOf(node) === 'text'), ...inlineDeclarations(node, rawStyle) }
-      : inlineDeclarations(node, rawStyle);
+      ? { ...computedPresentation(node, typeOf(node) === 'text'), ...authored }
+      : authored;
 
     // A very common frontend pattern is a media element filling an
     // `overflow:hidden` rounded frame. The layout container dissolves, so pass
@@ -566,10 +982,84 @@ export function measureSlides(doc: Document): MeasuredSlide[] {
       if (clipped && radius && radius.split(/\s+/).some((part) => parseFloat(part) > 0)) {
         kept['border-radius'] = radius;
       }
+      // The frame becomes the media's own typed border. The picture keeps its
+      // own box: the deck paints a media border *inside* the element, so the
+      // photograph stays exactly where and how large it was drawn and the
+      // frame lands on its outer edge rather than resampling the whole
+      // picture up by twice the border.
+      if (foldableMediaFrame(node.parentElement) === node) {
+        const width = parseFloat(parentStyle.borderTopWidth) || 0;
+        if (width > 0) kept.border = `${width}px solid ${parentStyle.borderTopColor}`;
+        if (radius && radius.split(/\s+/).some((part) => parseFloat(part) > 0)) {
+          kept['border-radius'] = radius;
+        }
+        // The frame's own ring, shadow and backdrop belong to the framed
+        // picture now; they used to travel on the shape this fold replaces,
+        // and without them every framed figure lost its lift — and a picture
+        // with transparency lost the colour it was sitting on.
+        for (const property of ['box-shadow', 'filter', 'mix-blend-mode', 'background-color']) {
+          const value = parentStyle.getPropertyValue(property).trim();
+          if (!ignorableComputed(property, value) && !kept[property]) kept[property] = value;
+        }
+      }
+    }
+
+    // A picture framed by `object-fit` and `object-position` is *cropped*, and
+    // the deck has a crop of its own: `sourceBox`, the rectangle the whole
+    // picture occupies behind the element's window. Leaving the framing as CSS
+    // renders correctly but cannot be edited — the editor's crop tool works on
+    // `sourceBox`, and with none recorded it assumes the picture is stretched
+    // to fill the box, so the first nudge of a `cover` portrait snapped it to
+    // the window's aspect and threw the framing away. Baking it here is what
+    // makes an imported circular portrait behave like one the editor cropped.
+    // (`paintedMediaBox` in shared/mediaMask.ts is the same placement rule,
+    // for media whose crop is still implicit.)
+    if (independent && (tag === 'img' || tag === 'video') && !node.dataset.crop) {
+      const source = tag === 'img'
+        ? { w: (node as HTMLImageElement).naturalWidth, h: (node as HTMLImageElement).naturalHeight }
+        : { w: (node as HTMLVideoElement).videoWidth, h: (node as HTMLVideoElement).videoHeight };
+      const fit = style.objectFit;
+      const position = (style.objectPosition || '50% 50%').trim();
+      const circular = /^\s*50%/.test(kept['border-radius'] ?? '');
+      // Only a *deliberate* framing is worth freezing: a plain centred cover
+      // is reproduced exactly by the deck's own `fit`, and keeping it implicit
+      // leaves the picture free to re-cover when the box is resized. A
+      // circular mask is always deliberate — nudging the face inside the
+      // circle is the whole reason it exists.
+      const framed = position !== '50% 50%' || circular;
+      if (framed && source.w > 0 && source.h > 0 && (fit === 'cover' || fit === 'contain')
+        && rect.width > 0 && rect.height > 0) {
+        const scale = fit === 'cover'
+          ? Math.max(rect.width / source.w, rect.height / source.h)
+          : Math.min(rect.width / source.w, rect.height / source.h);
+        const drawn = { w: source.w * scale, h: source.h * scale };
+        const place = (spec: string, box: number, size: number): number => {
+          const keywords: Record<string, string> = {
+            left: '0%', top: '0%', center: '50%', right: '100%', bottom: '100%',
+          };
+          const resolved = keywords[spec] ?? spec;
+          const percent = /^([+-]?[\d.]+)%$/.exec(resolved);
+          if (percent) return (box - size) * (Number(percent[1]) / 100);
+          const length = /^([+-]?[\d.]+)px$/.exec(resolved);
+          return length ? Number(length[1]) : (box - size) / 2;
+        };
+        const parts = position.toLowerCase().split(/\s+/);
+        const vertical = ['top', 'bottom'].includes(parts[0]) && parts.length === 2;
+        const [x, y] = vertical ? [parts[1], parts[0]] : parts;
+        const hundredth = (value: number): number => Math.round(value * 100) / 100;
+        node.dataset.crop = [
+          hundredth(place(x ?? '50%', rect.width, drawn.w)),
+          hundredth(place(y ?? '50%', rect.height, drawn.h)),
+          hundredth(drawn.w),
+          hundredth(drawn.h),
+        ].join(',');
+        delete kept['object-position'];
+      }
     }
 
     const verbatim = node.dataset.element === 'html'
-      || (CONTENT_TAGS.has(tag) && tag !== 'img' && tag !== 'video');
+      || (CONTENT_TAGS.has(tag) && tag !== 'img' && tag !== 'video'
+        && node.dataset.element !== 'table');
 
     return {
       tag,
@@ -600,6 +1090,12 @@ export function measureSlides(doc: Document): MeasuredSlide[] {
         // authored absolute position belongs to the original page and must
         // not be applied a second time inside that new local coordinate space.
         clone.setAttribute('data-slide-editor-fallback-root', '');
+        // The walk parks `transform:none` on every object while it measures
+        // an axis-aligned box. That is scaffolding, not markup: baked into the
+        // preserved region it overrode whatever transform the author's own CSS
+        // gave it, for ever.
+        if (rawStyle === null || rawStyle.trim() === '') clone.removeAttribute('style');
+        else clone.setAttribute('style', rawStyle);
         return clone.outerHTML;
       })()
         : (node.querySelector(':scope > .text-body > [data-text-content]')
@@ -627,7 +1123,19 @@ export function measureSlides(doc: Document): MeasuredSlide[] {
     };
   };
 
-  const simplePseudoShape = (
+  /**
+   * A CSS pseudo-element as an ordinary slide object.
+   *
+   * `::before`/`::after` carry a great deal of real design — badges, accent
+   * bars, arrowheads, decorative rules — and the deck has no pseudo-elements,
+   * so whatever is not converted here is simply *gone* from the slide with no
+   * trace in the file the author saved. Solid paint becomes a native shape;
+   * anything richer (a gradient bar, a shadowed chip, the border-triangle
+   * arrowhead, a `content:"→"`) becomes an ordinary styled text object, which
+   * is editable and, unlike an HTML fallback, does not take the owner's own
+   * text down with it.
+   */
+  const pseudoElement = (
     owner: HTMLElement,
     pseudo: '::before' | '::after',
     origin: DOMRect,
@@ -636,13 +1144,16 @@ export function measureSlides(doc: Document): MeasuredSlide[] {
       || owner.closest('[data-element="html"]')) return null;
     const style = view.getComputedStyle(owner, pseudo);
     if (!style.content || style.content === 'none' || style.content === 'normal') return null;
-    if (style.backgroundImage && style.backgroundImage !== 'none') return null;
-    if (style.boxShadow && style.boxShadow !== 'none') return null;
+    // A generated counter or image has no literal to carry across.
+    if (/\b(?:counter|counters|url|attr|image-set)\(/.test(style.content)) return null;
+    const text = /^"([\s\S]*)"$/.exec(style.content)?.[1] ?? '';
 
     const contentW = parseFloat(style.width);
     const contentH = parseFloat(style.height);
-    if (!Number.isFinite(contentW) || !Number.isFinite(contentH) || contentW <= 0 || contentH <= 0) return null;
+    if (!Number.isFinite(contentW) || !Number.isFinite(contentH)
+      || contentW < 0 || contentH < 0) return null;
     const borders = ['Top', 'Right', 'Bottom', 'Left'].map((side) => ({
+      side: side.toLowerCase(),
       width: parseFloat(style.getPropertyValue(`border-${side.toLowerCase()}-width`)) || 0,
       color: style.getPropertyValue(`border-${side.toLowerCase()}-color`),
       kind: style.getPropertyValue(`border-${side.toLowerCase()}-style`),
@@ -650,11 +1161,14 @@ export function measureSlides(doc: Document): MeasuredSlide[] {
     const first = borders[0];
     const uniformBorder = borders.every((border) => border.width === first.width
       && border.color === first.color && border.kind === first.kind);
-    if (!uniformBorder) return null;
-    const borderW = first.kind !== 'none' ? first.width : 0;
     const borderBox = style.boxSizing === 'border-box';
-    const width = contentW + (borderBox ? 0 : borderW * 2);
-    const height = contentH + (borderBox ? 0 : borderW * 2);
+    const inset = borders.map((border) => (border.kind === 'none' ? 0 : border.width));
+    const width = contentW + (borderBox ? 0 : inset[1] + inset[3]);
+    const height = contentH + (borderBox ? 0 : inset[0] + inset[2]);
+    // A zero content box is not an empty pseudo-element: the border-triangle
+    // arrowhead — `width:0; border-left:28px solid; border-top:14px solid
+    // transparent` — is drawn entirely out of its borders.
+    if (width <= 0 || height <= 0) return null;
     const ownerRect = owner.getBoundingClientRect();
     const left = parseFloat(style.left);
     const right = parseFloat(style.right);
@@ -666,30 +1180,64 @@ export function measureSlides(doc: Document): MeasuredSlide[] {
       ? top : Number.isFinite(bottom) ? ownerRect.height - bottom - height : 0);
     const fill = ignorableComputed('background-color', style.backgroundColor)
       ? undefined : style.backgroundColor;
-    if (!fill && borderW <= 0) return null;
+    const image = style.backgroundImage && style.backgroundImage !== 'none'
+      ? style.backgroundImage : undefined;
+    const shadow = style.boxShadow && style.boxShadow !== 'none' ? style.boxShadow : undefined;
+    const painted = Boolean(fill || image || shadow) || inset.some((value) => value > 0);
+    if (!painted && !text.trim()) return null;
     const radius = style.borderRadius || style.borderTopLeftRadius || '';
     const ellipse = /^\s*50%/.test(radius);
     const matrix = style.transform.match(/matrix\(([^)]+)\)/);
     const [a, b] = matrix ? matrix[1].split(',').map(Number) : [1, 0];
     const rotation = Math.round(Math.atan2(b, a) * (180 / Math.PI) * 100) / 100;
-    return {
+    const common = {
       tag: 'div',
       elementId: null,
-      classes: [],
-      dataset: {
-        element: 'shape',
-        shape: ellipse ? 'ellipse' : 'rect',
-        ...(fill ? { fill } : {}),
-        ...(borderW > 0 ? { stroke: first.color, strokeWidth: String(borderW) } : { strokeWidth: '0' }),
-        ...(!ellipse && parseFloat(radius) > 0 ? { radius: String(parseFloat(radius)) } : {}),
-      },
+      classes: [] as string[],
       rect: { x, y, w: width, h: height },
       rotation,
       opacity: Number(style.opacity) || 1,
-      style: {},
-      html: '',
       attrs: {},
       fallbackReason: undefined,
+    };
+    const borderW = first.kind !== 'none' ? first.width : 0;
+    if (uniformBorder && !image && !shadow && !text.trim() && (fill || borderW > 0)) {
+      return {
+        ...common,
+        dataset: {
+          element: 'shape',
+          shape: ellipse ? 'ellipse' : 'rect',
+          ...(fill ? { fill } : {}),
+          ...(borderW > 0
+            ? { stroke: first.color, strokeWidth: String(borderW) }
+            : { strokeWidth: '0' }),
+          ...(!ellipse && parseFloat(radius) > 0 ? { radius: String(parseFloat(radius)) } : {}),
+        },
+        style: {},
+        html: '',
+      };
+    }
+    // Everything else keeps its paint literally, as element CSS on an
+    // otherwise empty text object.
+    const kept: Record<string, string> = {};
+    for (const property of [
+      'background-color', 'background-image', 'background-size',
+      'background-position', 'background-repeat', 'border-radius', 'box-shadow',
+      'filter', 'mix-blend-mode', 'color', 'font-family', 'font-size',
+      'font-weight', 'font-style', 'line-height', 'letter-spacing',
+    ]) {
+      const value = style.getPropertyValue(property).trim();
+      if (!ignorableComputed(property, value)) kept[property] = value;
+    }
+    for (const border of borders) {
+      if (border.kind === 'none' || border.width <= 0) continue;
+      kept[`border-${border.side}`] = `${border.width}px ${border.kind} ${border.color}`;
+    }
+    return {
+      ...common,
+      dataset: {},
+      style: kept,
+      html: text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'),
     };
   };
 
@@ -697,7 +1245,7 @@ export function measureSlides(doc: Document): MeasuredSlide[] {
     // Checked before anything below touches a node: assigning through
     // node.style re-serialises the attribute from the CSSOM, which would
     // repair the very breakage this is meant to catch.
-    const warnings = styleWarnings(root);
+    const warnings = [...styleWarnings(root), ...unsupportedCssWarnings(root)];
     // Collect first, then style, then measure. The player wraps every object
     // in an element wrapper carrying the type class, and the deck's type
     // sizes hang off those classes -- so without this pass the compiler would
@@ -705,6 +1253,8 @@ export function measureSlides(doc: Document): MeasuredSlide[] {
     // renders at 44px.
     const objects: HTMLElement[] = [];
     const synthetic = new Set<HTMLElement>();
+    /** Dissolved layout boxes kept only for the picture or gradient they paint. */
+    const backdrops = new Set<HTMLElement>();
     // A build declared on a layout container belongs to everything inside it:
     // the first baked object keeps the author's trigger and the rest appear
     // with it, so dissolving the container does not silently drop the build.
@@ -723,12 +1273,26 @@ export function measureSlides(doc: Document): MeasuredSlide[] {
           // Layout dissolves, but paint it carries (a card's background, a
           // panel's border) must not: it becomes a rect shape behind its
           // children, in document order so it stays underneath them.
-          const paint = boxPaint(child);
+          // A frame around one picture is folded onto the picture itself
+          // (see `foldableMediaFrame`), so it must not also become a ring
+          // shape of its own -- that is the pair of objects the fold exists
+          // to avoid.
+          const paint = foldableMediaFrame(child) ? null : boxPaint(child);
           if (paint) {
             for (const [key, value] of Object.entries(paint)) child.dataset[key] = value;
             if (scope.spec) { child.dataset.build = scope.spec; scope.spec = 'withPrev'; }
             objects.push(child);
             synthetic.add(child);
+          } else if (independent && !ignorableComputed(
+            'background-image', computed(child).backgroundImage.trim())) {
+            // A photograph or gradient *behind* content is not something a
+            // deck shape can hold, and the layout box carrying it is about to
+            // dissolve. Keep it as a painted box of its own, underneath its
+            // children in document order, rather than losing the picture the
+            // slide was designed around.
+            if (scope.spec) { child.dataset.build = scope.spec; scope.spec = 'withPrev'; }
+            objects.push(child);
+            backdrops.add(child);
           }
           collect(child, scope);
         }
@@ -739,6 +1303,22 @@ export function measureSlides(doc: Document): MeasuredSlide[] {
     root.classList.add('slide');
     for (const node of objects) {
       if (synthetic.has(node)) continue;
+      // A hand-authored `<table>` is a deck table, not an inert HTML region.
+      // The deck's table *is* a text element with column widths, so the only
+      // thing missing was the measurement: take the widths the browser just
+      // computed and the rest of the mapping already exists.
+      if (independent && node.tagName.toLowerCase() === 'table' && !node.dataset.element) {
+        node.dataset.element = 'table';
+        const row = node.querySelector('tr');
+        const cells = row ? ([...row.children] as HTMLElement[]) : [];
+        const spanned = cells.some((cell) => (cell as HTMLTableCellElement).colSpan > 1);
+        const widths = cells.map((cell) => Math.round(cell.getBoundingClientRect().width));
+        // Column widths are proportions; a spanning first row cannot supply
+        // them, and the mapping falls back to equal columns without them.
+        if (!spanned && widths.length > 0 && widths.every((width) => width > 0)) {
+          node.dataset.tableWidths = widths.join(',');
+        }
+      }
       // A leaf with nothing to say but paint — an empty div with a background
       // — is a rectangle, not an empty text box.
       if (!node.dataset.element && typeOf(node) === 'text' && node.textContent!.trim() === ''
@@ -777,18 +1357,33 @@ export function measureSlides(doc: Document): MeasuredSlide[] {
     // re-serialises the whole attribute, which would rewrite every authored
     // #000000 as rgb(0, 0, 0) before we ever read it.
     const rawStyles = objects.map((node) => node.getAttribute('style'));
-    const transforms = objects.map((node) => node.style.transform);
     for (const node of objects) node.style.transform = 'none';
     void doc.body.offsetHeight;
 
     const origin = root.getBoundingClientRect();
     const nodes = objects.map((node, index) => measure(node, origin, angles[index], rawStyles[index]));
-    objects.forEach((node, index) => { node.style.transform = transforms[index]; });
+    // Put the attribute back exactly as authored — not through the CSSOM, which
+    // would leave an empty `style=""` behind and re-serialise every colour — so
+    // measuring the same document again reads what the first pass read.
+    objects.forEach((node, index) => {
+      const raw = rawStyles[index];
+      if (raw === null) node.removeAttribute('style');
+      else node.setAttribute('style', raw);
+    });
     // A synthetic rect's paint lives on the shape itself, and the layout that
     // positioned its children died with the container: carrying either in the
     // element's inline style would paint the background twice or inset the
     // drawing by a padding that no longer has anything to pad.
     objects.forEach((node, index) => {
+      if (backdrops.has(node)) {
+        // Its layout died with the container; only the paint is left, and the
+        // text it used to hold now lives in objects of its own.
+        nodes[index].style = Object.fromEntries(Object.entries(nodes[index].style)
+          .filter(([property]) => property.startsWith('background')
+            || ['border-radius', 'box-shadow', 'filter', 'mix-blend-mode'].includes(property)));
+        nodes[index].html = '';
+        return;
+      }
       if (!synthetic.has(node)) return;
       // Layout declarations and the paint represented by the shape itself are
       // discarded, but effects around that paint still belong on its wrapper.
@@ -800,15 +1395,35 @@ export function measureSlides(doc: Document): MeasuredSlide[] {
         ].includes(property)));
       nodes[index].html = '';
     });
-    // CSS pseudo-elements with simple solid paint are ordinary editable slide
-    // shapes in disguise. Preserve circles, badges and stems natively; more
-    // complex gradients/shadows stay with the smallest HTML fallback region.
+    // CSS pseudo-elements are ordinary editable slide objects in disguise:
+    // solid paint as a native shape, richer decoration as a styled text
+    // object. Either way they reach the deck instead of vanishing from it.
+    // Paint order is part of the design: `::before` sits behind its owner's
+    // content and `::after` in front of it. Appending every decoration to the
+    // end of the slide instead put accent bars and gradient washes on top of
+    // the words they were drawn behind.
+    const decorations: Array<{ at: number; node: MeasuredNode }> = [];
     for (const owner of [root, ...root.querySelectorAll<HTMLElement>('*')]) {
       for (const pseudo of ['::before', '::after'] as const) {
-        const shape = simplePseudoShape(owner, pseudo, origin);
-        if (shape) nodes.push(shape);
+        const decoration = pseudoElement(owner, pseudo, origin);
+        if (!decoration) continue;
+        const own = objects.indexOf(owner);
+        const inside = objects
+          .map((object, index) => ({ object, index }))
+          .filter(({ object }) => owner.contains(object));
+        const anchor = own >= 0 ? [own, own]
+          : inside.length > 0 ? [inside[0].index, inside[inside.length - 1].index]
+            : [nodes.length, nodes.length];
+        decorations.push({
+          at: pseudo === '::before' ? anchor[0] - 0.5 : anchor[1] + 0.5,
+          node: decoration,
+        });
       }
     }
+    decorations.sort((a, b) => a.at - b.at);
+    decorations.forEach((decoration, order) => {
+      nodes.splice(Math.max(0, Math.ceil(decoration.at) + order), 0, decoration.node);
+    });
 
     // Same reasoning as element styles: an authored background keeps its
     // literal value, and only a class-driven one falls back to the computed
@@ -866,9 +1481,9 @@ export function measureSlides(doc: Document): MeasuredSlide[] {
       name: root.dataset.name ?? '',
       notes: root.dataset.notes ?? '',
       background: { color: background, image: image ? image[1] : null },
-      magicMoveFromPrevious: root.dataset.magicMoveFromPrevious === 'true',
-      ...(root.dataset.magicMoveDuration !== undefined
-        ? { magicMoveDuration: Number(root.dataset.magicMoveDuration) }
+      morphFromPrevious: root.dataset.morphFromPrevious === 'true',
+      ...(root.dataset.morphDuration !== undefined
+        ? { morphDuration: Number(root.dataset.morphDuration) }
         : {}),
       nodes,
       warnings,

@@ -1,4 +1,5 @@
 import type { AssetImportProgress, ImportedAsset, MediaInfo } from '@shared/ipc.js';
+import { clipboardImageName, type ClipboardImageSource } from '@shared/clipboardImages.js';
 
 /**
  * The browser collab client's stand-in for the Electron preload bridge.
@@ -68,6 +69,33 @@ export function installNetApi(options: NetApiOptions): void {
         imported.push(await uploadFile(deck, file, progressToken));
       }
       return imported;
+    },
+
+    /**
+     * Import an image a drag only pointed at. A `data:` payload is already
+     * bytes and uploads like any drop; a remote URL is fetched by the server,
+     * which is both the only party that can reach it without CORS and the one
+     * that guards against a client aiming the fetcher at its own network.
+     */
+    importImageUrl: async (source: ClipboardImageSource): Promise<ImportedAsset | null> => {
+      try {
+        if (source.kind === 'data') {
+          const binary = atob(source.base64);
+          const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+          const name = clipboardImageName(source.mime) ?? 'Pasted image.png';
+          return await uploadFile(deck, new File([bytes], name, { type: source.mime }));
+        }
+        const response = await fetch(`/api/import-url?deck=${deck}`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ url: source.url }),
+        });
+        if (!response.ok) return null;
+        return await response.json() as ImportedAsset;
+      } catch (err) {
+        console.error('Could not import the dropped image:', err);
+        return null;
+      }
     },
 
     onAssetImportProgress: (fn: (p: AssetImportProgress) => void): (() => void) => {

@@ -24,11 +24,19 @@ import {
  * character offset inside it, read straight from the live selection.
  */
 
+/**
+ * Every toggle that can leave a collapsed-caret typing marker behind. The
+ * baselines carry Shift (CDP bit 8) and their own key codes, so the chord is
+ * spelled out per format rather than derived from the letter.
+ */
 const FORMATS = [
-  ['b', 66, 'bold'],
-  ['i', 73, 'italic'],
-  ['u', 85, 'underline'],
+  { key: 'b', code: 'KeyB', keyCode: 66, name: 'bold', shift: false },
+  { key: 'i', code: 'KeyI', keyCode: 73, name: 'italic', shift: false },
+  { key: 'u', code: 'KeyU', keyCode: 85, name: 'underline', shift: false },
+  { key: '+', code: 'Equal', keyCode: 187, name: 'superscript', shift: true },
+  { key: '_', code: 'Minus', keyCode: 189, name: 'subscript', shift: true },
 ] as const;
+const SHIFT = 8;
 
 interface CaretPosition {
   /** Index of the top-level block (li or p) holding the caret, or -1. */
@@ -141,15 +149,16 @@ describe.skipIf(!electronBinary)('caret position across format toggles', () => {
   }, async () => {
     await start();
     for (const [content, blocks] of [[CONTENT_A, 3], [CONTENT_B, 2]] as const) {
-      for (const [key, code, name] of FORMATS) {
+      for (const { key, code, keyCode, name, shift } of FORMATS) {
         for (let block = 0; block < blocks; block += 1) {
           await session.edit(content);
           await caretToEndOfBlock(content, block);
           await session.cdp.typeKeys('qq');
           const before = await caretPosition(content);
-          await session.cdp.chord(key, `Key${key.toUpperCase()}`, code, MOD);
+          const modifiers = shift ? MOD | SHIFT : MOD;
+          await session.cdp.chord(key, code, keyCode, modifiers);
           await session.cdp.typeKeys('ww');
-          await session.cdp.chord(key, `Key${key.toUpperCase()}`, code, MOD);
+          await session.cdp.chord(key, code, keyCode, modifiers);
           const after = await caretPosition(content);
           const label = `${name} in ${content === CONTENT_A ? BOX_A : BOX_B} block ${block}`;
           expect(after.block, `${label}: caret left its block: ${JSON.stringify(after)}`)
@@ -190,8 +199,8 @@ describe.skipIf(!electronBinary)('caret position across format toggles', () => {
             + `from the caret: ${JSON.stringify(after)}`).toBe(position.offset + word.length);
           position = after;
         } else if (roll < 0.85) {
-          const [key, code, name] = FORMATS[Math.floor(next() * FORMATS.length)];
-          await session.cdp.chord(key, `Key${key.toUpperCase()}`, code, MOD);
+          const { key, code, keyCode, name, shift } = FORMATS[Math.floor(next() * FORMATS.length)];
+          await session.cdp.chord(key, code, keyCode, shift ? MOD | SHIFT : MOD);
           const after = await caretPosition(CONTENT_A);
           // A format toggle must never move the caret at all.
           expect(after.block, `seed ${seed} step ${step}: Cmd+${name} moved the caret `

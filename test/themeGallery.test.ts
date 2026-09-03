@@ -33,17 +33,33 @@ describe('theme gallery', () => {
     target.click();
     expect(gallery.selectedId()).toBe('swiss');
     expect(target.getAttribute('aria-pressed')).toBe('true');
-    expect(onSelect).toHaveBeenCalledWith(THEMES.find((theme) => theme.id === 'swiss'));
+    expect(onSelect).toHaveBeenCalledWith(THEMES.find((theme) => theme.id === 'swiss'), 'card');
     expect(target.querySelector<HTMLElement>('.theme-installed-badge')!.hidden).toBe(true);
 
     gallery.setInstalled('swiss');
     expect(target.querySelector<HTMLElement>('.theme-installed-badge')!.hidden).toBe(false);
   });
 
+  it('marks the theme the deck wore before this one', () => {
+    const gallery = createThemeGallery(THEMES, 'swiss', vi.fn());
+    document.body.appendChild(gallery.element);
+    const badge = (id: string) => document
+      .querySelector<HTMLElement>(`[data-theme-id="${id}"] .theme-previous-badge`)!;
+
+    expect([...document.querySelectorAll<HTMLElement>('.theme-previous-badge')]
+      .every((element) => element.hidden)).toBe(true);
+    gallery.setPrevious('basic');
+    expect(badge('basic').hidden).toBe(false);
+    expect(badge('basic').textContent).toBe('Last used');
+    expect(badge('swiss').hidden).toBe(true);
+    gallery.setPrevious(null);
+    expect(badge('basic').hidden).toBe(true);
+  });
+
   it('falls back to the first theme when a deck has no installed preset', () => {
     const gallery = createThemeGallery(THEMES, null, vi.fn());
     expect(gallery.selectedId()).toBe(THEMES[0].id);
-    expect(gallery.element.querySelector('[aria-pressed="true"]')?.getAttribute('data-theme-id'))
+    expect(gallery.element.querySelector('.theme-card[aria-pressed="true"]')?.getAttribute('data-theme-id'))
       .toBe(THEMES[0].id);
   });
 });

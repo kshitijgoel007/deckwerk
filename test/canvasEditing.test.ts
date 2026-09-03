@@ -1461,6 +1461,44 @@ describe('inline text editing', () => {
     expect(video.type === 'video' ? video.sourceBox : null).toBeNull();
   });
 
+  /**
+   * The other half of cropping: the handles size the window, and dragging the
+   * picture chooses which part of it the window shows. Without this a body
+   * drag in mask mode moved the whole object, so there was no way to reframe a
+   * photo behind a mask at all.
+   */
+  it('pans the picture behind the mask when the body is dragged in mask mode', () => {
+    const { store, canvas, host } = setup();
+    const stage = host.querySelector<HTMLElement>('.stage')!;
+    stage.getBoundingClientRect = () =>
+      ({ left: 0, top: 0, width: 1920, height: 1080 }) as DOMRect;
+    canvas.toggleMaskMode('video-1');
+
+    // Starts inside the 100,300 640x360 window and drags up and left.
+    host.dispatchEvent(new PointerEvent('pointerdown', {
+      clientX: 400, clientY: 480, bubbles: true, pointerId: 1, button: 0,
+    }));
+    host.dispatchEvent(new PointerEvent('pointermove', {
+      clientX: 360, clientY: 455, bubbles: true, pointerId: 1, button: 0,
+    }));
+    host.dispatchEvent(new PointerEvent('pointerup', {
+      clientX: 360, clientY: 455, bubbles: true, pointerId: 1, button: 0,
+    }));
+
+    let video = store.slide!.elements.find((element) => element.id === 'video-1')!;
+    if (video.type !== 'video') throw new Error('expected video fixture');
+    // The window has not moved; the picture inside it has.
+    expect(video).toMatchObject({ x: 100, y: 300, w: 640, h: 360 });
+    expect(video.sourceBox).toEqual({ x: -40, y: -25, w: 640, h: 360 });
+    expect(store.history()[0]?.label).toBe('Move video in mask');
+    expect(canvas.maskingElement()).toBe('video-1');
+
+    // One undoable step, back to uncropped.
+    store.undo();
+    video = store.slide!.elements.find((element) => element.id === 'video-1')!;
+    expect(video.type === 'video' ? video.sourceBox : null).toBeNull();
+  });
+
   it('finishes mask editing when the user clicks outside the active mask', () => {
     const { store, canvas, host } = setup();
     const stage = host.querySelector<HTMLElement>('.stage')!;
@@ -1770,7 +1808,7 @@ describe('pointer handling keeps the DOM stable', () => {
     expect({ x: original.x, y: original.y }).toEqual({ x: 100, y: 100 });
     expect({ x: copy.x, y: copy.y }).toEqual({ x: 240, y: 140 });
     expect(copy.lineageId).toBe('text-1');
-    expect(copy.magicMoveId).toBeNull();
+    expect(copy.morphId).toBeNull();
     expect([...store.get().selection]).toEqual([copy.id]);
 
     // Duplication and movement are one undoable gesture.
@@ -2061,7 +2099,7 @@ describe('native line endpoint editing', () => {
 });
 
 describe('same-kind multi-selection properties', () => {
-  it('exposes mixed and shared text styling, applies it to all, and hides Magic Move', () => {
+  it('exposes mixed and shared text styling, applies it to all, and hides Morph', () => {
     const { store } = setup();
     const first = store.slide!.elements.find((element) => element.id === 'text-1')!;
     if (first.type !== 'text') throw new Error('expected text');
@@ -2078,7 +2116,7 @@ describe('same-kind multi-selection properties', () => {
     document.body.appendChild(inspectorHost);
     new Inspector(inspectorHost, store);
 
-    expect(inspectorHost.querySelector('.magic-move-section')).toBeNull();
+    expect(inspectorHost.querySelector('.morph-section')).toBeNull();
     const textGroup = [...inspectorHost.querySelectorAll<HTMLElement>('.insp-group')]
       .find((section) => section.querySelector('h3')?.textContent === 'Text')!;
     const field = (label: string) => [...textGroup.querySelectorAll<HTMLLabelElement>('label')]
@@ -2113,7 +2151,7 @@ describe('same-kind multi-selection properties', () => {
     }
     expect(store.selectedElements().map((element) => element.style['font-weight']))
       .toEqual(['600', '600']);
-    expect(inspectorHost.querySelector('.magic-move-section')).toBeNull();
+    expect(inspectorHost.querySelector('.morph-section')).toBeNull();
   });
 
   it('keeps shared video options available without exposing single-clip tools', () => {

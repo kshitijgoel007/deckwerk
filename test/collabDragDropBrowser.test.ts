@@ -59,45 +59,52 @@ afterEach(async () => {
   workDir = '';
 });
 
+/** Bring up a headless collab server with an empty deck and a connected
+ *  browser editor, ready to be dropped on. */
+async function openEditor(): Promise<Cdp> {
+  workDir = await mkdtemp(join(tmpdir(), 'collab-drag-drop-'));
+  const decksRoot = join(workDir, 'decks');
+  const deckDir = join(decksRoot, DECK_ID);
+  const clientDir = await collabClientDir();
+  const profileDir = join(workDir, 'electron-profile');
+  await mkdir(deckDir, { recursive: true });
+  await mkdir(profileDir, { recursive: true });
+
+  await saveDeck(deckDir, emptyDeck('Drag and drop'));
+  await writeFile(
+    join(deckDir, 'theme.css'),
+    '.slide { background: #ffffff; color: #111827; }\n',
+    'utf8',
+  );
+
+  server = await startCollabServer({
+    rootDir: decksRoot,
+    clientDir,
+    host: '127.0.0.1',
+    port: 0,
+  });
+
+  browser = await launchBrowser(
+    `http://127.0.0.1:${server.port}/?deck=${DECK_ID}&name=Drop%20Browser`,
+    profileDir,
+  );
+  const target = await findTarget(
+    browser.debugPort,
+    (t) => t.url.includes(`deck=${DECK_ID}`) && !t.url.includes('present.html'),
+    browser.log,
+  );
+  editor = await Cdp.connect(target.webSocketDebuggerUrl!);
+
+  await eventually(async () => editor!.evaluate<boolean>(`(() => (
+    document.getElementById('status')?.textContent?.includes('connected as Drop Browser') === true
+    && Boolean(document.querySelector('#canvas .slide'))
+  ))()`), 'browser editor did not finish connecting');
+  return editor;
+}
+
 describe.skipIf(!electronBinary)('collab drag-and-drop', () => {
   it('drops an image and a video onto the canvas, uploads both, and syncs them', async () => {
-    workDir = await mkdtemp(join(tmpdir(), 'collab-drag-drop-'));
-    const decksRoot = join(workDir, 'decks');
-    const deckDir = join(decksRoot, DECK_ID);
-    const clientDir = await collabClientDir();
-    const profileDir = join(workDir, 'electron-profile');
-    await mkdir(deckDir, { recursive: true });
-    await mkdir(profileDir, { recursive: true });
-
-    await saveDeck(deckDir, emptyDeck('Drag and drop'));
-    await writeFile(
-      join(deckDir, 'theme.css'),
-      '.slide { background: #ffffff; color: #111827; }\n',
-      'utf8',
-    );
-
-    server = await startCollabServer({
-      rootDir: decksRoot,
-      clientDir,
-      host: '127.0.0.1',
-      port: 0,
-    });
-
-    browser = await launchBrowser(
-      `http://127.0.0.1:${server.port}/?deck=${DECK_ID}&name=Drop%20Browser`,
-      profileDir,
-    );
-    const target = await findTarget(
-      browser.debugPort,
-      (t) => t.url.includes(`deck=${DECK_ID}`) && !t.url.includes('present.html'),
-      browser.log,
-    );
-    editor = await Cdp.connect(target.webSocketDebuggerUrl!);
-
-    await eventually(async () => editor!.evaluate<boolean>(`(() => (
-      document.getElementById('status')?.textContent?.includes('connected as Drop Browser') === true
-      && Boolean(document.querySelector('#canvas .slide'))
-    ))()`), 'browser editor did not finish connecting');
+    editor = await openEditor();
 
     const png = (await readFile(PNG)).toString('base64');
     const mp4 = (await readFile(MP4)).toString('base64');
@@ -179,7 +186,7 @@ describe.skipIf(!electronBinary)('collab drag-and-drop', () => {
     // Both assets must be fetchable from the server and actually decode in the
     // page: an upload that stores unusable bytes still passes a src assertion.
     for (const src of [image.src, video.src]) {
-      const response = await fetch(`http://127.0.0.1:${server.port}/decks/${DECK_ID}/${src}`);
+      const response = await fetch(`http://127.0.0.1:${server!.port}/decks/${DECK_ID}/${src}`);
       expect(response.status).toBe(200);
       expect((await response.arrayBuffer()).byteLength).toBeGreaterThan(0);
     }
@@ -207,6 +214,79 @@ describe.skipIf(!electronBinary)('collab drag-and-drop', () => {
       )),
     );
     expect(live.slides[0].elements.filter((el) => el.type === 'video')).toHaveLength(1);
+  }, 120_000);
+
+  /**
+   * A drag out of a web page, which carries no file at all.
+   *
+   * Chromium hands over the page's `<img>` markup and the image's URL, and
+   * nothing else -- the reason this drop used to be discarded in silence. The
+   * drag here quotes an inline `data:` image rather than a remote one so the
+   * test needs no network: everything the fix touches (finding the image on
+   * the drag, probing it for its natural size, the placeholder, and the
+   * import that resolves it) is the same code either way.
+   */
+  it('drops an image dragged out of a web page, which carries no file', async () => {
+    editor = await openEditor();
+    const png = (await readFile(PNG)).toString('base64');
+
+    const dropped = await editor.evaluate<{ files: number; x: number }>(`(() => {
+      const transfer = new DataTransfer();
+      // Exactly what a browser writes for an image drag: markup, plus the
+      // image's own URL in text/uri-list and the page's in text/plain.
+      transfer.setData('text/html', "<meta charset='utf-8'><img src=\\"data:image/png;base64,${png}\\" alt=\\"Swatch\\">");
+      transfer.setData('text/uri-list', 'data:image/png;base64,${png}');
+      transfer.setData('text/plain', 'https://example.test/gallery');
+
+      const host = document.getElementById('canvas');
+      const box = host.querySelector('.slide').getBoundingClientRect();
+      const x = Math.round(box.left + box.width / 2);
+      const y = Math.round(box.top + box.height / 2);
+      host.dispatchEvent(new DragEvent('drop', {
+        bubbles: true, cancelable: true, dataTransfer: transfer, clientX: x, clientY: y
+      }));
+      return { files: transfer.files.length, x };
+    })()`);
+    // The premise of the bug: there is no file to import.
+    expect(dropped.files).toBe(0);
+
+    const read = `(() => window.store.get().deck.slides[0].elements
+      .filter((el) => el.type === 'image')
+      .map((el) => ({ id: el.id, type: el.type, src: el.src, x: el.x, y: el.y, w: el.w, h: el.h })))()`;
+
+    const resolved = await eventually(
+      async () => editor!.evaluate<DroppedElement[]>(read),
+      'a web image drag never became a resolved image element',
+      (els) => els.length === 1 && !els[0].src.startsWith('pending:'),
+      30_000,
+    );
+    const [image] = resolved;
+    expect(image.src).toMatch(/^assets\/.+\.png$/);
+    // Sized from the image the browser decoded off the drag, and centred on
+    // the cursor like any other drop.
+    expect(image.w).toBeGreaterThan(0);
+    expect(image.h).toBeGreaterThan(0);
+    const canvasW = await editor.evaluate<number>('window.store.get().deck.canvas.w');
+    expect(image.x + image.w / 2).toBeCloseTo(canvasW / 2, 0);
+
+    // The bytes really landed in the deck, and really paint.
+    const port = server!.port;
+    const response = await fetch(`http://127.0.0.1:${port}/decks/${DECK_ID}/${image.src}`);
+    expect(response.status).toBe(200);
+    const painted = await eventually(async () => editor!.evaluate<boolean>(`(() => {
+      const img = document.querySelector('[data-element-id="${image.id}"] img');
+      return img?.complete === true && img.naturalWidth > 0;
+    })()`), 'the dropped web image did not render', (ok) => ok, 20_000);
+    expect(painted).toBe(true);
+
+    const live = await eventually(
+      async () => fetchDeck(server!.port),
+      'the dropped web image never reached the server deck',
+      (deck) => deck.slides[0].elements.some(
+        (el) => el.id === image.id && 'src' in el && el.src === image.src,
+      ),
+    );
+    expect(live.slides[0].elements).toHaveLength(1);
   }, 120_000);
 });
 

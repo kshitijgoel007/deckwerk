@@ -20,7 +20,7 @@ The first execution step is to commit the current worktree as a checkpoint befor
   - Authored and rendered bounds, rotation, opacity, stacking order, and selection flags.
   - Text HTML/plain text, resolved typography, alignment, fitted size, and overflow state.
   - Media paths, crop, border, effects, natural dimensions, and duration.
-  - Shape geometry, arrow endpoints/control points, builds, and Magic Move identities.
+  - Shape geometry, arrow endpoints/control points, builds, and Morph identities.
 - Treat computed scene JSON as the default agent view.
 - Add an on-demand live DOM request that returns rendered HTML with computed styles and explicit selection attributes.
 - Keep screenshots optional. Render them through the shared presentation renderer, with an option to annotate selected objects and element IDs.
@@ -33,7 +33,7 @@ Provide a `slide-agent` CLI:
 - `context [deck]`: return current selection and revision.
 - `inspect [deck] --selected`: return computed scenes; `--dom` requests the live DOM artifact.
 - `render [deck] --selected|--slide <id> --output <dir> [--annotate]`: produce optional PNGs.
-- `validate <deck>`: validate schema, IDs, asset references, builds, and Magic Move references.
+- `validate <deck>`: validate schema, IDs, asset references, builds, and Morph references.
 - `asset import <deck> <paths...>`: reuse existing deduplication, probing, vector preservation, and video transcoding; return deck-relative paths and media metadata.
 - `transaction apply <deck> <transaction.json>`: apply one atomic, named change.
 
@@ -41,9 +41,9 @@ Define `AgentTransactionV1` with `expectedRevision`, a history label, and ID-add
 
 - Insert, replace, delete, or reorder slides.
 - Insert, replace, or delete elements.
-- Update whitelisted deck fields such as title and Magic Move duration.
+- Update whitelisted deck fields such as title and Morph duration.
 - Replace a slide’s timeline as part of a slide replacement.
-- Pair Magic Move objects by replacing their explicit identity fields in one transaction.
+- Pair Morph objects by replacing their explicit identity fields in one transaction.
 
 Transactions are all-or-nothing and validated against the deck schema. Invalid IDs, duplicate IDs, broken references, or stale revisions leave the deck unchanged.
 
@@ -69,7 +69,7 @@ Paper research, figure extraction, and citation lookup remain agent responsibili
 - Test computed typography, inline overrides, auto-fit results, overflow, media geometry, arrows, builds, and selection flags against the live renderer.
 - Test stale sidecars, crashed-app leftovers, and offline authored-scene fallback.
 - Test online transactions, offline transactions, revision conflicts, atomic failure, undo/redo, selection preservation, and concurrent UI edits.
-- Test selected slides 18–21 flowing from context into a single Magic Move pairing transaction.
+- Test selected slides 18–21 flowing from context into a single Morph pairing transaction.
 - Test asset import for PNG, JPEG, SVG, PDF, and supported/unsupported video codecs.
 - Add an end-to-end fixture where an agent creates several slides, imports media, inserts a plain-text paper reference, validates the deck, and inspects the computed result.
 - Extend `AGENTS.md` with the CLI workflow, transaction examples, coordinate conventions, and guidance to prefer computed scenes, use DOM for layout debugging, and use screenshots only as optional verification.

@@ -208,8 +208,8 @@ export async function buildComputedScenes(
       canvas: deck.canvas,
       background: slide.background,
       layout: slide.layout ?? 'freeform',
-      magicMoveFromPrevious: slide.magicMoveFromPrevious ?? false,
-      magicMoveDuration: slide.magicMoveDuration ?? 1000,
+      morphFromPrevious: slide.morphFromPrevious ?? false,
+      morphDuration: slide.morphDuration ?? 1000,
       skipped: slide.skipped ?? false,
       timeline: structuredClone(slide.timeline),
       elements: slide.elements.map((element) => computedElement(
@@ -355,7 +355,7 @@ function computedElement(
       control: element.control ?? null,
       path: element.path,
     } : null,
-    magicMoveId: element.magicMoveId ?? null,
+    morphId: element.morphId ?? null,
     lineageId: element.lineageId ?? null,
   };
 }

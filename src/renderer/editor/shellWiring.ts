@@ -1,5 +1,7 @@
 import type { SlideElement } from '@shared/deck.js';
 import { EditorCanvas } from './canvas.js';
+import { setCircularMask } from '@shared/mediaMask.js';
+import { mediaNaturalSize } from './mediaNatural.js';
 import { Inspector } from './inspector.js';
 import { SlideRail } from './slideRail.js';
 import {
@@ -64,6 +66,8 @@ export function wireCanvasInspector(
   inspector.editingText = () => canvas.isEditing();
   const targetsTableCells = () => Boolean(canvas.tableSelectionInfo())
     && !canvas.hasExpandedTextSelection();
+  inspector.textStyleTargetsSelection = () => canvas.hasExpandedTextSelection()
+    || Boolean(canvas.tableSelectionInfo());
   inspector.onApplyTextSelectionWeight = (weight) =>
     targetsTableCells()
       ? canvas.applyTableCellTextStyle('fontWeight', String(weight))
@@ -422,7 +426,11 @@ export function makeContextActions(
           label: el.maskShape === 'circle' ? 'Rectangular mask' : 'Circular mask',
           action: () => store.updateSelected((target) => {
             if (target.type === 'image' || target.type === 'video') {
-              target.maskShape = target.maskShape === 'circle' ? undefined : 'circle';
+              setCircularMask(
+                target,
+                target.maskShape !== 'circle',
+                mediaNaturalSize(target.id),
+              );
             }
           }, { label: 'Mask shape' }),
         });

@@ -4,9 +4,9 @@ import { emptyDeck, type Deck, type SlideElement } from '../src/shared/deck.js';
 import { Player } from '../src/renderer/player/player.js';
 
 /**
- * Media has to survive a Magic Move, not just be positioned correctly by one.
+ * Media has to survive a Morph, not just be positioned correctly by one.
  *
- * `magicMoveTransform.test.ts` proves the arithmetic and `magicMoveBrowser`
+ * `morphTransform.test.ts` proves the arithmetic and `morphBrowser`
  * proves the geometry. Neither notices the failure this file exists for: the
  * transition completes, every wrapper is in the right place at the right size,
  * and the picture inside it is simply gone. Borders and effects are painted by
@@ -88,8 +88,8 @@ function media(
   const base = {
     id: `${spec.name}-${slide}`,
     // Paired across the two slides by an explicit shared identity, exactly as
-    // the editor's Magic Move pairing writes it.
-    magicMoveId: `magic-${spec.name}`,
+    // the editor's Morph pairing writes it.
+    morphId: `morph-${spec.name}`,
     x: 80 + index * 20,
     y: slide === 'a' ? 100 : 400,
     w: cropped ? 200 : 440,
@@ -123,13 +123,13 @@ function media(
   return { ...base, type: 'image', src: spec.src, alt: '' } as SlideElement;
 }
 
-function deckWithMagicMovedMedia(): Deck {
-  const deck = emptyDeck('Magic Move media');
+function deckWithMorphdMedia(): Deck {
+  const deck = emptyDeck('Morph media');
   deck.slides[0].elements = CASES.map((spec, i) => media('a', i, spec));
   deck.slides.push({
     ...deck.slides[0],
     id: 'slide-b',
-    magicMoveFromPrevious: true,
+    morphFromPrevious: true,
     elements: CASES.map((spec, i) => media('b', i, spec)),
   });
   return deck;
@@ -147,7 +147,7 @@ function mediaBody(wrapper: HTMLElement): HTMLElement | null {
   return wrapper.querySelector<HTMLElement>('img, video, .pending-asset');
 }
 
-describe('magic move media survival', () => {
+describe('morph media survival', () => {
   beforeEach(() => {
     document.body.replaceChildren();
     (globalThis as unknown as { ResizeObserver: typeof ResizeObserver }).ResizeObserver = class {
@@ -162,8 +162,8 @@ describe('magic move media survival', () => {
     HTMLMediaElement.prototype.load = () => {};
   });
 
-  it('keeps every image and video painted across a Magic Move, with borders and effects', () => {
-    const deck = deckWithMagicMovedMedia();
+  it('keeps every image and video painted across a Morph, with borders and effects', () => {
+    const deck = deckWithMorphdMedia();
     const host = document.createElement('div');
     document.body.appendChild(host);
     const player = new Player({ deck, container: host, resolveSrc: (src) => `/deck/${src}` });
@@ -183,7 +183,7 @@ describe('magic move media survival', () => {
     for (const spec of CASES) {
       const id = `${spec.name}-b`;
       const wrapper = stage.querySelector<HTMLElement>(`[data-element-id="${id}"]`);
-      expect(wrapper, `${spec.name}: wrapper missing after Magic Move`).toBeTruthy();
+      expect(wrapper, `${spec.name}: wrapper missing after Morph`).toBeTruthy();
 
       const body = mediaBody(wrapper!);
       expect(body, `${spec.name}: media body lost — wrapper survived but paints nothing`)
@@ -219,7 +219,7 @@ describe('magic move media survival', () => {
    * hand-off exists to prevent — so pin the continuation too.
    */
   it('still continues a playing video across the move rather than restarting it', () => {
-    const deck = deckWithMagicMovedMedia();
+    const deck = deckWithMorphdMedia();
     const host = document.createElement('div');
     document.body.appendChild(host);
     const player = new Player({ deck, container: host, resolveSrc: (src) => `/deck/${src}` });

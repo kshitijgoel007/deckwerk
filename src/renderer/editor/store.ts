@@ -696,7 +696,7 @@ export class EditorStore {
       for (const el of slide.elements.filter((candidate) => ids.has(candidate.id))) {
         const copy = structuredClone(el);
         copy.lineageId = el.lineageId ?? el.id;
-        copy.magicMoveId = null;
+        copy.morphId = null;
         copy.id = makeId(el.type);
         copy.x += offset.x;
         copy.y += offset.y;
@@ -946,9 +946,24 @@ async function readSystemClipboard(): Promise<ClipboardReadResult | ClipboardWri
   return fallbackClipboard;
 }
 
+/**
+ * How far a paste is nudged when the copy would otherwise land exactly on top
+ * of something the author is already looking at.
+ */
+const PASTE_OFFSET = 24;
+
+/**
+ * Where the last paste of the current clipboard content put things, so that
+ * pasting repeatedly cascades instead of stacking every copy in one spot.
+ * Cleared by the next copy; keyed by destination slide so a paste onto a new
+ * slide starts its own cascade.
+ */
+let pasteCascade: { key: string; steps: number } | null = null;
+
 export async function copySelectionToClipboard(store: EditorStore): Promise<number> {
   const els = store.selectedElements();
   if (els.length === 0) return 0;
+  pasteCascade = null;
   const ids = new Set(els.map((e) => e.id));
   // Builds ride along: an element that appears on click should still appear
   // on click after the paste. Entries triggered by elements staying behind
@@ -958,6 +973,7 @@ export async function copySelectionToClipboard(store: EditorStore): Promise<numb
     kind: 'elements',
     elements: structuredClone(els),
     timeline: structuredClone(timeline),
+    sourceSlideId: store.slide?.id ?? null,
   });
   return els.length;
 }
@@ -972,6 +988,7 @@ export async function cutSelectionToClipboard(store: EditorStore): Promise<numbe
 export async function copySlidesToClipboard(store: EditorStore): Promise<number> {
   const slides = store.selectedSlides();
   if (slides.length === 0) return 0;
+  pasteCascade = null;
   await writeSystemClipboard({ kind: 'slides', slides: structuredClone(slides) });
   return slides.length;
 }
@@ -1043,6 +1060,23 @@ export async function pasteFromClipboard(
 
   const elements = structuredClone(payload.elements);
   const timeline = structuredClone(payload.timeline);
+
+  /*
+   * Position: a paste onto a *different* slide keeps the layout the author
+   * composed — that is the whole point of copying a title or a figure across
+   * slides, and nudging it means realigning it by hand every time. Only a
+   * paste back onto the slide the elements came from is offset, because there
+   * the copy would sit invisibly on top of its original. Pasting the same
+   * clipboard again onto the same slide cascades from the previous paste
+   * rather than repeating it in place.
+   */
+  const targetSlideId = store.slide?.id ?? null;
+  const sameSlide = targetSlideId !== null && payload.sourceSlideId === targetSlideId;
+  const key = `${targetSlideId ?? ''}\u0000${payload.elements.map((el) => el.id).join(',')}`;
+  const repeats = pasteCascade?.key === key ? pasteCascade.steps + 1 : 0;
+  pasteCascade = { key, steps: repeats };
+  const nudge = (repeats + (sameSlide ? 1 : 0)) * PASTE_OFFSET;
+
   remapElementIds(elements, timeline);
   const created = elements.map((el) => el.id);
   store.commit((deck) => {
@@ -1050,11 +1084,11 @@ export async function pasteFromClipboard(
     if (!slide) return;
     const maxZ = slide.elements.reduce((m, e) => Math.max(m, e.z), 0);
     elements.forEach((el, i) => {
-      el.x += 24;
-      el.y += 24;
+      el.x += nudge;
+      el.y += nudge;
       if (el.type === 'shape' && el.control) {
-        el.control.x += 24;
-        el.control.y += 24;
+        el.control.x += nudge;
+        el.control.y += nudge;
       }
       el.z = maxZ + 1 + i;
       slide.elements.push(el);
@@ -1094,7 +1128,12 @@ export async function pasteImageFilesFromClipboard(
  * reliable signal; a clipboard file with no usable name but an image MIME
  * type still imports, under a name derived from the type.
  */
-function clipboardImageName(file: File): string | null {
+export function clipboardImageName(file: { name: string; type: string }): string | null {
+  // Chromium's placeholder name for clipboard bytes: the same screenshot is
+  // `Screenshot.png` through the OS clipboard, and the asset should not be
+  // called something different depending on which paste path caught it.
+  const generic = /^image(\.[a-z0-9]+)$/i.exec(file.name);
+  if (generic && classifyMediaName(file.name) === 'image') return `Screenshot${generic[1].toLowerCase()}`;
   if (classifyMediaName(file.name) === 'image') return file.name;
   if (!file.type.startsWith('image/')) return null;
   const ext = file.type.slice('image/'.length).split('+')[0].toLowerCase();

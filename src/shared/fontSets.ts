@@ -137,7 +137,7 @@ export function roleForElement(
   maxProse: number,
 ): RoleName {
   for (const cls of classes) {
-    const m = /^role-(title|heading|body|caption)$/.exec(cls);
+    const m = /^role-(title|heading|body|caption|base)$/.exec(cls);
     if (m) return m[1] as RoleName;
   }
   return roleForSize(size || maxProse * 0.5, maxProse);

@@ -1,3 +1,4 @@
+import { renameRetiredFields } from '@shared/fieldAliases.js';
 import { spawn } from 'node:child_process';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { lookup } from 'node:dns/promises';
@@ -33,6 +34,18 @@ import type { AgentChatState } from '../shared/ipc.js';
 import type { SharedAgentRuntimeLike } from './sharedAgent.js';
 import { planHtmlReplacement } from './htmlReplacement.js';
 import { htmlDraftWorkflow, type HtmlDraftWorkflow } from './htmlDraftWorkflow.js';
+import {
+  canAccessDeck,
+  canManageDeck,
+  normalizeLogin,
+  readDeckAccess,
+  resolveIdentity,
+  UserDirectory,
+  writeDeckAccess,
+  type AccessControlConfig,
+  type DeckAccess,
+  type Identity,
+} from './accessControl.js';
 
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -64,6 +77,8 @@ interface Peer {
   socket: WebSocket;
   state: PresenceState;
   greeted: boolean;
+  /** Tailnet identity the socket was admitted under; null without --access. */
+  identity: Identity | null;
 }
 
 /** One hosted deck: its authoritative session plus the peers editing it. */
@@ -166,6 +181,15 @@ export interface CollabServerOptions {
   /** Override the external Keynote adapter in focused server tests. */
   keynoteImporter?: (keyFile: string, outDir: string) => Promise<unknown>;
   /**
+   * Opt-in multi-user access control (`--access <adminLogin>`). When absent —
+   * every desktop flow and every deployment that predates it — the server
+   * behaves exactly as before: no identity, every deck open to whoever can
+   * reach the port. When present, identity comes from Tailscale (see
+   * accessControl.ts), decks carry public/private/shared permissions in an
+   * access.json sidecar, and the named admin sees everything.
+   */
+  accessControl?: AccessControlConfig;
+  /**
    * Called when the host requests the session end (POST /api/end from
    * loopback in a hosted session). The owner tears the server down; the
    * endpoint itself only notifies peers.
@@ -191,6 +215,11 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
   const agentMode = Boolean(options.agentMode);
   const sharedAgent = options.sharedAgent;
   const sharedAgentAccess = options.sharedAgentAccess ?? 'all';
+  const accessControl = options.accessControl
+    ? { admin: normalizeLogin(options.accessControl.admin) }
+    : null;
+  // Everyone the server has ever identified, for share-dialog autocomplete.
+  const userDirectory = accessControl ? new UserDirectory(join(resolve(options.rootDir), 'users.json')) : null;
   const rooms = new Map<string, Room>();
   const htmlDrafts = new Map<string, HttpHtmlDraft>();
   const latestHtmlDrafts = new Map<string, string>();
@@ -221,27 +250,63 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
     return dir;
   }
 
-  async function listDecks(): Promise<Array<{ id: string; title: string; slides: number }>> {
-    const out: Array<{ id: string; title: string; slides: number }> = [];
+  interface DeckListEntry {
+    id: string;
+    title: string;
+    slides: number;
+    /** Present only with access control on. */
+    owner?: string;
+    visibility?: 'public' | 'private';
+    canManage?: boolean;
+    sharedWithMe?: boolean;
+  }
+
+  async function listDecks(identity: Identity | null): Promise<DeckListEntry[]> {
+    const out: DeckListEntry[] = [];
     for (const entry of await readdir(rootDir, { withFileTypes: true })) {
       if (!entry.isDirectory()) continue;
       if (hostedDeckId && entry.name !== hostedDeckId) continue;
       const deckPath = join(rootDir, entry.name, 'deck.json');
       if (!existsSync(deckPath)) continue;
+      let listed: DeckListEntry;
       try {
         const raw = JSON.parse(await readFile(deckPath, 'utf8')) as {
           title?: string; slides?: unknown[];
         };
-        out.push({
+        listed = {
           id: entry.name,
           title: raw.title ?? entry.name,
           slides: Array.isArray(raw.slides) ? raw.slides.length : 0,
-        });
+        };
       } catch {
         // Half-written or invalid deck.json; skip rather than fail the listing.
+        continue;
       }
+      if (accessControl && identity) {
+        const access = await readDeckAccess(join(rootDir, entry.name), accessControl);
+        if (!canAccessDeck(identity.login, access, accessControl)) continue;
+        listed.owner = access.owner;
+        listed.visibility = access.visibility;
+        listed.canManage = canManageDeck(identity.login, access, accessControl);
+        listed.sharedWithMe = access.sharedWith.includes(identity.login);
+      }
+      out.push(listed);
     }
     return out.sort((a, b) => a.id.localeCompare(b.id));
+  }
+
+  /** Whether this identity may touch the deck at all; access control off = yes. */
+  async function deckAllowed(identity: Identity | null, deckId: string): Promise<boolean> {
+    if (!accessControl) return true;
+    if (!identity) return false;
+    let deckDir: string;
+    try {
+      deckDir = deckDirOf(deckId);
+    } catch {
+      // Invalid ids fall through to the route's own error handling.
+      return true;
+    }
+    return canAccessDeck(identity.login, await readDeckAccess(deckDir, accessControl), accessControl);
   }
 
   async function getRoom(deckId: string): Promise<Room> {
@@ -291,8 +356,17 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
     broadcast(room, { kind: 'presence', state: room.agentPresence });
   };
 
+  /**
+   * Whether the request comes from the server's owner. Without --access that
+   * is the loopback socket (the desktop app's own window). With it, every
+   * request is loopback — tailscale serve proxies them all — so the owner is
+   * the admin identity, or nobody.
+   */
+  const isHostRequest = (request: IncomingMessage): boolean => accessControl
+    ? resolveIdentity(request, accessControl)?.login === accessControl.admin
+    : isLoopbackRequest(request);
   const canUseSharedAgent = (request: IncomingMessage): boolean => Boolean(sharedAgent)
-    && (sharedAgentAccess === 'all' || isLoopbackRequest(request));
+    && (sharedAgentAccess === 'all' || isHostRequest(request));
 
   const agentChatId = (deckId: string, participantId: string | null): string | null => {
     if (sharedAgent && participantId) return sharedAgent.chatId(deckDirOf(deckId), participantId);
@@ -338,6 +412,21 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
     const deckParam = url.searchParams.get('deck');
     const agentSessionParam = normalizeSharedParticipantId(url.searchParams.get('agentSession'));
 
+    // With access control on, every request needs a tailnet identity before it
+    // gets a single byte — including the client bundle. One check here covers
+    // every ?deck=-scoped route; the asset route and the WebSocket upgrade
+    // carry the deck id elsewhere and repeat the deck check themselves.
+    const identity = accessControl ? resolveIdentity(request, accessControl) : null;
+    if (accessControl && !identity) {
+      return respondJson(response, 403, {
+        error: 'unidentified connection — this server is reachable only through tailscale serve',
+      });
+    }
+    if (identity && userDirectory) void userDirectory.note(identity);
+    if (deckParam && !(await deckAllowed(identity, deckParam))) {
+      return respondJson(response, 403, { error: 'you do not have access to this deck' });
+    }
+
     // Agent sessions are observation-only in the browser. All authoring,
     // comments, assets, and apply operations go through the HTTP API. Keep the
     // old manual workspace only as an explicit human debugging surface.
@@ -355,6 +444,11 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
     // Deck-scoped asset streaming: /decks/<id>/assets/<relpath>
     const assetMatch = /^\/decks\/([^/]+)\/(assets\/.+)$/.exec(path);
     if (assetMatch) {
+      if (!(await deckAllowed(identity, assetMatch[1]))) {
+        response.writeHead(403, { 'content-type': 'text/plain' });
+        response.end('forbidden');
+        return;
+      }
       let absolute: string;
       try {
         const deckDir = deckDirOf(assetMatch[1]);
@@ -402,10 +496,15 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
         hosted: Boolean(hostedDeckId),
         deckId: hostedDeckId ?? null,
         agentMode: Boolean(options.agentMode),
+        access: accessControl && identity ? {
+          user: identity.login,
+          name: identity.name,
+          admin: identity.login === accessControl.admin,
+        } : null,
         sharedAgent: canUseSharedAgent(request) ? {
           enabled: true,
           name: sharedAgent?.name ?? 'Agent',
-          canManageAccount: isLoopbackRequest(request),
+          canManageAccount: isHostRequest(request),
           ...(sharedAgentAccess === 'loopback' ? { personal: true } : {}),
         } : null,
         urls: boundPort === null ? [] : reachableUrls(host, boundPort),
@@ -424,7 +523,7 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
       const stream = {
         deckId: deckParam,
         participantId,
-        canManageAccount: isLoopbackRequest(request),
+        canManageAccount: isHostRequest(request),
         response,
       };
       response.writeHead(200, {
@@ -453,7 +552,7 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
       if (!participantId) return respondJson(response, 400, { error: 'missing or invalid participant' });
       await getRoom(deckParam);
       const state = await sharedAgent.getState(deckDirOf(deckParam), participantId);
-      respondJson(response, 200, publicAgentState(state, deckParam, isLoopbackRequest(request)));
+      respondJson(response, 200, publicAgentState(state, deckParam, isHostRequest(request)));
       return;
     }
 
@@ -467,7 +566,7 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
       await getRoom(deckParam);
       const deckDir = deckDirOf(deckParam);
       const payload = JSON.parse((await readBody(request)).toString('utf8') || '{}') as Record<string, unknown>;
-      const canManageAccount = isLoopbackRequest(request);
+      const canManageAccount = isHostRequest(request);
 
       if (path === '/api/shared-agent/login' || path === '/api/shared-agent/switch-account') {
         if (!canManageAccount) {
@@ -528,8 +627,94 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
     }
 
     if (path === '/api/decks' && request.method === 'GET') {
-      respondJson(response, 200, await listDecks());
+      respondJson(response, 200, await listDecks(identity));
       return;
+    }
+
+    // The people directory: everyone this server has identified before, so
+    // sharing can autocomplete logins and show names. Names come from the
+    // tailnet identity — being listed grants nothing by itself.
+    if (path === '/api/users' && request.method === 'GET' && userDirectory) {
+      respondJson(response, 200, await userDirectory.all());
+      return;
+    }
+
+    // Per-deck permissions. Reading requires deck access (enforced above);
+    // changing them is for the owner or the admin. Not routed at all without
+    // the --access flag, matching the rest of the sidecar machinery.
+    if (path === '/api/access' && accessControl && identity) {
+      if (!deckParam) return respondJson(response, 400, { error: 'missing deck' });
+      let deckDir: string;
+      try {
+        deckDir = deckDirOf(deckParam);
+      } catch {
+        return respondJson(response, 400, { error: 'invalid deck id' });
+      }
+      if (!existsSync(join(deckDir, 'deck.json'))) {
+        return respondJson(response, 404, { error: 'no such deck' });
+      }
+      const access = await readDeckAccess(deckDir, accessControl);
+      const canManage = canManageDeck(identity.login, access, accessControl);
+      if (request.method === 'GET') {
+        respondJson(response, 200, { ...access, canManage });
+        return;
+      }
+      if (request.method === 'PUT' || request.method === 'POST') {
+        if (!canManage) {
+          return respondJson(response, 403, { error: 'only the deck owner or the admin can change access' });
+        }
+        let payload: { visibility?: unknown; sharedWith?: unknown; owner?: unknown };
+        try {
+          payload = JSON.parse((await readBody(request)).toString('utf8') || '{}') as typeof payload;
+        } catch {
+          return respondJson(response, 400, { error: 'body must be JSON' });
+        }
+        if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+          return respondJson(response, 400, { error: 'body must be a JSON object' });
+        }
+        const next: DeckAccess = { ...access };
+        if (payload.visibility !== undefined) {
+          if (payload.visibility !== 'public' && payload.visibility !== 'private') {
+            return respondJson(response, 400, { error: 'visibility must be "public" or "private"' });
+          }
+          next.visibility = payload.visibility;
+        }
+        if (payload.sharedWith !== undefined) {
+          if (!Array.isArray(payload.sharedWith)
+            || payload.sharedWith.some((entry) => typeof entry !== 'string')
+            || payload.sharedWith.length > 500) {
+            return respondJson(response, 400, { error: 'sharedWith must be an array of logins' });
+          }
+          next.sharedWith = [...new Set((payload.sharedWith as string[])
+            .map(normalizeLogin)
+            .filter((login) => login !== ''))];
+        }
+        if (payload.owner !== undefined) {
+          // Transferring ownership is an admin act: an owner "giving a deck
+          // away" by typo would silently lock themselves out.
+          if (identity.login !== accessControl.admin) {
+            return respondJson(response, 403, { error: 'only the admin can transfer ownership' });
+          }
+          if (typeof payload.owner !== 'string' || !normalizeLogin(payload.owner)) {
+            return respondJson(response, 400, { error: 'owner must be a login' });
+          }
+          next.owner = normalizeLogin(payload.owner);
+        }
+        await writeDeckAccess(deckDir, next);
+        // A socket was admitted under the old sidecar; the new one has to
+        // apply to it too, or un-sharing would only stop the *next* visit.
+        for (const peer of rooms.get(deckParam)?.peers.values() ?? []) {
+          if (peer.identity && !canAccessDeck(peer.identity.login, next, accessControl)) {
+            peer.socket.close(4003, 'your access to this deck was revoked');
+          }
+        }
+        respondJson(response, 200, {
+          ...next,
+          canManage: canManageDeck(identity.login, next, accessControl),
+        });
+        return;
+      }
+      return respondJson(response, 405, { error: 'method not allowed' });
     }
 
     if (hostedDeckId && (path === '/api/decks' || path === '/api/import-keynote') && request.method === 'POST') {
@@ -543,6 +728,11 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
       const dir = deckDirOf(name);
       if (existsSync(dir)) return respondJson(response, 409, { error: `deck "${name}" already exists` });
       await createDeck(dir, name);
+      // New decks start private to their creator: accidental exposure should
+      // take an explicit act, not the absence of one.
+      if (accessControl && identity) {
+        await writeDeckAccess(dir, { owner: identity.login, visibility: 'private', sharedWith: [] });
+      }
       respondJson(response, 200, { id: name });
       return;
     }
@@ -558,6 +748,9 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
         const keyFile = join(tmp, `${name}.key`);
         await writeFile(keyFile, body);
         const report = await (options.keynoteImporter ?? runKeynoteImport)(keyFile, dir);
+        if (accessControl && identity) {
+          await writeDeckAccess(dir, { owner: identity.login, visibility: 'private', sharedWith: [] });
+        }
         respondJson(response, 200, { id: name, report });
       } catch (error) {
         await rm(dir, { recursive: true, force: true });
@@ -823,7 +1016,7 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
           theme: room.session.deck.theme,
           themePreset: room.session.deck.themePreset,
           themeStyle: room.session.deck.themeStyle,
-          magicMoveEasing: room.session.deck.magicMoveEasing,
+          morphEasing: room.session.deck.morphEasing,
         },
         slides: selected.map((slide) => inspectNativeSlide(room.session.deck, slide)),
       });
@@ -1529,6 +1722,20 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
     // immediately after the handshake isn't emitted before a listener exists.
     socket.pause();
     void (async () => {
+      // The upgrade request carries the same loopback socket and tailscale
+      // serve headers as any HTTP request, so the identity rules match.
+      let identity: Identity | null = null;
+      if (accessControl) {
+        identity = resolveIdentity(request, accessControl);
+        if (!identity || !(await deckAllowed(identity, deckId))) {
+          // Resume first: the close handshake needs to read the client's
+          // close frame, which a paused socket never would.
+          socket.resume();
+          socket.close(4003, 'you do not have access to this deck');
+          return;
+        }
+        if (userDirectory) void userDirectory.note(identity);
+      }
       let room: Room;
       try {
         room = await getRoom(deckId);
@@ -1536,16 +1743,17 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
         socket.close(4004, String(error instanceof Error ? error.message : error).slice(0, 120));
         return;
       }
-      bindPeer(room, socket);
+      bindPeer(room, socket, identity);
       socket.resume();
     })();
   });
 
-  function bindPeer(room: Room, socket: WebSocket): void {
+  function bindPeer(room: Room, socket: WebSocket, identity: Identity | null): void {
     const clientId = randomUUID();
     const peer: Peer = {
       socket,
       greeted: false,
+      identity,
       state: {
         clientId,
         name: '',
@@ -1562,14 +1770,16 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
     socket.on('message', (raw) => {
       let message;
       try {
-        message = ClientMessageSchema.parse(JSON.parse(String(raw)));
+        message = ClientMessageSchema.parse(renameRetiredFields(JSON.parse(String(raw))));
       } catch {
         return; // Trusted network; a malformed frame is a bug, not an attack. Drop it.
       }
 
       if (message.kind === 'hello') {
         room.guestCounter += 1;
-        peer.state.name = message.name?.trim() || `Guest ${room.guestCounter}`;
+        // With access control on, presence carries the authenticated identity —
+        // a client-supplied name is only trusted on the flagless server.
+        peer.state.name = identity?.name || message.name?.trim() || `Guest ${room.guestCounter}`;
         peer.state.color = pickColor(room.peers);
         peer.greeted = true;
         send(peer, {

@@ -288,6 +288,32 @@ export function fullThemeSelection(themeId: string): ThemeSelection {
 }
 
 /**
+ * Record a preset as one this deck has actually worn.
+ *
+ * Called where a theme reaches slides — an apply, or a slide created under the
+ * current selection — and deliberately not where a card is merely chosen, so
+ * the history answers "what did this deck look like before?" rather than
+ * "which cards did I click?". Most recent first, deduplicated, and short: it
+ * exists to name the one theme worth going back to, not to be an audit log.
+ */
+export function noteThemeUsed(deck: Pick<Deck, 'themeHistory'>, themeId: string | null | undefined): void {
+  if (!themeId) return;
+  const rest = (deck.themeHistory ?? []).filter((id) => id !== themeId);
+  deck.themeHistory = [themeId, ...rest].slice(0, 8);
+}
+
+/**
+ * The last theme this deck actually wore other than `currentId` — the one the
+ * picker marks so the author can find their way back to it.
+ */
+export function previousThemeUsed(
+  deck: Pick<Deck, 'themeHistory'>,
+  currentId: string | null | undefined,
+): string | null {
+  return (deck.themeHistory ?? []).find((id) => id !== currentId) ?? null;
+}
+
+/**
  * The deck's current theme: what the author last chose, with the deck's own
  * edits folded in when those edits belong to that same preset.
  *
@@ -296,7 +322,7 @@ export function fullThemeSelection(themeId: string): ThemeSelection {
  * they cannot disagree about which theme the deck is wearing.
  */
 export function deckTheme(deck: Deck): ThemePreset | null {
-  const preset = themeById(deck.themeSelection?.preset ?? deck.themePreset);
+  const preset = themeById(deck.themeSelection?.preset ?? deck.themePreset, deckThemes(deck));
   if (!preset) return null;
   if (preset.id === deck.themePreset && deck.themeStyle) {
     return presetFromStyle(deck.themeStyle, preset);
@@ -316,8 +342,116 @@ export function presetFromStyle(style: ThemeStyle, base: ThemePreset): ThemePres
   };
 }
 
-export function themeById(id: string | null | undefined): ThemePreset | null {
-  return THEMES.find((t) => t.id === id) ?? null;
+export type ThemeMode = 'light' | 'dark';
+
+/** Which side of the room a theme is built for, read off its ground. */
+export function themeMode(theme: Pick<ThemePreset, 'colors'>): ThemeMode {
+  const rgb = hexToRgb(theme.colors.background);
+  if (!rgb) return 'light';
+  return relativeLuma(rgb) < 128 ? 'dark' : 'light';
+}
+
+/** The base preset id behind a possibly `-dark`/`-light` suffixed variant id. */
+export function baseThemeId(
+  id: string | null | undefined,
+  pool: ThemePreset[] = THEMES,
+): string | null {
+  if (!id) return null;
+  const m = /^(.*)-(dark|light)$/.exec(id);
+  return m && pool.some((t) => t.id === m[1]) ? m[1] : id;
+}
+
+/**
+ * A theme's counterpart on the other side of the room.
+ *
+ * Every colour keeps its hue and saturation and flips its lightness around the
+ * middle: paper grounds become near-black grounds of the same temperature,
+ * inks become off-whites, and mid-tone accents — sitting near the pivot —
+ * barely move, so the theme keeps its voice. A theme already in the requested
+ * mode is returned as-is, which also keeps the flip an involution: the light
+ * variant of a dark variant is the original preset.
+ */
+export function themeVariant(base: ThemePreset, mode: ThemeMode): ThemePreset {
+  if (themeMode(base) === mode) return base;
+  const fonts = structuredClone(base.fonts);
+  for (const role of Object.values(fonts)) {
+    if (role.color) role.color = flipLightness(role.color);
+  }
+  return {
+    id: `${base.id}-${mode}`,
+    name: `${base.name} · ${mode === 'dark' ? 'Dark' : 'Light'}`,
+    description: base.description,
+    fonts,
+    palette: base.palette.map(flipLightness),
+    colors: {
+      background: flipLightness(base.colors.background),
+      text: flipLightness(base.colors.text),
+      muted: flipLightness(base.colors.muted),
+      accent: flipLightness(base.colors.accent),
+    },
+  };
+}
+
+/**
+ * Every preset this deck can wear: the built-ins plus the ones it carries.
+ *
+ * A deck-local theme is a first-class preset from here on — the gallery lists
+ * it, `themeById` resolves it, and its light/dark counterpart is generated the
+ * same way. Deck themes come last so a deck cannot quietly redefine a built-in
+ * id out from under a slide that already names it; `themeIssues` rejects the
+ * collision at the point it would be created rather than leaving it to
+ * resolution order.
+ */
+export function deckThemes(deck: Pick<Deck, 'customThemes'> | null | undefined): ThemePreset[] {
+  return [...THEMES, ...(deck?.customThemes ?? [])];
+}
+
+/**
+ * Resolve a preset id against a pool of themes, built-ins by default.
+ *
+ * Callers holding a deck should pass `deckThemes(deck)`; the bare form is for
+ * the places that genuinely mean "a shipped preset" and for tests.
+ */
+export function themeById(
+  id: string | null | undefined,
+  pool: ThemePreset[] = THEMES,
+): ThemePreset | null {
+  const exact = pool.find((t) => t.id === id) ?? null;
+  if (exact || !id) return exact;
+  const m = /^(.*)-(dark|light)$/.exec(id);
+  const base = m ? pool.find((t) => t.id === m[1]) : null;
+  if (!base) return null;
+  const variant = themeVariant(base, m![2] as ThemeMode);
+  // "basic-light" for a theme that is already light is not a real id.
+  return variant.id === id ? variant : null;
+}
+
+/**
+ * What is wrong with a proposed deck theme, in the words its author needs.
+ *
+ * Written for the agent CLI, where the preset arrives as hand-authored JSON:
+ * the schema catches the shape, this catches the things that are well-formed
+ * but would not work — an id that shadows a shipped preset (making the deck's
+ * theme depend on resolution order), a `-dark`/`-light` suffix that collides
+ * with a generated variant id, or a palette too short for the swatch row and
+ * the nearest-colour mapping that shape fills go through.
+ */
+export function themeIssues(preset: ThemePreset, existing: ThemePreset[]): string[] {
+  const issues: string[] = [];
+  if (THEMES.some((theme) => theme.id === preset.id)) {
+    issues.push(`"${preset.id}" is a built-in preset id; choose another`);
+  }
+  if (/-(dark|light)$/.test(preset.id)) {
+    issues.push(`"${preset.id}" ends in -dark/-light, which names a generated variant`);
+  }
+  if (existing.some((theme) => theme.id === preset.id)) {
+    issues.push(`the deck already has a theme with id "${preset.id}" (use --replace)`);
+  }
+  if (preset.palette.length < 2) issues.push('palette needs at least two swatches');
+  for (const [role, font] of Object.entries(preset.fonts)) {
+    if (!font.family.trim()) issues.push(`fonts.${role}.family is empty`);
+  }
+  return issues;
 }
 
 export function fontSetOf(theme: ThemePreset): FontSet {
@@ -367,9 +501,16 @@ export interface ThemeAdoption {
   detectRoles: boolean;
 }
 
-function explicitRole(el: SlideElement): ThemeTextRole {
-  const found = el.class.find((name) => /^role-(title|heading|body|caption)$/.test(name));
-  return (found?.slice(5) as ThemeTextRole | undefined) ?? 'base';
+/**
+ * The role an element is explicitly tagged with, or null when untagged.
+ * `role-base` counts: role detection writes it precisely so a later apply
+ * reuses the decision instead of re-detecting against a scale the earlier
+ * apply just rewrote — re-detection made a second Apply click reclassify
+ * (and restyle) text the first click had already settled.
+ */
+function explicitRole(el: SlideElement): ThemeTextRole | null {
+  const found = el.class.find((name) => /^role-(title|heading|body|caption|base)$/.test(name));
+  return (found?.slice(5) as ThemeTextRole | undefined) ?? null;
 }
 
 /** Adopt only requested properties from a preset, at an explicit scope. */
@@ -424,6 +565,7 @@ export function adoptThemeStyles(
   const adoptedAnything = options.fontFamily || options.fontWeight || options.typeScale
     || options.textColor || options.background || options.objectColors;
   if (options.scope !== 'selection' && adoptedAnything) {
+    noteThemeUsed(deck, theme.id);
     deck.themeSelection = {
       preset: theme.id,
       roles: [...options.roles],
@@ -438,12 +580,18 @@ export function adoptThemeStyles(
   for (const slide of slides) {
     if (options.background && options.scope !== 'selection') {
       slide.background = { color: source.colors.background, image: null };
+      // The ground is now the author's explicit choice. A slide that was
+      // following its layout master must stop, or the next master sync hands
+      // the background straight back to the master and the theme visibly
+      // "falls off" the slide.
+      slide.layoutBackgroundInherited = false;
     }
     for (const el of slide.elements) {
       if (options.scope === 'selection' && !selection.has(el.id)) continue;
       if (el.type === 'text') {
-        let role = explicitRole(el);
-        if (options.detectRoles && role === 'base') {
+        const tagged = explicitRole(el);
+        let role = tagged ?? 'base';
+        if (options.detectRoles && tagged === null) {
           const size = Number.parseFloat(el.style['font-size'] ?? '0') || 0;
           role = roleForElement(el.class, size, maxProse);
           el.class = [...el.class.filter((name) => !name.startsWith('role-')), `role-${role}`];
@@ -496,6 +644,45 @@ function hexToRgb(hex: string): [number, number, number] | null {
     Number.parseInt(h.slice(2, 4), 16),
     Number.parseInt(h.slice(4, 6), 16),
   ];
+}
+
+function relativeLuma([r, g, b]: [number, number, number]): number {
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+/** Same hue and saturation, lightness mirrored around the middle. */
+function flipLightness(hex: string): string {
+  const rgb = hexToRgb(hex);
+  if (!rgb) return hex;
+  const [r, g, b] = rgb.map((channel) => channel / 255);
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const l = (max + min) / 2;
+  let h = 0;
+  let s = 0;
+  if (max !== min) {
+    const d = max - min;
+    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+    if (max === r) h = ((g - b) / d + (g < b ? 6 : 0)) / 6;
+    else if (max === g) h = ((b - r) / d + 2) / 6;
+    else h = ((r - g) / d + 4) / 6;
+  }
+  const flipped = 1 - l;
+  const hue = (t: number): number => {
+    let x = t;
+    if (x < 0) x += 1;
+    if (x > 1) x -= 1;
+    const q = flipped < 0.5 ? flipped * (1 + s) : flipped + s - flipped * s;
+    const p = 2 * flipped - q;
+    if (x < 1 / 6) return p + (q - p) * 6 * x;
+    if (x < 1 / 2) return q;
+    if (x < 2 / 3) return p + (q - p) * (2 / 3 - x) * 6;
+    return p;
+  };
+  const channel = (value: number): string =>
+    Math.round(Math.min(1, Math.max(0, value)) * 255).toString(16).padStart(2, '0');
+  if (s === 0) return `#${channel(flipped)}${channel(flipped)}${channel(flipped)}`;
+  return `#${channel(hue(h + 1 / 3))}${channel(hue(h))}${channel(hue(h - 1 / 3))}`;
 }
 
 /**
@@ -587,9 +774,13 @@ export function applyThemeToDeck(deck: Deck, theme: ThemePreset, opts: ApplyOpti
 export function applyDeckThemeToNewSlide(deck: Deck, slideIndex: number): void {
   const selection: ThemeSelection | null = deck.themeSelection;
   const slide = deck.slides[slideIndex];
-  if (!selection || !slide) return;
+  if (!slide) return;
+  // The slide wears the deck's theme either way; the early returns below only
+  // decide whether anything has to be written onto it to make that true.
+  noteThemeUsed(deck, selection?.preset ?? deck.themePreset);
+  if (!selection) return;
   if (selection.preset === deck.themePreset) return;
-  const theme = themeById(selection.preset);
+  const theme = themeById(selection.preset, deckThemes(deck));
   if (!theme) return;
   adoptThemeStyles(deck, theme, {
     scope: 'slide',

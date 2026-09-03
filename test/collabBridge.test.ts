@@ -212,4 +212,40 @@ describe('connection lifecycle', () => {
       vi.useRealTimers();
     }
   });
+
+  it('stops retrying when the server closes with 4003 (access refused) and says why', () => {
+    vi.useFakeTimers();
+    class FakeWebSocket {
+      static readonly OPEN = 1;
+      static instances: FakeWebSocket[] = [];
+      readyState = 0;
+      private listeners = new Map<string, Array<(event: unknown) => void>>();
+      constructor(public url: string) {
+        FakeWebSocket.instances.push(this);
+      }
+      addEventListener(type: string, listener: (event: unknown) => void): void {
+        const list = this.listeners.get(type) ?? [];
+        list.push(listener);
+        this.listeners.set(type, list);
+      }
+      dispatch(type: string, event: unknown = {}): void {
+        for (const listener of this.listeners.get(type) ?? []) listener(event);
+      }
+      close(): void {}
+      send(): void {}
+    }
+    vi.stubGlobal('WebSocket', FakeWebSocket);
+    try {
+      const { bridge, events } = lifecycleBridge();
+      bridge.connect();
+      FakeWebSocket.instances[0].dispatch('close', { code: 4003, reason: 'your access to this deck was revoked' });
+      expect(events).toEqual([false, 'your access to this deck was revoked']);
+      // Retrying would only be refused again: no new socket, ever.
+      vi.advanceTimersByTime(60_000);
+      expect(FakeWebSocket.instances).toHaveLength(1);
+    } finally {
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    }
+  });
 });
