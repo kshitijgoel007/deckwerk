@@ -1,0 +1,1473 @@
+{
+  "version": 1,
+  "title": "2609_Deckwerk_intro",
+  "canvas": {
+    "w": 1920,
+    "h": 1080
+  },
+  "theme": "theme.css",
+  "themePreset": null,
+  "themeStyle": null,
+  "themeSelection": {
+    "preset": "basic",
+    "roles": [
+      "title",
+      "heading",
+      "body",
+      "caption"
+    ],
+    "fontFamily": true,
+    "fontWeight": true,
+    "typeScale": true,
+    "textColor": true,
+    "objectColors": true
+  },
+  "themeHistory": [
+    "basic",
+    "salon",
+    "salon-dark",
+    "basic-dark"
+  ],
+  "customThemes": [],
+  "layoutMasters": null,
+  "morphEasing": "ease-in-out",
+  "slides": [
+    {
+      "id": "slide-cc2uyiv1",
+      "name": "",
+      "background": {
+        "color": "#faf9f5",
+        "image": null
+      },
+      "notes": "",
+      "layout": "standard",
+      "layoutBackgroundInherited": false,
+      "elements": [
+        {
+          "id": "text-slide-cc2uyiv1-title",
+          "x": 120,
+          "y": 108,
+          "w": 1540,
+          "h": 190,
+          "rot": 0,
+          "z": 10,
+          "opacity": 1,
+          "class": [
+            "role-title"
+          ],
+          "style": {
+            "font-family": "Charter, \"Iowan Old Style\", \"New York\", Palatino, Georgia, serif",
+            "font-weight": "400",
+            "font-size": "88px",
+            "line-height": "1.08",
+            "letter-spacing": "-0.02em"
+          },
+          "type": "text",
+          "html": "<p style=\"margin:0;\"><span style=\"color: rgb(25, 25, 24); font-size: 85px; font-weight: 700; letter-spacing: -0.045em;\">DeckWerk</span><span style=\"color: rgb(116, 111, 100); font-size: 0.68em; vertical-align: super;\">1</span><span style=\"color: rgb(25, 25, 24); font-size: 0.84em; font-weight: 400; letter-spacing: -0.02em;\"> is an opinionated, modern presentation software. </span></p>",
+          "autoFit": true,
+          "align": "left",
+          "valign": "middle",
+          "layoutPlaceholder": "title"
+        },
+        {
+          "id": "text-f2c9sc0i",
+          "x": 126,
+          "y": 956,
+          "w": 1520,
+          "h": 68,
+          "rot": 0,
+          "z": 10,
+          "opacity": 1,
+          "class": [
+            "role-caption"
+          ],
+          "style": {
+            "font-size": "20px",
+            "line-height": "1.2",
+            "color": "#746f64"
+          },
+          "morphId": null,
+          "lineageId": "text-slide-cc2uyiv1-title",
+          "type": "text",
+          "html": "<p><span style=\"color: rgb(25, 25, 24); text-align: center;\">$^1$</span><span style=\"color: rgb(25, 25, 24); font-style: italic; text-align: center;\">Deck</span><span style=\"color: rgb(25, 25, 24); text-align: center;\"> as in slide deck</span><span style=\"color: rgb(25, 25, 24); font-weight: 700; text-align: center;\"> </span><span style=\"color: rgb(25, 25, 24); font-weight: 400; text-align: center;\">and </span><span style=\"color: rgb(25, 25, 24); font-style: italic; font-weight: 400; text-align: center;\">Werk<span style=\"font-style: normal;\"> as in the German word that means</span></span><span style=\"color: rgb(25, 25, 24); font-weight: 400; text-align: center;\"> \"A work (of art, literature, etc)\", a factory, or a structure.</span></p>",
+          "autoFit": true,
+          "align": "left",
+          "valign": "middle",
+          "layoutPlaceholder": "title"
+        },
+        {
+          "id": "text-vwj3p0fk",
+          "x": 126,
+          "y": 402,
+          "w": 1600,
+          "h": 500,
+          "rot": 0,
+          "z": 10,
+          "opacity": 1,
+          "class": [
+            "role-title"
+          ],
+          "style": {
+            "font-family": "Charter, \"Iowan Old Style\", \"New York\", Palatino, Georgia, serif",
+            "font-weight": "700",
+            "font-size": "52px",
+            "line-height": "1.36"
+          },
+          "morphId": null,
+          "lineageId": "text-slide-cc2uyiv1-title",
+          "type": "text",
+          "html": "<p style=\"margin:0 0 28px; font-size:26px; font-weight:700; letter-spacing:0.12em; text-transform:uppercase; color:#746f64;\">Key ideas</p><p style=\"margin:0; font-size:52px; line-height:1.36; font-weight:700; color:#191918;\"><span style=\"color:#9a9385; font-size:30px; letter-spacing:0.08em;\">01</span>&nbsp;&nbsp;Multi-platform and Open-Source<br><span style=\"color:#9a9385; font-size:30px; letter-spacing:0.08em;\">02</span>&nbsp;&nbsp;Collaborative via a webapp<br><span style=\"color:#9a9385; font-size:30px; letter-spacing:0.08em;\">03</span>&nbsp;&nbsp;Agent-enabled<br><span style=\"color:#9a9385; font-size:30px; letter-spacing:0.08em;\">04</span>&nbsp;&nbsp;Excellent image and video support</p>",
+          "autoFit": true,
+          "align": "left",
+          "valign": "top",
+          "layoutPlaceholder": "title"
+        }
+      ],
+      "timeline": []
+    },
+    {
+      "id": "slide-fv3brqap",
+      "name": "",
+      "background": {
+        "color": "#faf9f5",
+        "image": null
+      },
+      "notes": "",
+      "layout": "standard",
+      "layoutBackgroundInherited": false,
+      "elements": [
+        {
+          "id": "text-slide-fv3brqap-title",
+          "x": 120,
+          "y": 58,
+          "w": 1680,
+          "h": 142,
+          "rot": 0,
+          "z": 10,
+          "opacity": 1,
+          "class": [
+            "role-title"
+          ],
+          "style": {
+            "font-family": "Charter, \"Iowan Old Style\", \"New York\", Palatino, Georgia, serif",
+            "font-weight": "700",
+            "font-size": "108px",
+            "line-height": "1",
+            "letter-spacing": "-0.03em",
+            "color": "#191918"
+          },
+          "type": "text",
+          "html": "Videos: Drag-and-drop, crop, trim.",
+          "autoFit": true,
+          "align": "left",
+          "valign": "middle",
+          "layoutPlaceholder": "title"
+        }
+      ],
+      "timeline": []
+    },
+    {
+      "id": "slide-5fryw02l",
+      "name": "",
+      "background": {
+        "color": "#faf9f5",
+        "image": null
+      },
+      "notes": "",
+      "layout": "standard",
+      "layoutBackgroundInherited": false,
+      "elements": [
+        {
+          "id": "text-slide-5fryw02l-title",
+          "x": 120,
+          "y": 58,
+          "w": 1680,
+          "h": 142,
+          "rot": 0,
+          "z": 10,
+          "opacity": 1,
+          "class": [
+            "role-title"
+          ],
+          "style": {
+            "font-family": "Charter, \"Iowan Old Style\", \"New York\", Palatino, Georgia, serif",
+            "font-weight": "700",
+            "font-size": "108px",
+            "line-height": "1",
+            "letter-spacing": "-0.03em",
+            "color": "#191918"
+          },
+          "type": "text",
+          "html": "<span style=\"letter-spacing: -3.24px;\">Images: the same.</span>",
+          "autoFit": true,
+          "align": "left",
+          "valign": "middle",
+          "layoutPlaceholder": "title"
+        },
+        {
+          "id": "text-slide-5fryw02l-body",
+          "x": 120,
+          "y": 252,
+          "w": 1680,
+          "h": 700,
+          "rot": 0,
+          "z": 11,
+          "opacity": 1,
+          "class": [
+            "role-body"
+          ],
+          "style": {
+            "font-family": "\"Avenir Next\", Avenir, \"Helvetica Neue\", Inter, system-ui, sans-serif",
+            "font-weight": "400",
+            "font-size": "48px",
+            "line-height": "1.32",
+            "letter-spacing": "0",
+            "color": "#191918"
+          },
+          "type": "text",
+          "html": "<p><a href=\"https://vsitzmann.github.io/plumage/\">https://vsitzmann.github.io/plumage/</a></p><p><br></p>",
+          "autoFit": true,
+          "align": "left",
+          "valign": "top",
+          "layoutPlaceholder": "body"
+        }
+      ],
+      "timeline": []
+    },
+    {
+      "id": "slide-9lgicguo",
+      "name": "",
+      "background": {
+        "color": "#faf9f5",
+        "image": null
+      },
+      "notes": "",
+      "layout": "standard",
+      "layoutBackgroundInherited": false,
+      "elements": [
+        {
+          "id": "text-slide-9lgicguo-title",
+          "x": 120,
+          "y": 58,
+          "w": 1680,
+          "h": 142,
+          "rot": 0,
+          "z": 10,
+          "opacity": 1,
+          "class": [
+            "role-title"
+          ],
+          "style": {
+            "font-family": "Charter, \"Iowan Old Style\", \"New York\", Palatino, Georgia, serif",
+            "font-weight": "700",
+            "font-size": "108px",
+            "line-height": "1",
+            "letter-spacing": "-0.03em",
+            "color": "#191918"
+          },
+          "type": "text",
+          "html": "Light &amp; Dark Themeing.",
+          "autoFit": true,
+          "align": "left",
+          "valign": "middle",
+          "layoutPlaceholder": "title"
+        },
+        {
+          "id": "text-slide-9lgicguo-body",
+          "x": 120,
+          "y": 252,
+          "w": 1680,
+          "h": 700,
+          "rot": 0,
+          "z": 11,
+          "opacity": 1,
+          "class": [
+            "role-body"
+          ],
+          "style": {
+            "font-family": "\"Avenir Next\", Avenir, \"Helvetica Neue\", Inter, system-ui, sans-serif",
+            "font-weight": "400",
+            "font-size": "48px",
+            "line-height": "1.32",
+            "letter-spacing": "0",
+            "color": "#191918"
+          },
+          "type": "text",
+          "html": "<ul><li>Themes only control the slide's typefaces and color scheme.</li><li>They do <span style=\"font-style: italic;\">not</span><span style=\"font-style: normal;\"> control the slide's layout.</span></li></ul>",
+          "autoFit": true,
+          "align": "left",
+          "valign": "top",
+          "layoutPlaceholder": "body"
+        },
+        {
+          "id": "shape-56r957sw",
+          "x": 41,
+          "y": 496,
+          "w": 400,
+          "h": 240,
+          "rot": 0,
+          "z": 12,
+          "opacity": 1,
+          "class": [],
+          "style": {},
+          "morphId": null,
+          "lineageId": "shape-q3rbneoi",
+          "type": "shape",
+          "shape": "rect",
+          "fill": "#ece7dd",
+          "stroke": null,
+          "strokeWidth": 2,
+          "radius": 8,
+          "path": null,
+          "pathSize": null,
+          "arrowStart": false,
+          "arrowEnd": false
+        },
+        {
+          "id": "shape-nmqgwffa",
+          "x": 863,
+          "y": 467,
+          "w": 400,
+          "h": 240,
+          "rot": 0,
+          "z": 13,
+          "opacity": 1,
+          "class": [],
+          "style": {},
+          "morphId": null,
+          "lineageId": "shape-q3rbneoi",
+          "type": "shape",
+          "shape": "rect",
+          "fill": "#c96442",
+          "stroke": null,
+          "strokeWidth": 2,
+          "radius": 8,
+          "path": null,
+          "pathSize": null,
+          "arrowStart": false,
+          "arrowEnd": false
+        },
+        {
+          "id": "shape-pg62u0n4",
+          "x": 1337,
+          "y": 736,
+          "w": 400,
+          "h": 240,
+          "rot": 0,
+          "z": 14,
+          "opacity": 1,
+          "class": [],
+          "style": {},
+          "morphId": null,
+          "lineageId": "shape-q3rbneoi",
+          "type": "shape",
+          "shape": "rect",
+          "fill": "#c96442",
+          "stroke": null,
+          "strokeWidth": 2,
+          "radius": 8,
+          "path": null,
+          "pathSize": null,
+          "arrowStart": false,
+          "arrowEnd": false
+        },
+        {
+          "id": "shape-dl1z5usb",
+          "x": 463,
+          "y": 778,
+          "w": 400,
+          "h": 240,
+          "rot": 0,
+          "z": 15,
+          "opacity": 1,
+          "class": [],
+          "style": {},
+          "morphId": null,
+          "lineageId": "shape-q3rbneoi",
+          "type": "shape",
+          "shape": "rect",
+          "fill": "#6b6862",
+          "stroke": null,
+          "strokeWidth": 2,
+          "radius": 8,
+          "path": null,
+          "pathSize": null,
+          "arrowStart": false,
+          "arrowEnd": false
+        }
+      ],
+      "timeline": []
+    },
+    {
+      "id": "slide-nsdvjmtj-a50e",
+      "name": "",
+      "background": {
+        "color": "#faf9f5",
+        "image": null
+      },
+      "notes": "",
+      "layout": "standard",
+      "layoutBackgroundInherited": false,
+      "morphFromPrevious": false,
+      "elements": [
+        {
+          "id": "text-kbex1ffu-a50e",
+          "x": 120,
+          "y": 58,
+          "w": 1680,
+          "h": 142,
+          "rot": 0,
+          "z": 10,
+          "opacity": 1,
+          "class": [
+            "role-title"
+          ],
+          "style": {
+            "font-family": "Charter, \"Iowan Old Style\", \"New York\", Palatino, Georgia, serif",
+            "font-weight": "700",
+            "font-size": "108px",
+            "line-height": "1",
+            "letter-spacing": "-0.03em",
+            "color": "#191918"
+          },
+          "morphId": null,
+          "lineageId": "text-slide-9lgicguo-title",
+          "type": "text",
+          "html": "<span style=\"letter-spacing: -3.24px;\">Morph.</span>",
+          "autoFit": true,
+          "align": "left",
+          "valign": "middle",
+          "layoutPlaceholder": "title"
+        },
+        {
+          "id": "text-r5kyycj2-a50e",
+          "x": 120,
+          "y": 252,
+          "w": 1680,
+          "h": 700,
+          "rot": 0,
+          "z": 11,
+          "opacity": 1,
+          "class": [
+            "role-body"
+          ],
+          "style": {
+            "font-family": "\"Avenir Next\", Avenir, \"Helvetica Neue\", Inter, system-ui, sans-serif",
+            "font-weight": "400",
+            "font-size": "48px",
+            "line-height": "1.32",
+            "letter-spacing": "0",
+            "color": "#191918"
+          },
+          "morphId": null,
+          "lineageId": "text-slide-9lgicguo-body",
+          "type": "text",
+          "html": "<ul><li>You can enable magic move via a simple auto-pair.</li><li>But you can also manually pair with the magic move editor when the heuristic fails.</li></ul>",
+          "autoFit": true,
+          "align": "left",
+          "valign": "top",
+          "layoutPlaceholder": "body"
+        },
+        {
+          "id": "shape-tojg0mic-a50e",
+          "x": 560,
+          "y": 801,
+          "w": 400,
+          "h": 240,
+          "rot": 0,
+          "z": 12,
+          "opacity": 1,
+          "class": [],
+          "style": {},
+          "morphId": null,
+          "lineageId": "shape-q3rbneoi",
+          "type": "shape",
+          "shape": "rect",
+          "fill": "#ece7dd",
+          "stroke": null,
+          "strokeWidth": 2,
+          "radius": 8,
+          "path": null,
+          "pathSize": null,
+          "arrowStart": false,
+          "arrowEnd": false
+        },
+        {
+          "id": "shape-8pcjo1jq-a50e",
+          "x": 1373,
+          "y": 801,
+          "w": 400,
+          "h": 240,
+          "rot": 0,
+          "z": 13,
+          "opacity": 1,
+          "class": [],
+          "style": {},
+          "morphId": null,
+          "lineageId": "shape-q3rbneoi",
+          "type": "shape",
+          "shape": "rect",
+          "fill": "#c96442",
+          "stroke": null,
+          "strokeWidth": 2,
+          "radius": 8,
+          "path": null,
+          "pathSize": null,
+          "arrowStart": false,
+          "arrowEnd": false
+        },
+        {
+          "id": "shape-9eok71vm-a50e",
+          "x": 973,
+          "y": 509,
+          "w": 400,
+          "h": 240,
+          "rot": 0,
+          "z": 14,
+          "opacity": 1,
+          "class": [],
+          "style": {},
+          "morphId": null,
+          "lineageId": "shape-q3rbneoi",
+          "type": "shape",
+          "shape": "rect",
+          "fill": "#c96442",
+          "stroke": null,
+          "strokeWidth": 2,
+          "radius": 8,
+          "path": null,
+          "pathSize": null,
+          "arrowStart": false,
+          "arrowEnd": false
+        },
+        {
+          "id": "shape-odex3t93-a50e",
+          "x": 99,
+          "y": 526,
+          "w": 400,
+          "h": 240,
+          "rot": 0,
+          "z": 15,
+          "opacity": 1,
+          "class": [],
+          "style": {},
+          "morphId": null,
+          "lineageId": "shape-q3rbneoi",
+          "type": "shape",
+          "shape": "rect",
+          "fill": "#6b6862",
+          "stroke": null,
+          "strokeWidth": 2,
+          "radius": 8,
+          "path": null,
+          "pathSize": null,
+          "arrowStart": false,
+          "arrowEnd": false
+        }
+      ],
+      "timeline": []
+    },
+    {
+      "id": "slide-wgn069uh",
+      "name": "",
+      "background": {
+        "color": "#faf9f5",
+        "image": null
+      },
+      "notes": "",
+      "layout": "standard",
+      "layoutBackgroundInherited": false,
+      "morphFromPrevious": false,
+      "elements": [
+        {
+          "id": "text-trlftk99",
+          "x": 120,
+          "y": 58,
+          "w": 1680,
+          "h": 142,
+          "rot": 0,
+          "z": 10,
+          "opacity": 1,
+          "class": [
+            "role-title"
+          ],
+          "style": {
+            "font-family": "Charter, \"Iowan Old Style\", \"New York\", Palatino, Georgia, serif",
+            "font-weight": "700",
+            "font-size": "108px",
+            "line-height": "1",
+            "letter-spacing": "-0.03em",
+            "color": "#191918"
+          },
+          "morphId": null,
+          "lineageId": "text-slide-9lgicguo-title",
+          "type": "text",
+          "html": "Build Animations.",
+          "autoFit": true,
+          "align": "left",
+          "valign": "middle",
+          "layoutPlaceholder": "title"
+        },
+        {
+          "id": "text-u4zjxnbl",
+          "x": 120,
+          "y": 252,
+          "w": 1680,
+          "h": 700,
+          "rot": 0,
+          "z": 11,
+          "opacity": 1,
+          "class": [
+            "role-body"
+          ],
+          "style": {
+            "font-family": "\"Avenir Next\", Avenir, \"Helvetica Neue\", Inter, system-ui, sans-serif",
+            "font-weight": "400",
+            "font-size": "48px",
+            "line-height": "1.32",
+            "letter-spacing": "0",
+            "color": "#191918"
+          },
+          "morphId": null,
+          "lineageId": "text-slide-9lgicguo-body",
+          "type": "text",
+          "html": "<ul><li>You can edit text to build-in as the whole text box or paragraph-by-paragraph / bullet-by-bullet.</li><li>Shapes, too.</li></ul>",
+          "autoFit": true,
+          "align": "left",
+          "valign": "top",
+          "layoutPlaceholder": "body"
+        },
+        {
+          "id": "shape-zpp24rez",
+          "x": 560,
+          "y": 801,
+          "w": 400,
+          "h": 240,
+          "rot": 0,
+          "z": 12,
+          "opacity": 1,
+          "class": [],
+          "style": {},
+          "morphId": null,
+          "lineageId": "shape-q3rbneoi",
+          "type": "shape",
+          "shape": "rect",
+          "fill": "#ece7dd",
+          "stroke": null,
+          "strokeWidth": 2,
+          "radius": 8,
+          "path": null,
+          "pathSize": null,
+          "arrowStart": false,
+          "arrowEnd": false
+        },
+        {
+          "id": "shape-rotev20l",
+          "x": 1373,
+          "y": 801,
+          "w": 400,
+          "h": 240,
+          "rot": 0,
+          "z": 13,
+          "opacity": 1,
+          "class": [],
+          "style": {},
+          "morphId": null,
+          "lineageId": "shape-q3rbneoi",
+          "type": "shape",
+          "shape": "rect",
+          "fill": "#c96442",
+          "stroke": null,
+          "strokeWidth": 2,
+          "radius": 8,
+          "path": null,
+          "pathSize": null,
+          "arrowStart": false,
+          "arrowEnd": false
+        },
+        {
+          "id": "shape-u09yutk0",
+          "x": 973,
+          "y": 509,
+          "w": 400,
+          "h": 240,
+          "rot": 0,
+          "z": 14,
+          "opacity": 1,
+          "class": [],
+          "style": {},
+          "morphId": null,
+          "lineageId": "shape-q3rbneoi",
+          "type": "shape",
+          "shape": "rect",
+          "fill": "#c96442",
+          "stroke": null,
+          "strokeWidth": 2,
+          "radius": 8,
+          "path": null,
+          "pathSize": null,
+          "arrowStart": false,
+          "arrowEnd": false
+        },
+        {
+          "id": "shape-o7w8mf0s",
+          "x": 99,
+          "y": 526,
+          "w": 400,
+          "h": 240,
+          "rot": 0,
+          "z": 15,
+          "opacity": 1,
+          "class": [],
+          "style": {},
+          "morphId": null,
+          "lineageId": "shape-q3rbneoi",
+          "type": "shape",
+          "shape": "rect",
+          "fill": "#6b6862",
+          "stroke": null,
+          "strokeWidth": 2,
+          "radius": 8,
+          "path": null,
+          "pathSize": null,
+          "arrowStart": false,
+          "arrowEnd": false
+        }
+      ],
+      "timeline": [
+        {
+          "id": "t-zwt79ch1-ddb6",
+          "trigger": {
+            "on": "click",
+            "ref": null,
+            "delay": 0
+          },
+          "action": {
+            "type": "appear",
+            "target": "text-trlftk99",
+            "value": null
+          }
+        },
+        {
+          "id": "t-9ge42sib-ddb6",
+          "trigger": {
+            "on": "click",
+            "ref": null,
+            "delay": 0
+          },
+          "action": {
+            "type": "appear",
+            "target": "text-u4zjxnbl",
+            "value": "byParagraph"
+          }
+        },
+        {
+          "id": "t-97sgdw2i-ddb6",
+          "trigger": {
+            "on": "click",
+            "ref": null,
+            "delay": 0
+          },
+          "action": {
+            "type": "appear",
+            "target": "shape-o7w8mf0s",
+            "value": null
+          }
+        },
+        {
+          "id": "t-ofs7xx47-ddb6",
+          "trigger": {
+            "on": "click",
+            "ref": null,
+            "delay": 0
+          },
+          "action": {
+            "type": "appear",
+            "target": "shape-zpp24rez",
+            "value": null
+          }
+        },
+        {
+          "id": "t-t9eh8gl8-ddb6",
+          "trigger": {
+            "on": "click",
+            "ref": null,
+            "delay": 0
+          },
+          "action": {
+            "type": "appear",
+            "target": "shape-u09yutk0",
+            "value": null
+          }
+        },
+        {
+          "id": "t-1gteds2w-ddb6",
+          "trigger": {
+            "on": "click",
+            "ref": null,
+            "delay": 0
+          },
+          "action": {
+            "type": "appear",
+            "target": "shape-rotev20l",
+            "value": null
+          }
+        }
+      ]
+    },
+    {
+      "id": "slide-jkcsnn0l-a50e",
+      "name": "",
+      "background": {
+        "color": "#faf9f5",
+        "image": null
+      },
+      "notes": "",
+      "layout": "standard",
+      "layoutBackgroundInherited": false,
+      "morphFromPrevious": false,
+      "elements": [
+        {
+          "id": "text-u1mhl8gq-a50e",
+          "x": 120,
+          "y": 58,
+          "w": 1680,
+          "h": 142,
+          "rot": 0,
+          "z": 10,
+          "opacity": 1,
+          "class": [
+            "role-title"
+          ],
+          "style": {
+            "font-family": "Charter, \"Iowan Old Style\", \"New York\", Palatino, Georgia, serif",
+            "font-weight": "700",
+            "font-size": "108px",
+            "line-height": "1",
+            "letter-spacing": "-0.03em",
+            "color": "#191918"
+          },
+          "morphId": null,
+          "lineageId": "text-slide-ln6cror3-a50e-title",
+          "type": "text",
+          "html": "Math.",
+          "autoFit": true,
+          "align": "left",
+          "valign": "middle",
+          "layoutPlaceholder": "title"
+        },
+        {
+          "id": "text-ammdi6rl-a50e",
+          "x": 120,
+          "y": 252,
+          "w": 1680,
+          "h": 386,
+          "rot": 0,
+          "z": 11,
+          "opacity": 1,
+          "class": [
+            "role-body"
+          ],
+          "style": {
+            "font-family": "\"Avenir Next\", Avenir, \"Helvetica Neue\", Inter, system-ui, sans-serif",
+            "font-weight": "400",
+            "font-size": "48px",
+            "line-height": "1.32",
+            "letter-spacing": "0",
+            "color": "#191918"
+          },
+          "morphId": null,
+          "lineageId": "text-slide-ln6cror3-a50e-body",
+          "type": "text",
+          "html": "<p>Native latex support:$$\\nabla_\\theta J(\\theta)\n= \\mathbb{E}_{\\tau \\sim \\pi_\\theta}\\!\\left[\n    \\sum_{t=0}^{T} \\nabla_\\theta \\log \\pi_\\theta(a_t \\mid s_t)\\, R_t\n  \\right]$$</p><p><br></p>",
+          "autoFit": true,
+          "align": "left",
+          "valign": "top",
+          "layoutPlaceholder": "body"
+        }
+      ],
+      "timeline": []
+    },
+    {
+      "id": "slide-y83aqmf0-a50e",
+      "name": "",
+      "background": {
+        "color": "#faf9f5",
+        "image": null
+      },
+      "notes": "",
+      "layout": "standard",
+      "layoutBackgroundInherited": false,
+      "morphFromPrevious": false,
+      "elements": [
+        {
+          "id": "text-kf6slh7w-a50e",
+          "x": 120,
+          "y": 58,
+          "w": 1680,
+          "h": 142,
+          "rot": 0,
+          "z": 10,
+          "opacity": 1,
+          "class": [
+            "role-title"
+          ],
+          "style": {
+            "font-family": "Charter, \"Iowan Old Style\", \"New York\", Palatino, Georgia, serif",
+            "font-weight": "700",
+            "font-size": "108px",
+            "line-height": "1",
+            "letter-spacing": "-0.03em",
+            "color": "#191918"
+          },
+          "morphId": null,
+          "lineageId": "text-slide-ln6cror3-a50e-title",
+          "type": "text",
+          "html": "Agents.",
+          "autoFit": true,
+          "align": "left",
+          "valign": "middle",
+          "layoutPlaceholder": "title"
+        },
+        {
+          "id": "text-vzbv8cx2-a50e",
+          "x": 120,
+          "y": 252,
+          "w": 1680,
+          "h": 386,
+          "rot": 0,
+          "z": 11,
+          "opacity": 1,
+          "class": [
+            "role-body"
+          ],
+          "style": {
+            "font-family": "\"Avenir Next\", Avenir, \"Helvetica Neue\", Inter, system-ui, sans-serif",
+            "font-weight": "400",
+            "font-size": "48px",
+            "line-height": "1.32",
+            "letter-spacing": "0",
+            "color": "#191918"
+          },
+          "morphId": null,
+          "lineageId": "text-slide-ln6cror3-a50e-body",
+          "type": "text",
+          "html": "<ul><li>You can ask agents to edit existing slides or create completely new ones</li><li>Agents use native HTML to author slides that is then imported via DeckWerk's own HTML importer.</li><li>Priorities: (1) faithful to agent's HTML (2) editability.</li><li>Editability stays high, but most importantly, the agent can do what it does best: author HTML :)</li></ul>",
+          "autoFit": true,
+          "align": "left",
+          "valign": "top",
+          "layoutPlaceholder": "body"
+        },
+        {
+          "id": "text-f1bjolg8-a50e",
+          "x": 182,
+          "y": 724,
+          "w": 1607,
+          "h": 258,
+          "rot": 0,
+          "z": 11,
+          "opacity": 1,
+          "class": [
+            "role-caption"
+          ],
+          "style": {
+            "font-family": "\"Avenir Next\", Avenir, \"Helvetica Neue\", Inter, system-ui, sans-serif",
+            "font-weight": "500",
+            "font-size": "30px",
+            "line-height": "1.3",
+            "letter-spacing": "0.015em",
+            "color": "#6b6862"
+          },
+          "morphId": null,
+          "lineageId": "text-slide-ln6cror3-a50e-body",
+          "type": "text",
+          "html": "<p>Pls go to https://vsitzmann.github.io/plumage/, get images of 4 birds and their attribution, and build a slide with the same style as the existing slides with four round crops of the images (make sure that the crops are centered around the birds) as well as their scientific names and their attribution below. Insert after slide 8.\n</p><p><br></p>",
+          "autoFit": true,
+          "align": "left",
+          "valign": "top",
+          "layoutPlaceholder": "body"
+        }
+      ],
+      "timeline": []
+    },
+    {
+      "id": "slide-zfcr0m84-a50e",
+      "name": "",
+      "background": {
+        "color": "#faf9f5",
+        "image": null
+      },
+      "notes": "",
+      "layout": "standard",
+      "layoutBackgroundInherited": false,
+      "morphFromPrevious": false,
+      "elements": [
+        {
+          "id": "text-colt1c03-a50e",
+          "x": 120,
+          "y": 469,
+          "w": 1680,
+          "h": 142,
+          "rot": 0,
+          "z": 10,
+          "opacity": 1,
+          "class": [
+            "role-title"
+          ],
+          "style": {
+            "font-family": "Charter, \"Iowan Old Style\", \"New York\", Palatino, Georgia, serif",
+            "font-weight": "700",
+            "font-size": "108px",
+            "line-height": "1",
+            "letter-spacing": "-0.03em",
+            "color": "#191918"
+          },
+          "morphId": null,
+          "lineageId": "text-slide-ln6cror3-a50e-title",
+          "type": "text",
+          "html": "Presenting and Presenter Mode.",
+          "autoFit": true,
+          "align": "left",
+          "valign": "middle",
+          "layoutPlaceholder": "title"
+        }
+      ],
+      "timeline": []
+    },
+    {
+      "id": "slide-rmgzwxi3-a50e",
+      "name": "",
+      "background": {
+        "color": "#faf9f5",
+        "image": null
+      },
+      "notes": "",
+      "layout": "standard",
+      "layoutBackgroundInherited": false,
+      "morphFromPrevious": false,
+      "elements": [
+        {
+          "id": "text-ntrjjg5l-a50e",
+          "x": 120,
+          "y": 58,
+          "w": 1680,
+          "h": 142,
+          "rot": 0,
+          "z": 10,
+          "opacity": 1,
+          "class": [
+            "role-title"
+          ],
+          "style": {
+            "font-family": "Charter, \"Iowan Old Style\", \"New York\", Palatino, Georgia, serif",
+            "font-weight": "700",
+            "font-size": "108px",
+            "line-height": "1",
+            "letter-spacing": "-0.03em",
+            "color": "#191918"
+          },
+          "morphId": null,
+          "lineageId": "text-slide-bjuw97zu-e65a-title",
+          "type": "text",
+          "html": "Collaborating.",
+          "autoFit": true,
+          "align": "left",
+          "valign": "middle",
+          "layoutPlaceholder": "title"
+        },
+        {
+          "id": "text-4eg3p2b9-a50e",
+          "x": 120,
+          "y": 252,
+          "w": 1680,
+          "h": 700,
+          "rot": 0,
+          "z": 11,
+          "opacity": 1,
+          "class": [
+            "role-body"
+          ],
+          "style": {
+            "font-family": "\"Avenir Next\", Avenir, \"Helvetica Neue\", Inter, system-ui, sans-serif",
+            "font-weight": "400",
+            "font-size": "48px",
+            "line-height": "1.32",
+            "letter-spacing": "0",
+            "color": "#191918"
+          },
+          "morphId": null,
+          "lineageId": "text-slide-bjuw97zu-e65a-body",
+          "type": "text",
+          "html": "<ul><li>When you click \"Collaborate\" in the top right corner, DeckWerk starts a websocket and copies your laptop's IP address into the clipboard.</li><li>Anyone on your same network (or tailnet!) can immediately jump in and collaborate, you see their edits and selections in real-time.</li><li>Any participant can download a copy of the deck.</li><li>DeckWerk also ships with a headless server with rudimentary access controls, but we won't get into that right now!</li></ul>",
+          "autoFit": true,
+          "align": "left",
+          "valign": "top",
+          "layoutPlaceholder": "body"
+        }
+      ],
+      "timeline": []
+    },
+    {
+      "id": "slide-r7nju9mr-a50e",
+      "name": "",
+      "background": {
+        "color": "#faf9f5",
+        "image": null
+      },
+      "notes": "",
+      "layout": "standard",
+      "layoutBackgroundInherited": false,
+      "morphFromPrevious": false,
+      "elements": [
+        {
+          "id": "text-du4hx9bv-a50e",
+          "x": 120,
+          "y": 58,
+          "w": 1680,
+          "h": 142,
+          "rot": 0,
+          "z": 10,
+          "opacity": 1,
+          "class": [
+            "role-title"
+          ],
+          "style": {
+            "font-family": "Charter, \"Iowan Old Style\", \"New York\", Palatino, Georgia, serif",
+            "font-weight": "700",
+            "font-size": "108px",
+            "line-height": "1",
+            "letter-spacing": "-0.03em",
+            "color": "#191918"
+          },
+          "morphId": null,
+          "lineageId": "text-slide-bjuw97zu-e65a-title",
+          "type": "text",
+          "html": "Edit History.",
+          "autoFit": true,
+          "align": "left",
+          "valign": "middle",
+          "layoutPlaceholder": "title"
+        },
+        {
+          "id": "text-yn4zg0bg-a50e",
+          "x": 120,
+          "y": 254,
+          "w": 1680,
+          "h": 700,
+          "rot": 0,
+          "z": 11,
+          "opacity": 1,
+          "class": [
+            "role-body"
+          ],
+          "style": {
+            "font-family": "\"Avenir Next\", Avenir, \"Helvetica Neue\", Inter, system-ui, sans-serif",
+            "font-weight": "400",
+            "font-size": "48px",
+            "line-height": "1.32",
+            "letter-spacing": "0",
+            "color": "#191918"
+          },
+          "morphId": null,
+          "lineageId": "text-slide-bjuw97zu-e65a-body",
+          "type": "text",
+          "html": "<ul><li>DeckWerk keeps a full edit history.</li><li>Agent edits and history undos themselves appear as undo operations.</li></ul>",
+          "autoFit": true,
+          "align": "left",
+          "valign": "top",
+          "layoutPlaceholder": "body"
+        }
+      ],
+      "timeline": []
+    },
+    {
+      "id": "slide-pjdg1nfh-a50e",
+      "name": "",
+      "background": {
+        "color": "#faf9f5",
+        "image": null
+      },
+      "notes": "",
+      "layout": "standard",
+      "layoutBackgroundInherited": false,
+      "morphFromPrevious": false,
+      "elements": [
+        {
+          "id": "text-qmm5hqyz-a50e",
+          "x": 120,
+          "y": 58,
+          "w": 1680,
+          "h": 142,
+          "rot": 0,
+          "z": 10,
+          "opacity": 1,
+          "class": [
+            "role-title"
+          ],
+          "style": {
+            "font-family": "Charter, \"Iowan Old Style\", \"New York\", Palatino, Georgia, serif",
+            "font-weight": "700",
+            "font-size": "108px",
+            "line-height": "1",
+            "letter-spacing": "-0.03em",
+            "color": "#191918"
+          },
+          "morphId": null,
+          "lineageId": "text-slide-bjuw97zu-e65a-title",
+          "type": "text",
+          "html": "Saving and Exporting.",
+          "autoFit": true,
+          "align": "left",
+          "valign": "middle",
+          "layoutPlaceholder": "title"
+        },
+        {
+          "id": "text-4wqqdrtr-a50e",
+          "x": 120,
+          "y": 252,
+          "w": 1680,
+          "h": 700,
+          "rot": 0,
+          "z": 11,
+          "opacity": 1,
+          "class": [
+            "role-body"
+          ],
+          "style": {
+            "font-family": "\"Avenir Next\", Avenir, \"Helvetica Neue\", Inter, system-ui, sans-serif",
+            "font-weight": "400",
+            "font-size": "48px",
+            "line-height": "1.32",
+            "letter-spacing": "0",
+            "color": "#191918"
+          },
+          "morphId": null,
+          "lineageId": "text-slide-bjuw97zu-e65a-body",
+          "type": "text",
+          "html": "<ul><li>DeckWerk stores presentations as directory that contains a JSON (the actual slide contents), a CSS style file, an asset directory, the edit history, and a json with the agent chats (if any). DeckWerk itself renders presentations via HTML.</li><li>DeckWerk presentations can be exported as HTML files and asset directories that will play on any computer just via a browser.</li><li>Decks can also be exported as PDF files.</li></ul>",
+          "autoFit": true,
+          "align": "left",
+          "valign": "top",
+          "layoutPlaceholder": "body"
+        }
+      ],
+      "timeline": []
+    },
+    {
+      "id": "slide-bjuw97zu-e65a",
+      "name": "",
+      "background": {
+        "color": "#faf9f5",
+        "image": null
+      },
+      "notes": "",
+      "layout": "standard",
+      "layoutBackgroundInherited": false,
+      "elements": [
+        {
+          "id": "text-slide-bjuw97zu-e65a-title",
+          "x": 120,
+          "y": 469,
+          "w": 1680,
+          "h": 142,
+          "rot": 0,
+          "z": 10,
+          "opacity": 1,
+          "class": [
+            "role-title"
+          ],
+          "style": {
+            "font-family": "Charter, \"Iowan Old Style\", \"New York\", Palatino, Georgia, serif",
+            "font-weight": "700",
+            "font-size": "108px",
+            "line-height": "1",
+            "letter-spacing": "-0.03em",
+            "color": "#191918"
+          },
+          "type": "text",
+          "html": "Importing from Keynote.",
+          "autoFit": true,
+          "align": "left",
+          "valign": "middle",
+          "layoutPlaceholder": "title"
+        }
+      ],
+      "timeline": []
+    },
+    {
+      "id": "slide-2vmou9js",
+      "name": "",
+      "background": {
+        "color": "#faf9f5",
+        "image": null
+      },
+      "notes": "",
+      "layout": "standard",
+      "layoutBackgroundInherited": false,
+      "morphFromPrevious": false,
+      "elements": [
+        {
+          "id": "text-c3gak7gh",
+          "x": 120,
+          "y": 58,
+          "w": 1680,
+          "h": 142,
+          "rot": 0,
+          "z": 10,
+          "opacity": 1,
+          "class": [
+            "role-title"
+          ],
+          "style": {
+            "font-family": "Charter, \"Iowan Old Style\", \"New York\", Palatino, Georgia, serif",
+            "font-weight": "700",
+            "font-size": "108px",
+            "line-height": "1",
+            "letter-spacing": "-0.03em",
+            "color": "#191918"
+          },
+          "morphId": null,
+          "lineageId": "text-slide-bjuw97zu-e65a-title",
+          "type": "text",
+          "html": "Open Source - Vibecode away :)",
+          "autoFit": true,
+          "align": "left",
+          "valign": "middle",
+          "layoutPlaceholder": "title"
+        },
+        {
+          "id": "text-btfkon3h",
+          "x": 120,
+          "y": 252,
+          "w": 1680,
+          "h": 700,
+          "rot": 0,
+          "z": 11,
+          "opacity": 1,
+          "class": [
+            "role-body"
+          ],
+          "style": {
+            "font-family": "\"Avenir Next\", Avenir, \"Helvetica Neue\", Inter, system-ui, sans-serif",
+            "font-weight": "400",
+            "font-size": "48px",
+            "line-height": "1.32",
+            "letter-spacing": "0",
+            "color": "#191918"
+          },
+          "morphId": null,
+          "lineageId": "text-slide-bjuw97zu-e65a-body",
+          "type": "text",
+          "html": "<ul><li>Though literally all of this is vibecoded, it took me many many hours to make DeckWerk actually <span style=\"font-style: italic;\">work</span><span style=\"font-style: normal;\"> for what I need.</span></li><li>But what <span style=\"font-style: italic;\">I</span><span style=\"font-weight: 700;\"> <span style=\"font-weight: 400;\">need may not be what <span style=\"font-style: italic;\">you</span></span><span style=\"font-weight: 400;\"> need.</span></span></li><li><span style=\"font-weight: 700;\"><span style=\"font-weight: 400;\">So, view this as your starting point to vibe-code away and change this into whatever you want it to be :) </span></span></li></ul><p><span style=\"font-weight: 700;\"><span style=\"font-weight: 400;\"><br></span></span></p><p><span style=\"font-weight: 700;\"><span style=\"font-weight: 400;\">I will maintain this repo such that is serves <span style=\"font-style: italic;\">my</span><span style=\"font-style: normal;\"> use case best, and alas, I don't have time to do maintain it for anyone but myself<span style=\"font-style: normal;\">. </span>This may deviate from your needs, in which case, please fork it and make it better!</span></span></span></p>",
+          "autoFit": true,
+          "align": "left",
+          "valign": "top",
+          "layoutPlaceholder": "body"
+        }
+      ],
+      "timeline": []
+    },
+    {
+      "id": "slide-1romucdo",
+      "name": "",
+      "background": {
+        "color": "#faf9f5",
+        "image": null
+      },
+      "notes": "",
+      "layout": "standard",
+      "layoutBackgroundInherited": false,
+      "morphFromPrevious": false,
+      "elements": [
+        {
+          "id": "text-prt198co",
+          "x": 120,
+          "y": 58,
+          "w": 1680,
+          "h": 142,
+          "rot": 0,
+          "z": 10,
+          "opacity": 1,
+          "class": [
+            "role-title"
+          ],
+          "style": {
+            "color": "#191918",
+            "font-family": "Charter, \"Iowan Old Style\", \"New York\", Palatino, Georgia, serif",
+            "font-size": "108px",
+            "font-weight": "700",
+            "line-height": "1",
+            "letter-spacing": "-0.03em"
+          },
+          "morphId": null,
+          "lineageId": "text-slide-bjuw97zu-e65a-title",
+          "type": "text",
+          "html": "Acknowledgments.",
+          "autoFit": true,
+          "align": "left",
+          "valign": "middle",
+          "layoutPlaceholder": "title"
+        },
+        {
+          "id": "text-gh40xher",
+          "x": 120,
+          "y": 252,
+          "w": 1680,
+          "h": 231,
+          "rot": 0,
+          "z": 11,
+          "opacity": 1,
+          "class": [
+            "role-body"
+          ],
+          "style": {
+            "font-family": "\"Avenir Next\", Avenir, \"Helvetica Neue\", Inter, system-ui, sans-serif",
+            "font-weight": "400",
+            "font-size": "48px",
+            "line-height": "1.32",
+            "letter-spacing": "0",
+            "color": "#191918"
+          },
+          "morphId": null,
+          "lineageId": "text-slide-bjuw97zu-e65a-body",
+          "type": "text",
+          "html": "<p><span style=\"color: rgb(17, 17, 17);\">I thank Ludwig Schubert, Hikari Sorensen, Nitish Padmanaban, Helen Hoyt, Robert Konrad, and the folks from Rhoda: Weiyu Lin, Andy Liu, Shuming Hu, and Eric Ryan Chan for their feedback!</span><br></p>",
+          "autoFit": true,
+          "align": "left",
+          "valign": "top",
+          "layoutPlaceholder": "body"
+        },
+        {
+          "id": "text-4yvzhvas",
+          "x": 120,
+          "y": 560,
+          "w": 1680,
+          "h": 231,
+          "rot": 0,
+          "z": 11,
+          "opacity": 1,
+          "class": [
+            "role-body"
+          ],
+          "style": {
+            "font-family": "\"Avenir Next\", Avenir, \"Helvetica Neue\", Inter, system-ui, sans-serif",
+            "font-weight": "400",
+            "font-size": "48px",
+            "line-height": "1.32",
+            "letter-spacing": "0",
+            "color": "#191918"
+          },
+          "morphId": null,
+          "lineageId": "text-slide-bjuw97zu-e65a-body",
+          "type": "text",
+          "html": "<p><span style=\"color: rgb(17, 17, 17);\">DHH and the Omarchy team for inspiration: with DeckWerk done, I can finally go back to Linux :) </span><br></p>",
+          "autoFit": true,
+          "align": "left",
+          "valign": "top",
+          "layoutPlaceholder": "body"
+        }
+      ],
+      "timeline": []
+    }
+  ]
+}

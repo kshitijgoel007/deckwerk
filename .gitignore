@@ -9,11 +9,16 @@ __pycache__/
 *.py[cod]
 
 # Presentation decks are private local data — except demo-deck, the small
-# synthetic fixture the agent CLI tests copy their assets from. (decks/*
-# rather than decks/: git will not descend into an ignored directory to
-# honour a negation.)
+# synthetic fixture the agent CLI tests copy their assets from, and the
+# deckwerk_intro deck, of which only the slides and theme ship: its assets,
+# edit history and agent chats stay local. (decks/* rather than decks/: git
+# will not descend into an ignored directory to honour a negation.)
 decks/*
 !decks/demo-deck/
+!decks/deckwerk_intro/
+decks/deckwerk_intro/*
+!decks/deckwerk_intro/deck.json
+!decks/deckwerk_intro/theme.css
 
 # Live collaboration decks are private local data, never fixtures.
 collab-decks/
@@ -21,13 +26,6 @@ test_presentation.key
 
 # Large local presentation corpus used by the importer regression suite.
 example_presentations/
-
-# Collab server data: decks people edit live, including large media.
-collab-# Presentation decks are private local data — except demo-deck, the small
-# synthetic fixture the agent CLI tests copy their assets from.
-decks/
-!decks/demo-deck/
-!decks/demo-deck/**
 
 # Local reference presentation (>100MB, stripped from history).
 reference.key
