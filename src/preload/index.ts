@@ -54,7 +54,8 @@ const api = {
   getDeck: (): Promise<DeckSession | null> => ipcRenderer.invoke(IPC.deckGet),
   openDeckPath: (dir: string): Promise<DeckSession> =>
     ipcRenderer.invoke(IPC.deckOpenPath, dir),
-  saveDeck: (deck: Deck): Promise<void> => ipcRenderer.invoke(IPC.deckSave, deck),
+  saveDeck: (dir: string, deck: Deck): Promise<void> =>
+    ipcRenderer.invoke(IPC.deckSave, dir, deck),
   syncDeckSnapshot: (snapshot: DeckSessionSnapshot): Promise<void> =>
     ipcRenderer.invoke(IPC.deckSyncSnapshot, snapshot),
   saveDeckAs: (operationId?: string): Promise<DeckSession | null> =>

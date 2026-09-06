@@ -262,8 +262,13 @@ export interface DeckSession {
  * Authoritative renderer state while the collaboration server owns disk writes.
  * Main-process consumers (Present/PDF/web export) read this without becoming a
  * competing deck.json writer.
+ *
+ * Carried with its owner, so a mirror overtaken by a deck switch is refused
+ * rather than applied to whichever deck happens to be open when it lands.
  */
 export interface DeckSessionSnapshot {
+  /** Absolute path to the deck folder this state belongs to. */
+  dir: string;
   deck: Deck;
   themeCss: string;
 }

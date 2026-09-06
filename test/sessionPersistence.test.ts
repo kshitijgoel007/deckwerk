@@ -26,10 +26,11 @@ describe('editor session persistence', () => {
       syncDeckSnapshot: vi.fn(async () => {}),
     };
 
-    await persistSessionDeck(api, deck, '.slide { color: #123; }', true);
+    await persistSessionDeck(api, '/decks/agent', deck, '.slide { color: #123; }', true);
 
     expect(api.saveDeck).not.toHaveBeenCalled();
     expect(api.syncDeckSnapshot).toHaveBeenCalledWith({
+      dir: '/decks/agent',
       deck,
       themeCss: '.slide { color: #123; }',
     });
@@ -42,9 +43,9 @@ describe('editor session persistence', () => {
       syncDeckSnapshot: vi.fn(async () => {}),
     };
 
-    await persistSessionDeck(api, deck, '', false);
+    await persistSessionDeck(api, '/decks/local', deck, '', false);
 
-    expect(api.saveDeck).toHaveBeenCalledWith(deck);
+    expect(api.saveDeck).toHaveBeenCalledWith('/decks/local', deck);
     expect(api.syncDeckSnapshot).not.toHaveBeenCalled();
   });
 });

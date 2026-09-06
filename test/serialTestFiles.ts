@@ -8,4 +8,5 @@
 export const SERIAL_TEST_FILES = [
   'test/agentPresentationSync.test.ts',
   'test/clipboardImageBrowser.test.ts',
+  'test/deckSwitchPresentation.test.ts',
 ] as const;

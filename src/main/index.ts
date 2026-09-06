@@ -3,7 +3,7 @@ import { writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { userInfo } from 'node:os';
 import { basename, dirname, join, resolve, sep } from 'node:path';
-import { BrowserWindow, app, clipboard, dialog, ipcMain, screen, shell } from 'electron';
+import { BrowserWindow, app, clipboard, ipcMain, screen, shell } from 'electron';
 import type { Display, IpcMainInvokeEvent } from 'electron';
 import { parseDeck, type Deck } from '@shared/deck.js';
 import type { DeckHistoryDocument } from '@shared/deckHistory.js';
@@ -74,6 +74,7 @@ import {
 } from './deckStore.js';
 import { exportDeck } from './exportDeck.js';
 import { probeMedia, runTrim } from './ffmpeg.js';
+import { showOpenDialog, showSaveDialog } from './dialogs.js';
 import { importKeynote } from './keynoteImport.js';
 import { loadDeckHistory, saveDeckHistory } from './deckHistoryStore.js';
 import { HTML_EDIT_DIR, writeHtmlScope } from './htmlAuthoring.js';
@@ -393,6 +394,19 @@ function setSession(dir: string, deck: Deck): DeckSession {
 }
 
 /**
+ * Open a deck as the session, and tell every other window about it.
+ *
+ * The window that asked already has the deck in the reply. The ones that did
+ * not ask — an audience or Speaker View window still up from the last run, a
+ * trim window — would otherwise keep showing the document that was replaced.
+ */
+function openSession(dir: string, deck: Deck, event: IpcMainInvokeEvent): DeckSession {
+  const opened = setSession(dir, deck);
+  broadcastDeck(BrowserWindow.fromWebContents(event.sender));
+  return opened;
+}
+
+/**
  * Watch mode: reload when deck.json or theme.css change on disk, so an agent
  * (or a git checkout, or hand editing) shows up in the running app. Our own
  * saves also fire these events; the renderer compares content and ignores
@@ -424,7 +438,10 @@ function watchDeck(dir: string, themeFile: string): void {
           // fails on key order, and that false mismatch caused a full reload
           // that yanked the editor back to slide 1 a second after any edit.
           if (raw === lastSavedDeckJson) return;
-          if (!session) return;
+          // Closing a watcher does not cancel the debounce it already
+          // scheduled. A reload belonging to the deck that was open before an
+          // Open or Import must not land in the session that replaced it.
+          if (!session || session.dir !== dir) return;
           // Watching the folder also catches writes nobody here made that
           // change nothing — a script or checkout laying down identical
           // content. Reloading those would broadcast a deck the windows
@@ -441,7 +458,7 @@ function watchDeck(dir: string, themeFile: string): void {
     const onThemeChanged = (): void => {
       if (themeTimer) clearTimeout(themeTimer);
       themeTimer = setTimeout(async () => {
-        if (!session) return;
+        if (!session || session.dir !== dir) return;
         const css = await loadTheme(session.dir, session.deck.theme);
         sessionThemeCss = css;
         for (const win of BrowserWindow.getAllWindows()) {
@@ -584,7 +601,7 @@ app.on('before-quit', () => {
 
 function registerHandlers(): void {
   ipcMain.handle(IPC.deckNew, async (event, operationId?: string): Promise<DeckSession | null> => {
-    const res = await dialog.showSaveDialog({
+    const res = await showSaveDialog({
       title: 'New deck',
       buttonLabel: 'Create',
       // A deck is a folder, so the dialog names a directory to create.
@@ -598,11 +615,11 @@ function registerHandlers(): void {
     reportOperation(event, operationId, `Creating ${basename(dir)}/deck.json`);
     const deck = await createDeck(dir, basename(dir));
     reportOperation(event, operationId, 'Preparing the new presentation', 1);
-    return setSession(dir, deck);
+    return openSession(dir, deck, event);
   });
 
   ipcMain.handle(IPC.deckOpen, async (event, operationId?: string): Promise<DeckSession | null> => {
-    const res = await dialog.showOpenDialog({
+    const res = await showOpenDialog({
       title: 'Open deck',
       properties: ['openDirectory'],
     });
@@ -611,7 +628,7 @@ function registerHandlers(): void {
     reportOperation(event, operationId, `Reading ${basename(dir)}/deck.json`);
     const deck = await loadDeck(dir);
     reportOperation(event, operationId, 'Preparing deck files', 0.4);
-    return setSession(dir, deck);
+    return openSession(dir, deck, event);
   });
 
   // Pull rather than push: a window that opens mid-session asks for the current
@@ -718,12 +735,17 @@ function registerHandlers(): void {
 
   ipcMain.handle(
     IPC.deckOpenPath,
-    async (_e, dir: string): Promise<DeckSession> =>
-      setSession(dir, await loadDeck(dir)),
+    async (event, dir: string): Promise<DeckSession> =>
+      openSession(dir, await loadDeck(dir), event),
   );
 
-  ipcMain.handle(IPC.deckSave, async (event, deck: Deck): Promise<void> => {
+  ipcMain.handle(IPC.deckSave, async (event, dir: string, deck: Deck): Promise<void> => {
     const s = requireSession();
+    // A save belongs to the deck the renderer had open when the edit was made.
+    // One still in flight when the author opens or imports another deck would
+    // otherwise write those slides into the new deck's folder — and put them
+    // on the projector, because Present reads this session.
+    if (dir !== s.dir) throw new Error('Refusing to save a deck that is no longer open');
     lastSavedDeckJson = await saveDeck(s.dir, deck);
     s.deck = deck;
     broadcastDeck(BrowserWindow.fromWebContents(event.sender));
@@ -736,7 +758,11 @@ function registerHandlers(): void {
       // During an embedded Agent session the collaboration server is the only
       // deck.json writer. Present/PDF/web export still live in the main process,
       // so mirror the authoritative renderer state in memory without racing the
-      // server's debounced persistence.
+      // server's debounced persistence. Like an ordinary save, a mirror that
+      // names a deck this session no longer holds is stale, not authoritative.
+      if (snapshot.dir !== s.dir) {
+        throw new Error('Refusing to mirror a deck that is no longer open');
+      }
       s.deck = parseDeck(snapshot.deck);
       sessionThemeCss = snapshot.themeCss;
       broadcastDeck(BrowserWindow.fromWebContents(event.sender));
@@ -745,7 +771,7 @@ function registerHandlers(): void {
 
   ipcMain.handle(IPC.deckSaveAs, async (event, operationId?: string): Promise<DeckSession | null> => {
     const s = requireSession();
-    const target = await dialog.showSaveDialog({
+    const target = await showSaveDialog({
       title: 'Save deck as',
       buttonLabel: 'Save As',
       defaultPath: basename(s.dir),
@@ -757,9 +783,7 @@ function registerHandlers(): void {
     reportOperation(event, operationId, `Copying deck to ${basename(dir)}`);
     const deck = await copyDeck(s.dir, dir);
     reportOperation(event, operationId, 'Opening the saved copy', 0.8);
-    const saved = setSession(dir, deck);
-    broadcastDeck(BrowserWindow.fromWebContents(event.sender));
-    return saved;
+    return openSession(dir, deck, event);
   });
 
   ipcMain.handle(IPC.deckLoadTheme, async (): Promise<string> => {
@@ -1058,7 +1082,7 @@ function registerHandlers(): void {
   ipcMain.handle(
     IPC.keynoteImport,
     async (event, operationId?: string): Promise<KeynoteImportResult | null> => {
-      const picked = await dialog.showOpenDialog({
+      const picked = await showOpenDialog({
         title: 'Import a Keynote presentation',
         properties: ['openFile'],
         filters: [{ extensions: ['key'], name: 'Keynote' }],
@@ -1066,7 +1090,7 @@ function registerHandlers(): void {
       if (picked.canceled || picked.filePaths.length === 0) return null;
       const keyPath = picked.filePaths[0];
 
-      const target = await dialog.showSaveDialog({
+      const target = await showSaveDialog({
         title: 'Save the imported deck as',
         buttonLabel: 'Import',
         defaultPath: basename(keyPath, '.key'),
@@ -1082,15 +1106,14 @@ function registerHandlers(): void {
         reportOperation(event, operationId, message, ratio === null ? null : ratio * conversionShare);
       });
       reportOperation(event, operationId, 'Opening the imported presentation', conversionShare);
-      setSession(result.dir, result.deck);
-      broadcastDeck(BrowserWindow.fromWebContents(event.sender));
+      openSession(result.dir, result.deck, event);
       return result;
     },
   );
 
   ipcMain.handle(IPC.exportBundle, async (event, operationId?: string): Promise<string | null> => {
     const s = requireSession();
-    const target = await dialog.showSaveDialog({
+    const target = await showSaveDialog({
       title: 'Export as a standalone web page',
       buttonLabel: 'Export',
       defaultPath: `${basename(s.dir)}-web`,
@@ -1112,7 +1135,7 @@ function registerHandlers(): void {
     const s = requireSession();
     const mode = request.mode ?? 'final';
     const includeHidden = request.includeHidden ?? false;
-    const target = await dialog.showSaveDialog({
+    const target = await showSaveDialog({
       title: 'Export PDF',
       buttonLabel: 'Export',
       defaultPath: `${basename(s.dir)}.pdf`,

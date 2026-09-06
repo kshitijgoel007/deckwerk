@@ -175,6 +175,7 @@ cssEditor.onChange = () => {
 };
 let mainSessionPersistence: Promise<void> = Promise.resolve();
 function queueMainSessionPersistence(
+  dir: string,
   deck: Deck,
   themeCss: string,
   collaborationOwnsDisk: boolean,
@@ -183,6 +184,7 @@ function queueMainSessionPersistence(
     .catch(() => {})
     .then(() => persistSessionDeck(
       window.api,
+      dir,
       deck,
       themeCss,
       collaborationOwnsDisk,
@@ -192,7 +194,10 @@ function queueMainSessionPersistence(
 }
 
 function syncMainSessionSnapshot(): Promise<void> {
-  return queueMainSessionPersistence(store.get().deck, cssEditor.getValue(), true);
+  const { dir, deck } = store.get();
+  // Nothing is open on the welcome screen, so there is nothing to mirror.
+  if (!dir) return Promise.resolve();
+  return queueMainSessionPersistence(dir, deck, cssEditor.getValue(), true);
 }
 
 function queueAgentSessionSnapshot(): void {
@@ -821,7 +826,16 @@ async function save(opts: { flushHistory?: boolean } = {}): Promise<void> {
     saveTimer = null;
   }
   const deck = store.get().deck;
-  await queueMainSessionPersistence(deck, cssEditor.getValue(), agentSessionReady);
+  try {
+    await queueMainSessionPersistence(dir, deck, cssEditor.getValue(), agentSessionReady);
+  } catch (error) {
+    // Another deck was opened while this write was in flight, and the main
+    // process refused it rather than writing these slides into that deck's
+    // folder. The document this save belonged to is gone; there is nothing
+    // left to report or retry.
+    if (store.get().dir === dir) throw error;
+    return;
+  }
   try {
     // Await the latest snapshot after the deck write. Save As and window close
     // can now rely on history having reached disk rather than racing a fire-
