@@ -8,7 +8,7 @@ deck format works; this document is about **where we are and what is next**.
 
 ```bash
 npm install
-npm run setup:importer          # Python venv for the Keynote importer
+npm run setup:importer          # Python venv for the Keynote and PowerPoint importers
 npm run dev -- decks/test-presentation
 ```
 

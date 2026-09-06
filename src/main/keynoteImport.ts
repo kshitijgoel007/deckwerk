@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { app } from 'electron';
 import { parseDeck } from '@shared/deck.js';
-import type { ImportReport, KeynoteImportResult } from '@shared/ipc.js';
+import type { ImportReport, PresentationImportResult } from '@shared/ipc.js';
 
 /**
  * Runs the Keynote importer sidecar.
@@ -45,7 +45,7 @@ export async function importKeynote(
   keyPath: string,
   outDir: string,
   onProgress?: (message: string, ratio: number | null) => void,
-): Promise<KeynoteImportResult> {
+): Promise<PresentationImportResult> {
   const sidecar = resolveSidecar();
   if (!sidecar) {
     throw new Error(
@@ -57,7 +57,8 @@ export async function importKeynote(
   // Replaced within milliseconds by the sidecar's own first phase; this only
   // covers the gap while the process starts up.
   onProgress?.(`Reading ${basename(keyPath)}`, 0);
-  const { stdout } = await run(
+  const { stdout } = await runImporterSidecar(
+    'Keynote',
     sidecar.command,
     [...sidecar.args, keyPath, '--out', outDir],
     onProgress,
@@ -82,7 +83,15 @@ export async function importKeynote(
   return result;
 }
 
-function run(
+/**
+ * Run an importer sidecar and collect its JSON output.
+ *
+ * Shared by the Keynote and PowerPoint importers, which speak the same
+ * protocol: JSON on stdout, diagnostics and `@progress` phases on stderr.
+ * `kind` only names the importer in error messages.
+ */
+export function runImporterSidecar(
+  kind: string,
   command: string,
   args: string[],
   onProgress?: (message: string, ratio: number | null) => void,
@@ -96,12 +105,12 @@ function run(
     child.stdout.on('data', (d: string) => (stdout += d));
     child.stderr.on('data', (d: string) => reader.push(d));
     child.on('error', (err) =>
-      reject(new Error(`Could not run the Keynote importer: ${err.message}`)),
+      reject(new Error(`Could not run the ${kind} importer: ${err.message}`)),
     );
     child.on('close', (code) => {
       const stderr = reader.finish();
       if (code === 0) resolve({ stdout, stderr });
-      else reject(new Error(`Keynote import failed (exit ${code}):\n${stderr.trim()}`));
+      else reject(new Error(`${kind} import failed (exit ${code}):\n${stderr.trim()}`));
     });
   });
 }

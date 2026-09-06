@@ -24,6 +24,3 @@ Notes collected while exercising real imported decks and building the editor.
 - Add presenter view with notes, timer, next-slide preview and build progress.
 - Add a theme-change preview/diff that states exactly which properties and
   inline overrides will change before committing the operation.
-- Add native PPTX ingestion. The local corpus presently uses Keynote sources
-  for all duplicated PPTX files; a standalone PPTX still needs conversion or a
-  dedicated OOXML importer.

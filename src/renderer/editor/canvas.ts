@@ -450,6 +450,8 @@ export class EditorCanvas {
   private zoom = 1;
   /** Screen-pixel displacement from the centred stage position. */
   private pan = { x: 0, y: 0 };
+  /** Height of chrome covering the bottom of the host; see setBottomInset. */
+  private bottomInset = 0;
   private drag: DragMode = { kind: 'none' };
   /**
    * Whether the pointer has moved far enough to count as a drag.
@@ -1197,7 +1199,7 @@ export class EditorCanvas {
 
   private rescale(): void {
     const { deck } = this.store.get();
-    const r = this.host.getBoundingClientRect();
+    const r = this.viewportRect();
     if (r.width === 0 || r.height === 0) return;
     // Leave a margin so handles on the outer edge stay grabbable.
     const fitted = fitScale(deck.canvas, { w: r.width - 64, h: r.height - 64 });
@@ -1222,6 +1224,23 @@ export class EditorCanvas {
   /** User-visible zoom percentage, relative to the normal fitted view. */
   zoomPercent(): number {
     return Math.round(this.zoom * 100);
+  }
+
+  /**
+   * Reserve the bottom `px` of the host for chrome laid over it (the speaker
+   * notes drawer), so the slide is fitted and centred in what remains visible.
+   */
+  setBottomInset(px: number): void {
+    const next = Math.max(0, px);
+    if (next === this.bottomInset) return;
+    this.bottomInset = next;
+    this.rescale();
+  }
+
+  /** The part of the host the slide is laid out in: the host, less any bottom inset. */
+  private viewportRect(): { left: number; top: number; width: number; height: number } {
+    const r = this.host.getBoundingClientRect();
+    return { left: r.left, top: r.top, width: r.width, height: Math.max(0, r.height - this.bottomInset) };
   }
 
   /** Set zoom around the viewport centre. Exposed for shell actions and tests. */
@@ -1296,7 +1315,7 @@ export class EditorCanvas {
    * Without an anchor, the viewport centre is used (buttons and direct input).
    */
   private setZoom(next: number, anchor?: { x: number; y: number }): void {
-    const r = this.host.getBoundingClientRect();
+    const r = this.viewportRect();
     const { deck } = this.store.get();
     const bounded = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, next));
     if (r.width === 0 || r.height === 0) {
@@ -1332,7 +1351,7 @@ export class EditorCanvas {
 
   private bindViewportGestures(): void {
     this.host.addEventListener('wheel', (event) => {
-      if ((event.target as HTMLElement).closest('.zoom-controls')) return;
+      if ((event.target as HTMLElement).closest('.zoom-controls, .notes-drawer')) return;
 
       // Chromium represents a macOS trackpad pinch as a wheel event with the
       // control modifier set. Anchoring it at the pointer makes the gesture
@@ -1343,7 +1362,7 @@ export class EditorCanvas {
           : event.deltaMode === WheelEvent.DOM_DELTA_PAGE ? this.host.clientHeight
             : 1;
         const factor = Math.exp(-event.deltaY * unit * 0.01);
-        const hostRect = this.host.getBoundingClientRect();
+        const hostRect = this.viewportRect();
         this.setZoom(this.zoom * factor, {
           x: event.clientX - hostRect.left,
           y: event.clientY - hostRect.top,
@@ -1752,7 +1771,7 @@ export class EditorCanvas {
     // are ordinary application controls. Capturing their pointer on the canvas
     // changes the pointer-up target and prevents Chromium from synthesising a
     // click, which made all three welcome actions appear inert.
-    if (target.closest('.welcome-screen, .zoom-controls')) return;
+    if (target.closest('.welcome-screen, .zoom-controls, .notes-toggle, .notes-drawer')) return;
     const slide = this.store.slide;
     if (!slide) return;
 

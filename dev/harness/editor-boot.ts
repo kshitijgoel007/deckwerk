@@ -4,6 +4,7 @@ import { emptyDeck } from '../../src/shared/deck.js';
 import { EditorCanvas } from '../../src/renderer/editor/canvas.js';
 import { SlideRail } from '../../src/renderer/editor/slideRail.js';
 import { EditorStore } from '../../src/renderer/editor/store.js';
+import { SpeakerNotesDrawer } from '../../src/renderer/editor/speakerNotesDrawer.js';
 
 /**
  * Mounts the real editing canvas with a stubbed preload bridge, so the
@@ -69,12 +70,18 @@ deck.slides.push({
   ...structuredClone(deck.slides[0]),
   id: 'slide-2',
   name: 'Second',
+  notes: 'Second slide: **pause** here, then ask the room.',
   elements: [],
 });
 
 const store = new EditorStore(deck, '/tmp/harness');
 const rail = new SlideRail(document.getElementById('rail')!, store);
 const canvas = new EditorCanvas(document.getElementById('canvas')!, store);
+const notes = new SpeakerNotesDrawer(document.getElementById('canvas')!, store, {
+  openFile: async () => '/tmp/harness/notes.md',
+  onInsetChange: (px) => canvas.setBottomInset(px),
+  onStatus: (message) => console.log(message),
+});
 
 // Exposed so the harness can be driven and asserted on from the console.
-Object.assign(window, { store, rail, canvas });
+Object.assign(window, { store, rail, canvas, notes });

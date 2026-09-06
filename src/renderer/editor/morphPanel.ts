@@ -6,7 +6,7 @@ import { recoverPreviewFrames } from '../player/previewFrameRecovery.js';
 import { freezePreviewVideos } from '../player/previewPoster.js';
 import { renderSlide } from '../player/render.js';
 import { describeElement as describe, renderElementLabel } from './elementLabel.js';
-import type { EditorStore } from './store.js';
+import { sameSlideIgnoringNotes, type EditorStore } from './store.js';
 
 const PREVIEW_WIDTH_FALLBACK = 560;
 
@@ -492,7 +492,15 @@ export class MorphPanel {
   ): HTMLElement {
     const key = `${side}:${interactive ? 'modal' : 'compact'}`;
     const cached = this.previews.get(key);
-    if (cached && cached.slide === slide && cached.canvasW === canvas.w && cached.canvasH === canvas.h) {
+    if (
+      cached
+      && cached.canvasW === canvas.w
+      && cached.canvasH === canvas.h
+      && sameSlideIgnoringNotes(cached.slide, slide)
+    ) {
+      // A note edited since the surface was drawn changes nothing in the
+      // picture; remember the current slide so the next comparison is cheap.
+      cached.slide = slide;
       // The surface spends time detached between renders, and the load gate
       // aborts the fetch of a detached element -- re-queue anything that came
       // back frameless instead of re-showing a black box.

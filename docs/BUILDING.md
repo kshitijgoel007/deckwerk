@@ -22,8 +22,8 @@ it on**. There is no cross-build, and this is not a missing feature:
 
 - `ffmpeg-static` and `ffprobe-static` download a binary for the host during
   `npm ci`, and the app ships whatever they fetched.
-- The Keynote importer is a PyInstaller freeze, and PyInstaller cannot
-  cross-compile — not even between macOS architectures.
+- The Keynote and PowerPoint importers are PyInstaller freezes, and
+  PyInstaller cannot cross-compile — not even between macOS architectures.
 
 If you need packages for several platforms, that is what the release workflow
 is for; see [RELEASING.md](RELEASING.md).
@@ -41,10 +41,10 @@ Nothing else has to be installed by hand — `npm ci` fetches Electron, and
 `npm run dist` fetches the packaging tools it needs.
 
 Python is required to **build**, and is not required to **run**. The Keynote
-importer is frozen by PyInstaller into a single binary with the interpreter and
-every dependency inside it, shipped alongside the app. Someone who installs
-DeckWerk from a `.dmg`, an `.exe`, or Flathub imports `.key` files on a machine
-with no Python at all.
+and PowerPoint importers are each frozen by PyInstaller into a single binary
+with the interpreter and every dependency inside it, shipped alongside the app.
+Someone who installs DeckWerk from a `.dmg`, an `.exe`, or Flathub imports
+`.key` and `.pptx` files on a machine with no Python at all.
 
 ```bash
 brew install python                          # macOS

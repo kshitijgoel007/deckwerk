@@ -1,10 +1,10 @@
-import { type FSWatcher, existsSync, mkdirSync, watch } from 'node:fs';
+import { existsSync, mkdirSync, watch } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { userInfo } from 'node:os';
-import { basename, dirname, join, resolve, sep } from 'node:path';
+import { basename, dirname, extname, join, resolve, sep } from 'node:path';
 import { BrowserWindow, app, clipboard, ipcMain, screen, shell } from 'electron';
-import type { Display, IpcMainInvokeEvent } from 'electron';
+import type { Display, IpcMainInvokeEvent, WebContents } from 'electron';
 import { parseDeck, type Deck } from '@shared/deck.js';
 import type { DeckHistoryDocument } from '@shared/deckHistory.js';
 import {
@@ -36,7 +36,7 @@ import type {
   DeckSessionSnapshot,
   DeckHistorySession,
   ImportedAsset,
-  KeynoteImportResult,
+  PresentationImportResult,
   OperationProgress,
   PresentationCommand,
   PresentationState,
@@ -51,13 +51,12 @@ import type {
   WorkflowStartResult,
 } from '@shared/ipc.js';
 import { startWorkflow } from './workflow.js';
-import { AgentRuntime } from './agentRuntime.js';
 import { AgentChatController } from './agentChat.js';
 import { AgentVisualPolicy } from './agentVisualPolicy.js';
 import { DesktopSharedAgent } from './desktopSharedAgent.js';
 import { callPresentationApi } from './agentPresentationApi.js';
 import type { DynamicToolCall, DynamicToolResult } from './codexAppServer.js';
-import { installAssetProtocol, registerAssetScheme, setDeckDir } from './assetProtocol.js';
+import { installAssetProtocol, registerAssetScheme } from './assetProtocol.js';
 import {
   createDeck,
   deckFolderPath,
@@ -69,6 +68,7 @@ import {
   loadTheme,
   resolveAsset,
   saveDeck,
+  saveSpeakerNotes,
   serializeDeck,
   saveTheme,
 } from './deckStore.js';
@@ -76,9 +76,25 @@ import { exportDeck } from './exportDeck.js';
 import { probeMedia, runTrim } from './ffmpeg.js';
 import { showOpenDialog, showSaveDialog } from './dialogs.js';
 import { importKeynote } from './keynoteImport.js';
+import { importPowerPoint } from './pptxImport.js';
 import { loadDeckHistory, saveDeckHistory } from './deckHistoryStore.js';
+import { serializeSpeakerNotes, SPEAKER_NOTES_FILE } from '@shared/speakerNotes.js';
 import { HTML_EDIT_DIR, writeHtmlScope } from './htmlAuthoring.js';
 import {
+  attachWindow,
+  deckKeyFor,
+  editorStates,
+  forgetEditorWindow,
+  isEmptyEditor,
+  NO_DECK_KEY,
+  ownerOf,
+  registerEditorWindow,
+  stateForDeckDir,
+  windowsOf,
+  type DeckWindowState,
+} from './deckWindows.js';
+import {
+  cascadedEditorBounds,
   createEditorWindow,
   createPdfWindow,
   createPresentWindow,
@@ -86,6 +102,7 @@ import {
   createRasterWindow,
   createTrimWindow,
   showSpeakerWindowAboveFullscreen,
+  type WindowContinuityState,
 } from './windows.js';
 import {
   defaultClientDir, startCollabServer, type HtmlDraftPreview, type NativeDraftPreview,
@@ -110,24 +127,20 @@ import {
 app.setName('DeckWerk');
 registerAssetScheme();
 
-/** The one deck the app has open. Present and trim windows share it. */
-let session: DeckSession | null = null;
-/** Latest renderer-owned theme while an Agent collaboration session owns disk writes. */
-let sessionThemeCss: string | null = null;
-let editorWindow: BrowserWindow | null = null;
-let presentWindow: BrowserWindow | null = null;
-let presenterWindow: BrowserWindow | null = null;
-let presentationState: PresentationState | null = null;
-let presentationDisplays: { audienceDisplayId: number; presenterDisplayId: number } | null = null;
-let swappingPresentationDisplays = false;
-let trimWindow: BrowserWindow | null = null;
-let rasterWindow: BrowserWindow | null = null;
-/** Live while the open deck is being shared for co-editing. */
+/**
+ * Each open presentation lives in its own editor window, with its own session,
+ * watchers and satellite windows; see `deckWindows.ts`. Collaboration and the
+ * embedded Agent chat are the exception: both host one authoritative server
+ * pinned to a single deck, and the agent's sign-in is a single machine-wide
+ * login, so they stay one-at-a-time for the whole app. `collabOwner` is the
+ * document that holds the session, so a second presentation asking to share is
+ * told one is already running instead of quietly taking it over.
+ */
 let collabServer: RunningCollabServer | null = null;
 let collabMode: 'window' | 'agent-background' | 'collaboration-background' | null = null;
+let collabOwner: DeckWindowState | null = null;
 let agentSessionReturn: Promise<void> | null = null;
 let quitting = false;
-const agentRuntime = new AgentRuntime(() => editorWindow);
 const agentChatStateListeners = new Set<(
   state: AgentChatState,
   conversationKey: string,
@@ -144,8 +157,11 @@ const agentChat = new AgentChatController({
     await shell.openExternal(url);
   },
   onState: (state, conversationKey) => {
-    if (conversationKey === '' && editorWindow && !editorWindow.isDestroyed()) {
-      editorWindow.webContents.send(IPC.agentChatState, state);
+    // The desktop conversation belongs to whichever window has that deck open;
+    // a partitioned key is a shared-server browser conversation, not a window's.
+    const owner = conversationKey === '' ? stateForDeckDir(state.deckPath) : null;
+    if (owner && !owner.editor.isDestroyed()) {
+      owner.editor.webContents.send(IPC.agentChatState, state);
     }
     for (const listener of agentChatStateListeners) listener(state, conversationKey);
   },
@@ -162,8 +178,11 @@ const agentVisualPolicy = new AgentVisualPolicy();
 
 async function handleAgentDynamicTool(call: DynamicToolCall): Promise<DynamicToolResult> {
   if (call.tool === 'presentation_api') {
-    if (!collabServer || !session) throw new Error('The deck-scoped slide server is not running');
-    return callPresentationApi(call, { port: collabServer.port, deckPath: session.dir });
+    const hosted = collabOwner?.session;
+    if (!collabServer || !hosted) {
+      throw new Error('The deck-scoped slide server is not running');
+    }
+    return callPresentationApi(call, { port: collabServer.port, deckPath: hosted.dir });
   }
   if (call.tool !== 'browser_open') throw new Error(`Unknown DeckWerk tool: ${call.tool}`);
   const args = call.arguments && typeof call.arguments === 'object'
@@ -268,55 +287,75 @@ function moveFullscreenWindowToDisplay(
   });
 }
 
-function moveSpeakerWindowToDisplay(display: Display): Promise<void> {
-  return moveFullscreenWindowToDisplay(presenterWindow, display);
+function moveSpeakerWindowToDisplay(state: DeckWindowState, display: Display): Promise<void> {
+  return moveFullscreenWindowToDisplay(state.presenter, display);
 }
 
-function moveAudienceWindowToDisplay(display: Display): Promise<void> {
-  return moveFullscreenWindowToDisplay(presentWindow, display);
+function moveAudienceWindowToDisplay(state: DeckWindowState, display: Display): Promise<void> {
+  return moveFullscreenWindowToDisplay(state.present, display);
 }
 
-function openSpeakerWindow(displayId: number, visibleAboveFullscreen: boolean): BrowserWindow {
+function openSpeakerWindow(
+  state: DeckWindowState,
+  displayId: number,
+  visibleAboveFullscreen: boolean,
+): BrowserWindow {
   const win = createPresenterWindow(displayId, visibleAboveFullscreen);
-  presenterWindow = win;
+  state.presenter = win;
+  attachWindow(state, win);
   win.webContents.once('did-finish-load', () => {
-    if (presentationState && !win.isDestroyed()) {
-      win.webContents.send(IPC.presentState, presentationState);
+    if (state.presentationState && !win.isDestroyed()) {
+      win.webContents.send(IPC.presentState, state.presentationState);
     }
   });
   win.on('closed', () => {
-    if (presenterWindow === win) presenterWindow = null;
-    presentationDisplays = null;
-    if (presentWindow && !presentWindow.isDestroyed()) presentWindow.close();
+    if (state.presenter === win) state.presenter = null;
+    state.presentationDisplays = null;
+    if (state.present && !state.present.isDestroyed()) state.present.close();
   });
   return win;
 }
 
-async function swapPresentationDisplayRoles(): Promise<void> {
-  if (swappingPresentationDisplays || !presentationDisplays || !presenterWindow) return;
+async function swapPresentationDisplayRoles(state: DeckWindowState): Promise<void> {
+  if (state.swappingPresentationDisplays || !state.presentationDisplays || !state.presenter) return;
   const displays = screen.getAllDisplays();
   const primary = screen.getPrimaryDisplay();
-  const swapped = swappedPresentationDisplays(displays, presentationDisplays, primary);
+  const swapped = swappedPresentationDisplays(displays, state.presentationDisplays, primary);
   if (!swapped) return;
   const { audience: audienceTarget, presenter: presenterTarget } = swapped;
 
-  swappingPresentationDisplays = true;
-  presentationDisplays = {
+  state.swappingPresentationDisplays = true;
+  state.presentationDisplays = {
     audienceDisplayId: audienceTarget.id,
     presenterDisplayId: presenterTarget.id,
   };
   try {
     await Promise.all([
-      moveSpeakerWindowToDisplay(presenterTarget),
-      moveAudienceWindowToDisplay(audienceTarget),
+      moveSpeakerWindowToDisplay(state, presenterTarget),
+      moveAudienceWindowToDisplay(state, audienceTarget),
     ]);
-    if (presenterWindow && !presenterWindow.isDestroyed()) presenterWindow.focus();
+    if (state.presenter && !state.presenter.isDestroyed()) state.presenter.focus();
   } finally {
-    swappingPresentationDisplays = false;
+    state.swappingPresentationDisplays = false;
   }
 }
 
-function requireSession(): DeckSession {
+/**
+ * Which open presentation a message belongs to.
+ *
+ * Every handler resolves its document from the window that sent the message
+ * rather than from anything app-wide. That is what keeps a second presentation
+ * from answering with the first one's slides, and an autosave, export or
+ * projector from reaching a deck its window never had open.
+ */
+function requireOwner(event: { sender: WebContents }): DeckWindowState {
+  const owner = ownerOf(event.sender);
+  if (!owner) throw new Error('This window does not belong to an open presentation');
+  return owner;
+}
+
+function requireSession(event: { sender: WebContents }): DeckSession {
+  const { session } = requireOwner(event);
   if (!session) throw new Error('No deck is open');
   return session;
 }
@@ -333,10 +372,10 @@ function reportOperation(
   event.sender.send(IPC.operationProgress, progress);
 }
 
+/** Collaboration is app-wide, so its state goes to the window that started it. */
 function sendAgentSessionState(state: AgentSessionState): void {
-  if (editorWindow && !editorWindow.isDestroyed()) {
-    editorWindow.webContents.send(IPC.agentSessionState, state);
-  }
+  const editor = collabOwner?.editor;
+  if (editor && !editor.isDestroyed()) editor.webContents.send(IPC.agentSessionState, state);
 }
 
 /**
@@ -349,13 +388,15 @@ function endBackgroundAgentSession(): Promise<void> {
   if (collabMode !== 'agent-background' && collabMode !== 'collaboration-background') {
     return Promise.resolve();
   }
+  const owner = collabOwner;
 
   agentSessionReturn = (async () => {
     const closing = collabServer;
     collabServer = null;
     collabMode = null;
+    collabOwner = null;
     try {
-      if (session) await agentChat.suspend(session.dir);
+      if (owner?.session) await agentChat.suspend(owner.session.dir);
       closing?.notifyEnded();
       // Let WebSocket queue the terminal frame before close() terminates peers.
       if (closing) await new Promise<void>((resolvePromise) => setImmediate(resolvePromise));
@@ -363,47 +404,115 @@ function endBackgroundAgentSession(): Promise<void> {
     } catch (error) {
       console.error('Could not close background collaboration session cleanly:', error);
     }
-    if (quitting || !session) return;
+    if (quitting || !owner || !owner.session || owner.editor.isDestroyed()) return;
     try {
-      session.deck = await loadDeck(session.dir);
+      owner.session.deck = await loadDeck(owner.session.dir);
     } catch (error) {
       console.error('Could not reload the deck after collaboration:', error);
     }
-    watchDeck(session.dir, session.deck.theme);
-    broadcastDeck();
-    sendAgentSessionState({ active: false });
+    watchDeck(owner);
+    broadcastDeck(owner);
+    // The owner is no longer the collaboration's, so address it directly.
+    owner.editor.webContents.send(IPC.agentSessionState, { active: false });
   })().finally(() => {
     agentSessionReturn = null;
   });
   return agentSessionReturn;
 }
 
-let watchers: FSWatcher[] = [];
-/** Exactly what we last wrote, so the watcher can tell an echo from an edit. */
-let lastSavedDeckJson: string | null = null;
-/** HTML the editor itself just exported; its watcher event is an echo, not an edit. */
-const lastWrittenHtml = new Map<string, string>();
-
-function setSession(dir: string, deck: Deck): DeckSession {
-  session = { dir, deck };
-  sessionThemeCss = null;
-  setDeckDir(dir);
-  watchDeck(dir, deck.theme);
-  void agentRuntime.open(dir);
+/** Give a window a document, and tell it which deck its assets now come from. */
+function setSession(state: DeckWindowState, dir: string, deck: Deck): DeckSession {
+  const session: DeckSession = { dir, deck };
+  state.session = session;
+  state.themeCss = null;
+  state.lastSavedDeckJson = null;
+  state.deckKey = deckKeyFor(dir);
+  for (const win of windowsOf(state)) win.webContents.send(IPC.deckKey, state.deckKey);
+  watchDeck(state);
+  // A deck saved before speaker notes existed has no notes.md. Write it now
+  // so an author can open the file straight away; a file that already says
+  // what the deck says is left untouched.
+  void saveSpeakerNotes(dir, deck).catch((error) => {
+    console.error(`Could not write ${SPEAKER_NOTES_FILE} in ${dir}:`, error);
+  });
+  void state.agentRuntime.open(dir);
   return session;
 }
 
 /**
- * Open a deck as the session, and tell every other window about it.
+ * Open a deck in one window, and tell that window's other windows about it.
  *
  * The window that asked already has the deck in the reply. The ones that did
  * not ask — an audience or Speaker View window still up from the last run, a
  * trim window — would otherwise keep showing the document that was replaced.
  */
-function openSession(dir: string, deck: Deck, event: IpcMainInvokeEvent): DeckSession {
-  const opened = setSession(dir, deck);
-  broadcastDeck(BrowserWindow.fromWebContents(event.sender));
+function openSession(
+  state: DeckWindowState,
+  dir: string,
+  deck: Deck,
+  event: IpcMainInvokeEvent,
+): DeckSession {
+  const opened = setSession(state, dir, deck);
+  broadcastDeck(state, BrowserWindow.fromWebContents(event.sender));
   return opened;
+}
+
+/**
+ * Where a newly opened, created or imported deck goes.
+ *
+ * A window with nothing open adopts it — that is what the welcome screen is
+ * for. A window that already holds a presentation keeps it, and the new deck
+ * gets a window of its own, so opening a second talk never closes the first.
+ * `null` tells the asking renderer that the deck went elsewhere and it should
+ * leave its own document alone.
+ */
+function openDeckForRequester(
+  state: DeckWindowState,
+  dir: string,
+  deck: Deck,
+  event: IpcMainInvokeEvent,
+): DeckSession | null {
+  // One document, one window. Two windows on one folder would be two debounced
+  // whole-file writers racing each other over the same deck.json, so a deck
+  // that is already open is brought forward instead of opened twice.
+  const already = stateForDeckDir(dir);
+  if (already) {
+    if (already === state) return state.session;
+    if (!already.editor.isDestroyed()) already.editor.focus();
+    return null;
+  }
+  if (isEmptyEditor(state)) return openSession(state, dir, deck, event);
+  const source = state.editor;
+  const opened = createEditorState(
+    '',
+    source.isDestroyed() ? undefined : cascadedEditorBounds(source),
+  );
+  setSession(opened, dir, deck);
+  return null;
+}
+
+/** A new editor window, registered as a document before its renderer loads. */
+function createEditorState(query = '', bounds?: WindowContinuityState): DeckWindowState {
+  const win = createEditorWindow(query, bounds);
+  const state = registerEditorWindow(win);
+  win.on('closed', () => closeDocument(state));
+  return state;
+}
+
+/**
+ * The window holding a document has gone. Stop watching its folder, take its
+ * satellite windows down with it, and hand back the app-wide collaboration
+ * session if this was the document that held it.
+ */
+function closeDocument(state: DeckWindowState): void {
+  for (const watcher of state.watchers) watcher.close();
+  state.watchers = [];
+  void state.agentRuntime.close();
+  for (const win of [state.present, state.presenter, state.trim, state.raster]) {
+    if (win && !win.isDestroyed()) win.close();
+  }
+  if (collabOwner === state) void endBackgroundAgentSession();
+  forgetEditorWindow(state);
 }
 
 /**
@@ -412,9 +521,12 @@ function openSession(dir: string, deck: Deck, event: IpcMainInvokeEvent): DeckSe
  * saves also fire these events; the renderer compares content and ignores
  * echoes, which is simpler and more robust than timestamp bookkeeping.
  */
-function watchDeck(dir: string, themeFile: string): void {
-  for (const w of watchers) w.close();
-  watchers = [];
+function watchDeck(state: DeckWindowState): void {
+  for (const w of state.watchers) w.close();
+  state.watchers = [];
+  if (!state.session) return;
+  const { dir } = state.session;
+  const themeFile = state.session.deck.theme;
   let deckTimer: NodeJS.Timeout | null = null;
   let themeTimer: NodeJS.Timeout | null = null;
   const htmlTimers = new Map<string, NodeJS.Timeout>();
@@ -437,19 +549,19 @@ function watchDeck(dir: string, themeFile: string): void {
           // what we wrote is the only reliable echo test: comparing decks
           // fails on key order, and that false mismatch caused a full reload
           // that yanked the editor back to slide 1 a second after any edit.
-          if (raw === lastSavedDeckJson) return;
+          if (raw === state.lastSavedDeckJson) return;
           // Closing a watcher does not cancel the debounce it already
-          // scheduled. A reload belonging to the deck that was open before an
-          // Open or Import must not land in the session that replaced it.
-          if (!session || session.dir !== dir) return;
+          // scheduled. A reload belonging to the deck this window had before an
+          // Open or Save As must not land in the session that replaced it.
+          if (!state.session || state.session.dir !== dir) return;
           // Watching the folder also catches writes nobody here made that
           // change nothing — a script or checkout laying down identical
           // content. Reloading those would broadcast a deck the windows
           // already have, for no reason.
-          if (raw === serializeDeck(session.deck)) return;
+          if (raw === serializeDeck(state.session.deck)) return;
           const deck = await loadDeck(dir);
-          session.deck = deck;
-          broadcastDeck();
+          state.session.deck = deck;
+          broadcastDeck(state);
         } catch {
           // Half-written JSON mid-save; the next event will retry.
         }
@@ -458,21 +570,41 @@ function watchDeck(dir: string, themeFile: string): void {
     const onThemeChanged = (): void => {
       if (themeTimer) clearTimeout(themeTimer);
       themeTimer = setTimeout(async () => {
-        if (!session || session.dir !== dir) return;
-        const css = await loadTheme(session.dir, session.deck.theme);
-        sessionThemeCss = css;
-        for (const win of BrowserWindow.getAllWindows()) {
-          if (!win.isDestroyed()) win.webContents.send(IPC.themeCss, css);
+        if (!state.session || state.session.dir !== dir) return;
+        const css = await loadTheme(state.session.dir, state.session.deck.theme);
+        state.themeCss = css;
+        for (const win of windowsOf(state)) win.webContents.send(IPC.themeCss, css);
+      }, 200);
+    };
+    // notes.md is the hand-editable mirror of the slides' notes. A change goes
+    // to the editor renderer, which applies it to the slides as an undoable
+    // edit and autosaves; that save rewrites deck.json and, normalised,
+    // notes.md itself. Our own write of the file is recognised by content:
+    // what is on disk already says exactly what the deck says.
+    let notesTimer: NodeJS.Timeout | null = null;
+    const onNotesChanged = (): void => {
+      if (notesTimer) clearTimeout(notesTimer);
+      notesTimer = setTimeout(async () => {
+        try {
+          if (!state.session || state.session.dir !== dir) return;
+          const { readFile } = await import('node:fs/promises');
+          const contents = await readFile(join(dir, SPEAKER_NOTES_FILE), 'utf8');
+          if (contents === serializeSpeakerNotes(state.session.deck)) return;
+          if (state.editor.isDestroyed()) return;
+          state.editor.webContents.send(IPC.speakerNotesEdit, contents);
+        } catch {
+          // Deleted or mid-write; the next event will retry.
         }
       }, 200);
     };
     // A theme kept in a subfolder is not visible to a non-recursive directory
     // watch, so that case keeps its own path watcher.
     const themeInDeckRoot = !themeFile.includes('/') && !themeFile.includes(sep);
-    watchers.push(
+    state.watchers.push(
       watch(dir, (_event, filename) => {
         const name = filename ? String(filename) : '';
         if (name === 'deck.json') onDeckChanged();
+        else if (name === SPEAKER_NOTES_FILE) onNotesChanged();
         else if (themeInDeckRoot && name === themeFile) onThemeChanged();
       }),
       ...(themeInDeckRoot ? [] : [watch(join(dir, themeFile), onThemeChanged)]),
@@ -503,12 +635,13 @@ function watchDeck(dir: string, themeFile: string): void {
             if (contents !== first) return;
             if (/<html[\s>]/i.test(contents) && !/<\/html>/i.test(contents)) return;
             // The editor's own export lands here too; that event is an echo.
-            if (lastWrittenHtml.get(path) === contents) {
-              lastWrittenHtml.delete(path);
+            if (state.lastWrittenHtml.get(path) === contents) {
+              state.lastWrittenHtml.delete(path);
               return;
             }
-            if (!session || session.dir !== dir || !editorWindow || editorWindow.isDestroyed()) return;
-            editorWindow.webContents.send(IPC.htmlEdit, { path, contents });
+            if (!state.session || state.session.dir !== dir) return;
+            if (state.editor.isDestroyed()) return;
+            state.editor.webContents.send(IPC.htmlEdit, { path, contents });
           } catch (error) {
             console.error(`Could not read HTML edit ${path}:`, error);
           }
@@ -521,15 +654,14 @@ function watchDeck(dir: string, themeFile: string): void {
   }
 }
 
-/** Push deck changes to every open window so they never show stale content. */
-function broadcastDeck(except?: BrowserWindow | null): void {
-  if (!session) return;
-  for (const win of BrowserWindow.getAllWindows()) {
-    if (win === except || win.isDestroyed()) continue;
-    win.webContents.send(IPC.deckState, session);
+/** Push deck changes to one document's windows so they never show stale content. */
+function broadcastDeck(state: DeckWindowState, except?: BrowserWindow | null): void {
+  if (!state.session) return;
+  for (const win of windowsOf(state)) {
+    if (win === except) continue;
+    win.webContents.send(IPC.deckState, state.session);
   }
 }
-
 /**
  * A deck folder named on the command line, if any. Used by `npm run dev -- <dir>`
  * and by opening a deck from the shell.
@@ -556,35 +688,39 @@ app.whenReady().then(async () => {
   registerHandlers();
 
   const initial = deckDirFromArgv();
-  if (initial) {
-    try {
-      setSession(initial, await loadDeck(initial));
-    } catch (err) {
+  const deck = initial
+    ? await loadDeck(initial).catch((err: unknown) => {
       console.error(`Could not open ${initial}:`, err);
-    }
-  }
+      return null;
+    })
+    : null;
 
-  editorWindow = createEditorWindow();
+  // The window exists before the deck is attached, so the document belongs to
+  // it from the start rather than being adopted from anything app-wide.
+  const first = createEditorState();
+  if (initial && deck) setSession(first, initial, deck);
 
   screen.on('display-removed', () => {
-    if (!presentWindow || presentWindow.isDestroyed()) return;
     const primary = screen.getPrimaryDisplay();
-    presentationDisplays = {
-      audienceDisplayId: primary.id,
-      presenterDisplayId: primary.id,
-    };
-    void Promise.all([
-      moveSpeakerWindowToDisplay(primary),
-      moveAudienceWindowToDisplay(primary),
-    ]).then(() => {
-      if (presenterWindow && !presenterWindow.isDestroyed()) {
-        showSpeakerWindowAboveFullscreen(presenterWindow);
-      }
-    });
+    for (const state of editorStates()) {
+      if (!state.present || state.present.isDestroyed()) continue;
+      state.presentationDisplays = {
+        audienceDisplayId: primary.id,
+        presenterDisplayId: primary.id,
+      };
+      void Promise.all([
+        moveSpeakerWindowToDisplay(state, primary),
+        moveAudienceWindowToDisplay(state, primary),
+      ]).then(() => {
+        if (state.presenter && !state.presenter.isDestroyed()) {
+          showSpeakerWindowAboveFullscreen(state.presenter);
+        }
+      });
+    }
   });
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) editorWindow = createEditorWindow();
+    if (BrowserWindow.getAllWindows().length === 0) createEditorState();
   });
 });
 
@@ -594,7 +730,7 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   quitting = true;
-  void agentRuntime.close();
+  for (const state of editorStates()) void state.agentRuntime.close();
   agentChat.close();
   void collabServer?.close();
 });
@@ -615,7 +751,7 @@ function registerHandlers(): void {
     reportOperation(event, operationId, `Creating ${basename(dir)}/deck.json`);
     const deck = await createDeck(dir, basename(dir));
     reportOperation(event, operationId, 'Preparing the new presentation', 1);
-    return openSession(dir, deck, event);
+    return openDeckForRequester(requireOwner(event), dir, deck, event);
   });
 
   ipcMain.handle(IPC.deckOpen, async (event, operationId?: string): Promise<DeckSession | null> => {
@@ -628,72 +764,79 @@ function registerHandlers(): void {
     reportOperation(event, operationId, `Reading ${basename(dir)}/deck.json`);
     const deck = await loadDeck(dir);
     reportOperation(event, operationId, 'Preparing deck files', 0.4);
-    return openSession(dir, deck, event);
+    return openDeckForRequester(requireOwner(event), dir, deck, event);
   });
 
-  // Pull rather than push: a window that opens mid-session asks for the current
+  // Pull rather than push: a window that opens mid-session asks for its own
   // deck itself, so it can't miss a broadcast that fired before it loaded.
-  ipcMain.handle(IPC.deckGet, (): DeckSession | null => session);
-  ipcMain.handle(IPC.deckHistoryLoad, async (_event, dir: string): Promise<DeckHistorySession> => {
-    const s = requireSession();
+  ipcMain.handle(
+    IPC.deckGet,
+    (event): DeckSession | null => ownerOf(event.sender)?.session ?? null,
+  );
+  // Answered synchronously during preload: `assetUrl` is called on first paint.
+  ipcMain.on(IPC.deckKeyGet, (event) => {
+    event.returnValue = ownerOf(event.sender)?.deckKey ?? NO_DECK_KEY;
+  });
+  ipcMain.handle(IPC.deckHistoryLoad, async (event, dir: string): Promise<DeckHistorySession> => {
+    const s = requireSession(event);
     if (dir !== s.dir) throw new Error('The requested deck is no longer open');
     return { dir: s.dir, history: await loadDeckHistory(s.dir) };
   });
   ipcMain.handle(
     IPC.deckHistorySave,
-    async (_event, dir: string, history: DeckHistoryDocument): Promise<void> => {
-      const s = requireSession();
+    async (event, dir: string, history: DeckHistoryDocument): Promise<void> => {
+      const s = requireSession(event);
       if (dir !== s.dir) throw new Error('Refusing to save history to a deck that is no longer open');
       await saveDeckHistory(s.dir, history);
     },
   );
 
-  ipcMain.handle(IPC.agentContextPublish, async (_event, context: AgentContextDraft) => {
-    await agentRuntime.publish(context);
+  ipcMain.handle(IPC.agentContextPublish, async (event, context: AgentContextDraft) => {
+    await requireOwner(event).agentRuntime.publish(context);
   });
-  ipcMain.on(IPC.agentResponse, (_event, response: AgentResponse) => {
-    void agentRuntime.respond(response);
+  ipcMain.on(IPC.agentResponse, (event, response: AgentResponse) => {
+    void requireOwner(event).agentRuntime.respond(response);
   });
-  ipcMain.handle(IPC.agentChatGetState, async (): Promise<AgentChatState> => {
-    const s = requireSession();
+  ipcMain.handle(IPC.agentChatGetState, async (event): Promise<AgentChatState> => {
+    const s = requireSession(event);
     return agentChat.getState(s.dir);
   });
   ipcMain.handle(
     IPC.agentChatGetTranscript,
-    async (_event, request: AgentChatSelectRequest): Promise<AgentChatTranscript | null> => {
-      const s = requireSession();
+    async (event, request: AgentChatSelectRequest): Promise<AgentChatTranscript | null> => {
+      const s = requireSession(event);
       if (!request || typeof request.chatId !== 'string') throw new Error('A chat id is required');
       return agentChat.getTranscript(s.dir, request.chatId);
     },
   );
   ipcMain.handle(
     IPC.agentChatSelect,
-    async (_event, request: AgentChatSelectRequest): Promise<AgentChatState> => {
-      const s = requireSession();
+    async (event, request: AgentChatSelectRequest): Promise<AgentChatState> => {
+      const s = requireSession(event);
       if (!request || typeof request.chatId !== 'string') throw new Error('A chat id is required');
       return agentChat.select(s.dir, request.chatId);
     },
   );
-  ipcMain.handle(IPC.agentChatLogin, async (): Promise<AgentChatState> => {
-    const s = requireSession();
+  ipcMain.handle(IPC.agentChatLogin, async (event): Promise<AgentChatState> => {
+    const s = requireSession(event);
     return agentChat.login(s.dir);
   });
-  ipcMain.handle(IPC.agentChatSwitchAccount, async (): Promise<AgentChatState> => {
-    const s = requireSession();
+  ipcMain.handle(IPC.agentChatSwitchAccount, async (event): Promise<AgentChatState> => {
+    const s = requireSession(event);
     return agentChat.switchAccount(s.dir);
   });
   ipcMain.handle(
     IPC.agentChatSetModel,
-    async (_event, request: AgentChatSetModelRequest): Promise<AgentChatState> => {
-      const s = requireSession();
+    async (event, request: AgentChatSetModelRequest): Promise<AgentChatState> => {
+      const s = requireSession(event);
       if (!request || typeof request.model !== 'string') throw new Error('A model is required');
       return agentChat.setModel(s.dir, request.model);
     },
   );
   ipcMain.handle(
     IPC.agentChatSetReasoningEffort,
-    async (_event, request: AgentChatSetReasoningEffortRequest): Promise<AgentChatState> => {
-      const s = requireSession();
+    async (event, request: AgentChatSetReasoningEffortRequest): Promise<AgentChatState> => {
+      const s = requireSession(event);
       if (!request || typeof request.effort !== 'string') {
         throw new Error('A reasoning effort is required');
       }
@@ -702,8 +845,8 @@ function registerHandlers(): void {
   );
   ipcMain.handle(
     IPC.agentChatSetFastMode,
-    async (_event, request: AgentChatSetFastModeRequest): Promise<AgentChatState> => {
-      const s = requireSession();
+    async (event, request: AgentChatSetFastModeRequest): Promise<AgentChatState> => {
+      const s = requireSession(event);
       if (!request || typeof request.enabled !== 'boolean') {
         throw new Error('A fast mode setting is required');
       }
@@ -712,8 +855,8 @@ function registerHandlers(): void {
   );
   ipcMain.handle(
     IPC.agentChatSend,
-    async (_event, request: AgentChatSendRequest): Promise<AgentChatState> => {
-      const s = requireSession();
+    async (event, request: AgentChatSendRequest): Promise<AgentChatState> => {
+      const s = requireSession(event);
       if (!request || typeof request.text !== 'string') throw new Error('A message is required');
       return agentChat.send(s.dir, request, async () => {
         if (!collabServer) throw new Error('The deck-scoped agent session is not running');
@@ -724,37 +867,39 @@ function registerHandlers(): void {
       });
     },
   );
-  ipcMain.handle(IPC.agentChatInterrupt, async (): Promise<AgentChatState> => {
-    const s = requireSession();
+  ipcMain.handle(IPC.agentChatInterrupt, async (event): Promise<AgentChatState> => {
+    const s = requireSession(event);
     return agentChat.interrupt(s.dir);
   });
-  ipcMain.handle(IPC.agentChatReset, async (): Promise<AgentChatState> => {
-    const s = requireSession();
+  ipcMain.handle(IPC.agentChatReset, async (event): Promise<AgentChatState> => {
+    const s = requireSession(event);
     return agentChat.reset(s.dir);
   });
 
   ipcMain.handle(
     IPC.deckOpenPath,
-    async (event, dir: string): Promise<DeckSession> =>
-      openSession(dir, await loadDeck(dir), event),
+    async (event, dir: string): Promise<DeckSession | null> =>
+      openDeckForRequester(requireOwner(event), dir, await loadDeck(dir), event),
   );
 
   ipcMain.handle(IPC.deckSave, async (event, dir: string, deck: Deck): Promise<void> => {
-    const s = requireSession();
+    const state = requireOwner(event);
+    const s = requireSession(event);
     // A save belongs to the deck the renderer had open when the edit was made.
-    // One still in flight when the author opens or imports another deck would
+    // One still in flight when this window takes on another deck would
     // otherwise write those slides into the new deck's folder — and put them
-    // on the projector, because Present reads this session.
+    // on the projector, because Present reads this window's session.
     if (dir !== s.dir) throw new Error('Refusing to save a deck that is no longer open');
-    lastSavedDeckJson = await saveDeck(s.dir, deck);
+    state.lastSavedDeckJson = await saveDeck(s.dir, deck);
     s.deck = deck;
-    broadcastDeck(BrowserWindow.fromWebContents(event.sender));
+    broadcastDeck(state, BrowserWindow.fromWebContents(event.sender));
   });
 
   ipcMain.handle(
     IPC.deckSyncSnapshot,
     (event, snapshot: DeckSessionSnapshot): void => {
-      const s = requireSession();
+      const state = requireOwner(event);
+      const s = requireSession(event);
       // During an embedded Agent session the collaboration server is the only
       // deck.json writer. Present/PDF/web export still live in the main process,
       // so mirror the authoritative renderer state in memory without racing the
@@ -764,13 +909,13 @@ function registerHandlers(): void {
         throw new Error('Refusing to mirror a deck that is no longer open');
       }
       s.deck = parseDeck(snapshot.deck);
-      sessionThemeCss = snapshot.themeCss;
-      broadcastDeck(BrowserWindow.fromWebContents(event.sender));
+      state.themeCss = snapshot.themeCss;
+      broadcastDeck(state, BrowserWindow.fromWebContents(event.sender));
     },
   );
 
   ipcMain.handle(IPC.deckSaveAs, async (event, operationId?: string): Promise<DeckSession | null> => {
-    const s = requireSession();
+    const s = requireSession(event);
     const target = await showSaveDialog({
       title: 'Save deck as',
       buttonLabel: 'Save As',
@@ -783,24 +928,38 @@ function registerHandlers(): void {
     reportOperation(event, operationId, `Copying deck to ${basename(dir)}`);
     const deck = await copyDeck(s.dir, dir);
     reportOperation(event, operationId, 'Opening the saved copy', 0.8);
-    return openSession(dir, deck, event);
+    // Save As continues one document in one window, so it never spawns another.
+    return openSession(requireOwner(event), dir, deck, event);
   });
 
-  ipcMain.handle(IPC.deckLoadTheme, async (): Promise<string> => {
-    const s = requireSession();
-    return sessionThemeCss ?? loadTheme(s.dir, s.deck.theme);
+  ipcMain.handle(IPC.deckLoadTheme, async (event): Promise<string> => {
+    const state = requireOwner(event);
+    const s = requireSession(event);
+    return state.themeCss ?? loadTheme(s.dir, s.deck.theme);
   });
 
-  ipcMain.handle(IPC.deckSaveTheme, async (_e, css: string): Promise<void> => {
-    const s = requireSession();
-    sessionThemeCss = css;
+  ipcMain.handle(IPC.deckSaveTheme, async (event, css: string): Promise<void> => {
+    const state = requireOwner(event);
+    const s = requireSession(event);
+    state.themeCss = css;
     await saveTheme(s.dir, s.deck.theme, css);
   });
 
-  ipcMain.handle(IPC.htmlExport, async (_e, slideIds: string[]): Promise<string> => {
-    const s = requireSession();
+  ipcMain.handle(IPC.speakerNotesOpen, async (event): Promise<string> => {
+    const s = requireSession(event);
+    // A deck saved before notes existed has no notes.md yet; write it from the
+    // slides so the editor that opens has the sections to fill in.
+    await saveSpeakerNotes(s.dir, s.deck);
+    const path = join(s.dir, SPEAKER_NOTES_FILE);
+    const openError = await shell.openPath(path);
+    if (openError) throw new Error(`Could not open ${path}: ${openError}`);
+    return path;
+  });
+
+  ipcMain.handle(IPC.htmlExport, async (event, slideIds: string[]): Promise<string> => {
+    const s = requireSession(event);
     const written = await writeHtmlScope(s.dir, s.deck, slideIds);
-    lastWrittenHtml.set(written.path, written.contents);
+    requireOwner(event).lastWrittenHtml.set(written.path, written.contents);
     const openError = await shell.openPath(written.path);
     if (openError) {
       throw new Error(`HTML was written to ${written.path}, but could not be opened: ${openError}`);
@@ -809,9 +968,9 @@ function registerHandlers(): void {
   });
 
   ipcMain.handle(IPC.htmlAdopt, async (
-    _e, path: string, contents: string, expected: string,
+    event, path: string, contents: string, expected: string,
   ): Promise<void> => {
-    const s = requireSession();
+    const s = requireSession(event);
     const editDir = join(s.dir, HTML_EDIT_DIR);
     const target = resolve(String(path));
     // Only files inside this deck's edit/ folder; the renderer holds no other
@@ -825,14 +984,14 @@ function registerHandlers(): void {
     const current = await readFile(target, 'utf8').catch(() => null);
     if (current !== expected) return;
     // Our own write; the watcher event it fires is an echo, not an edit.
-    lastWrittenHtml.set(target, contents);
+    requireOwner(event).lastWrittenHtml.set(target, contents);
     await writeFile(target, contents, 'utf8');
   });
 
   ipcMain.handle(
     IPC.assetImport,
     async (event, paths: string[], token?: string): Promise<ImportedAsset[]> => {
-      const s = requireSession();
+      const s = requireSession(event);
       const out: ImportedAsset[] = [];
       for (const p of paths) {
         // One bad file in a multi-file drop shouldn't lose the rest.
@@ -859,12 +1018,13 @@ function registerHandlers(): void {
   // Copy: serialise the fragment onto the OS pasteboard under a private
   // format, with absolute asset paths attached, so any instance of this app —
   // including a different process with a different deck open — can paste it.
-  ipcMain.handle(IPC.clipboardWrite, (_e, request: ClipboardWriteRequest): void => {
+  ipcMain.handle(IPC.clipboardWrite, (event, request: ClipboardWriteRequest): void => {
     const assets: ClipboardPayload['assets'] = [];
-    if (session) {
+    const source = ownerOf(event.sender)?.session;
+    if (source) {
       for (const src of collectAssetSrcs(request)) {
         try {
-          const absPath = resolveAsset(session.dir, src);
+          const absPath = resolveAsset(source.dir, src);
           if (existsSync(absPath)) assets.push({ src, absPath });
         } catch {
           // A src that escapes the deck folder simply doesn't travel.
@@ -878,7 +1038,7 @@ function registerHandlers(): void {
   // Paste: validate whatever is on the pasteboard, then re-import each
   // referenced asset into *this* deck. Import names files by content hash, so
   // pasting back into the source deck (or pasting twice) copies nothing.
-  ipcMain.handle(IPC.clipboardRead, async (): Promise<ClipboardReadResult | null> => {
+  ipcMain.handle(IPC.clipboardRead, async (event): Promise<ClipboardReadResult | null> => {
     const buf = clipboard.readBuffer(CLIPBOARD_FORMAT);
     if (!buf || buf.length === 0) {
       const html = clipboard.readHTML();
@@ -895,7 +1055,7 @@ function registerHandlers(): void {
         // otherwise defaults PNG encoding to the 1x representation.
         const scaleFactor = Math.max(1, ...image.getScaleFactors());
         const asset = await importImageBuffer(
-          requireSession().dir,
+          requireSession(event).dir,
           image.toPNG({ scaleFactor }),
           'Screenshot.png',
           image.getSize(scaleFactor),
@@ -911,7 +1071,7 @@ function registerHandlers(): void {
       // Nothing but a reference: chat and web apps overwhelmingly write just
       // an `<img src="https://…">`, with no pixels on the pasteboard at all.
       // Go and get the bytes.
-      const linked = await importClipboardImageUrl(requireSession().dir, html, text);
+      const linked = await importClipboardImageUrl(requireSession(event).dir, html, text);
       if (linked) return { kind: 'external-image', asset: linked };
       return null;
     }
@@ -923,7 +1083,7 @@ function registerHandlers(): void {
     }
     if (!payload) return null;
 
-    const s = requireSession();
+    const s = requireSession(event);
     const map = new Map<string, string>();
     for (const asset of payload.assets) {
       try {
@@ -953,12 +1113,12 @@ function registerHandlers(): void {
   // drag, and the bytes are fetched here, next to the deck folder.
   ipcMain.handle(
     IPC.assetImportUrl,
-    async (_e, source: ClipboardImageSource): Promise<ImportedAsset | null> =>
-      importImageSource(requireSession().dir, source),
+    async (event, source: ClipboardImageSource): Promise<ImportedAsset | null> =>
+      importImageSource(requireSession(event).dir, source),
   );
 
-  ipcMain.handle(IPC.assetProbe, async (_e, src: string) => {
-    const s = requireSession();
+  ipcMain.handle(IPC.assetProbe, async (event, src: string) => {
+    const s = requireSession(event);
     return probeMedia(resolveAsset(s.dir, src));
   });
 
@@ -972,14 +1132,17 @@ function registerHandlers(): void {
       height: display.bounds.height,
     }));
   });
-  ipcMain.handle(IPC.presentOpen, async (_e, slideIndex: number, options: PresentOptions = {}) => {
+  ipcMain.handle(IPC.presentOpen, async (event, slideIndex: number, options: PresentOptions = {}) => {
+    // Presenting belongs to one document: the window that asked. Another
+    // presentation's projector, if there is one, is left exactly as it is.
+    const state = requireOwner(event);
     const displays = screen.getAllDisplays();
     const primary = screen.getPrimaryDisplay();
-    if (presentWindow && !presentWindow.isDestroyed()) {
-      if (options.speakerView && (!presenterWindow || presenterWindow.isDestroyed())) {
+    if (state.present && !state.present.isDestroyed()) {
+      if (options.speakerView && (!state.presenter || state.presenter.isDestroyed())) {
         const audienceDisplay = chooseDisplayById(
           displays,
-          presentationDisplays?.audienceDisplayId,
+          state.presentationDisplays?.audienceDisplayId,
           chooseAudienceDisplay(displays, primary),
         );
         const presenterDisplay = chooseDisplayById(
@@ -987,16 +1150,17 @@ function registerHandlers(): void {
           options.presenterDisplayId,
           primary,
         );
-        presentationDisplays = {
+        state.presentationDisplays = {
           audienceDisplayId: audienceDisplay.id,
           presenterDisplayId: presenterDisplay.id,
         };
         openSpeakerWindow(
+          state,
           presenterDisplay.id,
           audienceDisplay.id === presenterDisplay.id,
         );
       }
-      (presenterWindow ?? presentWindow).focus();
+      (state.presenter ?? state.present).focus();
       return;
     }
     const audienceDisplay = chooseDisplayById(
@@ -1020,99 +1184,141 @@ function registerHandlers(): void {
       openSpeakerView,
     );
 
-    presentationState = null;
-    presentationDisplays = {
+    state.presentationState = null;
+    state.presentationDisplays = {
       audienceDisplayId: audienceDisplay.id,
       presenterDisplayId: presenterDisplay.id,
     };
-    presentWindow = createPresentWindow(
+    const audience = createPresentWindow(
       slideIndex,
       audienceDisplay.id,
       options.endSlideIndex,
       showAudienceWindow,
     );
-    presenterWindow = openSpeakerView
-      ? openSpeakerWindow(presenterDisplay.id, false)
+    state.present = audience;
+    attachWindow(state, audience);
+    state.presenter = openSpeakerView
+      ? openSpeakerWindow(state, presenterDisplay.id, false)
       : null;
-    presentWindow.on('closed', () => {
-      presentWindow = null;
-      presentationDisplays = null;
-      if (presenterWindow && !presenterWindow.isDestroyed()) presenterWindow.close();
+    audience.on('closed', () => {
+      if (state.present === audience) state.present = null;
+      state.presentationDisplays = null;
+      if (state.presenter && !state.presenter.isDestroyed()) state.presenter.close();
     });
   });
-  ipcMain.on(IPC.presentCommand, (_event, command: PresentationCommand) => {
+  ipcMain.on(IPC.presentCommand, (event, command: PresentationCommand) => {
+    const state = ownerOf(event.sender);
+    if (!state) return;
     if (command.type === 'exit') {
-      presentWindow?.close();
-      presenterWindow?.close();
+      state.present?.close();
+      state.presenter?.close();
       return;
     }
     if (command.type === 'swapDisplays') {
-      void swapPresentationDisplayRoles();
+      void swapPresentationDisplayRoles(state);
       return;
     }
-    presentWindow?.webContents.send(IPC.presentCommand, command);
+    state.present?.webContents.send(IPC.presentCommand, command);
   });
-  ipcMain.on(IPC.presentState, (_event, state: PresentationState) => {
-    presentationState = state;
-    presenterWindow?.webContents.send(IPC.presentState, state);
+  ipcMain.on(IPC.presentState, (event, presentation: PresentationState) => {
+    const state = ownerOf(event.sender);
+    if (!state) return;
+    state.presentationState = presentation;
+    state.presenter?.webContents.send(IPC.presentState, presentation);
   });
 
-  ipcMain.handle(IPC.trimOpen, (_e, payload: { src: string; elementId: string }) => {
-    if (trimWindow && !trimWindow.isDestroyed()) trimWindow.close();
-    trimWindow = createTrimWindow();
-    const win = trimWindow;
-    win.on('closed', () => (trimWindow = null));
+  ipcMain.handle(IPC.trimOpen, (event, payload: { src: string; elementId: string }) => {
+    const state = requireOwner(event);
+    if (state.trim && !state.trim.isDestroyed()) state.trim.close();
+    const win = createTrimWindow();
+    state.trim = win;
+    attachWindow(state, win);
+    win.on('closed', () => {
+      if (state.trim === win) state.trim = null;
+    });
     // Wait for the renderer before sending, or the payload lands nowhere.
     win.webContents.once('did-finish-load', () => {
       win.webContents.send(IPC.trimOpen, payload);
     });
   });
 
-  ipcMain.handle(IPC.rasterOpen, (_e, payload: RasterTarget) => {
-    if (rasterWindow && !rasterWindow.isDestroyed()) rasterWindow.close();
-    rasterWindow = createRasterWindow();
-    const win = rasterWindow;
-    win.on('closed', () => (rasterWindow = null));
+  ipcMain.handle(IPC.rasterOpen, (event, payload: RasterTarget) => {
+    const state = requireOwner(event);
+    if (state.raster && !state.raster.isDestroyed()) state.raster.close();
+    const win = createRasterWindow();
+    state.raster = win;
+    attachWindow(state, win);
+    win.on('closed', () => {
+      if (state.raster === win) state.raster = null;
+    });
     // Wait for the paint renderer to subscribe before delivering its target.
     win.webContents.once('did-finish-load', () => {
       win.webContents.send(IPC.rasterOpen, payload);
     });
   });
 
+  /**
+   * Pick a presentation file, pick where the converted deck goes, run the
+   * matching importer sidecar, then open the result. Keynote and PowerPoint
+   * differ only in the file filter, the dialog wording and the sidecar.
+   */
+  async function importPresentation(
+    event: IpcMainInvokeEvent,
+    operationId: string | undefined,
+    source: {
+      name: string;
+      extensions: string[];
+      run: typeof importKeynote;
+    },
+  ): Promise<PresentationImportResult | null> {
+    const picked = await showOpenDialog({
+      title: `Import a ${source.name} presentation`,
+      properties: ['openFile'],
+      filters: [{ extensions: source.extensions, name: source.name }],
+    });
+    if (picked.canceled || picked.filePaths.length === 0) return null;
+    const sourcePath = picked.filePaths[0];
+
+    const target = await showSaveDialog({
+      title: 'Save the imported deck as',
+      buttonLabel: 'Import',
+      defaultPath: basename(sourcePath, extname(sourcePath)),
+      properties: ['createDirectory'],
+    });
+    if (target.canceled || !target.filePath) return null;
+
+    // The sidecar reports 0..1 across its own work, and the renderer's
+    // `adopt` then reports the rest of the way. Compress the conversion into
+    // the first half so the operation's completion only ever moves forward.
+    const conversionShare = 0.5;
+    const result = await source.run(sourcePath, deckFolderPath(target.filePath), (message, ratio) => {
+      reportOperation(event, operationId, message, ratio === null ? null : ratio * conversionShare);
+    });
+    reportOperation(event, operationId, 'Opening the imported presentation', conversionShare);
+    const adopted = openDeckForRequester(requireOwner(event), result.dir, result.deck, event);
+    // A window that already held a presentation keeps it; the import went to
+    // a window of its own, so the asking renderer must not adopt the deck.
+    return { ...result, openedInNewWindow: adopted === null };
+  }
+
   ipcMain.handle(
     IPC.keynoteImport,
-    async (event, operationId?: string): Promise<KeynoteImportResult | null> => {
-      const picked = await showOpenDialog({
-        title: 'Import a Keynote presentation',
-        properties: ['openFile'],
-        filters: [{ extensions: ['key'], name: 'Keynote' }],
-      });
-      if (picked.canceled || picked.filePaths.length === 0) return null;
-      const keyPath = picked.filePaths[0];
+    (event, operationId?: string) =>
+      importPresentation(event, operationId, { name: 'Keynote', extensions: ['key'], run: importKeynote }),
+  );
 
-      const target = await showSaveDialog({
-        title: 'Save the imported deck as',
-        buttonLabel: 'Import',
-        defaultPath: basename(keyPath, '.key'),
-        properties: ['createDirectory'],
-      });
-      if (target.canceled || !target.filePath) return null;
-
-      // The sidecar reports 0..1 across its own work, and the renderer's
-      // `adopt` then reports the rest of the way. Compress the conversion into
-      // the first half so the operation's completion only ever moves forward.
-      const conversionShare = 0.5;
-      const result = await importKeynote(keyPath, deckFolderPath(target.filePath), (message, ratio) => {
-        reportOperation(event, operationId, message, ratio === null ? null : ratio * conversionShare);
-      });
-      reportOperation(event, operationId, 'Opening the imported presentation', conversionShare);
-      openSession(result.dir, result.deck, event);
-      return result;
-    },
+  ipcMain.handle(
+    IPC.pptxImport,
+    (event, operationId?: string) =>
+      importPresentation(event, operationId, {
+        name: 'PowerPoint',
+        extensions: ['pptx', 'ppsx', 'potx'],
+        run: importPowerPoint,
+      }),
   );
 
   ipcMain.handle(IPC.exportBundle, async (event, operationId?: string): Promise<string | null> => {
-    const s = requireSession();
+    const s = requireSession(event);
     const target = await showSaveDialog({
       title: 'Export as a standalone web page',
       buttonLabel: 'Export',
@@ -1132,7 +1338,7 @@ function registerHandlers(): void {
     request: PdfExportRequest = {},
     operationId?: string,
   ): Promise<string | null> => {
-    const s = requireSession();
+    const s = requireSession(event);
     const mode = request.mode ?? 'final';
     const includeHidden = request.includeHidden ?? false;
     const target = await showSaveDialog({
@@ -1160,6 +1366,9 @@ function registerHandlers(): void {
     });
     const query = `?job=${encodeURIComponent(jobId)}&mode=${mode}&includeHidden=${includeHidden ? '1' : '0'}`;
     const printWindow = createPdfWindow(query);
+    // The print page asks for "the" deck the same way any window does, so it
+    // has to belong to the document being exported.
+    attachWindow(requireOwner(event), printWindow);
     try {
       await ready;
       reportOperation(event, operationId, 'Checking rendered pages', 0.6);
@@ -1201,9 +1410,9 @@ function registerHandlers(): void {
     clipboard.writeText(agent ? agentClipboardPrompt(joinUrl, deckId) : joinUrl);
   };
 
-  const stopDeckWatchers = (): void => {
-    for (const watcher of watchers) watcher.close();
-    watchers = [];
+  const stopDeckWatchers = (state: DeckWindowState): void => {
+    for (const watcher of state.watchers) watcher.close();
+    state.watchers = [];
   };
 
   const startHostedServer = async (
@@ -1265,10 +1474,19 @@ function registerHandlers(): void {
    * differ.
    */
   const startBackgroundSession = async (
+    event: IpcMainInvokeEvent,
     mode: 'agent' | 'collaboration',
   ): Promise<AgentSessionConnection> => {
-    const s = requireSession();
+    const state = requireOwner(event);
+    const s = requireSession(event);
     if (collabMode === 'window') throw new Error('End the current collaboration first');
+    // One hosted session per app: it pins a server to a single deck and shares
+    // one agent sign-in. Another window's presentation must not be taken over.
+    if (collabServer && collabOwner && collabOwner !== state) {
+      throw new Error(
+        'Another window is already sharing a presentation — end that session first',
+      );
+    }
     const deckId = basename(s.dir);
     const name = userInfo().username || 'Host';
     const wantedMode = mode === 'agent' ? 'agent-background' : 'collaboration-background';
@@ -1283,9 +1501,10 @@ function registerHandlers(): void {
         () => setImmediate(() => void endBackgroundAgentSession()),
       );
       collabMode = wantedMode;
+      collabOwner = state;
       // The server is now the deck's sole writer. Native edits will reach it
       // through the WebSocket bridge returned below.
-      stopDeckWatchers();
+      stopDeckWatchers(state);
     }
     if (collabMode !== wantedMode) {
       throw new Error('A different collaboration session is already running');
@@ -1305,7 +1524,7 @@ function registerHandlers(): void {
 
   ipcMain.handle(
     IPC.agentSessionStart,
-    async (): Promise<AgentSessionConnection> => startBackgroundSession('agent'),
+    async (event): Promise<AgentSessionConnection> => startBackgroundSession(event, 'agent'),
   );
   ipcMain.handle(IPC.agentSessionEnd, async (): Promise<void> => {
     await endBackgroundAgentSession();
@@ -1315,25 +1534,25 @@ function registerHandlers(): void {
   // made Collaborate slow and visually disruptive, and—more importantly—meant
   // tests never exercised native cursor publishing.
   ipcMain.handle(IPC.collabStart, async (
-    _e,
+    event,
     opts?: CollabStartRequest,
   ): Promise<AgentSessionConnection> => {
     if (opts?.agent) {
-      return startBackgroundSession('agent');
+      return startBackgroundSession(event, 'agent');
     }
-    return startBackgroundSession('collaboration');
+    return startBackgroundSession(event, 'collaboration');
   });
 
   ipcMain.handle(
     IPC.workflowStart,
-    async (_e, request: WorkflowStartRequest): Promise<WorkflowStartResult> => {
-      const s = requireSession();
+    async (event, request: WorkflowStartRequest): Promise<WorkflowStartResult> => {
+      const s = requireSession(event);
       return startWorkflow(s.dir, s.deck, request);
     },
   );
 
   ipcMain.handle(IPC.trimRun, async (event, req: TrimRequest): Promise<TrimResult> => {
-    const s = requireSession();
+    const s = requireSession(event);
     const input = resolveAsset(s.dir, req.src);
     const { absolute, relative } = await derivedAssetPath(s.dir, req.src, 'trim');
 
@@ -1346,14 +1565,14 @@ function registerHandlers(): void {
     const info = await probeMedia(absolute);
     const result: TrimResult = { src: relative, ...info };
     // The editor is what relinks the element; the trim window only reports.
-    editorWindow?.webContents.send(IPC.trimDone, result);
+    requireOwner(event).editor.webContents.send(IPC.trimDone, result);
     return result;
   });
 
   ipcMain.handle(
     IPC.rasterSave,
-    async (_event, req: RasterSaveRequest): Promise<RasterResult> => {
-      const s = requireSession();
+    async (event, req: RasterSaveRequest): Promise<RasterResult> => {
+      const s = requireSession(event);
       // Resolving the input is a cheap containment/existence check. Raster
       // output always becomes a sibling derived asset; the original stays put.
       const input = resolveAsset(s.dir, req.src);
@@ -1375,7 +1594,7 @@ function registerHandlers(): void {
         width: req.width,
         height: req.height,
       };
-      editorWindow?.webContents.send(IPC.rasterDone, result);
+      requireOwner(event).editor.webContents.send(IPC.rasterDone, result);
       return result;
     },
   );

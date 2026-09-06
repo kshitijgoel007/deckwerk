@@ -1,4 +1,4 @@
-import { access, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -29,6 +29,27 @@ describe('deck folder persistence', () => {
 
     await expect(access(join(deckDir, 'edit'))).resolves.toBeUndefined();
     await expect(access(join(deckDir, 'AGENTS.md'))).rejects.toThrow();
+  });
+
+  it('mirrors slide notes into notes.md on save and leaves the file alone when nothing changed', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'deck-notes-'));
+    cleanup.push(root);
+    const deckDir = join(root, 'Deck');
+    const deck = await createDeck(deckDir);
+    const notesPath = join(deckDir, 'notes.md');
+    const initial = await readFile(notesPath, 'utf8');
+    expect(initial).toContain(`<!-- slide: ${deck.slides[0].id} -->`);
+
+    deck.slides[0].notes = 'Say hello.\n\nThen pause.';
+    await saveDeck(deckDir, deck);
+    const written = await readFile(notesPath, 'utf8');
+    expect(written).toContain('\n\nSay hello.\n\nThen pause.\n');
+
+    // A save that changes no note must not touch a file the author may have open.
+    const before = await stat(notesPath);
+    await new Promise((settle) => setTimeout(settle, 20));
+    await saveDeck(deckDir, deck);
+    expect((await stat(notesPath)).mtimeMs).toBe(before.mtimeMs);
   });
 
   it('copies the complete deck for Save As without changing the source', async () => {

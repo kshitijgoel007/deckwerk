@@ -1,4 +1,4 @@
-import type { MediaEffect, Slide, SlideElement } from '@shared/deck.js';
+import type { Deck, MediaEffect, Slide, SlideElement } from '@shared/deck.js';
 import {
   paragraphsToList,
   paragraphsToOrderedList,
@@ -15,7 +15,7 @@ import type {
   TableSelection,
 } from './canvas.js';
 import { type AlignMode, alignElements } from './align.js';
-import type { EditorStore } from './store.js';
+import { sameDeckIgnoringNotes, type EditorStore } from './store.js';
 import { LAYOUT_LABELS, applySlideLayout, type SlideLayout } from './slideLayouts.js';
 import { MorphPanel } from './morphPanel.js';
 import { fontFamilyField, primaryFamily } from './fontPicker.js';
@@ -157,7 +157,7 @@ export class Inspector {
   /** Seeks the sidebar trim preview; rebuilt with the panel. */
   private trimPreviewSeek: ((t: number) => void) | null = null;
   /** What the panel showed last, to skip re-renders that would change nothing. */
-  private lastDeck: unknown = null;
+  private lastDeck: Deck | null = null;
   private lastSelection = '';
   private lastSlide = -1;
   private lastSlideSelection = '';
@@ -200,8 +200,12 @@ export class Inspector {
         this.store.endTransaction();
         this.changingOpacity = false;
       }
+      // Speaker notes are not shown here. Each keystroke in the notes drawer
+      // commits a fresh deck, and rebuilding for it re-mounted the layout and
+      // Morph previews — every slide picture in the panel flickered per key.
       if (
-        deck === this.lastDeck
+        this.lastDeck !== null
+        && sameDeckIgnoringNotes(deck, this.lastDeck)
         && sel === this.lastSelection
         && slideIndex === this.lastSlide
         && slideSel === this.lastSlideSelection

@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 /**
- * Freeze the Keynote importer into a single self-contained binary.
+ * Freeze the Keynote and PowerPoint importers into self-contained binaries.
  *
  * Python is a hard build-time dependency, and deliberately not a *runtime*
  * one: PyInstaller bundles the interpreter and every dependency into the
- * binary shipped as an extraResource, so an installed DeckWerk imports .key
- * files on a machine with no Python at all.
+ * binaries shipped as extraResources, so an installed DeckWerk imports .key
+ * and .pptx files on a machine with no Python at all.
  *
  * This replaces the shell one-liner it grew out of, which hardcoded POSIX venv
  * layout (`.venv-import/bin/pip`) and so could never run on Windows.
@@ -50,14 +50,14 @@ function findPython() {
 const python = findPython();
 if (!python) {
   console.error(
-    'Python 3.10+ is required to build the Keynote importer, and was not found.\n' +
+    'Python 3.10+ is required to build the presentation importers, and was not found.\n' +
       '\n' +
       '  macOS    brew install python\n' +
       '  Debian   sudo apt-get install python3 python3-venv\n' +
       '  Windows  winget install Python.Python.3.12\n' +
       '\n' +
       'Python is needed only to build; the app ships the interpreter inside the\n' +
-      'frozen importer, so people who install DeckWerk never need it.',
+      'frozen importers, so people who install DeckWerk never need it.',
   );
   process.exit(1);
 }
@@ -69,33 +69,48 @@ if (!existsSync(exe('python'))) {
   run(python.command, [...python.prefix, '-m', 'venv', VENV]);
 }
 
-console.log('Installing keynote-parser and pyinstaller');
+console.log('Installing keynote-parser, pillow and pyinstaller');
 run(exe('python'), ['-m', 'pip', 'install', '--quiet', '--upgrade', 'pip']);
-run(exe('python'), ['-m', 'pip', 'install', '--quiet', 'keynote-parser', 'pyinstaller']);
+run(exe('python'), ['-m', 'pip', 'install', '--quiet', 'keynote-parser', 'pillow', 'pyinstaller']);
 
 mkdirSync('build/importers', { recursive: true });
 
-console.log('Freezing importer');
-run(exe('pyinstaller'), [
-  '--onefile',
-  '--name', 'keynote-import',
-  // keynote-parser loads Apple's protobuf message modules dynamically, so
-  // PyInstaller's static analysis cannot see them; likewise snappy's backend.
-  '--collect-all', 'keynote_parser',
-  '--collect-all', 'snappy',
-  '--distpath', 'build/importers',
-  '--workpath', 'build/pyinstaller',
-  '--specpath', 'build/pyinstaller',
-  '--noconfirm',
-  'importers/keynote/import_keynote.py',
-]);
+const IMPORTERS = [
+  {
+    name: 'keynote-import',
+    script: 'importers/keynote/import_keynote.py',
+    // keynote-parser loads Apple's protobuf message modules dynamically, so
+    // PyInstaller's static analysis cannot see them; likewise snappy's backend.
+    collect: ['keynote_parser', 'snappy'],
+  },
+  {
+    name: 'pptx-import',
+    script: 'importers/pptx/import_pptx.py',
+    // Pillow's format plugins are imported by name at runtime.
+    collect: ['PIL'],
+  },
+];
 
-const frozen = join('build/importers', WINDOWS ? 'keynote-import.exe' : 'keynote-import');
-if (!existsSync(frozen)) throw new Error(`pyinstaller reported success but ${frozen} is missing`);
+for (const importer of IMPORTERS) {
+  console.log(`Freezing ${importer.name}`);
+  run(exe('pyinstaller'), [
+    '--onefile',
+    '--name', importer.name,
+    ...importer.collect.flatMap((pkg) => ['--collect-all', pkg]),
+    '--distpath', 'build/importers',
+    '--workpath', 'build/pyinstaller',
+    '--specpath', 'build/pyinstaller',
+    '--noconfirm',
+    importer.script,
+  ]);
 
-// Prove the binary is genuinely self-contained before anything packages it.
-const check = spawnSync(frozen, ['--help'], { encoding: 'utf8' });
-if (check.status !== 0) {
-  throw new Error(`frozen importer does not run: ${check.stderr || check.error?.message}`);
+  const frozen = join('build/importers', WINDOWS ? `${importer.name}.exe` : importer.name);
+  if (!existsSync(frozen)) throw new Error(`pyinstaller reported success but ${frozen} is missing`);
+
+  // Prove the binary is genuinely self-contained before anything packages it.
+  const check = spawnSync(frozen, ['--help'], { encoding: 'utf8' });
+  if (check.status !== 0) {
+    throw new Error(`frozen importer does not run: ${check.stderr || check.error?.message}`);
+  }
+  console.log(`Built ${frozen}`);
 }
-console.log(`Built ${frozen}`);

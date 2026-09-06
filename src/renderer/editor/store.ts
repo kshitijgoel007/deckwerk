@@ -856,6 +856,27 @@ function sameDeck(left: Deck, right: Deck): boolean {
   return left === right || JSON.stringify(left) === JSON.stringify(right);
 }
 
+/**
+ * Whether two slides draw the same picture: everything but the speaker note
+ * agrees. Typing in the notes drawer commits a fresh slide object per
+ * keystroke, and views that only paint the slide must not treat that as a
+ * change worth rebuilding for.
+ */
+export function sameSlideIgnoringNotes(left: Slide, right: Slide): boolean {
+  if (left === right) return true;
+  return JSON.stringify({ ...left, notes: '' }) === JSON.stringify({ ...right, notes: '' });
+}
+
+/** Whether two decks differ in nothing but their slides' speaker notes. */
+export function sameDeckIgnoringNotes(left: Deck, right: Deck): boolean {
+  if (left === right) return true;
+  if (left.slides.length !== right.slides.length) return false;
+  for (let i = 0; i < left.slides.length; i++) {
+    if (!sameSlideIgnoringNotes(left.slides[i], right.slides[i])) return false;
+  }
+  return JSON.stringify({ ...left, slides: null }) === JSON.stringify({ ...right, slides: null });
+}
+
 /** A stable signature of what a run of operations touches, for coalescing. */
 function operationTargets(operations: AgentOperation[]): string {
   const ids = new Set<string>();

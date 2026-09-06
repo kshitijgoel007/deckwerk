@@ -11,7 +11,7 @@ export function statusBarText(state: EditorState, statusMessage = ''): string {
     if (selection.size > 0) bits.push(`${selection.size} selected`);
     if (dirty) bits.push('unsaved');
   } else {
-    bits.push('No deck open — use New, Open or Import Keynote');
+    bits.push('No deck open — use New, Open or Import');
   }
 
   if (statusMessage) bits.push(statusMessage);

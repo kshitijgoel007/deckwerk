@@ -282,7 +282,7 @@ describe('text formatting from the inspector controls', () => {
 
     trigger().click();
     const swatches = [...document.querySelectorAll<HTMLButtonElement>('.color-picker-palette-button')];
-    expect(swatches.map((swatch) => swatch.title)).toEqual(['#112233', '#ff8800']);
+    expect(swatches.map((swatch) => swatch.title)).toEqual(['#112233', '#ff8800', '#ffffff', '#000000']);
     swatches[0].click();
 
     expect(textOf(store, 'text-1').style.color).toBe('#112233');

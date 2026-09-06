@@ -4,7 +4,7 @@ Status: the experimental UI rework was reverted on 18 August 2026.
 
 The editor again uses the layout and styling from commit `7b8cacf`:
 
-- New, Open, and Import Keynote are direct controls at the top left.
+- New, Open, and Import (Keynote or PowerPoint) are direct controls at the top left.
 - Text and Shape remain separate controls in the center.
 - Agent, Collaborate, and Present remain direct controls at the right.
 - Props, Theme, Build, and History are the sidebar tabs.

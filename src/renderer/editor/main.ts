@@ -5,7 +5,7 @@ import '../collab/collab.css';
 import { applyAgentTransaction } from '@shared/agent.js';
 import type { Deck, SlideElement } from '@shared/deck.js';
 import { emptyDeck } from '@shared/deck.js';
-import type { AgentSessionConnection, AuthoredHtmlFile } from '@shared/ipc.js';
+import type { AgentSessionConnection, AuthoredHtmlFile, PresentationImportResult } from '@shared/ipc.js';
 import { captureEditorView, decodeEditorView, restoreEditorView } from '@shared/editorView.js';
 import { setIdSuffix } from '@shared/geometry.js';
 import { adoptAuthoredIds } from '@shared/htmlSlides.js';
@@ -55,6 +55,8 @@ import { PresenceOverlay } from '../collab/presenceOverlay.js';
 import { openEndCollaborationPopover } from '../collab/endCollaborationPopover.js';
 import { setRenderInvariantChecks } from './renderInvariants.js';
 import { setSelectionInvariantChecks } from './selectionInvariants.js';
+import { SpeakerNotesDrawer } from './speakerNotesDrawer.js';
+import { applySpeakerNotes } from '@shared/speakerNotes.js';
 
 /**
  * Editor shell: wires the panels to one store, owns the toolbar, the keyboard
@@ -117,6 +119,15 @@ const canvas = new EditorCanvas(el('canvas'), store);
 // are Chromium's to reclaim -- closing Present used to leave canvas, rail and
 // Morph previews black until something happened to touch them.
 trackPreviewFrameRecovery(el('canvas'), document.body);
+new SpeakerNotesDrawer(el('canvas'), store, {
+  // Flush the note being typed so the file that opens already has it.
+  openFile: async () => {
+    await save();
+    return window.api.openSpeakerNotes();
+  },
+  onInsetChange: (px) => canvas.setBottomInset(px),
+  onStatus: setStatusMessage,
+});
 const inspector = new Inspector(el('inspector'), store);
 new TimelinePanel(el('timeline'), store);
 const agentChatHistoryModal = new AgentChatHistoryModal(window.api);
@@ -209,6 +220,7 @@ const welcome = new WelcomeScreen(el('canvas'), {
   newPresentation,
   openPresentation,
   importKeynote: importKeynotePresentation,
+  importPowerPoint: importPowerPointPresentation,
 });
 const agentChatPanel = new AgentChatPanel({
   api: window.api,
@@ -255,6 +267,21 @@ window.api.onAgentRequest?.((request) => void agent.handle(request));
  * are measured against the typography currently on screen.
  */
 window.api.onHtmlEdit?.((file) => void applyHtmlEdit(file));
+// notes.md saved outside the editor: the file is the whole set of notes, so
+// apply it to every slide as one undoable edit. The autosave that follows
+// rewrites deck.json and the file itself in normalised form.
+window.api.onSpeakerNotesEdit?.((contents) => {
+  const { deck, changed, dropped } = applySpeakerNotes(store.get().deck, contents);
+  const ignored = dropped > 0
+    ? ` — ${dropped} section${dropped === 1 ? '' : 's'} beyond the last slide ignored`
+    : '';
+  if (!changed) {
+    if (dropped > 0) setStatusMessage(`notes.md changes nothing${ignored}`);
+    return;
+  }
+  store.replaceWithHistory(deck, 'Edit speaker notes in notes.md');
+  setStatusMessage(`Applied notes.md${ignored}`);
+});
 
 let htmlEditQueue: Promise<void> = Promise.resolve();
 
@@ -318,6 +345,7 @@ function buildToolbar(): void {
     barButton('Open', openPresentation),
     createToolbarPicker('Import…', [
       { label: 'Keynote…', action: () => void importKeynotePresentation() },
+      { label: 'PowerPoint…', action: () => void importPowerPointPresentation() },
     ]),
     createToolbarPicker('Save As…', [
       { label: 'Deck…', action: () => void saveAsPresentation() },
@@ -696,11 +724,27 @@ async function saveAsPresentation(): Promise<void> {
   }
 }
 
-async function importKeynotePresentation(): Promise<void> {
+function importKeynotePresentation(): Promise<void> {
+  return importPresentation('Keynote', (operationId) => window.api.importKeynote(operationId));
+}
+
+function importPowerPointPresentation(): Promise<void> {
+  return importPresentation('PowerPoint', (operationId) => window.api.importPowerPoint(operationId));
+}
+
+async function importPresentation(
+  kind: string,
+  run: (operationId: string) => Promise<PresentationImportResult | null>,
+): Promise<void> {
   try {
-    const result = await runOperation('Importing Keynote presentation…', async (operation) => {
-      const imported = await window.api.importKeynote(operation.id);
-      if (imported) await adopt(imported.dir, imported.deck, operation);
+    const result = await runOperation(`Importing ${kind} presentation…`, async (operation) => {
+      const imported = await run(operation.id);
+      // A window that already held a presentation keeps it: the imported deck
+      // opened in a window of its own. The report still belongs here, in the
+      // status bar of the window the author started the import from.
+      if (imported && !imported.openedInNewWindow) {
+        await adopt(imported.dir, imported.deck, operation);
+      }
       return imported;
     });
     if (!result) {

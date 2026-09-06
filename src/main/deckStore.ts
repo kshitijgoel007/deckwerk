@@ -5,6 +5,7 @@ import { basename, dirname, extname, join, resolve, sep } from 'node:path';
 import { type Deck, emptyDeck, parseDeck } from '@shared/deck.js';
 import type { ImportedAsset } from '@shared/ipc.js';
 import { classifyMediaName, CONVERTED_IMAGE_EXTS } from '@shared/media.js';
+import { serializeSpeakerNotes, SPEAKER_NOTES_FILE } from '@shared/speakerNotes.js';
 import { isWebSafeCodec, probeMedia, transcodeToH264, videoCodec } from './ffmpeg.js';
 import { convertHeicToPng } from './heic.js';
 
@@ -138,8 +139,31 @@ export async function saveDeck(dir: string, deck: Deck): Promise<string> {
     await rm(temporary, { force: true }).catch(() => {});
     throw error;
   }
+  await saveSpeakerNotes(dir, deck);
   // Returned so the caller can recognise the watcher echo of this very write.
   return json;
+}
+
+/**
+ * Mirror the slides' notes into `notes.md` beside the deck. Skipped when the
+ * file already says exactly that, so an autosave that changed no note does not
+ * touch the file an author may have open in another editor. Returns what the
+ * file now holds, so a watcher can recognise the echo of this write.
+ */
+export async function saveSpeakerNotes(dir: string, deck: Deck): Promise<string> {
+  const markdown = serializeSpeakerNotes(deck);
+  const target = join(dir, SPEAKER_NOTES_FILE);
+  const existing = await readFile(target, 'utf8').catch(() => null);
+  if (existing === markdown) return markdown;
+  const temporary = join(dir, `.${SPEAKER_NOTES_FILE}.${randomUUID()}.tmp`);
+  try {
+    await writeFile(temporary, markdown, 'utf8');
+    await rename(temporary, target);
+  } catch (error) {
+    await rm(temporary, { force: true }).catch(() => {});
+    throw error;
+  }
+  return markdown;
 }
 
 /**

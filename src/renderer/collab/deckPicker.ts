@@ -42,17 +42,28 @@ export async function createDeckOnServer(): Promise<void> {
 }
 
 export function importKeynoteToServer(onStatus: (text: string) => void): void {
+  importPresentationToServer(onStatus, { accept: '.key', route: '/api/import-keynote' });
+}
+
+export function importPowerPointToServer(onStatus: (text: string) => void): void {
+  importPresentationToServer(onStatus, { accept: '.pptx', route: '/api/import-pptx' });
+}
+
+function importPresentationToServer(
+  onStatus: (text: string) => void,
+  source: { accept: string; route: string },
+): void {
   const input = document.createElement('input');
   input.type = 'file';
-  input.accept = '.key';
+  input.accept = source.accept;
   input.addEventListener('change', () => {
     const file = input.files?.[0];
     if (!file) return;
     onStatus(`Importing ${file.name}… this can take a minute for a large deck.`);
     void (async () => {
-      const name = file.name.replace(/\.key$/i, '');
+      const name = file.name.replace(/\.(key|pptx)$/i, '');
       const response = await fetch(
-        `/api/import-keynote?name=${encodeURIComponent(name)}`,
+        `${source.route}?name=${encodeURIComponent(name)}`,
         { method: 'POST', body: file },
       );
       const body = await response.json() as { id?: string; error?: string };
@@ -127,7 +138,7 @@ export function showDeckPicker(opts: {
     const decks = await response.json() as DeckEntry[];
     list.replaceChildren();
     if (decks.length === 0) {
-      list.textContent = 'No presentations yet — create one or import a Keynote file.';
+      list.textContent = 'No presentations yet — create one or import a Keynote or PowerPoint file.';
       return;
     }
     if (!opts.access) {
@@ -166,6 +177,7 @@ export function showDeckPicker(opts: {
         opts.onStatus(`Create failed: ${error instanceof Error ? error.message : error}`));
     }),
     makeButton('Import Keynote…', () => importKeynoteToServer(opts.onStatus)),
+    makeButton('Import PowerPoint…', () => importPowerPointToServer(opts.onStatus)),
   );
   if (opts.dismissable) {
     const cancel = makeButton('Cancel', () => overlay.remove());

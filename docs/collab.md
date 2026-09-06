@@ -39,6 +39,9 @@ not receive the host's Agent panel or account controls. Starting collaboration
 while the native Agent panel is already active preserves that conversation
 across the handoff.
 
+Only one deck can be hosted at a time, across every window the app has open:
+see **Known limits**.
+
 Requires the built browser client (`npm run build:collab`); packaged builds
 ship it in `dist/collab`.
 
@@ -199,8 +202,9 @@ Do not expose it to an untrusted network.
 - **Open / New** — the toolbar lists every deck on the server, creates new
   ones (server-side `createDeck`, so theme.css and the agent brief stub come
   along).
-- **Import Keynote…** — uploads a `.key` file; the server runs the same
-  importer sidecar as the desktop app and the deck opens when it finishes.
+- **Import Keynote…** / **Import PowerPoint…** — uploads a `.key` or `.pptx`
+  file; the server runs the same importer sidecar as the desktop app and the
+  deck opens when it finishes.
 - **Save As… → Deck archive (.zip)…** — everyone, at any point, can save
   the whole deck folder (`deck.json`, `theme.css`, `assets/`). The server
   flushes the live session first, so the archive is exactly what everyone
@@ -313,10 +317,31 @@ would take, is in [Desktop → web feature parity](desktop-web-parity.md).
 
 ## Known limits
 
+- **One hosted session per desktop app, across all its windows.** The desktop
+  app can have several presentations open at once, each in its own window, but
+  Collaborate and the embedded Agent chat are not per window: both start one
+  authoritative server pinned to a single deck, and the embedded agent has a
+  single machine-wide sign-in (`agent-codex` under the app's user data). A
+  second window asking to share while another window's session is running is
+  told to end that one first. What this implies:
+  - You cannot host two presentations for co-editing at the same time from one
+    app, and you cannot run an Agent chat on one deck while another window
+    hosts a different one.
+  - Ending the session, or closing the window that started it, hands the
+    ability back; the deck's disk watcher resumes for that window only.
+  - Nothing here constrains the standalone server (**Running a standalone
+    server**, above), which is already multi-deck and multi-user: it keeps a
+    room per deck and is reached through the browser client, not through any
+    desktop session.
+  - Making it per window would mean a server and port per open deck plus
+    splitting the shared agent login and shared-agent routing. That is a
+    deliberate deferral, not an oversight.
 - Do not open the same deck folder in the Electron app while the collab
   server is hosting it: both are debounced whole-file writers and will
   overwrite each other. Use the browser client, or an offline
-  `slide-agent apply` (the watcher picks it up).
+  `slide-agent apply` (the watcher picks it up). The desktop app enforces the
+  same rule among its own windows: opening a deck a window already has open
+  brings that window forward rather than opening it twice.
 - Timeline (build) edits are slide-granular: two people editing builds on the
   same slide at the same moment resolve last-write-wins.
 - Two people typing in the same text box at once: the last one to finish

@@ -37,6 +37,33 @@ function continuityOptions(state?: WindowContinuityState): Partial<Rectangle> {
   return state?.bounds ?? {};
 }
 
+/**
+ * Where a second presentation's window goes: the same size as the window it
+ * was opened from, stepped down and to the right so both are visible at once
+ * and neither hides the other's title bar. Kept on the source window's display
+ * and inside its work area, so a cascade near a screen edge does not walk a
+ * window off it.
+ */
+export function cascadedEditorBounds(source: BrowserWindow): WindowContinuityState {
+  const from = captureWindowContinuity(source);
+  const step = 32;
+  const area = screen.getDisplayMatching(from.bounds).workArea;
+  const width = Math.min(from.bounds.width, area.width);
+  const height = Math.min(from.bounds.height, area.height);
+  return {
+    bounds: {
+      x: Math.min(from.bounds.x + step, area.x + area.width - width),
+      y: Math.min(from.bounds.y + step, area.y + area.height - height),
+      width,
+      height,
+    },
+    // A cascade is only meaningful as an ordinary window: inheriting maximized
+    // or fullscreen would put the new document exactly on top of the old one.
+    maximized: false,
+    fullScreen: false,
+  };
+}
+
 function showWindow(win: BrowserWindow, state?: WindowContinuityState): void {
   // Production-browser integration tests drive windows through CDP. Keeping
   // them hidden prevents a successful test cleanup from looking like the

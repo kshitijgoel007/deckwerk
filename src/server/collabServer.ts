@@ -180,6 +180,8 @@ export interface CollabServerOptions {
   sharedAgentAccess?: 'all' | 'loopback';
   /** Override the external Keynote adapter in focused server tests. */
   keynoteImporter?: (keyFile: string, outDir: string) => Promise<unknown>;
+  /** Override the external PowerPoint adapter in focused server tests. */
+  pptxImporter?: (pptxFile: string, outDir: string) => Promise<unknown>;
   /**
    * Opt-in multi-user access control (`--access <adminLogin>`). When absent —
    * every desktop flow and every deployment that predates it — the server
@@ -717,7 +719,7 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
       return respondJson(response, 405, { error: 'method not allowed' });
     }
 
-    if (hostedDeckId && (path === '/api/decks' || path === '/api/import-keynote') && request.method === 'POST') {
+    if (hostedDeckId && (path === '/api/decks' || path === '/api/import-keynote' || path === '/api/import-pptx') && request.method === 'POST') {
       respondJson(response, 403, { error: 'this session hosts a single shared presentation' });
       return;
     }
@@ -737,17 +739,22 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
       return;
     }
 
-    if (path === '/api/import-keynote' && request.method === 'POST') {
+    const importRoute = path === '/api/import-keynote'
+      ? { extension: '.key', run: options.keynoteImporter ?? runKeynoteImport }
+      : path === '/api/import-pptx'
+        ? { extension: '.pptx', run: options.pptxImporter ?? runPowerPointImport }
+        : null;
+    if (importRoute && request.method === 'POST') {
       const name = sanitizeDeckId(url.searchParams.get('name') ?? '');
       if (!name) return respondJson(response, 400, { error: 'missing or invalid name' });
       const dir = deckDirOf(name);
       if (existsSync(dir)) return respondJson(response, 409, { error: `deck "${name}" already exists` });
       const body = await readBody(request);
-      const tmp = await mkdtemp(join(tmpdir(), 'collab-keynote-'));
+      const tmp = await mkdtemp(join(tmpdir(), 'collab-import-'));
       try {
-        const keyFile = join(tmp, `${name}.key`);
-        await writeFile(keyFile, body);
-        const report = await (options.keynoteImporter ?? runKeynoteImport)(keyFile, dir);
+        const sourceFile = join(tmp, `${name}${importRoute.extension}`);
+        await writeFile(sourceFile, body);
+        const report = await importRoute.run(sourceFile, dir);
         if (accessControl && identity) {
           await writeDeckAccess(dir, { owner: identity.login, visibility: 'private', sharedWith: [] });
         }
@@ -2399,41 +2406,44 @@ export function scratchpadDocument(html: string, mode: 'slides' | 'contact'): st
 /** A new deck's folder name: human-typed, so normalise instead of rejecting. */
 function sanitizeDeckId(name: string): string {
   return basename(name)
-    .replace(/\.key$/i, '')
+    .replace(/\.(key|pptx)$/i, '')
     .replace(/[^a-zA-Z0-9._ -]+/g, '-')
     .replace(/^[.\s-]+|[\s-]+$/g, '')
     .slice(0, 80);
 }
 
 /**
- * Run the Keynote importer sidecar without Electron: the frozen binary when
- * built (build/importers), otherwise the project venv's Python and the source
+ * Run an importer sidecar without Electron: the frozen binary when built
+ * (build/importers), otherwise the project venv's Python and the source
  * script — the same fallbacks the desktop app uses.
  */
-async function runKeynoteImport(keyFile: string, outDir: string): Promise<unknown> {
+async function runImporter(
+  importer: { binary: string; script: string; label: string },
+  sourceFile: string,
+  outDir: string,
+): Promise<unknown> {
   const repoRoot = resolve(import.meta.dirname, '../..');
-  const binaryName = process.platform === 'win32' ? 'keynote-import.exe' : 'keynote-import';
+  const binaryName = process.platform === 'win32' ? `${importer.binary}.exe` : importer.binary;
   const resourcesPath = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath;
   const binaries = [
     ...(resourcesPath ? [join(resourcesPath, 'importers', binaryName)] : []),
     join(repoRoot, 'build/importers', binaryName),
   ];
   const binary = binaries.find((candidate) => existsSync(candidate));
-  const script = join(repoRoot, 'importers/keynote/import_keynote.py');
+  const script = join(repoRoot, importer.script);
   const venv = join(repoRoot, '.venv-import/bin/python');
 
   let command: string;
   let args: string[];
   if (binary) {
     command = binary;
-    args = [keyFile, '--out', outDir];
+    args = [sourceFile, '--out', outDir];
   } else if (existsSync(script)) {
     command = existsSync(venv) ? venv : 'python3';
-    args = [script, keyFile, '--out', outDir];
+    args = [script, sourceFile, '--out', outDir];
   } else {
-    throw new Error('Keynote importer not found (run npm run build:importer)');
+    throw new Error(`${importer.label} importer not found (run npm run build:importer)`);
   }
-
   const stdout = await new Promise<string>((resolvePromise, reject) => {
     const child = spawn(command, args);
     let out = '';
@@ -2447,6 +2457,22 @@ async function runKeynoteImport(keyFile: string, outDir: string): Promise<unknow
   });
   const payload = JSON.parse(stdout) as { report?: unknown };
   return payload.report ?? null;
+}
+
+function runKeynoteImport(keyFile: string, outDir: string): Promise<unknown> {
+  return runImporter(
+    { binary: 'keynote-import', script: 'importers/keynote/import_keynote.py', label: 'Keynote' },
+    keyFile,
+    outDir,
+  );
+}
+
+function runPowerPointImport(pptxFile: string, outDir: string): Promise<unknown> {
+  return runImporter(
+    { binary: 'pptx-import', script: 'importers/pptx/import_pptx.py', label: 'PowerPoint' },
+    pptxFile,
+    outDir,
+  );
 }
 
 /**

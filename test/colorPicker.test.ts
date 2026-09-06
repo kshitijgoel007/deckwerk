@@ -32,7 +32,10 @@ describe('color picker', () => {
 
     const picker = document.querySelector<HTMLElement>('.color-picker-popover')!;
     expect(picker).not.toBeNull();
-    expect(picker.querySelectorAll('.color-picker-palette-button')).toHaveLength(3);
+    expect(picker.querySelectorAll('.color-picker-palette-button')).toHaveLength(5);
+    const neutrals = picker.querySelector('.color-picker-palette-neutrals')!;
+    expect([...neutrals.querySelectorAll('button')].map((b) => b.title)).toEqual(['#ffffff', '#000000']);
+    expect(neutrals.previousElementSibling?.getAttribute('title')).toBe('#ff8800');
     expect(picker.querySelector('.color-picker-plane')).not.toBeNull();
     expect(picker.querySelector<HTMLInputElement>('input[aria-label="Hue"]')).not.toBeNull();
     expect(picker.querySelector<HTMLInputElement>('input[aria-label="Opacity"]')?.value).toBe('100');

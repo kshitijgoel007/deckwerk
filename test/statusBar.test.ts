@@ -13,7 +13,7 @@ import { statusBarText } from '../src/renderer/editor/statusBar.js';
 describe('status bar', () => {
   it('does not report the welcome screen placeholder as slide 1/1', () => {
     const store = new EditorStore(emptyDeck());
-    expect(statusBarText(store.get())).toBe('No deck open — use New, Open or Import Keynote');
+    expect(statusBarText(store.get())).toBe('No deck open — use New, Open or Import');
   });
 
   it('reports slide state once a deck is open', () => {

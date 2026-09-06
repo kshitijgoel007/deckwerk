@@ -62,7 +62,9 @@ export async function compileAuthoredHtml(
       theme,
       themeHref: deck.theme,
       canvas: deck.canvas,
-      base: 'deck://asset/',
+      // Not a fixed string: the asset host names the deck, so a second window
+      // measuring its own authored HTML must not resolve against this one's.
+      base: window.api.assetUrl(''),
     }));
     doc.close();
 

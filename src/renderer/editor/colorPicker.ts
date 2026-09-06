@@ -224,13 +224,13 @@ export function colorField(
     }
 
     const swatchButtons: HTMLButtonElement[] = [];
-    for (const themeColor of themeColors()) {
-      const parsed = parseCssColor(themeColor)!;
+    const addSwatch = (host: HTMLElement, cssColor: string, labelPrefix: string) => {
+      const parsed = parseCssColor(cssColor)!;
       const swatch = document.createElement('button');
       swatch.type = 'button';
       swatch.className = 'color-picker-palette-button';
-      swatch.setAttribute('aria-label', `Theme color ${themeColor}`);
-      swatch.title = themeColor;
+      swatch.setAttribute('aria-label', `${labelPrefix} ${cssColor}`);
+      swatch.title = cssColor;
       previewStyle(swatch, parsed);
       swatch.addEventListener('click', () => {
         current = { ...parsed, a: current.a };
@@ -240,13 +240,21 @@ export function colorField(
         commit();
       });
       swatchButtons.push(swatch);
-      palette.appendChild(swatch);
-    }
-    if (swatchButtons.length === 0 && !themeDefault) {
+      host.appendChild(swatch);
+    };
+    for (const themeColor of themeColors()) addSwatch(palette, themeColor, 'Theme color');
+    // White and black are always on offer, set apart at the right of the row so
+    // they read as fixed neutrals rather than part of the theme palette.
+    const neutrals = document.createElement('div');
+    neutrals.className = 'color-picker-palette-neutrals';
+    addSwatch(neutrals, '#ffffff', 'Neutral color');
+    addSwatch(neutrals, '#000000', 'Neutral color');
+    palette.appendChild(neutrals);
+    if (themeColors().length === 0 && !themeDefault) {
       const empty = document.createElement('div');
       empty.className = 'color-picker-palette-empty';
       empty.textContent = 'No theme palette';
-      palette.appendChild(empty);
+      palette.insertBefore(empty, neutrals);
     }
 
     const plane = document.createElement('div');

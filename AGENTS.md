@@ -236,6 +236,8 @@ A deck is a folder:
 my-talk/
   deck.json    content, geometry, builds — schema: src/shared/deck.ts (zod)
   theme.css    typography and colour; a marked block is theme-generated
+  notes.md     speaker notes, one section per slide, separated by `---` lines;
+               the editor mirrors it from deck.json and reads edits back
   edit/        watched HTML authoring files
   assets/      media, referenced by deck-relative path
 ```

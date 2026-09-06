@@ -2,6 +2,7 @@ export interface WelcomeActions {
   newPresentation: () => void | Promise<void>;
   openPresentation: () => void | Promise<void>;
   importKeynote: () => void | Promise<void>;
+  importPowerPoint: () => void | Promise<void>;
 }
 
 /** The intentional no-deck state shown before the user opens any presentation. */
@@ -24,7 +25,7 @@ export class WelcomeScreen {
     const title = document.createElement('h1');
     title.textContent = 'What would you like to present?';
     const detail = document.createElement('p');
-    detail.textContent = 'Create a deck, open a DeckWerk folder, or bring in an existing Keynote presentation.';
+    detail.textContent = 'Create a deck, open a DeckWerk folder, or bring in an existing Keynote or PowerPoint presentation.';
 
     const choices = document.createElement('div');
     choices.className = 'welcome-actions';
@@ -32,6 +33,7 @@ export class WelcomeScreen {
       actionButton('New presentation', 'Start with a title and body slide', 'new', actions.newPresentation),
       actionButton('Open presentation', 'Open a folder containing deck.json', 'open', actions.openPresentation),
       actionButton('Import from Keynote', 'Convert a .key presentation into an editable deck', 'keynote', actions.importKeynote),
+      actionButton('Import from PowerPoint', 'Convert a .pptx presentation into an editable deck', 'powerpoint', actions.importPowerPoint),
     );
 
     screen.append(mark, title, detail, choices);

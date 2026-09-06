@@ -5,6 +5,7 @@ import './collab.css';
 import { emptyDeck } from '@shared/deck.js';
 import { setIdSuffix } from '@shared/geometry.js';
 import { EditorCanvas } from '../editor/canvas.js';
+import { SpeakerNotesDrawer } from '../editor/speakerNotesDrawer.js';
 import { createDeckWerkButton } from '../editor/aboutDialog.js';
 import { installAgentApi, setAgentName } from './agentApi.js';
 import { CssEditor } from '../editor/cssEditor.js';
@@ -33,7 +34,7 @@ import { createThemePanel } from '../editor/themePanel.js';
 import { TimelinePanel } from '../editor/timelinePanel.js';
 import { CollabBridge } from './collabBridge.js';
 import { createConnectionNotice } from './connectionNotice.js';
-import { createDeckOnServer, importKeynoteToServer, showDeckPicker, showShareDialog } from './deckPicker.js';
+import { createDeckOnServer, importKeynoteToServer, importPowerPointToServer, showDeckPicker, showShareDialog } from './deckPicker.js';
 import { installNetApi } from './netApi.js';
 import { PresenceOverlay } from './presenceOverlay.js';
 import { installAgentWorkspace } from './agentWorkspace.js';
@@ -54,7 +55,7 @@ import { DesignWorkspace } from '../editor/designWorkspace.js';
  * Browser collaboration shell: the same canvas, rail, inspector, theme
  * gallery, timeline and history panels as the desktop app, wired to a collab
  * server over WebSocket instead of an Electron preload. Persistence, asset
- * storage, ffprobe, and Keynote import live on the server; edits leave here
+ * storage, ffprobe, and presentation import live on the server; edits leave here
  * as element-level transactions and arrive from everyone else the same way.
  */
 
@@ -191,6 +192,13 @@ trackVideoLoading(el('canvas'));
 trackPreviewFrameRecovery(el('canvas'), document.body);
 // Peers should watch each other type, not just see the result on blur.
 canvas.liveTextSync = true;
+// Speaker notes edit like any other slide field and reach peers through the
+// same store; the file behind them lives on the server, so there is nothing
+// local to open here.
+new SpeakerNotesDrawer(el('canvas'), store, {
+  onInsetChange: (px) => canvas.setBottomInset(px),
+  onStatus: setStatusMessage,
+});
 const inspector = new Inspector(el('inspector'), store);
 new TimelinePanel(el('timeline'), store);
 new HistoryPanel(el('history'), store);
@@ -573,6 +581,7 @@ function buildToolbar(): void {
       })),
       createToolbarPicker('Import…', [
         { label: 'Keynote…', action: () => importKeynoteToServer(setStatusMessage) },
+        { label: 'PowerPoint…', action: () => importPowerPointToServer(setStatusMessage) },
       ]),
     );
   }

@@ -2,6 +2,7 @@ import { createReadStream, statSync } from 'node:fs';
 import { Readable } from 'node:stream';
 import { protocol } from 'electron';
 import { resolveAsset } from './deckStore.js';
+import { deckDirForKey } from './deckWindows.js';
 
 /**
  * A custom `deck://` scheme for serving a deck's own assets to the renderer.
@@ -11,9 +12,11 @@ import { resolveAsset } from './deckStore.js';
  * More importantly, this route goes through `net.fetch`, which honours HTTP
  * range requests — without those, seeking in a long video forces a full
  * download and scrubbing in the trim window is unusable.
+ *
+ * The URL's host names the deck: `deck://<deck key>/<path inside the folder>`.
+ * A request carries no window identity, so with several presentations open at
+ * once the URL is the only thing that can say which folder to serve from.
  */
-
-let currentDeckDir: string | null = null;
 
 /** Must be called before `app.ready`. */
 export function registerAssetScheme(): void {
@@ -29,11 +32,6 @@ export function registerAssetScheme(): void {
       scheme: 'deck',
     },
   ]);
-}
-
-/** Point the scheme at the deck folder whose assets should be served. */
-export function setDeckDir(dir: string | null): void {
-  currentDeckDir = dir;
 }
 
 /**
@@ -73,13 +71,14 @@ const MIME: Record<string, string> = {
 /** Must be called after `app.ready`. */
 export function installAssetProtocol(): void {
   protocol.handle('deck', async (request) => {
-    if (!currentDeckDir) return new Response('No deck open', { status: 404 });
     try {
-      // deck://asset/<relative path>
+      // deck://<deck key>/<relative path>
       const url = new URL(request.url);
+      const deckDir = deckDirForKey(url.hostname);
+      if (!deckDir) return new Response('No deck open', { status: 404 });
       const relative = decodeURIComponent(url.pathname).replace(/^\/+/, '');
       if (!relative) return new Response('Not found', { status: 404 });
-      const absolute = resolveAsset(currentDeckDir, relative);
+      const absolute = resolveAsset(deckDir, relative);
       const info = statSync(absolute);
       const size = info.size;
       const ext = absolute.slice(absolute.lastIndexOf('.')).toLowerCase();
@@ -139,10 +138,4 @@ export function installAssetProtocol(): void {
       return new Response(String(err), { status: 403 });
     }
   });
-}
-
-/** Deck-relative path -> URL the renderer can load. */
-export function assetUrl(src: string): string {
-  const clean = src.replace(/^\/+/, '');
-  return `deck://asset/${clean.split('/').map(encodeURIComponent).join('/')}`;
 }

@@ -23,9 +23,10 @@ Nothing here can be cross-built:
 
 - `ffmpeg-static` and `ffprobe-static` fetch a binary for the *install* host
   during `npm ci`, and `src/main/ffmpeg.ts` ships whatever it finds.
-- The Keynote importer is a PyInstaller freeze, and PyInstaller cannot
-  cross-compile — not even between macOS architectures. Hence a `macos-14`
-  (arm64) job and a `macos-13` (Intel) job rather than one universal build.
+- The Keynote and PowerPoint importers are PyInstaller freezes, and
+  PyInstaller cannot cross-compile — not even between macOS architectures.
+  Hence a `macos-14` (arm64) job and a `macos-13` (Intel) job rather than one
+  universal build.
 - Notarization only runs on macOS; Azure Trusted Signing only runs on Windows,
   because electron-builder drives it through a PowerShell module.
 

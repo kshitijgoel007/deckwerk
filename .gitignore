@@ -32,3 +32,6 @@ reference.key
 
 # Packaged installers (electron-builder output).
 release/
+
+# Local Keynote corpus used for import spot-checks.
+example-keynote-decks/

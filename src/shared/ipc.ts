@@ -21,6 +21,9 @@ export const IPC = {
   deckLoadTheme: 'deck:loadTheme',
   deckSaveTheme: 'deck:saveTheme',
   deckState: 'deck:state',
+  /** Synchronous, at preload time: which deck this window's assets come from. */
+  deckKeyGet: 'deck:keyGet',
+  deckKey: 'deck:key',
   themeCss: 'deck:themeCss',
   assetImport: 'asset:import',
   assetImportUrl: 'asset:importUrl',
@@ -41,6 +44,7 @@ export const IPC = {
   rasterSave: 'raster:save',
   rasterDone: 'raster:done',
   keynoteImport: 'keynote:import',
+  pptxImport: 'pptx:import',
   exportBundle: 'export:bundle',
   exportPdf: 'export:pdf',
   exportPdfReady: 'export:pdfReady',
@@ -48,6 +52,9 @@ export const IPC = {
   htmlExport: 'html:export',
   htmlEdit: 'html:edit',
   htmlAdopt: 'html:adopt',
+  /** `notes.md` changed on disk; payload is the file's contents. */
+  speakerNotesEdit: 'speakerNotes:edit',
+  speakerNotesOpen: 'speakerNotes:open',
   agentContextPublish: 'agent:contextPublish',
   agentRequest: 'agent:request',
   agentResponse: 'agent:response',
@@ -367,7 +374,7 @@ export interface RasterResult extends RasterTarget {
   height: number;
 }
 
-/** Per-deck summary of what the Keynote importer could and could not map. */
+/** Per-deck summary of what a presentation importer could and could not map. */
 export interface ImportReport {
   slides: number;
   elements: number;
@@ -376,8 +383,18 @@ export interface ImportReport {
   warnings: string[];
 }
 
-export interface KeynoteImportResult {
+/** Outcome of importing a Keynote or PowerPoint presentation. */
+export interface PresentationImportResult {
   dir: string;
   deck: Deck;
   report: ImportReport;
+  /**
+   * The import went to a window of its own because the asking window already
+   * held a presentation, so that window must not adopt this deck. It still
+   * reports the outcome: it is the window the author started the import from.
+   */
+  openedInNewWindow?: boolean;
 }
+
+/** @deprecated Kept for callers that predate the PowerPoint importer. */
+export type KeynoteImportResult = PresentationImportResult;

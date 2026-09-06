@@ -24,7 +24,7 @@ import type {
   DeckSessionSnapshot,
   DeckHistorySession,
   ImportedAsset,
-  KeynoteImportResult,
+  PresentationImportResult,
   MediaInfo,
   OperationProgress,
   PdfExportRequest,
@@ -43,16 +43,41 @@ import type {
 } from '@shared/ipc.js';
 
 /**
+ * Which deck this window's `deck://` asset URLs resolve to.
+ *
+ * Several presentations can be open at once, and an asset request carries no
+ * window identity, so the URL itself has to name the deck. The key is fetched
+ * synchronously here — `assetUrl` is called during the first render — and
+ * refreshed whenever this window's document changes.
+ */
+let deckKey: string = (() => {
+  try {
+    return String(ipcRenderer.sendSync(IPC.deckKeyGet) ?? 'no-deck');
+  } catch {
+    return 'no-deck';
+  }
+})();
+ipcRenderer.on(IPC.deckKey, (_e, key: string) => {
+  deckKey = key;
+});
+
+/**
  * The renderer's entire view of the outside world. Context isolation is on and
  * nodeIntegration is off, so this surface is deliberately small and explicit.
  */
 const api = {
+  /**
+   * Null when the author cancelled, and also when the deck opened in a window
+   * of its own because this window already held a presentation. Either way
+   * this window keeps what it has.
+   */
   newDeck: (operationId?: string): Promise<DeckSession | null> =>
     ipcRenderer.invoke(IPC.deckNew, operationId),
   openDeck: (operationId?: string): Promise<DeckSession | null> =>
     ipcRenderer.invoke(IPC.deckOpen, operationId),
   getDeck: (): Promise<DeckSession | null> => ipcRenderer.invoke(IPC.deckGet),
-  openDeckPath: (dir: string): Promise<DeckSession> =>
+  /** Null when the deck went to a window of its own instead of this one. */
+  openDeckPath: (dir: string): Promise<DeckSession | null> =>
     ipcRenderer.invoke(IPC.deckOpenPath, dir),
   saveDeck: (dir: string, deck: Deck): Promise<void> =>
     ipcRenderer.invoke(IPC.deckSave, dir, deck),
@@ -112,8 +137,10 @@ const api = {
    */
   pathForFile: (file: File): string => webUtils.getPathForFile(file),
 
-  importKeynote: (operationId?: string): Promise<KeynoteImportResult | null> =>
+  importKeynote: (operationId?: string): Promise<PresentationImportResult | null> =>
     ipcRenderer.invoke(IPC.keynoteImport, operationId),
+  importPowerPoint: (operationId?: string): Promise<PresentationImportResult | null> =>
+    ipcRenderer.invoke(IPC.pptxImport, operationId),
   exportBundle: (operationId?: string): Promise<string | null> =>
     ipcRenderer.invoke(IPC.exportBundle, operationId),
   exportPdf: (request: PdfExportRequest = {}, operationId?: string): Promise<string | null> =>
@@ -184,7 +211,7 @@ const api = {
 
   /** Deck-relative asset path -> a URL this window can load. */
   assetUrl: (src: string): string =>
-    `deck://asset/${src.replace(/^\/+/, '').split('/').map(encodeURIComponent).join('/')}`,
+    `deck://${deckKey}/${src.replace(/^\/+/, '').split('/').map(encodeURIComponent).join('/')}`,
 
   onDeckState: (fn: (s: DeckSession) => void): (() => void) =>
     on(IPC.deckState, fn),
@@ -203,6 +230,11 @@ const api = {
    */
   htmlAdopt: (path: string, contents: string, expected: string): Promise<void> =>
     ipcRenderer.invoke(IPC.htmlAdopt, path, contents, expected),
+  /** The deck's `notes.md` was saved outside the editor. */
+  onSpeakerNotesEdit: (fn: (contents: string) => void): (() => void) =>
+    on(IPC.speakerNotesEdit, fn),
+  /** Write `notes.md` if it is missing and open it in the system's editor. */
+  openSpeakerNotes: (): Promise<string> => ipcRenderer.invoke(IPC.speakerNotesOpen),
   onTrimTarget: (fn: (p: { src: string; elementId: string }) => void): (() => void) =>
     on(IPC.trimOpen, fn),
   onTrimProgress: (fn: (p: TrimProgress) => void): (() => void) =>
