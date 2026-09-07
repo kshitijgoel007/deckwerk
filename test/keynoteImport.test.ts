@@ -359,6 +359,100 @@ describe.skipIf(!ready)('keynote importer', () => {
     60_000,
   );
 
+  // Keynote stores UTF-8 member names without the zip UTF-8 flag, so the
+  // stdlib decodes them as CP437. A macOS screenshot ("12.12.40\u202fPM.png")
+  // then never matches the protobuf's clean name and the importer silently
+  // fell back to the 256px thumbnail. Directory packages hit the NFD/NFC
+  // variant of the same mismatch.
+  it('finds package members whose names were written as unflagged UTF-8 or NFD', () => {
+    const stdout = execFileSync(PYTHON, ['-c', [
+      'import io, json, unicodedata, zipfile, tempfile',
+      'from pathlib import Path',
+      'from importers.keynote.import_keynote import Package',
+      "name = 'Data/Screenshot 2026-06-25 at 12.12.40\u202fPM-25029.png'",
+      'out = {}',
+      'with tempfile.TemporaryDirectory() as tmp:',
+      "    key = Path(tmp) / 'deck.key'",
+      "    with zipfile.ZipFile(key, 'w') as z:",
+      '        info = zipfile.ZipInfo(name)',
+      '        info.flag_bits &= ~0x800',
+      "        z.writestr(info, b'original')",
+      "        z.writestr('Data/plain.png', b'plain')",
+      '    pkg = Package(key)',
+      "    out['zip_has'] = name in pkg",
+      "    out['zip_read'] = pkg.read(name).decode()",
+      "    out['zip_plain'] = pkg.read('Data/plain.png').decode()",
+      "    out['zip_names'] = sorted(pkg.names)",
+      "    folder = Path(tmp) / 'deck'",
+      "    (folder / 'Data').mkdir(parents=True)",
+      "    nfd = unicodedata.normalize('NFD', 'Data/caf\u00e9-1.png')",
+      "    (folder / nfd).write_bytes(b'nfd')",
+      '    pkg = Package(folder)',
+      "    out['dir_has'] = 'Data/caf\u00e9-1.png' in pkg",
+      "    out['dir_read'] = pkg.read('Data/caf\u00e9-1.png').decode()",
+      'print(json.dumps(out))',
+    ].join('\n')], { encoding: 'utf8', cwd: process.cwd() });
+    const result = JSON.parse(stdout);
+    expect(result.zip_has).toBe(true);
+    expect(result.zip_read).toBe('original');
+    expect(result.zip_plain).toBe('plain');
+    expect(result.zip_names).toEqual([
+      'Data/Screenshot 2026-06-25 at 12.12.40\u202fPM-25029.png',
+      'Data/plain.png',
+    ]);
+    expect(result.dir_has).toBe(true);
+    expect(result.dir_read).toBe('nfd');
+  }, 60_000);
+
+  // A pasted PDF figure is vector, so it is rendered large enough to fill the
+  // slide on a 2x display rather than at a fixed 2x of its own point size,
+  // and saved as lossless WebP with the alpha channel dropped when nothing
+  // is transparent. Before this, a 400pt figure stretched across a 1920pt
+  // slide was an 800px raster.
+  it('rasterises PDF figures to fill the slide at 2x, as lossless WebP', () => {
+    const stdout = execFileSync(PYTHON, ['-c', [
+      'import json, tempfile',
+      'from pathlib import Path',
+      'import pymupdf as fitz',
+      'from PIL import Image',
+      'from importers.keynote.import_keynote import Importer, Report',
+      'def pdf(opaque):',
+      '    doc = fitz.open()',
+      '    page = doc.new_page(width=400, height=200)',
+      '    if opaque:',
+      '        page.draw_rect(page.rect, color=None, fill=(1, 1, 1))',
+      '    page.draw_rect(fitz.Rect(10, 10, 100, 100), color=None, fill=(1, 0, 0))',
+      '    return doc.tobytes()',
+      'out = {}',
+      'with tempfile.TemporaryDirectory() as tmp:',
+      '    assets = Path(tmp)',
+      '    imp = Importer(objects={}, datas={}, pkg=None, out_dir=assets, report=Report(), canvas=(1920.0, 1080.0))',
+      "    for label, opaque in (('opaque', True), ('transparent', False)):",
+      "        rel = imp._rasterise_pdf(pdf(opaque), label + '.pdf', assets)",
+      "        with Image.open(assets / Path(rel).name) as img:",
+      "            out[label] = {'rel': rel, 'size': img.size, 'mode': img.mode, 'format': img.format}",
+      "    out['converted'] = imp.report.converted_images",
+      "    out['scale_small'] = imp._pdf_render_scale(400, 200)",
+      "    out['scale_huge'] = imp._pdf_render_scale(4000, 3000)",
+      "    out['scale_tiny_canvas'] = Importer(objects={}, datas={}, pkg=None, out_dir=assets, report=Report(), canvas=(100.0, 100.0))._pdf_render_scale(400, 200)",
+      'print(json.dumps(out))',
+    ].join('\n')], { encoding: 'utf8', cwd: process.cwd() });
+    const result = JSON.parse(stdout);
+    // 400pt wide on a 1920pt slide at 2x: 3840px across.
+    expect(result.opaque.size).toEqual([3840, 1920]);
+    expect(result.opaque.format).toBe('WEBP');
+    expect(result.opaque.rel).toBe('assets/opaque.webp');
+    expect(result.opaque.mode).toBe('RGB');
+    expect(result.transparent.size).toEqual([3840, 1920]);
+    expect(result.transparent.mode).toBe('RGBA');
+    expect(result.converted).toBe(2);
+    expect(result.scale_small).toBeCloseTo(9.6);
+    // A poster-sized page is capped rather than rendered at 8000px.
+    expect(result.scale_huge).toBeCloseTo(4096 / 4000);
+    // Never below the 2x a plain retina render needs.
+    expect(result.scale_tiny_canvas).toBe(2);
+  }, 60_000);
+
   it('reports a clear error for a file that is not a Keynote deck', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'kn-bad-'));
     try {

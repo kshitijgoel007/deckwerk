@@ -122,7 +122,7 @@ export function createSpeakerView(options: SpeakerViewOptions): SpeakerView {
     if (!slide) return;
     const stage = document.createElement('div');
     stage.className = 'stage';
-    stage.appendChild(renderSlide(slide, { resolveSrc, mediaPreload: 'metadata' }));
+    stage.appendChild(renderSlide(slide, { resolveSrc, mediaPreload: 'metadata', deferVideoSrc: true }));
     target.appendChild(stage);
     applyStaticSlideState(stage, slide, resolveState(slide, step));
     const bounds = target.getBoundingClientRect();

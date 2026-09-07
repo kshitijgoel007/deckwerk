@@ -40,6 +40,8 @@ import type {
   TrimResult,
   WorkflowStartRequest,
   WorkflowStartResult,
+  VideoPosterRequest,
+  VideoPosterResult,
 } from '@shared/ipc.js';
 
 /**
@@ -129,6 +131,12 @@ const api = {
     on(IPC.assetImportProgress, fn),
   probeAsset: (src: string): Promise<MediaInfo> =>
     ipcRenderer.invoke(IPC.assetProbe, src),
+  /**
+   * One frame of a deck video as an image URL, cut in the main process, so a
+   * thumbnail never has to open a video pipeline in this window.
+   */
+  videoPoster: (req: VideoPosterRequest): Promise<VideoPosterResult> =>
+    ipcRenderer.invoke(IPC.videoPoster, req),
 
   /**
    * A dropped File carries no usable path once context isolation is on;

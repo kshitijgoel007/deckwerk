@@ -10,7 +10,7 @@ import {
 } from '@shared/agent.js';
 import type { Deck, Slide, SlideElement } from '@shared/deck.js';
 import { fitAutoText, renderSlide } from '../player/render.js';
-import type { EditorStore } from './store.js';
+import { sameSlideIgnoringNotes, type EditorStore } from './store.js';
 
 const COMPUTED_PROPERTIES = [
   'color', 'background-color', 'font-family', 'font-size', 'font-weight',
@@ -31,6 +31,21 @@ export class AgentBridge {
   private store: EditorStore;
   private options: AgentBridgeOptions;
   private timer: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * The last measurement and what it was measured from. Measuring mounts a
+   * full copy of every selected slide, images included, in a hidden host.
+   * Done after each keystroke in the speaker notes drawer, that copy evicted
+   * the GPU's decoded images and every sidebar thumbnail flashed blank while
+   * it decoded again — so a publish whose picture has not changed reuses the
+   * scenes it already has.
+   */
+  private lastMeasured: {
+    slides: Array<{ slide: Slide; index: number }>;
+    activeSlideIndex: number;
+    selectionKey: string;
+    canvas: Deck['canvas'];
+    scenes: ComputedSlideScene[];
+  } | null = null;
 
   constructor(store: EditorStore, options: AgentBridgeOptions) {
     this.store = store;
@@ -136,14 +151,34 @@ export class AgentBridge {
       const selectedSlides = state.deck.slides
         .map((slide, index) => ({ slide, index }))
         .filter(({ slide }) => state.slideSelection.has(slide.id));
-      const scenes = await buildComputedScenes(
-        state.deck,
-        selectedSlides,
-        state.slideIndex,
-        state.slideSelection,
-        state.selection,
-        this.options.resolveSrc,
-      );
+      const selectionKey = [...state.selection].sort().join(',');
+      const canvas = state.deck.canvas;
+      const previous = this.lastMeasured;
+      const reusable = previous !== null
+        && previous.activeSlideIndex === state.slideIndex
+        && previous.selectionKey === selectionKey
+        && previous.canvas.w === canvas.w
+        && previous.canvas.h === canvas.h
+        && previous.slides.length === selectedSlides.length
+        && previous.slides.every((entry, i) => entry.index === selectedSlides[i].index
+          && sameSlideIgnoringNotes(entry.slide, selectedSlides[i].slide));
+      const scenes = reusable
+        ? previous.scenes
+        : await buildComputedScenes(
+          state.deck,
+          selectedSlides,
+          state.slideIndex,
+          state.slideSelection,
+          state.selection,
+          this.options.resolveSrc,
+        );
+      this.lastMeasured = {
+        slides: selectedSlides,
+        activeSlideIndex: state.slideIndex,
+        selectionKey,
+        canvas,
+        scenes,
+      };
       await this.options.publish({
         version: AGENT_PROTOCOL_VERSION,
         deckRevision: await browserDeckRevision(state.deck),

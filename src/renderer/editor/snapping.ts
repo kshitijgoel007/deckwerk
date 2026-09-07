@@ -428,3 +428,38 @@ export function snapResize(
   ];
   return { rect: out, guides, spacing, sizes: sizeGuides(out, others) };
 }
+
+/**
+ * Snap a single point — a line or arrow endpoint — to the alignment targets.
+ *
+ * Each axis is considered on its own: the point's x snaps to the nearest
+ * vertical target (canvas edges and centre, other elements' edges and
+ * centres, plus any `extra` coordinates such as the line's own fixed end so a
+ * near-horizontal arrow can be made exactly horizontal), and likewise for y.
+ * Guides are returned only for the axes that actually snapped.
+ */
+export function snapPoint(
+  point: { x: number; y: number },
+  canvas: { w: number; h: number },
+  others: Rect[],
+  threshold: number,
+  extra: { x?: number[]; y?: number[] } = {},
+): { point: { x: number; y: number }; guides: SnapLine[] } {
+  const guides: SnapLine[] = [];
+  const out = { ...point };
+  for (const axis of ['x', 'y'] as const) {
+    const targets = [...snapTargets(canvas, others, axis), ...(extra[axis] ?? [])];
+    const value = point[axis];
+    let best: { delta: number; at: number } | null = null;
+    for (const target of targets) {
+      const delta = target - value;
+      if (Math.abs(delta) > threshold) continue;
+      if (!best || Math.abs(delta) < Math.abs(best.delta)) best = { delta, at: target };
+    }
+    if (best) {
+      out[axis] = best.at;
+      guides.push({ axis, at: best.at });
+    }
+  }
+  return { point: out, guides };
+}

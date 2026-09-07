@@ -180,15 +180,36 @@ describe('authored placeholder content and layout changes', () => {
 
   it('lets the master override one property without clearing the rest', () => {
     const deck = authoredDeck();
-    slotOf(deck, 'title').style = { 'font-family': 'Charter, serif', 'font-size': '88px' };
+    slotOf(deck, 'title').style = { 'font-family': 'Charter, serif', 'font-weight': '700' };
     const master = deck.layoutMasters!.standard.elements[0];
     if (master.type !== 'text') throw new Error('the standard master starts with its title');
-    master.style['font-size'] = '64px';
+    master.style['font-weight'] = '400';
     syncDeckWithLayoutMasters(deck);
 
     expect(slotOf(deck, 'title').style).toEqual({
-      'font-family': 'Charter, serif', 'font-size': '64px',
+      'font-family': 'Charter, serif', 'font-weight': '400',
     });
+  });
+
+  /**
+   * The size of a title is the deck's, set once in the theme for every title.
+   * A size that found its way onto a master placeholder used to stamp itself
+   * onto every slide and take those boxes off the deck's scale for good.
+   */
+  it('never carries a type scale from the master onto slides', () => {
+    const deck = authoredDeck();
+    const master = deck.layoutMasters!.standard.elements[0];
+    if (master.type !== 'text') throw new Error('the standard master starts with its title');
+    master.style = { 'font-size': '64px', 'line-height': '1', 'letter-spacing': '0.1em', 'font-family': 'Georgia' };
+    master.contentStyle = { 'font-size': '60px' };
+
+    syncDeckWithLayoutMasters(deck);
+    expect(slotOf(deck, 'title').style).toEqual({ 'font-family': 'Georgia' });
+    expect(slotOf(deck, 'title').contentStyle).toBeUndefined();
+
+    applySlideLayout(deck.slides[0], 'standard', deck.layoutMasters);
+    expect(slotOf(deck, 'title').style).toEqual({ 'font-family': 'Georgia' });
+    expect(slotOf(deck, 'title').contentStyle).toBeUndefined();
   });
 });
 

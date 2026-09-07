@@ -34,6 +34,7 @@ import shutil
 import subprocess
 import sys
 import traceback
+import unicodedata
 import warnings
 import zipfile
 from collections import Counter
@@ -68,6 +69,15 @@ VIDEO_EXTS = {".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi", ".m4a"}
 # Vector art pasted from a paper or a logo. A browser will not render these in
 # an <img>, so they are rasterised on import.
 PDF_EXTS = {".pdf", ".eps"}
+# A rasterised PDF is sized so that it would still be sharp on a 2x display if
+# it were stretched to fill the whole slide. The source is vector, so the only
+# cost of headroom is bytes; the cost of too little is a figure that goes soft
+# the moment someone drags it larger in the editor, with no vector left to
+# re-render from. The cap keeps a poster-sized page from producing a texture
+# Chromium struggles to decode.
+PDF_RASTER_DEVICE_SCALE = 2.0
+PDF_RASTER_MIN_SCALE = 2.0
+PDF_RASTER_MAX_SIDE = 4096
 # Keynote stores animated GIFs as movies, but a <video> cannot play a GIF —
 # they have to come back out as images, where they animate natively.
 ANIMATED_IMAGE_EXTS = {".gif", ".apng", ".webp"}
@@ -182,22 +192,61 @@ class Package:
     def __init__(self, path: Path):
         self.path = path
         self._zip: zipfile.ZipFile | None = None
+        # Maps the name a package *should* have for each member to the name
+        # the container actually stores it under. Keynote writes UTF-8 file
+        # names into the zip without setting the UTF-8 flag, so `zipfile`
+        # decodes them as CP437 and a macOS screenshot called
+        # "... 12.12.40\u202fPM.png" comes back as mojibake. Looked up by the
+        # protobuf's clean name, that member is "missing" and the importer
+        # silently falls back to the 256px thumbnail. Directory packages have
+        # the mirror-image problem: HFS+/APFS hand back decomposed (NFD)
+        # names while the protobuf holds composed (NFC) ones.
+        self._members: dict[str, str] = {}
         if path.is_dir():
-            self.names = [
-                str(p.relative_to(path)) for p in path.rglob("*") if p.is_file()
-            ]
+            for member in path.rglob("*"):
+                if member.is_file():
+                    stored = str(member.relative_to(path))
+                    self._members[_canonical_name(stored)] = stored
         else:
             self._zip = zipfile.ZipFile(path)
-            self.names = self._zip.namelist()
+            for info in self._zip.infolist():
+                self._members[_canonical_name(_zip_member_name(info))] = info.filename
+        self.names = list(self._members)
+
+    def __contains__(self, name: str) -> bool:
+        return _canonical_name(name) in self._members
 
     def read(self, name: str) -> bytes:
+        stored = self._members.get(_canonical_name(name), name)
         if self._zip is not None:
-            return self._zip.read(name)
-        return (self.path / name).read_bytes()
+            return self._zip.read(stored)
+        return (self.path / stored).read_bytes()
 
     def close(self) -> None:
         if self._zip is not None:
             self._zip.close()
+
+
+def _zip_member_name(info: zipfile.ZipInfo) -> str:
+    """The member's real name, undoing `zipfile`'s CP437 guess where needed.
+
+    The zip spec says names are CP437 unless general-purpose bit 11 is set.
+    Keynote (like many writers) stores UTF-8 and never sets the bit, so the
+    stdlib produces CP437 mojibake. Round-tripping the text back through CP437
+    recovers the original bytes; if those bytes are valid UTF-8 they are the
+    intended name, otherwise the name really was CP437 and is left alone.
+    """
+    if info.flag_bits & 0x800:
+        return info.filename
+    try:
+        return info.filename.encode("cp437").decode("utf-8")
+    except UnicodeError:
+        return info.filename
+
+
+def _canonical_name(name: str) -> str:
+    """Normalise a member path so equivalent Unicode spellings compare equal."""
+    return unicodedata.normalize("NFC", name)
 
 
 def load_objects(
@@ -996,7 +1045,7 @@ class Importer:
             return None
 
         source = f"Data/{file_name}"
-        if source not in self.pkg.names:
+        if source not in self.pkg:
             self.report.warnings.append(f"Missing from package: {source}")
             return None
 
@@ -1008,6 +1057,9 @@ class Importer:
             name = _safe_name(file_name)
             if ext in RASTER_CONVERT:
                 name = _safe_name(Path(file_name).stem) + ".png"
+                self.report.converted_images += 1
+            elif ext in PDF_EXTS:
+                name = _safe_name(Path(file_name).stem) + ".webp"
                 self.report.converted_images += 1
             rel = f"assets/{name}"
             self._asset_cache[data_id] = rel
@@ -1115,14 +1167,21 @@ class Importer:
         return f"assets/{target.name}"
 
     def _rasterise_pdf(self, raw: bytes, file_name: str, assets: Path) -> str | None:
-        """Render a PDF's first page to PNG.
+        """Render a PDF's first page to a lossless WebP.
 
         Logos and vector figures are routinely pasted into Keynote as PDF. A
         browser will not display one in an `<img>`, so left alone it imports as
-        a broken image. Rendered at 2x so it stays sharp on a projector.
+        a broken image. The page is rendered large enough to fill the slide on
+        a 2x display (see PDF_RASTER_*). Figures are plots, diagrams and
+        equations — hairlines, small text and usually a transparent background
+        — so the container is lossless: JPEG has no alpha and rings on exactly
+        those features. WebP lossless is a quarter smaller than PNG for the
+        same pixels, and every current browser decodes it.
         """
         try:
-            import fitz  # PyMuPDF
+            # The `fitz` name still works but prints a deprecation notice on
+            # stdout, which is this process's JSON channel.
+            import pymupdf as fitz
         except ImportError:
             self.report.warnings.append(
                 f"{file_name} is a PDF and PyMuPDF is not installed, so it "
@@ -1135,15 +1194,48 @@ class Importer:
             with fitz.open(stream=raw, filetype="pdf") as doc:
                 if doc.page_count == 0:
                     return None
-                pixmap = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(2, 2), alpha=True)
-                dest = assets / (_safe_name(Path(file_name).stem) + ".png")
-                pixmap.save(dest)
+                page = doc.load_page(0)
+                scale = self._pdf_render_scale(page.rect.width, page.rect.height)
+                pixmap = page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=True)
+                dest = self._save_pixmap(pixmap, assets, _safe_name(Path(file_name).stem))
         except Exception as exc:
             self.report.warnings.append(f"Could not rasterise {file_name}: {exc}")
             return None
 
         self.report.converted_images += 1
         return f"assets/{dest.name}"
+
+    def _pdf_render_scale(self, page_w: float, page_h: float) -> float:
+        """Pixels per PDF point so the page fills the slide at 2x, within limits."""
+        long_side = max(float(page_w), float(page_h))
+        if long_side <= 0:
+            return PDF_RASTER_MIN_SCALE
+        target = max(self.canvas) * PDF_RASTER_DEVICE_SCALE
+        scale = max(PDF_RASTER_MIN_SCALE, target / long_side)
+        return min(scale, PDF_RASTER_MAX_SIDE / long_side)
+
+    def _save_pixmap(self, pixmap: Any, assets: Path, stem: str) -> Path:
+        """Write a rendered page, dropping an alpha channel nothing uses.
+
+        Falls back to PNG through PyMuPDF itself when Pillow is unavailable, so
+        a bare install still produces a visible figure.
+        """
+        try:
+            from PIL import Image
+        except ImportError:
+            dest = assets / (stem + ".png")
+            pixmap.save(dest)
+            return dest
+
+        mode = "RGBA" if pixmap.alpha else "RGB"
+        img = Image.frombytes(mode, (pixmap.width, pixmap.height), pixmap.samples)
+        if mode == "RGBA" and img.getextrema()[3][0] == 255:
+            # Exported with a solid background: a fully opaque alpha channel
+            # is a third more bytes for nothing.
+            img = img.convert("RGB")
+        dest = assets / (stem + ".webp")
+        img.save(dest, "WEBP", lossless=True, quality=100, method=4)
+        return dest
 
     def _convert_image(self, raw: bytes, file_name: str, assets: Path) -> str | None:
         """Re-encode a format Chromium cannot display as PNG."""

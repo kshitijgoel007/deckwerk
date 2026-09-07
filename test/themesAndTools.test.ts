@@ -4,6 +4,7 @@ import type { Slide } from '../src/shared/deck.js';
 import type { ThemeAdoption } from '../src/shared/themes.js';
 import {
   NO_APPLY,
+  STOCK_STYLESHEET_STYLE,
   THEMES,
   THEME_BLOCK_START,
   applyThemeToDeck,
@@ -12,6 +13,7 @@ import {
   applyDeckThemeToNewSlide,
   nearestPaletteColor,
   themeCss,
+  themeStyleCss,
   withThemeBlock,
 } from '../src/shared/themes.js';
 import { applySlideLayout } from '../src/renderer/editor/slideLayouts.js';
@@ -119,7 +121,7 @@ describe('applying a theme', () => {
     expect(title.style['font-size']).toBe('96px');
   });
 
-  it('applies a family to one slide without changing deck defaults or sibling slides', () => {
+  it('applies a family to one slide: the target follows theme.css, the sibling is pinned where it was', () => {
     const deck = sampleDeck();
     deck.slides.push(structuredClone(deck.slides[0]));
     deck.slides[1].id = 'slide-2';
@@ -129,12 +131,22 @@ describe('applying a theme', () => {
       typeScale: false, textColor: false, background: false, objectColors: false,
       replaceOverrides: true, detectRoles: false,
     }, 0, new Set());
-    expect(deck.themeStyle).toBeNull();
-    expect(deck.slides[0].elements[0].style['font-family']).toBe(THEMES[1].fonts.title.family);
-    expect(deck.slides[1].elements[0].style['font-family']).toBeUndefined();
+    // The family adopted is installed as the deck default; nothing else moves
+    // off the stock stylesheet the deck was wearing.
+    expect(deck.themePreset).toBe(THEMES[1].id);
+    expect(deck.themeStyle!.fonts.title.family).toBe(THEMES[1].fonts.title.family);
+    expect(deck.themeStyle!.fonts.title.size).toBe(STOCK_STYLESHEET_STYLE.fonts.title.size);
+    expect(deck.themeStyle!.fonts.body).toEqual(STOCK_STYLESHEET_STYLE.fonts.body);
+    expect(deck.themeStyle!.colors).toEqual(STOCK_STYLESHEET_STYLE.colors);
+    // The target carries no copy: theme.css decides its family now.
+    expect(deck.slides[0].elements[0].style).toEqual({ 'font-size': '96px' });
+    // The sibling renders exactly as before: the stock family, pinned inline.
+    expect(deck.slides[1].elements[0].style).toEqual({
+      'font-size': '96px', 'font-family': STOCK_STYLESHEET_STYLE.fonts.title.family,
+    });
   });
 
-  it('applies a theme only to the selected slides', () => {
+  it('applies a theme only to the selected slides; the others keep the family they showed', () => {
     const deck = sampleDeck();
     deck.slides.push(structuredClone(deck.slides[0]), structuredClone(deck.slides[0]));
     deck.slides[1].id = 'slide-2';
@@ -151,11 +163,15 @@ describe('applying a theme', () => {
       replaceOverrides: true, detectRoles: false,
     }, 0, new Set(), new Set(['slide-1', 'slide-3']));
 
-    expect(deck.slides[0].elements[0].style['font-family']).toBe(THEMES[1].fonts.title.family);
-    expect(deck.slides[1].elements[0].style['font-family']).toBeUndefined();
-    expect(deck.slides[2].elements[0].style['font-family']).toBe(THEMES[1].fonts.title.family);
+    // Selected titles follow theme.css, which now names the new family.
+    expect(deck.slides[0].elements[0].style['font-family']).toBeUndefined();
+    expect(deck.slides[2].elements[0].style['font-family']).toBeUndefined();
+    expect(deck.themeStyle!.fonts.title.family).toBe(THEMES[1].fonts.title.family);
+    expect(themeStyleCss(deck.themeStyle!)).toContain(`font-family: ${THEMES[1].fonts.title.family};`);
+    // The unselected slide keeps the stock family it rendered in.
+    expect(deck.slides[1].elements[0].style['font-family']).toBe(STOCK_STYLESHEET_STYLE.fonts.title.family);
+    // Colour was not adopted: every title keeps its own.
     expect(deck.slides.every((slide) => slide.elements[0].style.color === '#123456')).toBe(true);
-    expect(deck.themeStyle).toBeNull();
   });
 
   it('with every option off, changes nothing', () => {
@@ -347,12 +363,17 @@ describe('a new slide and the deck theme', () => {
     objectColors: false, replaceOverrides: true, detectRoles: false,
   };
 
-  it('records the applied preset and properties even when only slides were themed', () => {
+  it('records the applied preset and properties, and installs them, when only slides were themed', () => {
     const deck = emptyDeck('T');
     adoptThemeStyles(deck, THEMES[1], { ...SLIDES_SCOPE_APPLY }, 0, new Set(), new Set(['slide-1']));
-    // Deck defaults are untouched — this scope only wrote onto those slides.
-    expect(deck.themeStyle).toBeNull();
-    expect(deck.themePreset).toBeNull();
+    // What was adopted is the deck default now; the rest stays stock.
+    expect(deck.themePreset).toBe(THEMES[1].id);
+    expect(deck.themeStyle!.fonts.title.family).toBe(THEMES[1].fonts.title.family);
+    expect(deck.themeStyle!.fonts.body.family).toBe(THEMES[1].fonts.body.family);
+    expect(deck.themeStyle!.fonts.caption.family).toBe(THEMES[1].fonts.caption.family);
+    expect(deck.themeStyle!.fonts.heading).toEqual(STOCK_STYLESHEET_STYLE.fonts.heading);
+    expect(deck.themeStyle!.fonts.title.size).toBe(STOCK_STYLESHEET_STYLE.fonts.title.size);
+    expect(deck.themeStyle!.colors).toEqual(STOCK_STYLESHEET_STYLE.colors);
     expect(deck.themeSelection).toEqual({
       preset: THEMES[1].id,
       roles: ['title', 'body', 'caption'],
@@ -364,23 +385,27 @@ describe('a new slide and the deck theme', () => {
     });
   });
 
-  it('gives a slide created afterwards the same family, plus the theme background', () => {
+  it('gives a slide created afterwards the same family through theme.css, with no inline copy', () => {
     const deck = emptyDeck('T');
     const first = freshSlide(deck, 0);
     deck.slides.pop(); // drop emptyDeck's own bare slide
     adoptThemeStyles(deck, THEMES[1], { ...SLIDES_SCOPE_APPLY }, 0, new Set(), new Set([first.id]));
 
     const fresh = freshSlide(deck, 1);
+    const born = JSON.stringify(fresh);
     applyDeckThemeToNewSlide(deck, 1);
 
+    // The apply installed the family, so the new slide simply sits on the
+    // cascade like the themed one: neither carries the family inline.
+    expect(JSON.stringify(fresh)).toBe(born);
     const titleOf = (slide: typeof fresh) =>
       slide.elements.find((el) => el.class.includes('role-title'))!;
-    expect(titleOf(fresh).style['font-family']).toBe(THEMES[1].fonts.title.family);
-    expect(titleOf(fresh).style['font-family']).toBe(titleOf(first).style['font-family']);
+    expect(titleOf(fresh).style['font-family']).toBeUndefined();
+    expect(titleOf(first).style['font-family']).toBeUndefined();
+    expect(deck.themeStyle!.fonts.title.family).toBe(THEMES[1].fonts.title.family);
     // Sizes were not part of the apply, so they are not invented here either.
     expect(titleOf(fresh).style['font-size']).toBeUndefined();
-    expect(fresh.background.color).toBe(THEMES[1].colors.background);
-    expect(fresh.layoutBackgroundInherited).toBe(false);
+    expect(deck.themeStyle!.fonts.title.size).toBe(STOCK_STYLESHEET_STYLE.fonts.title.size);
   });
 
   it('leaves a new slide inline-free when the theme is the deck default', () => {
@@ -398,7 +423,7 @@ describe('a new slide and the deck theme', () => {
     expect(fresh.background.color).toBeNull();
   });
 
-  it('follows the last applied theme when it differs from the installed default', () => {
+  it('follows the merged defaults after a slides-scope apply of a second theme', () => {
     const deck = emptyDeck('T');
     adoptThemeStyles(deck, THEMES[1], {
       ...SLIDES_SCOPE_APPLY, scope: 'deck', background: true,
@@ -408,9 +433,16 @@ describe('a new slide and the deck theme', () => {
     const fresh = freshSlide(deck, 1);
     applyDeckThemeToNewSlide(deck, 1);
 
+    // The second apply installed its families, so the new slide follows them
+    // through theme.css; what the second apply did not adopt is still the first's.
     const title = fresh.elements.find((el) => el.class.includes('role-title'))!;
-    expect(title.style['font-family']).toBe(THEMES[2].fonts.title.family);
-    expect(fresh.background.color).toBe(THEMES[2].colors.background);
+    expect(title.style['font-family']).toBeUndefined();
+    expect(deck.themePreset).toBe(THEMES[2].id);
+    expect(deck.themeStyle!.fonts.title.family).toBe(THEMES[2].fonts.title.family);
+    expect(deck.themeStyle!.fonts.body.family).toBe(THEMES[2].fonts.body.family);
+    expect(deck.themeStyle!.fonts.heading.family).toBe(STOCK_STYLESHEET_STYLE.fonts.heading.family);
+    expect(deck.themeStyle!.colors.background).toBe(THEMES[1].colors.background);
+    expect(fresh.background.color).toBeNull();
   });
 
   it('is a no-op for a deck whose theme was never applied', () => {

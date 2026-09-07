@@ -161,14 +161,14 @@ describe('stackable media effects', () => {
       .some((section) => section.querySelector('h3')?.textContent === 'Image')).toBe(false);
     const sections = [...host.querySelectorAll<HTMLElement>('.insp-type-sections .insp-option-section')];
     expect(sections.map((section) => section.querySelector('h4')?.textContent))
-      .toEqual(['Sizing', 'Masking - non-destructive & revertible', 'Border', 'Effects']);
+      .toEqual(['Mask', 'Border', 'Effects']);
     expect(sections[0].textContent).toContain('Keep aspect ratio');
-    expect(sections[1].textContent).toContain('Corner radius');
-    expect(sections[1].textContent).toContain('Circular mask');
-    expect(sections[1].textContent).toContain('Edit mask');
-    expect(sections[2].textContent).toContain('Color');
-    expect(sections[2].textContent).toContain('Width');
-    expect(sections[2].textContent).not.toContain('Corner radius');
+    expect(sections[0].textContent).toContain('Corner radius');
+    expect(sections[0].textContent).toContain('Circular mask');
+    expect(sections[0].textContent).toContain('Edit mask');
+    expect(sections[1].textContent).toContain('Color');
+    expect(sections[1].textContent).toContain('Width');
+    expect(sections[1].textContent).not.toContain('Corner radius');
 
     const add = (kind: string) => {
       const picker = host.querySelector<HTMLSelectElement>('.effect-add')!;

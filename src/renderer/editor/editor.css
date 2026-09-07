@@ -2431,7 +2431,9 @@ input[type="range"] { accent-color: var(--accent); border: 0; background: transp
   background: var(--panel-2);
 }
 .theme-inline-editor .font-family-field,
+.theme-inline-editor .field-number,
 .theme-inline-editor .field-color { margin-top: 9px; }
+.theme-inline-editor .theme-scale-hint { margin: 9px 0 0; }
 .theme-inline-editor > .panel-action { width: 100%; margin-top: 12px; }
 .theme-card {
   display: block;
@@ -3642,7 +3644,7 @@ select.panel-action-select {
 
 /* --- text alignment buttons --- */
 
-.align-buttons {
+.align-buttons, .segmented-buttons {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   overflow: hidden;
@@ -3650,7 +3652,7 @@ select.panel-action-select {
   border-radius: 5px;
 }
 
-.align-button {
+.align-button, .segment-button {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -3661,11 +3663,11 @@ select.panel-action-select {
   color: var(--muted);
 }
 
-.align-button:first-child { border-left: 0; }
+.align-button:first-child, .segment-button:first-child { border-left: 0; }
 .align-button svg { width: 13px; height: 13px; fill: currentcolor; }
-.align-button:hover { color: var(--text); }
+.align-button:hover, .segment-button:hover { color: var(--text); }
 
-.align-button.is-active {
+.align-button.is-active, .segment-button.is-active {
   background: var(--accent);
   color: #fff;
 }
@@ -3684,3 +3686,400 @@ select.panel-action-select {
   white-space: nowrap;
   pointer-events: none;
 }
+
+/* --- multi-selection align panel --- */
+
+.align-strip-pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.align-strip {
+  display: grid;
+  grid-auto-columns: minmax(0, 1fr);
+  grid-auto-flow: column;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+}
+
+.insp-group .align-strip-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-left: 1px solid var(--line);
+  border-radius: 0;
+  background: var(--panel-2);
+  color: var(--muted);
+}
+
+.align-strip-button:first-child { border-left: 0; }
+.align-strip-button:hover { color: var(--text); background: color-mix(in srgb, var(--panel-2) 80%, var(--accent)); }
+.align-strip-button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.align-strip-button svg { width: 14px; height: 14px; }
+.align-strip-button svg * { fill: none; stroke: currentcolor; stroke-width: 1.4; stroke-linecap: round; }
+.align-strip-button svg .fill { fill: currentcolor; stroke: none; }
+
+/* ============================================================= */
+/* Inspector redesign: one control idiom (the segmented strip),   */
+/* one section style, steppers inside their inputs, captions in   */
+/* place of hint paragraphs, and the Build panel's cards led by   */
+/* the element they animate. Later rules override earlier ones.   */
+/* ============================================================= */
+
+/* --- section headings with an optional caption --- */
+
+.insp-subtitle-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  margin: 0 0 6px;
+}
+.insp-subtitle-row > .insp-subtitle { margin: 0; flex: none; }
+.insp-subtitle-caption {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font: 10px var(--mono);
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.insp-subtitle-row > .ghost { flex: none; }
+
+/* --- multi-selection groups are plain sections now --- */
+
+.insp-group { border: 0; background: transparent; padding: 0; margin: 0; }
+.insp-group + .insp-group,
+.insp-option-section + .insp-group { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line); }
+.insp-group-content { min-width: 0; }
+
+/* --- the strip, shared by align, arrange, kind, list, vertical --- */
+
+.align-buttons, .segmented-buttons {
+  grid-template-columns: none;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+}
+.align-button, .segment-button { height: 26px; padding: 0; }
+.segment-button:disabled { opacity: 0.4; cursor: default; }
+.segment-button svg { width: 14px; height: 14px; }
+.segment-button svg * { fill: none; stroke: currentcolor; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
+.segment-button svg .fill { fill: currentcolor; stroke: none; }
+.segment-button { font: 10.5px var(--mono); }
+.align-button:focus-visible, .segment-button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+/* The value-carrying select behind a strip: present for keyboard and
+   assistive technology, invisible to everyone else. */
+.segmented-select {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  border: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+.field-segmented { position: relative; }
+.field-segmented:focus-within .segmented-buttons { box-shadow: 0 0 0 1px var(--accent); }
+
+/* --- 1. Geometry: opacity and arrange share the last row --- */
+
+.geometry-bottom-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 128px;
+  align-items: end;
+  gap: 8px;
+}
+.geometry-bottom-row > .field { margin-bottom: 0; min-width: 0; }
+.geometry-bottom-row .field-opacity-controls { height: 28px; grid-template-columns: minmax(0, 1fr) 36px; gap: 6px; }
+.geometry-bottom-row .field-opacity output { font-size: 10.5px; }
+.field-arrange .align-strip { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); }
+.z-order-row { grid-template-columns: none; gap: 0; }
+.z-order-row button { padding: 0; font-size: inherit; }
+
+/* --- 3. Number steppers live inside the input, shown on hover --- */
+
+.optional-number-controls {
+  position: relative;
+  display: block;
+}
+.optional-number-controls > input {
+  width: 100%;
+  padding-right: 22px;
+}
+.optional-number-controls.has-theme-value > input { padding-right: 64px; }
+.optional-number-controls > .theme-value-indicator {
+  position: absolute;
+  top: 50%;
+  right: 20px;
+  transform: translateY(-50%);
+  margin: 0;
+  font-size: 9px;
+}
+.optional-number-controls > .number-step-buttons {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  bottom: 2px;
+  display: grid;
+  grid-template-rows: 1fr 1fr;
+  gap: 0;
+  width: 16px;
+  opacity: 0;
+  transition: opacity 80ms ease;
+}
+.optional-number-controls:hover > .number-step-buttons,
+.optional-number-controls:focus-within > .number-step-buttons { opacity: 1; }
+.optional-number-controls > .number-step-buttons button {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 6px;
+}
+.optional-number-controls > .number-step-buttons button:hover { background: var(--line); color: var(--text); }
+/* The clear cross has something to clear only when a value is explicit. It
+   sits just left of the steppers and yields to them on hover. */
+.optional-number-controls > .icon-button {
+  position: absolute;
+  top: 50%;
+  right: 18px;
+  transform: translateY(-50%);
+  padding: 0 3px;
+  font-size: 12px;
+  line-height: 1;
+}
+.optional-number-controls.has-theme-value > .icon-button { display: none; }
+.optional-number-controls:hover > .icon-button,
+.optional-number-controls:focus-within > .icon-button { right: 20px; }
+@media (prefers-reduced-motion: reduce) {
+  .optional-number-controls > .number-step-buttons { transition: none; }
+}
+
+/* Units read as the input's suffix: "12 px", "90 °", "300 ms". */
+.field-unit-wrap { position: relative; display: block; min-width: 0; }
+.field-unit-wrap > input { width: 100%; padding-right: 26px; }
+.field-unit-wrap > input::-webkit-inner-spin-button,
+.field-unit-wrap > input::-webkit-outer-spin-button { appearance: none; margin: 0; }
+.field-unit {
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  transform: translateY(-50%);
+  color: var(--muted);
+  font: 10px var(--mono);
+  pointer-events: none;
+}
+
+/* --- 6. Text: style strip beside the colour swatch --- */
+
+.text-style-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 46px;
+  align-items: end;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.text-style-row > .field { margin-bottom: 0; min-width: 0; }
+.text-selection-style .text-format-buttons { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.text-selection-style button { height: 26px; padding: 0; }
+.field-color.field-color-stacked { flex-direction: column; align-items: stretch; gap: 3px; }
+.field-color-stacked .color-picker-trigger { width: 100%; height: 26px; }
+/* Not a `.compact-field-row`: the browser tests address the Vertical select
+   through that class and would find the hidden List select first. */
+.text-list-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: end;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.text-list-row:has(> .field-color-stacked) { grid-template-columns: minmax(0, 1fr) 98px; }
+.text-list-row > .field { margin-bottom: 0; min-width: 0; }
+.font-fallback-note[hidden] { display: none; }
+.font-fallback-note {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font-size: 10px;
+}
+
+/* --- 7. Media: one primary action per panel, toggles as a strip --- */
+
+.video-playback-options {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+}
+.video-playback-options > .panel-action { width: auto; margin: 0; padding: 0 10px; height: 26px; font-size: 10.5px; white-space: nowrap; }
+.video-checkbox-grid {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  gap: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+}
+/* One stop of the strip: the real checkbox and its full label are for
+   assistive technology; the short word is what shows. */
+.toggle-segment {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 26px;
+  margin: 0;
+  border-left: 1px solid var(--line);
+  background: var(--panel-2);
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+}
+.toggle-segment:first-child { border-left: 0; }
+.toggle-segment:hover { color: var(--text); }
+.toggle-segment > input,
+.toggle-segment > span:not(.toggle-segment-short) {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  opacity: 0;
+}
+.toggle-segment:has(> input:checked) { background: var(--accent); color: #fff; }
+.toggle-segment:has(> input:indeterminate) { background: var(--accent-soft); color: var(--text); }
+.toggle-segment:has(> input:focus-visible) { outline: 2px solid var(--accent); outline-offset: -2px; }
+.toggle-segment > .toggle-segment-short { font: 10.5px var(--mono); letter-spacing: 0; text-transform: none; }
+
+.media-mask-settings { margin-bottom: 4px; }
+.media-mask-settings .field-check { min-height: 26px; }
+.media-masking-options > .field-check { margin: 4px 0 0; }
+.mask-action-row { margin-top: 8px; }
+.mask-action-row .panel-action { margin: 0; font-weight: 500; }
+.mask-action-row .mask-reset-segment {
+  border: 1px solid var(--line);
+  border-left: 0;
+  background: var(--panel-2);
+  color: var(--muted);
+  font-size: 16px;
+}
+.mask-action-row .mask-reset-segment:hover:not(:disabled) { background: var(--panel-2); color: var(--danger); border-left-color: var(--line); }
+
+.media-border-options { align-items: end; }
+.media-border-options .field-number { flex-direction: column; align-items: stretch; gap: 3px; }
+.media-border-options > .field-color { flex-direction: column; align-items: stretch; gap: 3px; }
+.media-border-options .color-picker-trigger { width: 100%; height: 26px; }
+
+.effect-add.panel-action-select,
+select.panel-action-select {
+  width: auto;
+  margin: 2px 0 0;
+  padding: 2px 22px 2px 4px;
+  border-color: transparent;
+  background-color: transparent;
+  color: var(--muted);
+  font: 10.5px var(--mono);
+}
+select.panel-action-select:hover:not(:disabled) { color: var(--text); border-color: var(--line); }
+
+.video-trim-options .trim-preview { height: 96px; }
+.video-trim-options .trim-reset { display: block; margin: 2px 0 0 auto; }
+
+/* Quiet, text-only actions: "Reset trim", "+ Add effect", "by paragraph". */
+button.ghost {
+  padding: 2px 6px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+  font-size: 10.5px;
+}
+button.ghost:hover:not(:disabled) { color: var(--text); background: transparent; border-color: var(--line); }
+
+/* --- 8. Shape --- */
+
+.shape-line-flags { grid-template-columns: repeat(3, auto); justify-content: space-between; align-items: center; }
+.shape-line-flags .field-check { margin: 0; gap: 5px; }
+.shape-line-flags .field-check > span { font-size: 9px; letter-spacing: 0.04em; white-space: nowrap; }
+
+/* --- 9 & 10. Build panel --- */
+
+.build-elements-section .insp-subtitle-row { align-items: center; }
+.build-element-list {
+  max-height: calc(8 * 26px + 2px);
+  margin-bottom: 8px;
+}
+.build-element-row {
+  position: relative;
+  height: 26px;
+  padding: 0 8px 0 26px;
+  align-items: center;
+}
+/* A glyph for the element's kind, in the row's own gutter. */
+.build-element-row::before {
+  content: 'T';
+  position: absolute;
+  left: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 12px;
+  color: var(--muted);
+  font: 10px var(--mono);
+  text-align: center;
+}
+.build-element-row[data-kind="list"]::before { content: '≔'; }
+.build-element-row[data-kind="table"]::before { content: '▦'; }
+.build-element-row[data-kind="image"]::before { content: '▣'; }
+.build-element-row[data-kind="video"]::before { content: '▶'; }
+.build-element-row[data-kind="html"]::before { content: '<>'; letter-spacing: -0.1em; }
+.build-element-row[data-kind="unsupported"]::before { content: '?'; }
+.build-element-row[data-kind^="shape"]::before { content: '■'; }
+.build-element-row[data-kind="shape-ellipse"]::before { content: '●'; }
+.build-element-row[data-kind="shape-line"]::before { content: '╱'; }
+.build-element-row[data-kind="shape-arrow"]::before { content: '→'; }
+.build-element-row[data-kind="shape-path"]::before { content: '∿'; }
+/* The steps that animate this element, drawn as the same orange badge the
+   canvas uses, from a data attribute so the row's text stays its name. */
+.build-element-row[data-steps]::after {
+  content: attr(data-steps);
+  flex: none;
+  margin-left: auto;
+  padding: 0 5px;
+  height: 15px;
+  border-radius: 8px;
+  background: var(--build-orange);
+  color: #000;
+  font: 700 9.5px/15px var(--mono);
+  white-space: nowrap;
+}
+.build-elements-section > .panel-action { margin: 0 0 4px; }
+.build-add-paragraph { white-space: nowrap; }
+
+.step-label { margin-bottom: 4px; }
+.timeline-row { gap: 6px; padding: 6px; }
+.build-card-head { gap: 6px; }
+.build-card-head .build-target-name { flex: 1; font-size: 11px; color: var(--text); }
+.build-card-head .icon-button { margin-left: auto; }
+.build-card-body { padding-left: 21px; gap: 6px; }
+.build-card-when { display: grid; grid-template-columns: minmax(0, 1fr) 64px; align-items: center; }
+.build-trigger-strip { min-width: 0; }
+.build-trigger-strip .segment-button { height: 24px; }
+.build-delay-wrap > input { padding: 3px 24px 3px 6px; height: 24px; }
+.build-card-what { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; }
+.build-action-label { color: var(--muted); font: 9.5px var(--mono); letter-spacing: 0.08em; text-transform: uppercase; }
+.timeline-row select.build-action { padding: 2px 20px 2px 6px; height: 24px; font: 10.5px var(--mono); }
+.timeline-row select.build-trigger { flex: none; }
+.build-num { min-width: 16px; height: 16px; font: 700 9.5px/1 var(--mono); color: #000; }

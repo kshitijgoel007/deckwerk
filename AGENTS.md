@@ -46,13 +46,24 @@ slide-agent inspect --html --selected > edit/work.html # 2. export a range
 #                                                        3. edit and save it
 ```
 
+Adding slides rather than changing them is a different file — `slide-agent new
+> edit/add.html`, which can only insert. See **Adding slides vs. changing
+them** below before you write either one.
+
 That is the whole thing. There is no fourth step: with the editor open, saving
 `edit/work.html` updates exactly those slides about 200 ms later, as one named,
 undoable change. Keep editing and keep saving.
 
 **1. `context` — the map.** Every slide in order with its id and its title, the
 text roles this deck actually uses, and whether the editor is live. This is how
-you find "the middle of the talk" without reading the talk.
+you find "the middle of the talk" without reading the talk. It takes no flags:
+it is always the whole deck.
+
+**Naming a slide.** Anywhere a command takes `--slide`, it takes the slide's id
+*or* its 1-based number — the number the editor's rail shows, the number
+`context` and `comments` print, and the number a person says out loud. So "my
+slide 44 is ugly" is `--slide 44`, and that slide with its neighbours is
+`--slide 43,44,45`. You never have to look up an id to act on a number.
 
 ### Resolve the visual direction before creating slides
 
@@ -102,16 +113,50 @@ If `apply` times out, **do not apply again**: the editor may still land the
 change. Check `slide-agent context` for the outline first — the id write-back
 makes an accidental double-apply harmless only once the file has been stamped.
 
-**Appending needs no export.** A new file in `edit/` holding only new
-`<section class="slide">`s (no `data-slide-id`) appends at the end of the deck
-— on save, or via `apply` (`--after <slideId>` to place it elsewhere). Export a
-range only to change it; exporting a slide purely as an "anchor" risks the
-slide for nothing.
+## Adding slides vs. changing them
+
+These are two different files, and picking the wrong one is how a slide gets
+destroyed. Decide which you are doing *before* you open an editor:
+
+| Intent | The file to write | What a save does |
+| --- | --- | --- |
+| Add slides | `slide-agent new > edit/add.html` | only ever inserts |
+| Change, reorder or remove existing slides | `slide-agent inspect --html --slide … > edit/work.html` | replaces, inserts, deletes and reorders the range it names |
+
+**`slide-agent new` is the one to reach for when adding.** It writes the same
+browser-openable skeleton as an export — the canvas box, `theme.css`, the type
+rules, the `<base>` — but with no slide ids and no scope marker, so nothing in
+the deck is at risk however you edit it. `--count <n>` gives you n starter
+sections. `apply --after <slideId>` places them somewhere other than the end.
+
+**Never copy an export to author new slides.** This is the mistake that bites:
+an export carries a `slide-editor-scope` marker in its `<head>` recording the
+slides it governs, and a copy inherits it. Replace that copy's contents with
+your new slide and saving it does not add a slide — it **deletes** every slide
+the original exported. Use `new` instead; the copy has no advantage over it.
+
+Inside an exported file, three rules decide everything, and the file states
+them in a comment next to its marker:
+
+- editing inside a section that has a `data-slide-id` — **replaces** that slide
+- a section with `class="slide"` and no `data-slide-id` — **adds** a slide
+- removing a section that was exported here — **deletes** that slide
+
+So to add a slide *next to* slide 44, keep slide 44's section exactly where it
+is and put a new id-less section beside it. Duplicating slide 44's section to
+get a starting point only works if you **delete the copy's `data-slide-id`** —
+leave it in and the file names one slide twice, which is refused.
+
+**Check what actually happened.** Every `apply` reports a `changes` object —
+`replaced`, `inserted`, `deleted`, `moved`, each naming ids. Read it. If
+`deleted` is not empty and you did not mean to delete a slide, undo in the
+editor (the sync is one undo entry) before saving that file again. On a watched
+save the editor's status message says the same thing.
 
 `slide-agent validate` also reports `overflows`: every element whose authored
 box extends past the canvas, from geometry alone. Deliberate bleeds show up
 there too — the list is a checklist, not an error. Scope it to the slides you
-are actually editing with `--slide <id>` (repeatable, or comma-separated) or
+are actually editing with `--slide <id|number>` (repeatable, or comma-separated) or
 `--selected`; structural `errors` stay deck-wide either way.
 
 **Write semantic markup; put reusable classes in `theme.css`.** The walk bakes
@@ -238,6 +283,8 @@ my-talk/
   theme.css    typography and colour; a marked block is theme-generated
   notes.md     speaker notes, one section per slide, separated by `---` lines;
                the editor mirrors it from deck.json and reads edits back
+  AGENTS.md    the deck-facing brief (docs/deck-brief.md), regenerated by the
+               editor on every open unless its marker line has been removed
   edit/        watched HTML authoring files
   assets/      media, referenced by deck-relative path
 ```
@@ -264,8 +311,12 @@ my-talk/
 ## Getting this guide, from a deck folder
 
 You are probably working in a deck folder, not in the editor's source tree.
-DeckWerk no longer writes an `AGENTS.md` into each deck folder. This repository
-guide remains available from any deck folder through the CLI:
+Every deck the editor opens gets an `AGENTS.md` of its own — the text of
+`docs/deck-brief.md`, written by `src/main/agentGuide.ts` with the absolute
+path of this checkout's `bin/slide-agent` filled in — so an agent pointed at
+the folder can start without knowing where the editor lives. That brief is the
+deck-facing guide; this document is the repository one, and it is one command
+away from any deck folder:
 
 ```bash
 slide-agent docs        # this document
@@ -293,9 +344,10 @@ Diagnostics go to stderr. Exit codes are `0` ok, `1` error,
 | `docs` | This guide |
 | `capabilities [ids...]` | Every feature (or just the named ones), with a working example, screenshot and markup |
 | `context [deck]` | What is selected, what revision is the deck, is the editor live |
-| `inspect [deck] [--selected\|--slide id\|--all] [--html\|--dom]` | Editable HTML, or computed inspection data |
+| `new [deck] [--count <n>]` | A blank authoring page — no ids, no scope, so saving it only adds slides |
+| `inspect [deck] [--selected\|--slide id\|number\|--all] [--html\|--dom]` | Editable HTML for the slides it names (saving it can replace and delete them), or computed inspection data |
 | `apply [deck] --html <file>` | Explicitly compile and sync an HTML range |
-| `render [deck] [--selected\|--slide id\|--all] --output <dir> [--annotate] [--built] [--contact-sheet]` | Optional PNGs; `--contact-sheet` adds one tiled overview of everything rendered |
+| `render [deck] [--selected\|--slide id\|number\|--all] --output <dir> [--annotate] [--built] [--contact-sheet]` | Optional PNGs; `--contact-sheet` adds one tiled overview of everything rendered |
 | `preview [deck] [--port n] [--open]` | Export through the real player and serve on localhost; prints its URL as JSON, then blocks — run it in the background and give the user the URL |
 | `validate [deck]` | Schema, duplicate ids, timeline references, missing assets |
 | `asset import <deck> <paths...>` | Media copied into `assets/`, deduped, probed, transcoded |
@@ -307,7 +359,7 @@ The deck argument defaults to the current directory.
 ### Repair import gaps
 
 `slide-agent validate` reports `importGaps` separately from structural errors.
-For each gap, export its slide with `inspect --html --slide <id>`, replace the
+For each gap, export its slide with `inspect --html --slide <id|number>`, replace the
 conspicuous `data-element="unsupported"` placeholder with real HTML, and save.
 The replacement becomes an editable text, media, shape, or HTML object on the
 way back; a clean `importGaps: []` confirms that the repair loop is complete.
@@ -331,10 +383,12 @@ slide-agent render $DECK --all --output /tmp/shots   # look at it
 - **`create` restyles nothing.** Like installing a theme in the panel, it
   changes what is *available*. `choose` makes it the deck's current theme, so
   new slides are born wearing it; `apply` restyles slides that already exist.
-- `--scope deck` is the install: it writes the deck's defaults, adopts them on
-  every slide, and rewrites the generated block in `theme.css`. `--scope slides`
-  with `--slide <id>` (repeatable) or `--all` restyles only those slides and
-  leaves the stylesheet alone.
+- Every `apply` and `choose` installs what it adopts into the deck's defaults
+  and the generated block of `theme.css`; the slides it targets drop their
+  inline copies and follow the stylesheet. `--scope deck` targets every slide.
+  `--scope slides` with `--slide <id|number>` (repeatable) or `--all` targets only
+  those, and pins every other slide at the values it rendered at, so nothing
+  outside the scope changes visually (deck.json does).
 - Narrow what is taken with `--roles title,heading,body,caption,base` and
   `--properties fonts,weights,scale,text-color,background,object-colors`. Both
   default to everything.
@@ -347,7 +401,8 @@ slide-agent render $DECK --all --output /tmp/shots   # look at it
   end in `-dark`/`-light`. `--replace` overwrites a deck theme you are
   iterating on.
 - A deck-wide apply reports `warnings` when the deck's own CSS styles type or
-  colour outside the generated block: those declarations sit below it and win.
+  colour with a selector more specific than the theme's (two classes, an id,
+  an attribute): the generated block is written last, so only those outrank it.
 
 ### Start with `context`
 
@@ -543,7 +598,12 @@ slide-agent inspect $DECK --slide results      # confirm the result
   being referenced (`asset import` does this automatically).
 - Text styling belongs in `theme.css` via `role-title` / `role-heading` /
   `role-body` / `role-caption` classes; inline `style` on an element overrides
-  the stylesheet and is best reserved for deliberate one-offs.
+  the stylesheet and is best reserved for deliberate one-offs. A role's default
+  size lives in `themeStyle` in `deck.json` and is written into the generated
+  block of `theme.css` (in the app under Theme › Edit theme; from the CLI
+  through `theme create` and `theme apply`). Editing a default changes what new
+  slides are born with; existing slides keep their size until the theme is
+  applied to them. Layout masters never carry a size.
 - A deck may carry its own theme presets in `deck.json` (`customThemes`), which
   resolve everywhere a built-in preset id does. Write them with
   `slide-agent theme create`, never by hand.

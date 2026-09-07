@@ -8,13 +8,14 @@ import { emptyDeck } from '@shared/deck.js';
 import type { AgentSessionConnection, AuthoredHtmlFile, PresentationImportResult } from '@shared/ipc.js';
 import { captureEditorView, decodeEditorView, restoreEditorView } from '@shared/editorView.js';
 import { setIdSuffix } from '@shared/geometry.js';
-import { adoptAuthoredIds } from '@shared/htmlSlides.js';
+import { adoptAuthoredIds, describeHtmlSync, htmlSyncSummary } from '@shared/htmlSlides.js';
 import { rangeForSlideSelection } from '@shared/presentationRange.js';
 import {
   themeById,
   themeCss,
   deckThemes,
   themeStyleCss,
+  themeStyleLabel,
   withThemeBlock,
 } from '@shared/themes.js';
 import { AgentBridge } from './agentBridge.js';
@@ -46,6 +47,7 @@ import {
   type ShellDeps,
 } from './shellWiring.js';
 import { SlideRail } from './slideRail.js';
+import { installWindowApiPosterProvider } from '../player/previewPosterProvider.js';
 import { EditorStore } from './store.js';
 import { statusBarText } from './statusBar.js';
 import { TimelinePanel } from './timelinePanel.js';
@@ -70,6 +72,9 @@ const el = <T extends HTMLElement>(id: string): T => {
 };
 
 const store = new EditorStore(emptyDeck());
+// Rail and Morph thumbnails take their poster frames from the main process, so
+// this window never opens a video pipeline for a preview (see posterCache.ts).
+installWindowApiPosterProvider();
 let historySaveTimer: ReturnType<typeof setTimeout> | null = null;
 let historyDirty = false;
 
@@ -319,7 +324,11 @@ function applyHtmlEdit(file: AuthoredHtmlFile): Promise<void> {
             operation.update(`Writing assigned slide ids to ${name}`);
             await window.api.htmlAdopt?.(file.path, adopted, file.contents);
           }
-          return `Applied ${name}${warned}`;
+          // What the save did, not merely that it did something: a file that
+          // was meant to add a slide and instead replaced or deleted one reads
+          // exactly like a success otherwise.
+          const did = describeHtmlSync(htmlSyncSummary(transaction.operations));
+          return `Applied ${name} — ${did}${warned}`;
         }
         return `${name}: the deck kept changing while it compiled — save it again`;
       });
@@ -926,6 +935,7 @@ async function adopt(
   // A large rail rebuild is synchronous. Give an already-visible progress
   // indicator a paint opportunity before Chromium starts constructing it.
   await operation?.waitForPaint();
+  themeStylesheetArmed = false;
   store.load(deck, dir, { history });
   historyDirty = false;
   if (initialViewPending) {
@@ -945,6 +955,11 @@ async function adopt(
     : loadedCss;
   cssEditor.setValue(refreshedCss);
   if (refreshedCss !== loadedCss) void persistThemeCss(refreshedCss);
+  // From here on the stylesheet mirrors the deck's composed defaults; until
+  // now the editor held the previous deck's CSS and nothing may be derived
+  // from it.
+  mirroredThemeStyle = JSON.stringify(deck.themeStyle);
+  themeStylesheetArmed = true;
   operation?.update('Loading fonts and fitting slide content', 0.95);
   themePanel.noteDeckOpened(deck);
   // Applying the deck stylesheet can start web-font loads, and auto-fit runs
@@ -1013,10 +1028,14 @@ function setStatusMessage(text: string): void {
 
 function renderStatus(): void {
   const status = el('status');
-  status.textContent = statusBarText(store.get(), statusMessage);
-  status.dataset.busy = statusBusy ? 'true' : 'false';
-  status.setAttribute('aria-busy', String(statusBusy));
-  status.setAttribute('aria-live', 'polite');
+  // Runs on every store emit; rewriting unchanged text and attributes still
+  // costs a style and paint invalidation of the full-width footer.
+  const text = statusBarText(store.get(), statusMessage);
+  if (status.textContent !== text) status.textContent = text;
+  const busy = statusBusy ? 'true' : 'false';
+  if (status.dataset.busy !== busy) status.dataset.busy = busy;
+  if (status.getAttribute('aria-busy') !== busy) status.setAttribute('aria-busy', busy);
+  if (status.getAttribute('aria-live') !== 'polite') status.setAttribute('aria-live', 'polite');
 }
 
 /* --- boot --- */
@@ -1036,7 +1055,29 @@ store.subscribe(() => {
   renderStatus();
   scheduleSave();
   publishAgentPresence();
+  syncThemeStylesheet();
 });
+
+/**
+ * theme.css is the deck's composed defaults, rendered. Any path that changes
+ * them -- the panel, the inspector, a new slide installing the chosen theme,
+ * an undo -- has to reach the stylesheet, so the mirror lives here once rather
+ * than at every call site.
+ */
+let mirroredThemeStyle = JSON.stringify(store.get().deck.themeStyle);
+let themeStylesheetArmed = false;
+function syncThemeStylesheet(): void {
+  if (!themeStylesheetArmed) return;
+  const deck = store.get().deck;
+  const serialized = JSON.stringify(deck.themeStyle);
+  if (serialized === mirroredThemeStyle) return;
+  mirroredThemeStyle = serialized;
+  if (!deck.themeStyle) return;
+  const css = withThemeBlock(cssEditor.getValue(), themeStyleCss(deck.themeStyle, themeStyleLabel(deck)));
+  if (css === cssEditor.getValue()) return;
+  cssEditor.setValue(css);
+  void persistThemeCss(css);
+}
 syncSlideSelectionContext();
 renderStatus();
 

@@ -1,4 +1,5 @@
 import type { Deck, ThemeStyle } from '@shared/deck.js';
+import { realignSlideToLayout } from '@shared/layoutMasters.js';
 import {
   THEMES,
   deckThemes,
@@ -7,13 +8,16 @@ import {
   adoptThemeStyles,
   baseThemeId,
   deckTheme,
-  fullThemeSelection,
   presetFromStyle,
   previousThemeUsed,
   themeById,
   themeStyleOf,
   themeStyleCss,
+  themeStyleLabel,
   withThemeBlock,
+  chooseDeckTheme,
+  installThemeStyle,
+  type ThemeTextRole,
 } from '@shared/themes.js';
 import type { CssEditor } from './cssEditor.js';
 import { barButton } from './shellWiring.js';
@@ -24,6 +28,7 @@ import {
   type ThemeGallery,
 } from './themeGallery.js';
 import { fontFamilyField } from './fontPicker.js';
+import { numberField } from './inspector.js';
 
 /**
  * Whether one of the stack's characterful leading families is installed.
@@ -107,6 +112,8 @@ export interface ThemePanel {
   /** Keep scope controls consistent with the rail selection. */
   syncScope(slideSelectionCount: number): void;
   applyButtonLabel(): string;
+  /** Label of the Apply layout button; follows the same scope as Apply theme. */
+  layoutApplyButtonLabel(): string;
   /** Close the theme chooser/editor and end its central preview session. */
   dismiss(): boolean;
 }
@@ -136,6 +143,7 @@ export function createThemePanel(deps: ThemePanelDeps): ThemePanel {
   let themeGallery: ThemeGallery | null = null;
   let themeScopeSelect: HTMLSelectElement | null = null;
   let themeApplyButton: HTMLButtonElement | null = null;
+  let layoutApplyButton: HTMLButtonElement | null = null;
   let activeThemeHost: HTMLElement | null = null;
   let chooser: HTMLElement | null = null;
   let themeEditor: HTMLElement | null = null;
@@ -211,10 +219,11 @@ export function createThemePanel(deps: ThemePanelDeps): ThemePanel {
     if (preview) layoutPreviewHost.appendChild(preview);
   }
 
-  function refreshThemeCss(label: string): void {
-    const style = store.get().deck.themeStyle;
-    if (!style) return;
-    const css = withThemeBlock(cssEditor.getValue(), themeStyleCss(style, label));
+  function refreshThemeCss(): void {
+    const deck = store.get().deck;
+    if (!deck.themeStyle) return;
+    const css = withThemeBlock(cssEditor.getValue(), themeStyleCss(deck.themeStyle, themeStyleLabel(deck)));
+    if (css === cssEditor.getValue()) return;
     cssEditor.setValue(css);
     deps.saveThemeCss(css);
   }
@@ -227,10 +236,11 @@ export function createThemePanel(deps: ThemePanelDeps): ThemePanel {
    * wearing this theme, so the choice has to outlive the panel and the session.
    */
   function chooseTheme(theme: ThemePreset): void {
-    if (store.get().deck.themeSelection?.preset === theme.id) return;
-    store.commit((deck) => {
-      deck.themeSelection = fullThemeSelection(theme.id);
-    }, { label: `Choose ${theme.name}` });
+    const deck = store.get().deck;
+    if (deck.themeSelection?.preset === theme.id && deck.themePreset === theme.id) return;
+    store.commit((target) => chooseDeckTheme(target, theme), { label: `Choose ${theme.name}` });
+    refreshThemeCss();
+    themeGallery?.setInstalled(theme.id);
     void save();
     setStatusMessage(
       `New slides will use “${theme.name}”. Existing slides keep their current `
@@ -277,6 +287,52 @@ export function createThemePanel(deps: ThemePanelDeps): ThemePanel {
         : themeAdoption.scope === 'selection'
           ? 'Apply theme to selected objects'
           : 'Apply theme to current slide';
+  }
+
+  /**
+   * Apply layout shares Apply theme's scope: it is the same question, asked of
+   * geometry instead of styling. Objects are not a layout scope, so "selected
+   * objects" means the slide those objects sit on.
+   */
+  function layoutApplyButtonLabel(): string {
+    const count = store.get().slideSelection.size;
+    return themeAdoption.scope === 'deck'
+      ? 'Apply layout to deck'
+      : themeAdoption.scope === 'slides'
+        ? `Apply layout to ${count} selected slide${count === 1 ? '' : 's'}`
+        : 'Apply layout to current slide';
+  }
+
+  /**
+   * Re-align every in-scope slide's text boxes to its own layout master.
+   * Nothing about the slide's look changes: this is for boxes that were
+   * nudged, resized or imported off-grid and should sit where the layout says.
+   */
+  function applyLayout(): void {
+    const { deck, slideIndex, slideSelection } = store.get();
+    const ids = new Set<string>(themeAdoption.scope === 'deck'
+      ? deck.slides.map((slide) => slide.id)
+      : themeAdoption.scope === 'slides' && slideSelection.size > 0
+        ? slideSelection
+        : [deck.slides[slideIndex]?.id].filter((id): id is string => Boolean(id)));
+    let moved = 0;
+    let freeform = 0;
+    store.commit((target) => {
+      for (const slide of target.slides) {
+        if (!ids.has(slide.id)) continue;
+        if ((slide.layout ?? 'freeform') === 'freeform') { freeform += 1; continue; }
+        moved += realignSlideToLayout(slide, target.layoutMasters);
+      }
+    }, { label: 'Apply layout' });
+    void save();
+    const scopeName = themeAdoption.scope === 'deck'
+      ? 'the deck'
+      : ids.size === 1 ? 'the current slide' : `${ids.size} selected slides`;
+    setStatusMessage(moved === 0
+      ? (freeform === ids.size
+        ? `Nothing to align: ${scopeName} uses the freeform layout.`
+        : `No text boxes to align on ${scopeName}.`)
+      : `Re-aligned ${moved} text box${moved === 1 ? '' : 'es'} to the layout on ${scopeName}.`);
   }
 
   /**
@@ -385,13 +441,16 @@ export function createThemePanel(deps: ThemePanelDeps): ThemePanel {
     });
     scopeLabel.append(scopeTitle, scope);
 
+    // Heading rides along with Title: headings are what imports and agents tag,
+    // not a role authors pick, so it gets no box of its own.
     const roleTitle = groupLabel('Text roles');
-    const roleBoxes = (['title', 'heading', 'body', 'caption'] as const).map((role) => {
+    const roleBoxes = (['title', 'body', 'caption'] as const).map((role) => {
       const box = optionBox(role[0].toUpperCase() + role.slice(1), themeAdoption.roles.includes(role));
       box.input.addEventListener('change', () => {
+        const covered: ThemeAdoption['roles'] = role === 'title' ? ['title', 'heading'] : [role];
         themeAdoption.roles = box.input.checked
-          ? [...new Set([...themeAdoption.roles, role])]
-          : themeAdoption.roles.filter((candidate) => candidate !== role);
+          ? [...new Set([...themeAdoption.roles, ...covered])]
+          : themeAdoption.roles.filter((candidate) => !covered.includes(candidate));
       });
       return box.label;
     });
@@ -430,10 +489,12 @@ export function createThemePanel(deps: ThemePanelDeps): ThemePanel {
         new Set(selection),
         new Set(slideSelection),
       ));
-      if (themeAdoption.scope === 'deck') refreshThemeCss(theme.name);
+      // Every scope installs what it adopted (see adoptThemeStyles), so the
+      // stylesheet the slides load has to follow the deck's defaults each time.
+      if (store.get().deck.themeStyle) refreshThemeCss();
       refreshSwatches();
-      if (themeAdoption.scope === 'deck') themeGallery?.setInstalled(theme.id);
-      if (themeAdoption.scope === 'deck') selectedThemeId = theme.id;
+      themeGallery?.setInstalled(store.get().deck.themePreset);
+      selectedThemeId = store.get().deck.themePreset;
       void save();
       refreshPreviousBadge();
       notifyThemePreview();
@@ -463,10 +524,18 @@ export function createThemePanel(deps: ThemePanelDeps): ThemePanel {
     const layoutsSection = panelSection('Layouts', 'layouts-section');
     layoutsSection.append(layoutPreviewHost);
 
+    // Apply theme's geometric twin: a heading and one button, no options.
+    const layoutApplyAction = document.createElement('div');
+    layoutApplyAction.className = 'theme-apply-action';
+    layoutApplyButton = barButton(layoutApplyButtonLabel(), applyLayout, 'primary panel-action');
+    layoutApplyAction.append(layoutApplyButton);
+    const layoutApplySection = panelSection('Apply layout', 'layout-apply-section');
+    layoutApplySection.append(layoutApplyAction);
+
     // Which theme the deck wears comes first; what to do with it second. The
     // old order asked you to configure an adoption before showing you what you
     // were adopting.
-    wrap.append(intro, themeSection, applySection, layoutsSection);
+    wrap.append(intro, themeSection, applySection, layoutsSection, layoutApplySection);
     refreshPreviousBadge();
     renderActiveTheme();
     renderLayoutPreview();
@@ -490,12 +559,12 @@ export function createThemePanel(deps: ThemePanelDeps): ThemePanel {
         const base = themeById(selectedThemeId, pool) ?? themeById(deck.themePreset, pool) ?? THEMES[0];
         const style = structuredClone(deck.themeStyle ?? themeStyleOf(base));
         mutate(style);
-        deck.themeStyle = style;
-        deck.themePreset = base.id;
+        // A default changes for new slides and the next Apply; slides already
+        // on the stylesheet are pinned where they are (installThemeStyle).
+        installThemeStyle(deck, style, base.id, { slides: new Set(), elements: new Set() });
         selectedThemeId = base.id;
       }, { label });
-      const installed = themeById(store.get().deck.themePreset, deckThemes(store.get().deck));
-      refreshThemeCss(`${installed?.name ?? 'Theme'} · Modified`);
+      refreshThemeCss();
       themeGallery?.setSelected(store.get().deck.themePreset);
       themeGallery?.setInstalled(store.get().deck.themePreset);
       void save();
@@ -511,6 +580,31 @@ export function createThemePanel(deps: ThemePanelDeps): ThemePanel {
         },
       ));
     }
+
+    // The deck's default size per role. Editing it changes what new slides
+    // are born with and what Apply installs; existing slides keep the size
+    // they have (setThemeRoleSize pins the ones that were following theme.css).
+    themeEditor.appendChild(groupLabel('Type scale'));
+    const ROLE_LABELS: Record<Exclude<ThemeTextRole, 'base' | 'heading'>, string> = {
+      title: 'Title', body: 'Body', caption: 'Caption',
+    };
+    for (const role of ['title', 'body', 'caption'] as const) {
+      const sizeField = numberField(
+        `${ROLE_LABELS[role]} size`,
+        theme.fonts[role].size,
+        (value) => {
+          const size = Math.round(Math.max(6, Math.min(400, value)) * 10) / 10;
+          update((style) => { style.fonts[role].size = size; }, `Set theme ${role} size`);
+        },
+      );
+      sizeField.classList.add('theme-role-size');
+      sizeField.querySelector('input')!.title = 'Value in px';
+      themeEditor.appendChild(sizeField);
+    }
+    const scaleHint = document.createElement('p');
+    scaleHint.className = 'insp-hint theme-scale-hint';
+    scaleHint.textContent = 'Sizes for new slides. Existing slides keep theirs until you apply the theme to them.';
+    themeEditor.appendChild(scaleHint);
 
     themeEditor.appendChild(groupLabel('Semantic colours'));
     for (const [key, label] of [
@@ -547,6 +641,7 @@ export function createThemePanel(deps: ThemePanelDeps): ThemePanel {
     }
     hadMultipleSlidesSelected = multiple;
     if (themeApplyButton) themeApplyButton.textContent = applyButtonLabel();
+    if (layoutApplyButton) layoutApplyButton.textContent = layoutApplyButtonLabel();
   }
 
   const element = build();
@@ -556,6 +651,7 @@ export function createThemePanel(deps: ThemePanelDeps): ThemePanel {
     refreshSwatches,
     syncScope,
     applyButtonLabel,
+    layoutApplyButtonLabel,
     dismiss: () => {
       const wasOpen = themePreviewOpen
         || Boolean(chooser && !chooser.hidden)

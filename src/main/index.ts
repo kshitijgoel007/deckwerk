@@ -49,6 +49,8 @@ import type {
   TrimResult,
   WorkflowStartRequest,
   WorkflowStartResult,
+  VideoPosterRequest,
+  VideoPosterResult,
 } from '@shared/ipc.js';
 import { startWorkflow } from './workflow.js';
 import { AgentChatController } from './agentChat.js';
@@ -74,12 +76,15 @@ import {
 } from './deckStore.js';
 import { exportDeck } from './exportDeck.js';
 import { probeMedia, runTrim } from './ffmpeg.js';
+import { attachRendererHealth } from './windowHealth.js';
+import { POSTER_HOST, posterFor } from './posterCache.js';
 import { showOpenDialog, showSaveDialog } from './dialogs.js';
 import { importKeynote } from './keynoteImport.js';
 import { importPowerPoint } from './pptxImport.js';
 import { loadDeckHistory, saveDeckHistory } from './deckHistoryStore.js';
 import { serializeSpeakerNotes, SPEAKER_NOTES_FILE } from '@shared/speakerNotes.js';
 import { HTML_EDIT_DIR, writeHtmlScope } from './htmlAuthoring.js';
+import { AGENT_GUIDE_FILE, defaultLauncherPath, writeAgentGuide } from './agentGuide.js';
 import {
   attachWindow,
   deckKeyFor,
@@ -435,6 +440,12 @@ function setSession(state: DeckWindowState, dir: string, deck: Deck): DeckSessio
   void saveSpeakerNotes(dir, deck).catch((error) => {
     console.error(`Could not write ${SPEAKER_NOTES_FILE} in ${dir}:`, error);
   });
+  // An agent pointed at this folder reads AGENTS.md first. Keep the deck's
+  // copy current with the editor that is open on it; a copy the author has
+  // taken over (marker line removed) is left alone.
+  void writeAgentGuide(dir, { launcher: defaultLauncherPath() }).catch((error) => {
+    console.error(`Could not write ${AGENT_GUIDE_FILE} in ${dir}:`, error);
+  });
   void state.agentRuntime.open(dir);
   return session;
 }
@@ -495,6 +506,7 @@ function openDeckForRequester(
 function createEditorState(query = '', bounds?: WindowContinuityState): DeckWindowState {
   const win = createEditorWindow(query, bounds);
   const state = registerEditorWindow(win);
+  attachRendererHealth(win);
   win.on('closed', () => closeDocument(state));
   return state;
 }
@@ -1550,6 +1562,13 @@ function registerHandlers(): void {
       return startWorkflow(s.dir, s.deck, request);
     },
   );
+
+  ipcMain.handle(IPC.videoPoster, async (event, req: VideoPosterRequest): Promise<VideoPosterResult> => {
+    const s = requireSession(event);
+    const input = resolveAsset(s.dir, req.src);
+    const name = await posterFor(input, req.time);
+    return { url: name ? `deck://${POSTER_HOST}/${encodeURIComponent(name)}` : null };
+  });
 
   ipcMain.handle(IPC.trimRun, async (event, req: TrimRequest): Promise<TrimResult> => {
     const s = requireSession(event);

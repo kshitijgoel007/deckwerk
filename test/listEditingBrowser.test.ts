@@ -235,6 +235,26 @@ describe.skipIf(!electronBinary)('editing bulleted lists', () => {
     expect(await session.persistedProblems(), 'stored markup after nesting').toEqual([]);
   });
 
+  it('outdents an item that was saved nested inside its parent item', {
+    timeout: 120_000,
+  }, async () => {
+    // The saved shape keeps the sub-list inside the parent item. Chromium's
+    // own outdent leaves the item inside that parent, still painted indented.
+    await session.reset('<ul><li>alpha<ul><li>beta</li><li>delta</li></ul></li><li>gamma</li></ul>');
+    await session.edit();
+    await session.caretIn('beta');
+    await session.cdp.chord('Tab', 'Tab', 9, 8);
+    await session.expectPersisted(
+      (lines) => lines.join('|') === 'ul|- alpha|- beta|  ul|  - delta|- gamma',
+      'promoted, keeping the item after it one level deeper');
+    await session.cdp.key('End', 35);
+    await session.cdp.typeKeys("!");
+    await session.expectPersisted(
+      (lines) => lines.join('|') === 'ul|- alpha|- beta!|  ul|  - delta|- gamma',
+      'the caret stayed in the promoted item');
+    expect(await session.persistedProblems(), 'stored markup after outdenting').toEqual([]);
+  });
+
   it('switches a list between bullets and numbers, and frees one numbered item',
     { timeout: 120_000 }, async () => {
       await session.reset('<ul><li>alpha</li><li>beta</li><li>gamma</li><li>delta</li></ul>');

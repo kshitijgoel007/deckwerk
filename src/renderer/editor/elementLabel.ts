@@ -108,8 +108,10 @@ export function elementSwatches(el: SlideElement): Array<{ color: string; kind: 
 export function describeElement(el: SlideElement): string {
   switch (el.type) {
     case 'text': {
-      const text = stripTags(el.html).trim();
-      return text.slice(0, 32) || 'text (empty)';
+      const table = tableShape(el.html);
+      if (table) return `table, ${table.rows} × ${table.columns}`;
+      const text = blockTexts(el.html).join(' · ');
+      return text.slice(0, 48) || 'text (empty)';
     }
     case 'image':
     case 'video':
@@ -144,8 +146,29 @@ export function renderElementLabel(host: HTMLElement, el: SlideElement): void {
   }
 }
 
-function stripTags(html: string): string {
+/**
+ * The text of each block, so "Revenue up · Costs flat" rather than the
+ * paragraphs run together as "Revenue upCosts flat".
+ */
+function blockTexts(html: string): string[] {
   const div = document.createElement('div');
   div.innerHTML = html;
-  return div.textContent ?? '';
+  const blocks = div.querySelectorAll('p, li, h1, h2, h3, h4, h5, h6, div');
+  const texts = [...blocks]
+    .filter((node) => !node.querySelector('p, li, h1, h2, h3, h4, h5, h6, div'))
+    .map((node) => (node.textContent ?? '').replace(/\s+/g, ' ').trim())
+    .filter(Boolean);
+  if (texts.length > 0) return texts;
+  const whole = (div.textContent ?? '').replace(/\s+/g, ' ').trim();
+  return whole ? [whole] : [];
+}
+
+function tableShape(html: string): { rows: number; columns: number } | null {
+  if (!/<table\b/i.test(html)) return null;
+  const div = document.createElement('div');
+  div.innerHTML = html;
+  const rows = div.querySelectorAll('tr');
+  if (rows.length === 0) return null;
+  const columns = Math.max(...[...rows].map((row) => row.querySelectorAll('td, th').length));
+  return { rows: rows.length, columns };
 }

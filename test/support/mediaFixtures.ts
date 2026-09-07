@@ -166,7 +166,7 @@ export const MEDIA_FIXTURES: readonly MediaFixture[] = [
     converted: false,
     sized: true,
     why: 'H.264 in MP4 — the format everything exports to.',
-    encode: ['-t', '0.5', '-c:v', 'libx264', '-pix_fmt', 'yuv420p'],
+    encode: ['-t', '0.5', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-movflags', '+faststart'],
   },
   {
     name: 'clip.mov',
@@ -176,7 +176,7 @@ export const MEDIA_FIXTURES: readonly MediaFixture[] = [
     converted: false,
     sized: true,
     why: 'QuickTime is what macOS tools write, and H.264 inside it is fine.',
-    encode: ['-t', '0.5', '-c:v', 'libx264', '-pix_fmt', 'yuv420p'],
+    encode: ['-t', '0.5', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-movflags', '+faststart'],
   },
   {
     name: 'clip.m4v',
@@ -186,7 +186,18 @@ export const MEDIA_FIXTURES: readonly MediaFixture[] = [
     converted: false,
     sized: true,
     why: 'The Apple-flavoured MP4 extension.',
-    encode: ['-t', '0.5', '-c:v', 'libx264', '-pix_fmt', 'yuv420p'],
+    encode: ['-t', '0.5', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-movflags', '+faststart'],
+  },
+  {
+    name: 'recording.mov',
+    mime: 'video/quicktime',
+    kind: 'video',
+    src: /^assets\/recording\.[0-9a-f]{8}\.fs\.mov$/,
+    converted: true,
+    sized: true,
+    why: 'An H.264 screen recording indexed at the tail, as the macOS recorder and cameras write it: '
+      + 'playable, but Chromium must seek to the end before painting, so the index is moved up front.',
+    encode: ['-t', '0.5', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-movflags', '-faststart'],
   },
   {
     name: 'clip.webm',

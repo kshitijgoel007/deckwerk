@@ -288,6 +288,17 @@ export function fullThemeSelection(themeId: string): ThemeSelection {
 }
 
 /**
+ * Make `theme` the deck's current theme: what new slides are born wearing and
+ * what Apply installs. theme.css follows it at once so a new slide can simply
+ * sit on the cascade; every existing slide is pinned where it is first
+ * (installThemeStyle), so choosing restyles nothing already on screen.
+ */
+export function chooseDeckTheme(deck: Deck, theme: ThemePreset): void {
+  installThemeStyle(deck, themeStyleOf(theme), theme.id, { slides: new Set(), elements: new Set() });
+  deck.themeSelection = fullThemeSelection(theme.id);
+}
+
+/**
  * Record a preset as one this deck has actually worn.
  *
  * Called where a theme reaches slides — an apply, or a slide created under the
@@ -535,29 +546,38 @@ export function adoptThemeStyles(
     .filter((el) => el.type === 'text')
     .map((el) => ({ html: el.html, size: Number.parseFloat(el.style['font-size'] ?? '0') || 0 }))));
 
-  if (options.scope === 'deck') {
-    const defaults = structuredClone(deck.themeStyle ?? source);
-    for (const role of options.roles) {
-      if (options.fontFamily) defaults.fonts[role].family = source.fonts[role].family;
-      if (options.fontWeight) defaults.fonts[role].weight = source.fonts[role].weight;
-      if (options.typeScale) {
-        defaults.fonts[role].size = source.fonts[role].size;
-        defaults.fonts[role].lineHeight = source.fonts[role].lineHeight;
-        defaults.fonts[role].letterSpacing = source.fonts[role].letterSpacing;
-      }
-      if (options.textColor) {
-        defaults.fonts[role].color = source.fonts[role].color ?? source.colors.text;
-      }
+  // An apply, at any scope, installs what it adopts into the deck's defaults
+  // and so into theme.css: that is the only way the slides it touches can
+  // *follow* the theme rather than carry a copy of it. Everything outside the
+  // scope is pinned first, so installing moves nothing the author did not ask
+  // to move (see installThemeStyle).
+  const defaults = structuredClone(deck.themeStyle ?? effectiveThemeStyle(deck));
+  for (const role of options.roles) {
+    if (options.fontFamily) defaults.fonts[role].family = source.fonts[role].family;
+    if (options.fontWeight) defaults.fonts[role].weight = source.fonts[role].weight;
+    if (options.typeScale) {
+      defaults.fonts[role].size = source.fonts[role].size;
+      defaults.fonts[role].lineHeight = source.fonts[role].lineHeight;
+      defaults.fonts[role].letterSpacing = source.fonts[role].letterSpacing;
     }
-    if (options.textColor && options.roles.includes('base')) defaults.colors.text = source.colors.text;
-    if (options.textColor && options.roles.includes('caption')) defaults.colors.muted = source.colors.muted;
-    if (options.background) defaults.colors.background = source.colors.background;
-    if (options.objectColors) {
-      defaults.palette = [...source.palette];
-      defaults.colors.accent = source.colors.accent;
+    if (options.textColor) {
+      defaults.fonts[role].color = source.fonts[role].color ?? source.colors.text;
     }
-    deck.themeStyle = defaults;
-    deck.themePreset = theme.id;
+  }
+  if (options.textColor && options.roles.includes('base')) defaults.colors.text = source.colors.text;
+  if (options.textColor && options.roles.includes('caption')) defaults.colors.muted = source.colors.muted;
+  if (options.background) defaults.colors.background = source.colors.background;
+  if (options.objectColors) {
+    defaults.palette = [...source.palette];
+    defaults.colors.accent = source.colors.accent;
+  }
+  const adoptedAnything = options.fontFamily || options.fontWeight || options.typeScale
+    || options.textColor || options.background || options.objectColors;
+  if (adoptedAnything) {
+    installThemeStyle(deck, defaults, theme.id, {
+      slides: new Set(options.scope === 'selection' ? [] : slides.map((slide) => slide.id)),
+      elements: options.scope === 'selection' ? selection : new Set(),
+    });
   }
 
   // Remember the choice, not just its effect: a slide created later has no
@@ -565,8 +585,6 @@ export function adoptThemeStyles(
   // applies are deliberately narrow and say nothing about the deck's look, and
   // an apply with every property off is a no-op that must stay one — including
   // for the slides the author has yet to create.
-  const adoptedAnything = options.fontFamily || options.fontWeight || options.typeScale
-    || options.textColor || options.background || options.objectColors;
   if (options.scope !== 'selection' && adoptedAnything) {
     noteThemeUsed(deck, theme.id);
     deck.themeSelection = {
@@ -582,11 +600,11 @@ export function adoptThemeStyles(
 
   for (const slide of slides) {
     if (options.background && options.scope !== 'selection') {
-      slide.background = { color: source.colors.background, image: null };
-      // The ground is now the author's explicit choice. A slide that was
-      // following its layout master must stop, or the next master sync hands
-      // the background straight back to the master and the theme visibly
-      // "falls off" the slide.
+      // The ground now follows theme.css. Explicitly not the master's: a slide
+      // that was following its layout master must stop, or the next master
+      // sync hands the background straight back to the master and the theme
+      // visibly "falls off" the slide.
+      slide.background = { color: null, image: null };
       slide.layoutBackgroundInherited = false;
     }
     for (const el of slide.elements) {
@@ -600,23 +618,18 @@ export function adoptThemeStyles(
           el.class = [...el.class.filter((name) => !name.startsWith('role-')), `role-${role}`];
         }
         if (!options.roles.includes(role)) continue;
-        if (options.scope === 'deck' && !options.replaceOverrides) continue;
-        const font = source.fonts[role];
-        const style = { ...el.style };
-        const inherit = options.scope === 'deck' && options.replaceOverrides;
-        const set = (property: string, value: string) => {
-          if (inherit) delete style[property];
-          else style[property] = value;
-        };
-        if (options.fontFamily) set('font-family', font.family);
-        if (options.fontWeight) set('font-weight', String(font.weight));
-        if (options.typeScale) {
-          set('font-size', `${font.size}px`);
-          set('line-height', String(font.lineHeight));
-          set('letter-spacing', font.letterSpacing);
-        }
-        if (options.textColor) set('color', font.color ?? source.colors.text);
-        el.style = style;
+        if (!options.replaceOverrides) continue;
+        // Following the theme means carrying none of it: the box's own copy
+        // at every level -- the box, `.text-content`, and the runs inside the
+        // markup -- would each outrank the stylesheet. Relative run sizes
+        // (superscripts, a small unit after a figure) scale with the box and
+        // stay.
+        const properties: string[] = [];
+        if (options.fontFamily) properties.push('font-family');
+        if (options.fontWeight) properties.push('font-weight');
+        if (options.typeScale) properties.push('font-size', 'line-height', 'letter-spacing');
+        if (options.textColor) properties.push('color');
+        if (properties.length > 0) clearTextProperties(el, properties);
       } else if (el.type === 'shape' && options.objectColors) {
         if (el.fill) el.fill = remapObjectColor(el.fill, source.palette, slots);
         if (el.stroke) el.stroke = remapObjectColor(el.stroke, source.palette, slots);
@@ -625,15 +638,178 @@ export function adoptThemeStyles(
   }
 }
 
+/**
+ * Remove a box's own declarations for `properties` at every level, so the
+ * stylesheet decides them. Absolute run sizes go; relative ones stay.
+ */
+export function clearTextProperties(el: Extract<SlideElement, { type: 'text' }>, properties: string[]): void {
+  const style = { ...el.style };
+  for (const property of properties) delete style[property];
+  el.style = style;
+  if (el.contentStyle) {
+    const contentStyle = { ...el.contentStyle };
+    for (const property of properties) delete contentStyle[property];
+    el.contentStyle = Object.keys(contentStyle).length > 0 ? contentStyle : undefined;
+  }
+  el.html = stripStyleProperties(el.html, properties);
+}
+
+/**
+ * Strip CSS declarations from every `style="…"` attribute in authored markup,
+ * without a DOM: the CLI runs this too. A `font-size` in a relative unit is
+ * kept -- it describes the run against its box, not a fixed size.
+ */
+export function stripStyleProperties(html: string, properties: string[]): string {
+  if (properties.length === 0 || !/style\s*=/.test(html)) return html;
+  const wanted = new Set(properties.map((property) => property.toLowerCase()));
+  return html.replace(/\sstyle\s*=\s*("([^"]*)"|'([^']*)')/gi, (match, _quoted, doubleQuoted, singleQuoted) => {
+    const declarations = String(doubleQuoted ?? singleQuoted ?? '')
+      .split(';')
+      .map((declaration) => declaration.trim())
+      .filter(Boolean)
+      .filter((declaration) => {
+        const colon = declaration.indexOf(':');
+        if (colon === -1) return true;
+        const property = declaration.slice(0, colon).trim().toLowerCase();
+        const value = declaration.slice(colon + 1).trim();
+        if (!wanted.has(property)) return true;
+        return property === 'font-size' && /(em|rem|%|ex|ch)$/i.test(value);
+      });
+    if (declarations.length === 0) return '';
+    const quote = doubleQuoted !== undefined ? '"' : "'";
+    void match;
+    return ` style=${quote}${declarations.join('; ')}${quote}`;
+  });
+}
+
+/**
+ * What theme.css gives a box the deck has no composed defaults for.
+ *
+ * A new deck ships the stock stylesheet in `deckStore.ts`, and until a theme
+ * is installed that is what every box following the cascade renders in. When
+ * the first install replaces it, the boxes outside the install's scope have to
+ * be pinned at *these* values to stay as they are. Imported decks carry their
+ * type inline, so the guess rarely has to be right there.
+ */
+export const STOCK_STYLESHEET_STYLE: ThemeStyle = {
+  fonts: {
+    title: { family: '"Helvetica Neue", Inter, system-ui, sans-serif', size: 92, weight: 700, lineHeight: 1.28, letterSpacing: '-0.02em' },
+    heading: { family: '"Helvetica Neue", Inter, system-ui, sans-serif', size: 58, weight: 600, lineHeight: 1.28, letterSpacing: 'normal' },
+    body: { family: '"Helvetica Neue", Inter, system-ui, sans-serif', size: 48, weight: 400, lineHeight: 1.3, letterSpacing: 'normal' },
+    caption: { family: '"Helvetica Neue", Inter, system-ui, sans-serif', size: 30, weight: 400, lineHeight: 1.3, letterSpacing: 'normal', color: '#666666' },
+    base: { family: '"Helvetica Neue", Inter, system-ui, sans-serif', size: 48, weight: 400, lineHeight: 1.28, letterSpacing: 'normal' },
+  },
+  palette: [],
+  colors: { background: '#ffffff', text: '#111111', muted: '#666666', accent: '#111111' },
+};
+
+/**
+ * The label the generated theme.css block carries: the installed preset's
+ * name, marked when the deck's composed defaults have drifted from it. One
+ * helper so the shell's mirror and the panel write the same block for the
+ * same defaults instead of taking turns rewriting each other's comment.
+ */
+export function themeStyleLabel(deck: Deck): string {
+  const installed = themeById(deck.themePreset, deckThemes(deck));
+  if (!installed) return 'Custom deck defaults';
+  if (!deck.themeStyle) return installed.name;
+  const pristine = JSON.stringify(themeStyleOf(installed)) === JSON.stringify(deck.themeStyle);
+  return pristine ? installed.name : `${installed.name} · Modified`;
+}
+
+/** The defaults theme.css currently expresses for this deck, as best the data knows. */
+export function effectiveThemeStyle(deck: Deck): ThemeStyle {
+  if (deck.themeStyle) return deck.themeStyle;
+  const installed = themeById(deck.themePreset, deckThemes(deck));
+  return installed ? themeStyleOf(installed) : STOCK_STYLESHEET_STYLE;
+}
+
+/**
+ * The colours a freshly inserted object should be born in: the theme the
+ * deck's slides are wearing. A theme applied to slides rather than deck-wide
+ * leaves `themeStyle` alone and records the choice in `themeSelection`, so the
+ * selection wins when it names a different preset than the installed one.
+ */
+export function newObjectColors(deck: Deck): { fill: string; stroke: string } {
+  const selection = deck.themeSelection;
+  const chosen = selection && selection.preset !== deck.themePreset
+    ? themeById(selection.preset, deckThemes(deck))
+    : null;
+  const colors = chosen ? chosen.colors : effectiveThemeStyle(deck).colors;
+  return { fill: colors.accent, stroke: colors.text };
+}
+
+function roleColor(style: ThemeStyle, role: ThemeTextRole): string {
+  return style.fonts[role].color ?? (role === 'caption' ? style.colors.muted : style.colors.text);
+}
+
+/**
+ * Make `next` the deck's composed defaults -- the theme.css the slides load --
+ * while nothing outside `following` changes on screen.
+ *
+ * theme.css is one stylesheet for every slide, so changing it would move every
+ * box that follows it. Before the change, each such box outside the scope is
+ * pinned at the value it renders at today, for exactly the properties that are
+ * about to differ; a slide's ground likewise. Boxes already carrying their own
+ * value are untouched. The boxes in `following` are left on the cascade: they
+ * are the ones the author asked to move. A `base` box's size and line height
+ * come from `.element-text`, not from `.slide`, so those two are never pinned.
+ */
+export function installThemeStyle(
+  deck: Deck,
+  next: ThemeStyle,
+  presetId: string,
+  following: { slides: Set<string>; elements: Set<string> },
+): void {
+  const previous = effectiveThemeStyle(deck);
+  for (const slide of deck.slides) {
+    if (following.slides.has(slide.id)) continue;
+    if (
+      slide.background.color === null && slide.background.image === null
+      && previous.colors.background !== next.colors.background
+    ) {
+      slide.background = { color: previous.colors.background, image: null };
+      slide.layoutBackgroundInherited = false;
+    }
+    for (const el of slide.elements) {
+      if (el.type !== 'text' || following.elements.has(el.id)) continue;
+      const role = explicitRole(el) ?? 'base';
+      const was = previous.fonts[role];
+      const will = next.fonts[role];
+      const pin = (property: string, before: string, after: string): void => {
+        if (before === after) return;
+        if (el.style[property] !== undefined || el.contentStyle?.[property] !== undefined) return;
+        el.style = { ...el.style, [property]: before };
+      };
+      pin('font-family', was.family, will.family);
+      pin('font-weight', String(was.weight), String(will.weight));
+      if (role !== 'base') {
+        pin('font-size', `${was.size}px`, `${will.size}px`);
+        pin('line-height', String(was.lineHeight), String(will.lineHeight));
+      }
+      pin('letter-spacing', was.letterSpacing, will.letterSpacing);
+      pin('color', roleColor(previous, role), roleColor(next, role));
+    }
+  }
+  deck.themeStyle = structuredClone(next);
+  deck.themePreset = presetId;
+}
+
 /** Replace any previously installed theme block, leaving user CSS untouched. */
 export function withThemeBlock(css: string, block: string): string {
   const wrapped = `${THEME_BLOCK_START}\n${block}${THEME_BLOCK_END}\n`;
   const start = css.indexOf(THEME_BLOCK_START);
   const end = css.indexOf(THEME_BLOCK_END);
-  if (start !== -1 && end > start) {
-    return css.slice(0, start) + wrapped + css.slice(end + THEME_BLOCK_END.length + 1);
-  }
-  return `${wrapped}\n${css}`;
+  const rest = start !== -1 && end > start
+    ? css.slice(0, start) + css.slice(end + THEME_BLOCK_END.length + 1)
+    : css;
+  // The block goes last. A deck's stock stylesheet styles `.role-title` and
+  // `.role-body` at the same specificity as the block does, and CSS gives a
+  // tie to whichever rule comes later: with the block on top, a fresh deck
+  // never actually rendered an installed theme's sizes. Hand-written rules
+  // that mean to win still can, by being more specific.
+  const trimmed = rest.replace(/\s+$/, '');
+  return trimmed ? `${trimmed}\n\n${wrapped}` : wrapped;
 }
 
 /** Parse #rgb/#rrggbb; null for anything else (rgba stays untouched). */
@@ -856,4 +1032,27 @@ export function applyDeckThemeToNewSlide(deck: Deck, slideIndex: number): void {
   }, slideIndex, new Set());
   // The background is now the slide's own, not the layout master's.
   slide.layoutBackgroundInherited = false;
+}
+
+/*
+ * --- Deck-wide type scale per role ---
+ *
+ * A role's size lives in `deck.themeStyle` and becomes the `.role-*` rule in
+ * theme.css. Editing it is a change to the deck's *defaults*: new slides are
+ * born at the new size, and an explicit Apply moves existing slides to it.
+ * Existing slides otherwise keep exactly the size they had.
+ */
+
+/** The type-scale declarations a role owns. Family and weight are not scale. */
+export const ROLE_TYPE_SCALE_PROPERTIES = ['font-size', 'line-height', 'letter-spacing'] as const;
+
+/**
+ * Change one role's default size without moving a single existing box: new
+ * slides are born at it, and an Apply moves existing slides to it.
+ */
+export function setThemeRoleSize(deck: Deck, role: ThemeTextRole, size: number): void {
+  const base = deckTheme(deck) ?? THEMES[0];
+  const style = structuredClone(deck.themeStyle ?? themeStyleOf(base));
+  style.fonts[role].size = size;
+  installThemeStyle(deck, style, base.id, { slides: new Set(), elements: new Set() });
 }

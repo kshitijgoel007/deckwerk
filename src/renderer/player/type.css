@@ -78,13 +78,32 @@
    other block, so centring a bulleted text element actually centres it. */
 .text-body :is(ul, ol) {
   margin: 0;
-  /* `ol` cannot use the browser's fixed 40px inset: at presentation-sized
-     type it clips the digit and leaves only the period visible as a "bullet". */
-  padding-left: 1.4em;
+  /* Markers sit flush with the text box: no inset on the list itself. */
+  padding-left: 0;
 }
 
+/* The marker is laid out inside the item and the item hangs its wrapped
+   lines: the bullet (or number) starts at the box edge with no whitespace
+   before it, while continuation lines line up under the first line's text. */
 .text-body li {
   margin: 0.15em 0;
+  list-style-position: inside;
+  padding-left: 1.4em;
+  text-indent: -1.4em;
+}
+
+/* Blocks nested in an item (a wrapped paragraph, a sub-list) are not the
+   marker line and must not inherit its hanging indent. */
+.text-body li > :is(p, div, ul, ol, table) {
+  text-indent: 0;
+}
+
+/* Every level below the first indents by one step relative to the level
+   above. Inside an item the item's own padding already supplies that step;
+   Chromium's indent command writes the sub-list as a *sibling* of its item
+   (see canvas.ts), so that shape needs the step spelled out. */
+.text-body :is(ul, ol) > :is(ul, ol) {
+  padding-left: 1.4em;
 }
 
 /* An authored marker colour is independent of character-level text runs.

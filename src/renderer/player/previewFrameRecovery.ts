@@ -26,6 +26,9 @@ function needsRecovery(video: HTMLVideoElement): boolean {
   // capture path pinning its own frames). Not ours to touch.
   if (video.dataset.posterTime === undefined) return false;
   if (video.dataset.holdFrame === 'true') return false;
+  // Built without a source on purpose: its still is on its way from the
+  // poster provider, or freezePreviewVideos will restore the source itself.
+  if (video.dataset.posterPending === 'true') return false;
   // An element the gate aborted while it was detached has no src; if it is
   // back on screen (a cached rail thumbnail, re-appended) the stashed source
   // is what makes it recoverable at all.

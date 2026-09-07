@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { emptyDeck } from '../src/shared/deck.js';
+import { THEMES, chooseDeckTheme, fullThemeSelection } from '../src/shared/themes.js';
 import {
   EditorCanvas,
   elementContainsPoint,
@@ -2161,13 +2162,15 @@ describe('native line endpoint editing', () => {
 
     expect(host.querySelectorAll('.multi-line-sel')).toHaveLength(2);
     expect(host.querySelectorAll('.selection-line-preview')).toHaveLength(2);
-    expect(host.querySelectorAll('.multi-line-sel .handle')).toHaveLength(0);
+    // Each line keeps its endpoint handles so a bundle can be reshaped together.
+    expect(host.querySelectorAll('.multi-line-sel .handle-endpoint')).toHaveLength(4);
+    expect(host.querySelectorAll('.multi-line-sel [data-handle]')).toHaveLength(0);
 
     const inspectorHost = document.createElement('aside');
     document.body.appendChild(inspectorHost);
     new Inspector(inspectorHost, store);
     const arrowStyle = [...inspectorHost.querySelectorAll<HTMLElement>('.insp-group')]
-      .find((section) => section.querySelector('h3')?.textContent === 'Arrow style')!;
+      .find((section) => section.querySelector('h4')?.textContent === 'Arrow style')!;
     const widthField = [...arrowStyle.querySelectorAll<HTMLLabelElement>('label')]
       .find((label) => label.querySelector('span')?.textContent === 'WIDTH')!;
     const width = widthField.querySelector<HTMLInputElement>('input')!;
@@ -2206,7 +2209,7 @@ describe('same-kind multi-selection properties', () => {
 
     expect(inspectorHost.querySelector('.morph-section')).toBeNull();
     const textGroup = [...inspectorHost.querySelectorAll<HTMLElement>('.insp-group')]
-      .find((section) => section.querySelector('h3')?.textContent === 'Text')!;
+      .find((section) => section.querySelector('h4')?.textContent === 'Text')!;
     const field = (label: string) => [...textGroup.querySelectorAll<HTMLLabelElement>('label')]
       .find((candidate) => candidate.querySelector('span')?.textContent === label)!;
     const family = field('Font family').querySelector<HTMLSelectElement>('select')!;
@@ -2226,7 +2229,7 @@ describe('same-kind multi-selection properties', () => {
     family.value = 'Inter';
     family.dispatchEvent(new Event('change', { bubbles: true }));
     const rerenderedText = [...inspectorHost.querySelectorAll<HTMLElement>('.insp-group')]
-      .find((section) => section.querySelector('h3')?.textContent === 'Text')!;
+      .find((section) => section.querySelector('h4')?.textContent === 'Text')!;
     const rerenderedWeight = [...rerenderedText.querySelectorAll<HTMLLabelElement>('label')]
       .find((candidate) => candidate.querySelector('span')?.textContent === 'Font weight')!
       .querySelector<HTMLInputElement>('input')!;
@@ -2255,23 +2258,23 @@ describe('same-kind multi-selection properties', () => {
     new Inspector(inspectorHost, store);
 
     const videoGroup = [...inspectorHost.querySelectorAll<HTMLElement>('.insp-group')]
-      .find((section) => section.querySelector('h3')?.textContent === 'Video')!;
+      .find((section) => section.querySelector('h4')?.textContent === 'Video')!;
     const optionSections = [...videoGroup.querySelectorAll<HTMLElement>('.insp-option-section')];
     expect(optionSections.map((section) => section.querySelector('h4')?.textContent))
       .toEqual([
         'Playback',
-        'Sizing',
-        'Masking - non-destructive & revertible',
+        'Mask',
         'Border',
         'Effects',
       ]);
     expect(optionSections[0].querySelectorAll('.video-checkbox-grid > .field-check')).toHaveLength(4);
+    // Keep-aspect-ratio clips like the mask does, so it lives in that section.
     expect(optionSections[1].textContent).toContain('Keep aspect ratio');
-    expect(optionSections[2].textContent).toContain('Corner radius');
-    expect(optionSections[2].textContent).toContain('Circular mask');
-    expect(optionSections[3].textContent).toContain('Color');
-    expect(optionSections[3].textContent).toContain('Width');
-    expect(optionSections[3].textContent).not.toContain('Corner radius');
+    expect(optionSections[1].textContent).toContain('Corner radius');
+    expect(optionSections[1].textContent).toContain('Circular mask');
+    expect(optionSections[2].textContent).toContain('Color');
+    expect(optionSections[2].textContent).toContain('Width');
+    expect(optionSections[2].textContent).not.toContain('Corner radius');
     const autoplay = [...videoGroup.querySelectorAll<HTMLLabelElement>('label')]
       .find((label) => label.querySelector('span')?.textContent === 'Autoplay')!
       .querySelector<HTMLInputElement>('input')!;
@@ -2404,6 +2407,34 @@ describe('object creation and manipulation', () => {
     expect(rendered.getAttribute('cy')).toBe(String(ellipse.h / 2));
     expect(rendered.ownerSVGElement!.style.display).toBe('block');
     expect([...store.get().selection]).toEqual([ellipse.id]);
+  });
+
+  it('fills a new shape with the installed theme accent and inks a new line in its text colour', () => {
+    const { store } = setup();
+    const theme = THEMES[2];
+    store.commit((deck) => chooseDeckTheme(deck, theme));
+    expect(insertShape(store, 'rect').fill).toBe(theme.colors.accent);
+    expect(insertShape(store, 'ellipse').fill).toBe(theme.colors.accent);
+    expect(insertLine(store, 'arrow').stroke).toBe(theme.colors.text);
+  });
+
+  it('colours a new shape from the theme applied to slides when it differs from the installed one', () => {
+    const { store } = setup();
+    const installed = THEMES[0];
+    const applied = THEMES[3];
+    store.commit((deck) => {
+      chooseDeckTheme(deck, installed);
+      deck.themeSelection = fullThemeSelection(applied.id);
+    });
+    expect(applied.colors.accent).not.toBe(installed.colors.accent);
+    expect(insertShape(store, 'rect').fill).toBe(applied.colors.accent);
+  });
+
+  it('falls back to the stock stylesheet colours when no theme is installed', () => {
+    const { store } = setup();
+    expect(store.get().deck.themePreset).toBeNull();
+    expect(insertShape(store, 'rect').fill).toBe('#111111');
+    expect(insertLine(store, 'line').stroke).toBe('#111111');
   });
 
   it('inserts an ellipse as a circle', () => {
@@ -2888,6 +2919,118 @@ describe('object creation and manipulation', () => {
     expect(getComputedStyle(svg).display).toBe('block');
   });
 
+  it('snaps a dragged line endpoint to alignment guides, unless Command is held', () => {
+    const dragEnd = (metaKey: boolean) => {
+      const { store, host } = setup();
+      stageAtOne(host);
+      const line = insertLine(store, 'line');
+      const handle = host.querySelector<HTMLElement>(`.handle-endpoint[data-endpoint="end"]`)!;
+      // The video's right edge is x=740; aim 4px past it.
+      const target = { x: 744, y: 800 };
+      pointer(handle, 'pointerdown', line.x + line.w, line.y + line.h / 2);
+      host.dispatchEvent(new PointerEvent('pointermove', {
+        clientX: target.x, clientY: target.y, bubbles: true, pointerId: 1, button: 0, metaKey,
+      }));
+      const changed = store.slide!.elements.find((el) => el.id === line.id)!;
+      const guides = [...host.querySelectorAll('.guide-x')];
+      pointer(host, 'pointerup', target.x, target.y);
+      return { end: lineEndpoints(changed).end, guides, host };
+    };
+
+    const snapped = dragEnd(false);
+    expect(snapped.end.x).toBeCloseTo(740, 0);
+    expect(snapped.guides).toHaveLength(1);
+    // The guide vanishes with the drag.
+    expect(snapped.host.querySelectorAll('.guide').length).toBe(0);
+
+    const free = dragEnd(true);
+    expect(free.end.x).toBeCloseTo(744, 0);
+    expect(free.guides).toHaveLength(0);
+  });
+
+  it('snaps a dragged endpoint level with the fixed end', () => {
+    const { store, host } = setup();
+    stageAtOne(host);
+    const line = insertLine(store, 'line');
+    const { start } = lineEndpoints(line);
+    const handle = host.querySelector<HTMLElement>(`.handle-endpoint[data-endpoint="end"]`)!;
+    const target = { x: 1500, y: start.y + 4 };
+    pointer(handle, 'pointerdown', line.x + line.w, line.y + line.h / 2);
+    pointer(host, 'pointermove', target.x, target.y);
+    const changed = store.slide!.elements.find((el) => el.id === line.id)!;
+    const { start: s2, end } = lineEndpoints(changed);
+    expect(end.y).toBeCloseTo(s2.y, 0);
+    expect(changed.rot).toBeCloseTo(0, 0);
+    expect(host.querySelectorAll('.guide-y').length).toBe(1);
+    pointer(host, 'pointerup', target.x, target.y);
+  });
+
+  it('drags the same endpoint of every selected line together', () => {
+    const { store, host } = setup();
+    stageAtOne(host);
+    const a = insertLine(store, 'arrow');
+    const b = insertLine(store, 'arrow');
+    // Stack the second arrow below the first so both are level.
+    store.commit((deck) => {
+      const el = deck.slides[0].elements.find((e) => e.id === b.id)!;
+      el.y += 200;
+    });
+    store.select([a.id, b.id]);
+    const before = {
+      a: lineEndpoints(store.slide!.elements.find((e) => e.id === a.id)!),
+      b: lineEndpoints(store.slide!.elements.find((e) => e.id === b.id)!),
+    };
+    const handle = host.querySelector<HTMLElement>(
+      `.handle-endpoint[data-endpoint="end"][data-element-id="${a.id}"]`,
+    )!;
+    // Shorten by 100px, with Command held so no guide interferes.
+    const target = { x: before.a.end.x - 100, y: before.a.end.y };
+    handle.dispatchEvent(new PointerEvent('pointerdown', {
+      clientX: before.a.end.x, clientY: before.a.end.y, bubbles: true, pointerId: 1, button: 0,
+    }));
+    host.dispatchEvent(new PointerEvent('pointermove', {
+      clientX: target.x, clientY: target.y, bubbles: true, pointerId: 1, button: 0, metaKey: true,
+    }));
+    pointer(host, 'pointerup', target.x, target.y);
+
+    const after = {
+      a: lineEndpoints(store.slide!.elements.find((e) => e.id === a.id)!),
+      b: lineEndpoints(store.slide!.elements.find((e) => e.id === b.id)!),
+    };
+    for (const key of ['a', 'b'] as const) {
+      expect(after[key].start.x).toBeCloseTo(before[key].start.x, 0);
+      expect(after[key].start.y).toBeCloseTo(before[key].start.y, 0);
+      expect(after[key].end.x).toBeCloseTo(before[key].end.x - 100, 0);
+      expect(after[key].end.y).toBeCloseTo(before[key].end.y, 0);
+    }
+    expect(store.get().selection.size).toBe(2);
+  });
+
+  it('snaps a shift-dragged line endpoint to 45-degree steps', () => {
+    const { store, host } = setup();
+    stageAtOne(host);
+    const line = insertLine(store, 'line');
+    const { start } = lineEndpoints(line);
+    const handle = host.querySelector<HTMLElement>(`.handle-endpoint[data-endpoint="end"]`)!;
+    // 38 degrees off the horizontal, 300 along it: snaps to 45.
+    const target = { x: start.x + 300, y: start.y + 235 };
+    pointer(handle, 'pointerdown', line.x + line.w, line.y + line.h / 2);
+    host.dispatchEvent(new PointerEvent('pointermove', {
+      clientX: target.x, clientY: target.y, bubbles: true, pointerId: 1, button: 0, shiftKey: true,
+    }));
+    const changed = store.slide!.elements.find((el) => el.id === line.id)!;
+    expect(changed.rot).toBeCloseTo(45, 0);
+    const { start: s2, end } = lineEndpoints(changed);
+    expect(s2.x).toBeCloseTo(start.x, 0);
+    expect(s2.y).toBeCloseTo(start.y, 0);
+    expect(end.x - s2.x).toBeCloseTo(end.y - s2.y, 0);
+    // Releasing shift mid-drag goes back to following the pointer exactly.
+    pointer(host, 'pointermove', target.x, target.y);
+    const free = store.slide!.elements.find((el) => el.id === line.id)!;
+    expect(Math.abs(lineEndpoints(free).end.y - target.y)).toBeLessThan(1.5);
+    pointer(host, 'pointerup', target.x, target.y);
+  });
+
   it('leaves a rotated arrow selection box unrotated so canvas-space handles land on the arrow', () => {
     const { store, host } = setup();
     stageAtOne(host);
@@ -3195,5 +3338,33 @@ describe('spacing and sizing guides', () => {
     const bars = [...host.querySelectorAll('.measure-size')];
     expect(bars.length).toBeGreaterThanOrEqual(2);
     expect(new Set(bars.map((bar) => bar.textContent))).toEqual(new Set(['100']));
+  });
+});
+
+describe('pointer-ups on chrome laid over the canvas', () => {
+  it('does not end a transaction another control owns', () => {
+    const { store, host } = setup();
+    // The speaker notes drawer lives inside the canvas host. Clicking into its
+    // textarea focuses it (which begins the drawer's typing transaction) and
+    // the same click's pointer-up bubbles to the canvas.
+    const drawer = document.createElement('section');
+    drawer.className = 'notes-drawer';
+    const textarea = document.createElement('textarea');
+    drawer.appendChild(textarea);
+    host.appendChild(drawer);
+
+    textarea.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0 }));
+    store.beginTransaction('Edit speaker notes');
+    textarea.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, button: 0 }));
+
+    expect(store.isTransactionActive()).toBe(true);
+    store.endTransaction();
+  });
+
+  it('still ends its own gesture on a pointer-up over the slide', () => {
+    const { store, host } = setup();
+    store.beginTransaction('Move or resize objects');
+    host.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, button: 0 }));
+    expect(store.isTransactionActive()).toBe(false);
   });
 });

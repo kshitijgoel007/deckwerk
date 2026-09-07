@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Harness — Inspector panels</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #141416; }
+      #canvas { position: absolute; top: 0; left: 0; bottom: 0; right: 320px; }
+      #side { position: absolute; top: 0; right: 0; bottom: 0; }
+    </style>
+  </head>
+  <body>
+    <!-- Development harness: the real Inspector and Build panel in a plain browser. Not part of the app. -->
+    <div id="canvas"></div>
+    <aside id="side">
+      <nav id="side-tabs"></nav>
+      <div id="side-panels">
+        <div id="inspector" class="side-panel"></div>
+        <div id="timeline" class="side-panel" hidden></div>
+      </div>
+    </aside>
+    <script type="module" src="./inspector-boot.ts"></script>
+  </body>
+</html>

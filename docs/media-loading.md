@@ -86,6 +86,22 @@ fifteen elements of a one-clip deck never fetch at all and a re-rendered
 surface is a picture *synchronously*. Released elements are ungated
 (`ungateVideoLoad`), which frees both the connection and the decoder.
 
+In the desktop app the frame is not even captured in the page. Preview
+surfaces render with `deferVideoSrc: true`, which builds the `<video>` with
+*no source* (the URL is parked in `data-gate-aborted-src`, the poster time in
+`data-poster-time`, and `data-poster-pending` marks it), and
+`freezePreviewVideos` asks the poster provider (`previewPosterProvider.ts`)
+for the picture. The provider is `window.api.videoPoster`, which has the main
+process cut the frame with ffmpeg into a per-user cache and serve it as
+`deck://posters/<hash>.jpg` (`src/main/posterCache.ts`). The renderer thus
+never opens a media pipeline for a thumbnail. This is not a refinement: in
+Sept 2026 the create-and-tear-down churn of thumbnail pipelines on an
+81-video deck hit a lock inversion between Chromium's main and media threads
+and froze the editor window for good (`docs/confirmed-bugs.md`). The browser
+collab client has no provider and keeps the in-page capture; so does any
+element the provider cannot serve, whose source is restored and gated as
+before. Recovery (`previewFrameRecovery.ts`) leaves a pending element alone.
+
 The editor canvas and the Player keep real `<video>` elements: they play. A
 capture path (`holdFrame`) is skipped, and if a frame cannot be read (a tainted
 canvas) the element is simply left alone — the old behaviour.

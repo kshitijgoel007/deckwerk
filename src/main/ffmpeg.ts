@@ -118,6 +118,24 @@ export async function transcodeToH264(
 }
 
 /**
+ * Cut one frame of `input` at `seconds` to a JPEG at `output`.
+ *
+ * `-ss` before `-i` seeks by index, so this is a few frames of decoding even
+ * on a long clip. The frame is bounded to 960px on its long edge: it is for
+ * thumbnails, and a full-size still of a screen recording would cost more to
+ * decode in the renderer than it is worth.
+ */
+export async function extractPosterFrame(input: string, seconds: number, output: string): Promise<void> {
+  await run(getFfmpegPath(), [
+    '-hide_banner', '-loglevel', 'error', '-y',
+    '-ss', Math.max(0, seconds).toFixed(3), '-i', input,
+    '-frames:v', '1', '-an',
+    '-vf', "scale='min(960,iw)':-2",
+    '-q:v', '4', '-f', 'image2', output,
+  ]);
+}
+
+/**
  * Write raw RGBA pixels out as a PNG.
  *
  * Node has no image encoder and the main process has no canvas, so the one

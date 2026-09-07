@@ -143,6 +143,45 @@ function harness(deck: Deck): Harness {
 describe('agent context publication', () => {
   beforeEach(() => document.body.replaceChildren());
 
+  it('does not mount a measuring copy of the slide for a speaker-note edit', async () => {
+    // Typing in the notes drawer commits a new deck per keystroke. Measuring
+    // the slide again each time meant rendering every image on it into a
+    // hidden host, which evicted the sidebar thumbnails' decoded pictures and
+    // made them flash blank on every key.
+    const h = harness(deckOf(makeSlide('slide-1', [text('a', 'One')])));
+    await h.bridge.flush();
+    const mounts: number[] = [];
+    const observer = new MutationObserver((records) => {
+      for (const record of records) mounts.push(record.addedNodes.length);
+    });
+    observer.observe(document.body, { childList: true });
+
+    h.store.commit((deck) => { deck.slides[0].notes = 'remember to pause'; }, { label: 'Edit speaker notes' });
+    await h.bridge.flush();
+    h.store.commit((deck) => { deck.slides[0].notes = 'remember to pause here'; }, { label: 'Edit speaker notes' });
+    await h.bridge.flush();
+    observer.disconnect();
+
+    expect(mounts.filter((n) => n > 0)).toEqual([]);
+    expect(h.published).toHaveLength(3);
+    // The revision still moves: the agent must see that the deck changed.
+    expect(h.published[2].deckRevision).not.toBe(h.published[0].deckRevision);
+    expect(h.published[2].scenes).toEqual(h.published[0].scenes);
+  });
+
+  it('measures again when the slide itself changes', async () => {
+    const h = harness(deckOf(makeSlide('slide-1', [text('a', 'One')])));
+    await h.bridge.flush();
+    const before = h.scene('slide-1');
+    h.store.commit((deck) => {
+      const element = deck.slides[0].elements[0];
+      if (element.type === 'text') element.html = 'Something much longer than before';
+    }, { label: 'Edit text' });
+    await h.bridge.flush();
+    expect(h.scene('slide-1').elements[0].text?.plain).toBe('Something much longer than before');
+    expect(h.scene('slide-1')).not.toEqual(before);
+  });
+
   it('reuses the deck revision across selection-only context publications', async () => {
     const deck = deckOf(
       makeSlide('slide-1', [text('a', 'One')]),

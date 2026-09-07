@@ -19,7 +19,7 @@ import { sameDeckIgnoringNotes, type EditorStore } from './store.js';
 import { LAYOUT_LABELS, applySlideLayout, type SlideLayout } from './slideLayouts.js';
 import { MorphPanel } from './morphPanel.js';
 import { fontFamilyField, primaryFamily } from './fontPicker.js';
-import { deckTheme, deckThemes, themeById } from '@shared/themes.js';
+import { deckTheme, deckThemes, themeById, type ThemeTextRole } from '@shared/themes.js';
 import { colorField, colorForInput } from './colorPicker.js';
 import { setCircularMask } from '@shared/mediaMask.js';
 import { mediaNaturalSize } from './mediaNatural.js';
@@ -73,6 +73,14 @@ const VIDEO_FLAG_LABELS = {
   controls: 'Controls',
 } as const;
 
+/** What fits in one stop of the playback toggle strip. */
+const VIDEO_FLAG_SHORT = {
+  autoplay: 'auto',
+  loop: 'loop',
+  muted: 'mute',
+  controls: 'ctrl',
+} as const;
+
 /**
  * The properties panel.
  *
@@ -110,6 +118,12 @@ export class Inspector {
   /** Apply a family to only the selected characters in the live text edit. */
   onApplyTextSelectionFontFamily?: (value: string) => boolean;
   onApplyTextSelectionFontSize?: (value: number) => boolean;
+  /**
+   * This inspector edits layout masters. A master carries no type scale (see
+   * layoutMasters.ts), so its size field is shown for what a placeholder
+   * inherits and cannot be typed into: the deck's sizes live in the theme.
+   */
+  editsLayoutMasters = false;
   /** Apply spacing after only the paragraphs covered by the live text selection. */
   onApplyTextSelectionParagraphSpacing?: (value: number | null) => boolean;
   /** Authored spacing shared by the paragraphs in the live text selection. */
@@ -326,7 +340,7 @@ export class Inspector {
       return;
     }
     if (selected.length > 1) {
-      this.host.appendChild(hint(`${selected.length} elements selected`));
+      this.host.appendChild(sectionTitle(`${selected.length} elements`));
       this.host.appendChild(this.alignSection());
       this.host.appendChild(this.geometrySection(selected));
       const first = selected[0];
@@ -471,7 +485,7 @@ export class Inspector {
     wrap.appendChild(button(
       active ? 'Done editing mask' : 'Edit mask',
       () => this.onToggleMask?.(elementId),
-      'primary panel-action',
+      active ? 'primary panel-action' : 'panel-action',
     ));
 
     const el = this.store
@@ -492,7 +506,7 @@ export class Inspector {
           }
         }, { label: 'Reset mask' }),
       );
-      reset.classList.add('primary', 'mask-reset-segment');
+      reset.classList.add('mask-reset-segment');
       wrap.classList.add('has-reset');
       wrap.appendChild(reset);
     }
@@ -502,10 +516,7 @@ export class Inspector {
   /** Rounded corners clip media, so keep them with the other mask controls. */
   private mediaMaskControls(elementId: string): HTMLElement {
     const el = this.store.selectedElements().find((element) => element.id === elementId);
-    const masking = optionSection(
-      'Masking - non-destructive & revertible',
-      'media-masking-options',
-    );
+    const masking = optionSection('Mask', 'media-masking-options', 'non-destructive');
     if (!el || (el.type !== 'image' && el.type !== 'video')) return masking.section;
 
     const settings = document.createElement('div');
@@ -516,7 +527,7 @@ export class Inspector {
           if (target.type === 'image' || target.type === 'video') {
             setMediaRadius(target, value);
           }
-        })),
+        }), { unit: 'px' }),
     );
     // Circle squares the window and crops the picture to it, so the mask is a
     // true circle whatever the media's aspect ratio. Mask editing then drags
@@ -530,6 +541,18 @@ export class Inspector {
         }, { label: on ? 'Circular mask' : 'Rectangular mask' })),
     );
     masking.content.appendChild(settings);
+    // 'contain' letterboxes inside the box (aspect ratio fixed); 'fill'
+    // stretches with it, which is what resizing feels like it should do
+    // when this is off. It clips like the mask does, so it lives here.
+    masking.content.appendChild(
+      checkboxField('Keep aspect ratio', el.fit !== 'fill', (on) =>
+        this.store.updateSelected((target) => {
+          if (target.type === 'image' || target.type === 'video') {
+            target.fit = on ? 'contain' : 'fill';
+          }
+        }),
+      ),
+    );
     masking.content.appendChild(this.maskButton(elementId));
     return masking.section;
   }
@@ -566,10 +589,10 @@ export class Inspector {
     }
 
     const end = el.end ?? duration;
-    const readout = document.createElement('p');
-    readout.className = 'insp-hint';
+    const readout = trim.caption;
+    readout.hidden = false;
     const setReadout = (from: number, to: number) => {
-      readout.textContent = `${from.toFixed(2)}s → ${to.toFixed(2)}s  (${(to - from).toFixed(2)}s of ${duration.toFixed(2)}s)`;
+      readout.textContent = `${from.toFixed(2)} – ${to.toFixed(2)} s of ${duration.toFixed(2)}`;
     };
     setReadout(el.start, end);
 
@@ -617,17 +640,17 @@ export class Inspector {
     seekPreview(el.start);
     this.trimPreviewSeek = seekPreview;
 
-    wrap.append(preview, range, readout);
-    wrap.appendChild(
-      button('Reset trim', () =>
-        this.store.updateSelected((e) => {
-          if (e.type !== 'video') return;
-          e.start = 0;
-          e.end = null;
-        }),
-        'primary panel-action',
-      ),
+    wrap.append(preview, range);
+    const reset = button('Reset trim', () =>
+      this.store.updateSelected((e) => {
+        if (e.type !== 'video') return;
+        e.start = 0;
+        e.end = null;
+      }),
+      'ghost trim-reset',
     );
+    reset.disabled = el.start === 0 && el.end === null;
+    wrap.appendChild(reset);
     return trim.section;
   }
 
@@ -655,17 +678,33 @@ export class Inspector {
         if (m.h !== undefined) el.h = Math.round(m.h);
       });
     };
-    const row = (pairs: Array<[string, AlignMode]>) => {
+    const strip = (entries: Array<[AlignMode, string]>) => {
       const div = document.createElement('div');
-      div.className = 'button-row';
-      for (const [label, mode] of pairs) div.appendChild(button(label, () => apply(mode)));
+      div.className = 'align-strip';
+      for (const [mode, title] of entries) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'align-strip-button';
+        b.title = title;
+        b.setAttribute('aria-label', title);
+        b.dataset.mode = mode;
+        b.appendChild(alignModeGlyph(mode));
+        b.addEventListener('click', () => apply(mode));
+        div.appendChild(b);
+      }
       return div;
     };
-    wrap.appendChild(row([['⟵', 'left'], ['⇔', 'hcenter'], ['⟶', 'right']]));
-    wrap.appendChild(row([['⤒', 'top'], ['⇕', 'vcenter'], ['⤓', 'bottom']]));
-    wrap.appendChild(row([['dist ⇢', 'distributeH'], ['dist ⇣', 'distributeV']]));
-    wrap.appendChild(row([['match W', 'matchW'], ['match H', 'matchH']]));
-    wrap.appendChild(hint('Match sizes uses the first-selected element as the reference.'));
+    const pair = document.createElement('div');
+    pair.className = 'align-strip-pair';
+    pair.appendChild(strip([['left', 'Align left'], ['hcenter', 'Align horizontal centres'], ['right', 'Align right']]));
+    pair.appendChild(strip([['top', 'Align top'], ['vcenter', 'Align vertical centres'], ['bottom', 'Align bottom']]));
+    wrap.appendChild(pair);
+    wrap.appendChild(strip([
+      ['distributeH', 'Distribute horizontally'],
+      ['distributeV', 'Distribute vertically'],
+      ['matchW', 'Match width of the first selected element'],
+      ['matchH', 'Match height of the first selected element'],
+    ]));
     return wrap;
   }
 
@@ -703,7 +742,7 @@ export class Inspector {
     row2.className = 'field-grid field-grid-2';
     row2.appendChild(
       numberField('ROT', multi ? commonValue(selected.map((element) => element.rot)) : first.rot, (v) =>
-        this.store.updateSelected((el) => (el.rot = v)),
+        this.store.updateSelected((el) => (el.rot = v)), { unit: '°' },
       ),
     );
     row2.appendChild(
@@ -713,7 +752,9 @@ export class Inspector {
     );
     wrap.appendChild(row2);
 
-    wrap.appendChild(opacityField(
+    const bottom = document.createElement('div');
+    bottom.className = 'geometry-bottom-row';
+    bottom.appendChild(opacityField(
       multi ? commonValue(selected.map((element) => element.opacity)) : first.opacity,
       () => {
         this.changingOpacity = true;
@@ -728,15 +769,30 @@ export class Inspector {
       },
     ));
 
+    const arrange = document.createElement('div');
+    arrange.className = 'field field-arrange';
+    const arrangeLabel = document.createElement('span');
+    arrangeLabel.textContent = 'Arrange';
     const order = document.createElement('div');
-    order.className = 'button-row z-order-row';
-    order.append(
-      button('Front', () => this.reorder('front')),
-      button('Forward', () => this.reorder('forward')),
-      button('Back', () => this.reorder('backward')),
-      button('To back', () => this.reorder('back')),
-    );
-    wrap.appendChild(order);
+    order.className = 'align-strip z-order-row';
+    for (const [dir, title] of [
+      ['front', 'Bring to front'],
+      ['forward', 'Bring forward'],
+      ['backward', 'Send backward'],
+      ['back', 'Send to back'],
+    ] as const) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'align-strip-button';
+      b.title = title;
+      b.setAttribute('aria-label', title);
+      b.appendChild(inlineGlyph(ARRANGE_GLYPHS[dir]));
+      b.addEventListener('click', () => this.reorder(dir));
+      order.appendChild(b);
+    }
+    arrange.append(arrangeLabel, order);
+    bottom.appendChild(arrange);
+    wrap.appendChild(bottom);
     return geometry.section;
   }
 
@@ -761,7 +817,6 @@ export class Inspector {
     const kind = shapes[0].shape;
     const label = kind === 'arrow' ? 'Arrow style' : kind === 'line' ? 'Line style' : 'Shape style';
     const wrap = group(label);
-    wrap.appendChild(hint(`Changes apply to all ${shapes.length} selected ${kind}s.`));
 
     if (kind === 'line' || kind === 'arrow') {
       wrap.appendChild(mixedCheckboxField(
@@ -820,7 +875,21 @@ export class Inspector {
     texts: Array<Extract<SlideElement, { type: 'text' }>>,
   ): HTMLElement {
     const wrap = group('Text');
-    wrap.appendChild(hint(`Changes apply to all ${texts.length} selected text boxes.`));
+    const roles = texts.map((text) =>
+      text.class.find((name) => /^role-(title|heading|body|caption|base)$/.test(name)) ?? 'none');
+    wrap.appendChild(mixedSelectField(
+      'Role', ['none', ...ROLE_ORDER.map((role) => `role-${role}`)],
+      commonValue(roles),
+      (value) => {
+        const role = value === 'none' ? null : value.slice(5);
+        const defaults = this.roleTypeDefaults(role);
+        this.store.updateSelected((element) => {
+          if (element.type !== 'text') return;
+          applyTextRole(element, role, defaults);
+        }, { label: role ? `Set role to ${role}` : 'Clear role' });
+      },
+    ));
+
     wrap.appendChild(mixedCheckboxField(
       'Auto-fit text to box',
       commonValue(texts.map((text) => Boolean(text.autoFit))),
@@ -896,6 +965,7 @@ export class Inspector {
       },
     );
     if (sizes.mixed || inheritedSizesDiffer) sizeField.querySelector('input')!.placeholder = 'Mixed';
+    if (this.editsLayoutMasters) lockSizeToTheme(sizeField);
     wrap.appendChild(sizeField);
 
     const weights = sharedValue(texts.map((text) => {
@@ -929,21 +999,6 @@ export class Inspector {
     );
     if (weights.mixed || inheritedWeightsDiffer) weightField.querySelector('input')!.placeholder = 'Mixed';
     wrap.appendChild(weightField);
-
-    const roles = texts.map((text) =>
-      text.class.find((name) => /^role-(title|body|caption)$/.test(name)) ?? 'none');
-    wrap.appendChild(mixedSelectField(
-      'Role', ['none', 'role-title', 'role-body', 'role-caption'],
-      commonValue(roles),
-      (value) => {
-        const role = value === 'none' ? null : value.slice(5);
-        const defaults = this.roleTypeDefaults(role);
-        this.store.updateSelected((element) => {
-          if (element.type !== 'text') return;
-          applyTextRole(element, role, defaults);
-        }, { label: role ? `Set role to ${role}` : 'Clear role' });
-      },
-    ));
 
     wrap.appendChild(mixedSelectField(
       'List', ['None', 'Bulleted', 'Numbered'],
@@ -1031,36 +1086,23 @@ export class Inspector {
   ): HTMLElement {
     const kind = media[0].type;
     const wrap = group(kind === 'image' ? 'Image' : 'Video');
-    wrap.appendChild(hint(`Changes apply to all ${media.length} selected ${kind}s.`));
     if (kind === 'video') {
-      const playback = optionSection('Playback', 'video-checkbox-grid');
+      const playback = optionSection('Playback', 'video-playback-options');
+      const flags = document.createElement('div');
+      flags.className = 'video-checkbox-grid';
       for (const key of ['autoplay', 'loop', 'muted', 'controls'] as const) {
-        playback.content.appendChild(mixedCheckboxField(
+        flags.appendChild(toggleSegment(mixedCheckboxField(
           VIDEO_FLAG_LABELS[key],
           commonValue(media.map((element) => element.type === 'video' && element[key])),
           (value) => this.store.updateSelected((element) => {
             if (element.type === 'video') element[key] = value;
           }),
-        ));
+        ), VIDEO_FLAG_SHORT[key]));
       }
+      playback.content.appendChild(flags);
       wrap.appendChild(playback.section);
     }
-    const sizing = optionSection('Sizing', 'media-sizing-options');
-    sizing.content.appendChild(mixedCheckboxField(
-      'Keep aspect ratio',
-      commonValue(media.map((element) => element.fit !== 'fill')),
-      (value) => this.store.updateSelected((element) => {
-        if (element.type === 'image' || element.type === 'video') {
-          element.fit = value ? 'contain' : 'fill';
-        }
-      }),
-    ));
-    wrap.appendChild(sizing.section);
-
-    const masking = optionSection(
-      'Masking - non-destructive & revertible',
-      'media-masking-options',
-    );
+    const masking = optionSection('Mask', 'media-masking-options', 'non-destructive');
     const maskSettings = document.createElement('div');
     maskSettings.className = 'media-mask-settings';
     maskSettings.append(
@@ -1072,6 +1114,7 @@ export class Inspector {
             setMediaRadius(element, value);
           }
         }),
+        { unit: 'px' },
       ),
       mixedCheckboxField(
         'Circular mask',
@@ -1084,6 +1127,15 @@ export class Inspector {
       ),
     );
     masking.content.appendChild(maskSettings);
+    masking.content.appendChild(mixedCheckboxField(
+      'Keep aspect ratio',
+      commonValue(media.map((element) => element.fit !== 'fill')),
+      (value) => this.store.updateSelected((element) => {
+        if (element.type === 'image' || element.type === 'video') {
+          element.fit = value ? 'contain' : 'fill';
+        }
+      }),
+    ));
     wrap.appendChild(masking.section);
 
     const editableBorders = media.map(editableMediaBorder);
@@ -1108,7 +1160,7 @@ export class Inspector {
             clearLegacyMediaBorder(element);
             element.borderWidth = Math.max(0, value);
           }
-        })),
+        }), { unit: 'px' }),
     );
     wrap.appendChild(border.section);
     if (commonValue(media.map((element) => JSON.stringify(editableVisualEffects(element)))) !== null) {
@@ -1133,9 +1185,10 @@ export class Inspector {
         // Preview in place. Double-clicking the video on the canvas does the
         // same thing; this is the discoverable version.
         const play = document.createElement('button');
-        play.className = 'primary panel-action';
+        play.className = 'primary panel-action video-preview-toggle';
         const setLabel = (playing: boolean) => {
           play.textContent = playing ? '❚❚ Pause preview' : '▶ Play preview';
+          play.title = playing ? 'Pause the preview on the canvas' : 'Play the clip on the canvas';
         };
         setLabel(false);
         play.addEventListener('click', () => {
@@ -1143,36 +1196,29 @@ export class Inspector {
         });
         playback.content.appendChild(play);
 
+        // Four independent on/off states read as one toggle strip, the same
+        // idiom as Bold / Italic / Underline.
         const flags = document.createElement('div');
         flags.className = 'video-checkbox-grid';
         for (const key of ['autoplay', 'loop', 'muted', 'controls'] as const) {
-          flags.appendChild(
+          flags.appendChild(toggleSegment(
             checkboxField(VIDEO_FLAG_LABELS[key], el[key], (v) =>
               this.store.updateSelected((e) => {
                 if (e.type === 'video') e[key] = v;
               }),
             ),
-          );
+            VIDEO_FLAG_SHORT[key],
+          ));
         }
         playback.content.appendChild(flags);
         wrap.appendChild(playback.section);
 
-        const sizing = optionSection('Sizing', 'media-sizing-options');
-        sizing.content.appendChild(
-          checkboxField('Keep aspect ratio', el.fit !== 'fill', (on) =>
-            this.store.updateSelected((e) => {
-              // 'contain' letterboxes inside the box (AR fixed); 'fill'
-              // stretches with it — which is what resizing feels like it
-              // should do when this is off.
-              if (e.type === 'video') e.fit = on ? 'contain' : 'fill';
-            }),
-          ),
-        );
-        wrap.appendChild(sizing.section);
+        // Trim is about time, like playback, so it sits beside it rather than
+        // after the mask and border sections.
+        wrap.appendChild(this.trimSection(el));
         wrap.appendChild(this.mediaMaskControls(el.id));
         wrap.appendChild(this.mediaBorderControls());
         wrap.appendChild(this.mediaEffectsControls());
-        wrap.appendChild(this.trimSection(el));
 
         // Last resort: the destructive ffmpeg editor. Writes a new file and
         // relinks — for when the non-destructive CSS path is not enough.
@@ -1190,15 +1236,6 @@ export class Inspector {
 
       case 'image': {
         const wrap = typeSections();
-        const sizing = optionSection('Sizing', 'media-sizing-options');
-        sizing.content.appendChild(
-          checkboxField('Keep aspect ratio', el.fit !== 'fill', (on) =>
-            this.store.updateSelected((e) => {
-              if (e.type === 'image') e.fit = on ? 'contain' : 'fill';
-            }),
-          ),
-        );
-        wrap.appendChild(sizing.section);
         wrap.appendChild(this.mediaMaskControls(el.id));
         wrap.appendChild(this.mediaBorderControls());
         wrap.appendChild(this.mediaEffectsControls());
@@ -1221,9 +1258,10 @@ export class Inspector {
         const layout = optionSection('Layout', 'text-layout-options');
 
         if (el.table) {
-          layout.content.appendChild(hint(
-            'Table rows automatically fit their contents. Drag the outer handles or blue column dividers to resize.',
-          ));
+          layout.caption.textContent = 'rows fit their contents';
+          layout.caption.hidden = false;
+          layout.caption.title =
+            'Table rows automatically fit their contents. Drag the outer handles or blue column dividers to resize.';
         } else {
           layout.content.appendChild(checkboxField('Auto-fit text to box', Boolean(el.autoFit), (on) =>
             this.store.updateSelected((target) => {
@@ -1327,6 +1365,7 @@ export class Inspector {
           fontSizeField.appendChild(status);
         }
         fontMetrics.appendChild(fontSizeField);
+        if (this.editsLayoutMasters) lockSizeToTheme(fontSizeField);
         fontMetrics.appendChild(optionalNumberField(
           'Font weight',
           displayedWeight,
@@ -1359,7 +1398,10 @@ export class Inspector {
         {
           const editing = this.editingText?.() ?? false;
           const selectionStyle = document.createElement('div');
-          selectionStyle.className = 'text-selection-style';
+          selectionStyle.className = 'text-selection-style field';
+          const styleLabel = document.createElement('span');
+          styleLabel.textContent = 'Style';
+          selectionStyle.appendChild(styleLabel);
           const formatButtons = document.createElement('div');
           formatButtons.className = 'button-row text-format-buttons';
           for (const [format, label, title] of [
@@ -1374,7 +1416,7 @@ export class Inspector {
               // A baseline shift describes a run, never a whole block, so
               // there is no box-level fallback to fall through to.
               if (isBaselineFormat(format)) return;
-              const active = wholeTextFormatState(el, format);
+              const active = wholeTextFormatState(el, format, computedTypography?.fontWeight ?? null);
               this.store.updateSelected((target) => {
                 if (target.type === 'text') setWholeTextFormat(target, format, !active);
               }, { label: `${active ? 'Remove' : 'Apply'} ${format}` });
@@ -1387,7 +1429,8 @@ export class Inspector {
               String(
                 editing
                   ? this.textSelectionFormatState?.(format) ?? false
-                  : !isBaselineFormat(format) && wholeTextFormatState(el, format),
+                  : !isBaselineFormat(format)
+                    && wholeTextFormatState(el, format, computedTypography?.fontWeight ?? null),
               ),
             );
             if (!editing && isBaselineFormat(format)) {
@@ -1406,9 +1449,7 @@ export class Inspector {
         // what "Cast fonts" and theme.css target, so restyling the deck later
         // lands on the right elements.
         const ROLES: Array<[string, string]> = [
-          ['role-title', 'Title'],
-          ['role-body', 'Body'],
-          ['role-caption', 'Caption'],
+          ...ROLE_ORDER.map((role): [string, string] => [`role-${role}`, ROLE_LABELS[role]]),
           ['', 'None'],
         ];
         const current = ROLES.find(([cls]) => cls && el.class.includes(cls))?.[0] ?? '';
@@ -1434,13 +1475,18 @@ export class Inspector {
         });
         roleSelect.append(roleSpan, roleDrop);
         roleSelect.classList.add('text-role');
-        typography.content.appendChild(roleSelect);
+        typography.content.prepend(roleSelect);
 
         // One mutually-exclusive list style control. When a live selection is
         // inside a list, the canvas transforms that entire list in place.
         const selectedListStyle = this.textSelectionListStyle?.();
-        const listStyle = selectField(
-          'List', ['None', 'Bulleted', 'Numbered'],
+        const listStyle = segmentedSelectField(
+          'List',
+          [
+            { value: 'None', title: 'No list', icon: LIST_GLYPHS.None },
+            { value: 'Bulleted', title: 'Bulleted list', icon: LIST_GLYPHS.Bulleted },
+            { value: 'Numbered', title: 'Numbered list', icon: LIST_GLYPHS.Numbered },
+          ],
           selectedListStyle ?? listStyleOfHtml(el.html),
           (style) => {
             if (this.onApplyTextSelectionListStyle?.(style as ListStyle)) return;
@@ -1456,13 +1502,19 @@ export class Inspector {
             select.disabled = true;
             select.title = 'List styles do not apply to tables';
           }
+          for (const choice of listStyle.querySelectorAll('button')) choice.disabled = true;
         }
-        layout.content.appendChild(listStyle);
+        const listRow = document.createElement('div');
+        listRow.className = 'text-list-row';
+        listRow.appendChild(listStyle);
+        layout.content.appendChild(listRow);
 
+        // The marker swatch sits beside List so it does not shift the layout
+        // when a list is switched on.
         const authoredMarker = listMarkerColorState(el.html);
         if (authoredMarker.hasList) {
           const marker = this.textSelectionMarkerColor?.() ?? authoredMarker;
-          layout.content.appendChild(colorField(
+          listRow.appendChild(colorField(
             marker.mixed ? 'Marker colour (mixed)' : 'Marker colour',
             marker.value,
             (value) => {
@@ -1478,15 +1530,17 @@ export class Inspector {
               clear: { kind: 'css', label: 'Follow text colour' },
             },
           ));
+          listRow.lastElementChild?.classList.add('field-color-stacked');
         }
 
         if (/<table\b/i.test(el.html)) {
           const table = optionSection('Table', 'text-table-options');
           const selected = this.tableSelection?.();
           if (!selected || selected.elementId !== el.id) {
-            table.content.appendChild(hint(
-              'Double-click the table, then drag horizontally, vertically, or diagonally across cells.',
-            ));
+            table.caption.textContent = 'double-click to select cells';
+            table.caption.hidden = false;
+            table.caption.title =
+              'Double-click the table, then drag horizontally, vertically, or diagonally across cells.';
           } else {
             const rowStart = Math.min(selected.row, selected.rowEnd) + 1;
             const rowEnd = Math.max(selected.row, selected.rowEnd) + 1;
@@ -1499,9 +1553,9 @@ export class Inspector {
                 : selected.mode === 'column'
                   ? `Column ${columnStart}, rows ${rowStart}–${rowEnd}`
                   : `Rows ${rowStart}–${rowEnd}, columns ${columnStart}–${columnEnd}`;
-            table.content.appendChild(hint(
-              `${location} · drag to select a rectangular range`,
-            ));
+            table.caption.textContent = location;
+            table.caption.hidden = false;
+            table.caption.title = 'Drag to select a rectangular range';
             table.content.appendChild(colorField(
               'Cell fill', null,
               (value) => this.onApplyTableCellColor?.('backgroundColor', value),
@@ -1560,24 +1614,35 @@ export class Inspector {
           layout.content.appendChild(table.section);
         }
 
+        // Colour shares the row with the style buttons: both act on the
+        // same run of characters, and the swatch was floating alone in an
+        // otherwise empty row.
         const paint = this.textPaintInfo(el);
-        typography.content.appendChild(
-          colorField(
-            'Colour',
-            paint.value,
-            (v) => {
-              if (this.onApplyTextSelectionColor?.(v)) return;
-              this.store.updateSelected((e) => {
-                if (e.type === 'text') setWholeTextColor(e, v);
-              });
-            },
-            {
-              inheritedValue: paint.inheritedValue,
-              source: paint.source,
-              clear: paint.clear,
-            },
-          ),
+        const colour = colorField(
+          'Colour',
+          paint.value,
+          (v) => {
+            if (this.onApplyTextSelectionColor?.(v)) return;
+            this.store.updateSelected((e) => {
+              if (e.type === 'text') setWholeTextColor(e, v);
+            });
+          },
+          {
+            inheritedValue: paint.inheritedValue,
+            source: paint.source,
+            clear: paint.clear,
+          },
         );
+        colour.classList.add('field-color-stacked');
+        const styleRow = typography.content.querySelector('.text-selection-style');
+        if (styleRow) {
+          const row = document.createElement('div');
+          row.className = 'text-style-row';
+          styleRow.replaceWith(row);
+          row.append(styleRow, colour);
+        } else {
+          typography.content.appendChild(colour);
+        }
         const alignment = document.createElement('div');
         alignment.className = 'compact-field-row';
         alignment.appendChild(
@@ -1588,10 +1653,18 @@ export class Inspector {
           ),
         );
         alignment.appendChild(
-          selectField('Vertical', ['top', 'middle', 'bottom'], el.valign, (v) =>
-            this.onApplyTableCellTextStyle?.('verticalAlign', v) || this.store.updateSelected((e) => {
-              if (e.type === 'text') e.valign = v as 'top';
-            }),
+          segmentedSelectField(
+            'Vertical',
+            [
+              { value: 'top', title: 'Align top', icon: VALIGN_GLYPHS.top },
+              { value: 'middle', title: 'Align middle', icon: VALIGN_GLYPHS.middle },
+              { value: 'bottom', title: 'Align bottom', icon: VALIGN_GLYPHS.bottom },
+            ],
+            el.valign,
+            (v) =>
+              this.onApplyTableCellTextStyle?.('verticalAlign', v) || this.store.updateSelected((e) => {
+                if (e.type === 'text') e.valign = v as 'top';
+              }),
           ),
         );
         layout.content.appendChild(alignment);
@@ -1641,15 +1714,70 @@ export class Inspector {
       case 'shape': {
         const wrap = typeSections();
         const style = optionSection('Style', 'shape-style-options');
+        const kinds: Array<{ value: string; title: string; icon: string }> = [
+          { value: 'rect', title: 'Rectangle', icon: SHAPE_KIND_GLYPHS.rect },
+          { value: 'ellipse', title: 'Ellipse', icon: SHAPE_KIND_GLYPHS.ellipse },
+          { value: 'line', title: 'Line', icon: SHAPE_KIND_GLYPHS.line },
+          { value: 'arrow', title: 'Arrow', icon: SHAPE_KIND_GLYPHS.arrow },
+        ];
+        // Imported vector art keeps its geometry as a path; it can be shown
+        // but not chosen, since there is no path to switch another kind to.
+        if (el.shape === 'path') {
+          kinds.push({ value: 'path', title: 'Path (imported)', icon: SHAPE_KIND_GLYPHS.path });
+        }
         style.content.appendChild(
-          selectField('Kind', ['rect', 'ellipse', 'line', 'arrow'], el.shape, (v) =>
+          segmentedSelectField('Kind', kinds, el.shape, (v) =>
             this.store.updateSelected((e) => {
               if (e.type === 'shape') e.shape = v as 'rect';
             }),
           ),
         );
-        if (el.shape === 'line' || el.shape === 'arrow') {
-          style.content.appendChild(
+        const stroked = el.shape === 'line' || el.shape === 'arrow';
+        const paint = document.createElement('div');
+        paint.className = 'compact-field-row';
+        // A line has no interior, so Fill and Radius would do nothing; the
+        // slot goes to the stroke width instead.
+        if (!stroked) {
+          const fill = colorField('Fill', el.fill, (v) =>
+            this.store.updateSelected((e) => {
+              if (e.type === 'shape') e.fill = v;
+            }),
+            { clear: { kind: 'none', label: 'No fill (transparent)' } },
+          );
+          fill.classList.add('field-color-stacked');
+          paint.appendChild(fill);
+        }
+        const stroke = colorField('Stroke', el.stroke, (v) =>
+          this.store.updateSelected((e) => {
+            if (e.type === 'shape') e.stroke = v;
+          }),
+          { clear: { kind: 'none', label: 'No stroke' } },
+        );
+        stroke.classList.add('field-color-stacked');
+        paint.appendChild(stroke);
+        const width = numberField('WIDTH', el.strokeWidth, (v) =>
+          this.store.updateSelected((e) => {
+            if (e.type === 'shape') e.strokeWidth = Math.max(0, v);
+          }), { unit: 'px' },
+        );
+        if (stroked) paint.appendChild(width);
+        style.content.appendChild(paint);
+        if (!stroked) {
+          const nums = document.createElement('div');
+          nums.className = 'compact-field-row';
+          nums.appendChild(width);
+          nums.appendChild(
+            numberField('RADIUS', el.radius, (v) =>
+              this.store.updateSelected((e) => {
+                if (e.type === 'shape') e.radius = Math.max(0, v);
+              }), { unit: 'px' },
+            ),
+          );
+          style.content.appendChild(nums);
+        } else {
+          const flags = document.createElement('div');
+          flags.className = 'compact-field-row shape-line-flags';
+          flags.appendChild(
             checkboxField('Curved', Boolean(el.control), (on) =>
               this.store.updateSelected((e) => {
                 if (e.type !== 'shape') return;
@@ -1659,43 +1787,22 @@ export class Inspector {
               }),
             ),
           );
+          flags.appendChild(
+            checkboxField('Head at end', el.arrowEnd, (on) =>
+              this.store.updateSelected((e) => {
+                if (e.type === 'shape') e.arrowEnd = on;
+              }, { label: on ? 'Add arrowhead at end' : 'Remove arrowhead at end' }),
+            ),
+          );
+          flags.appendChild(
+            checkboxField('Head at start', el.arrowStart, (on) =>
+              this.store.updateSelected((e) => {
+                if (e.type === 'shape') e.arrowStart = on;
+              }, { label: on ? 'Add arrowhead at start' : 'Remove arrowhead at start' }),
+            ),
+          );
+          style.content.appendChild(flags);
         }
-        const colors = document.createElement('div');
-        colors.className = 'compact-field-row';
-        colors.appendChild(
-          colorField('Fill', el.fill, (v) =>
-            this.store.updateSelected((e) => {
-              if (e.type === 'shape') e.fill = v;
-            }),
-            { clear: { kind: 'none', label: 'No fill (transparent)' } },
-          ),
-        );
-        colors.appendChild(
-          colorField('Stroke', el.stroke, (v) =>
-            this.store.updateSelected((e) => {
-              if (e.type === 'shape') e.stroke = v;
-            }),
-            { clear: { kind: 'none', label: 'No stroke' } },
-          ),
-        );
-        style.content.appendChild(colors);
-        const nums = document.createElement('div');
-        nums.className = 'compact-field-row';
-        nums.appendChild(
-          numberField('WIDTH', el.strokeWidth, (v) =>
-            this.store.updateSelected((e) => {
-              if (e.type === 'shape') e.strokeWidth = Math.max(0, v);
-            }),
-          ),
-        );
-        nums.appendChild(
-          numberField('RADIUS', el.radius, (v) =>
-            this.store.updateSelected((e) => {
-              if (e.type === 'shape') e.radius = Math.max(0, v);
-            }),
-          ),
-        );
-        style.content.appendChild(nums);
         wrap.appendChild(style.section);
         return wrap;
       }
@@ -1846,7 +1953,7 @@ export class Inspector {
             clearLegacyMediaBorder(target);
             target.borderWidth = Math.max(0, value);
           }
-        })),
+        }), { unit: 'px' }),
     );
     return border.section;
   }
@@ -1978,13 +2085,15 @@ export class Inspector {
 
 /* --- small DOM helpers, kept local so the panel stays self-contained --- */
 
+/**
+ * A multi-selection group. Same markup as `optionSection`, so a two-element
+ * panel reads with the hierarchy of a one-element panel rather than as cards
+ * nested under headings.
+ */
 function group(title: string): HTMLElement {
-  const el = document.createElement('section');
-  el.className = 'insp-group';
-  const h = document.createElement('h3');
-  h.textContent = title;
-  el.appendChild(h);
-  return el;
+  const { section } = optionSection(title, 'insp-group-content');
+  section.classList.add('insp-group');
+  return section;
 }
 
 /** Type-specific sections; the selected element type is already named above. */
@@ -2171,11 +2280,11 @@ function smallButton(label: string, title: string, onClick: () => void): HTMLBut
   return control;
 }
 
-function numberField(
+export function numberField(
   label: string,
   value: number | null,
   onChange: (v: number) => void,
-  opts: { step?: number } = {},
+  opts: { step?: number; unit?: string } = {},
 ): HTMLElement {
   const wrap = document.createElement('label');
   wrap.className = 'field field-number';
@@ -2192,7 +2301,21 @@ function numberField(
     const v = Number(input.value);
     if (Number.isFinite(v)) onChange(v);
   });
-  wrap.append(span, input);
+  wrap.appendChild(span);
+  if (opts.unit) {
+    // The unit reads as the input's suffix ("12 px") rather than a caption.
+    const box = document.createElement('span');
+    box.className = 'field-unit-wrap';
+    const unit = document.createElement('span');
+    unit.className = 'field-unit';
+    unit.textContent = opts.unit;
+    unit.setAttribute('aria-hidden', 'true');
+    input.title = `Value in ${opts.unit}`;
+    box.append(input, unit);
+    wrap.appendChild(box);
+  } else {
+    wrap.appendChild(input);
+  }
   return wrap;
 }
 
@@ -2385,20 +2508,32 @@ function checkboxField(
   return wrap;
 }
 
-/** A named cluster of related inspector controls. */
+/**
+ * A named cluster of related inspector controls. The heading is one or two
+ * words; anything that needs explaining goes in `caption`, a short muted note
+ * on the heading line, so a sentence never sits in a label slot.
+ */
 function optionSection(
   title: string,
   contentClass: string,
-): { section: HTMLElement; content: HTMLElement } {
+  caption?: string,
+): { section: HTMLElement; content: HTMLElement; caption: HTMLElement } {
   const section = document.createElement('section');
   section.className = 'insp-option-section';
+  const row = document.createElement('div');
+  row.className = 'insp-subtitle-row';
   const heading = document.createElement('h4');
   heading.className = 'insp-subtitle';
   heading.textContent = title;
+  const note = document.createElement('span');
+  note.className = 'insp-subtitle-caption';
+  if (caption) note.textContent = caption;
+  else note.hidden = true;
+  row.append(heading, note);
   const content = document.createElement('div');
   content.className = contentClass;
-  section.append(heading, content);
-  return { section, content };
+  section.append(row, content);
+  return { section, content, caption: note };
 }
 
 function mixedCheckboxField(
@@ -2469,6 +2604,144 @@ function alignGlyph(lines: number[][]): SVGElement {
     svg.appendChild(line);
   });
   return svg;
+}
+
+/**
+ * Icons for the multi-selection align panel: a guide line the boxes snap to
+ * plus two boxes of different size, all in currentcolor so they follow hover.
+ */
+const ALIGN_MODE_GLYPHS: Record<AlignMode, string> = {
+  left: '<path d="M1.5 1v12"/><rect class="fill" x="3" y="3" width="9" height="3" rx=".5"/><rect class="fill" x="3" y="8" width="5.5" height="3" rx=".5"/>',
+  hcenter: '<path d="M7 1v12"/><rect class="fill" x="2.5" y="3" width="9" height="3" rx=".5"/><rect class="fill" x="4.25" y="8" width="5.5" height="3" rx=".5"/>',
+  right: '<path d="M12.5 1v12"/><rect class="fill" x="2" y="3" width="9" height="3" rx=".5"/><rect class="fill" x="5.5" y="8" width="5.5" height="3" rx=".5"/>',
+  top: '<path d="M1 1.5h12"/><rect class="fill" x="3" y="3" width="3" height="9" rx=".5"/><rect class="fill" x="8" y="3" width="3" height="5.5" rx=".5"/>',
+  vcenter: '<path d="M1 7h12"/><rect class="fill" x="3" y="2.5" width="3" height="9" rx=".5"/><rect class="fill" x="8" y="4.25" width="3" height="5.5" rx=".5"/>',
+  bottom: '<path d="M1 12.5h12"/><rect class="fill" x="3" y="2" width="3" height="9" rx=".5"/><rect class="fill" x="8" y="5.5" width="3" height="5.5" rx=".5"/>',
+  distributeH: '<path d="M1.5 1v12M12.5 1v12"/><rect class="fill" x="4" y="3.5" width="2.5" height="7" rx=".5"/><rect class="fill" x="7.5" y="3.5" width="2.5" height="7" rx=".5"/>',
+  distributeV: '<path d="M1 1.5h12M1 12.5h12"/><rect class="fill" x="3.5" y="4" width="7" height="2.5" rx=".5"/><rect class="fill" x="3.5" y="7.5" width="7" height="2.5" rx=".5"/>',
+  matchW: '<rect x="1.5" y="2" width="11" height="4" rx=".5"/><path d="M1.5 10.5h11M3.5 8.5l-2 2 2 2M10.5 8.5l2 2-2 2"/>',
+  matchH: '<rect x="2" y="1.5" width="4" height="11" rx=".5"/><path d="M10.5 1.5v11M8.5 3.5l2-2 2 2M8.5 10.5l2 2 2-2"/>',
+};
+
+function alignModeGlyph(mode: AlignMode): SVGElement {
+  return inlineGlyph(ALIGN_MODE_GLYPHS[mode]);
+}
+
+/** A 14×14 stroke-and-fill icon in currentcolor; see `.align-strip-button svg`. */
+function inlineGlyph(markup: string): SVGElement {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 14 14');
+  svg.setAttribute('aria-hidden', 'true');
+  svg.innerHTML = markup;
+  return svg;
+}
+
+/** Stacking order: the filled square is the selection, the outline the rest. */
+const ARRANGE_GLYPHS = {
+  front: '<rect x="1.5" y="5.5" width="7" height="7" rx=".5"/><rect class="fill" x="5.5" y="1.5" width="7" height="7" rx=".5"/>',
+  forward: '<rect x="1.5" y="5.5" width="7" height="7" rx=".5"/><rect class="fill" x="5.5" y="1.5" width="7" height="7" rx=".5"/><path d="M3.5 4.5V1.5M2 3l1.5-1.5L5 3"/>',
+  backward: '<rect class="fill" x="1.5" y="5.5" width="7" height="7" rx=".5"/><rect x="5.5" y="1.5" width="7" height="7" rx=".5"/><path d="M10.5 9.5v3M9 11l1.5 1.5L12 11"/>',
+  back: '<rect class="fill" x="1.5" y="5.5" width="7" height="7" rx=".5"/><rect x="5.5" y="1.5" width="7" height="7" rx=".5"/>',
+} as const;
+
+const VALIGN_GLYPHS = {
+  top: '<path d="M1.5 1.5h11"/><rect class="fill" x="4" y="3.5" width="6" height="2" rx=".5"/><rect class="fill" x="4" y="7" width="6" height="2" rx=".5"/>',
+  middle: '<path d="M1.5 7h11" stroke-dasharray="1.5 1.5"/><rect class="fill" x="4" y="3" width="6" height="2" rx=".5"/><rect class="fill" x="4" y="9" width="6" height="2" rx=".5"/>',
+  bottom: '<path d="M1.5 12.5h11"/><rect class="fill" x="4" y="5" width="6" height="2" rx=".5"/><rect class="fill" x="4" y="8.5" width="6" height="2" rx=".5"/>',
+} as const;
+
+const LIST_GLYPHS = {
+  None: '<path d="M2 3.5h10M2 7h10M2 10.5h10"/>',
+  Bulleted: '<circle class="fill" cx="3" cy="3.5" r="1.2"/><circle class="fill" cx="3" cy="7" r="1.2"/><circle class="fill" cx="3" cy="10.5" r="1.2"/><path d="M6 3.5h6M6 7h6M6 10.5h6"/>',
+  Numbered: '<path class="fill" d="M2.2 2.2h1.2v2.8h-.9V3h-.6zM2 6.3c0-.6.5-1 1.2-1s1.2.4 1.2 1c0 .4-.3.7-.8 1.1l-.5.4h1.3v.7H2v-.6l1.3-1.1c.3-.2.4-.4.4-.5 0-.2-.1-.3-.4-.3-.2 0-.4.1-.4.4zm.1 4.1h.8c0 .2.2.3.4.3s.4-.1.4-.3-.2-.3-.5-.3H3v-.6h.2c.3 0 .4-.1.4-.3s-.1-.3-.3-.3-.4.1-.4.3h-.8c0-.6.5-.9 1.2-.9s1.1.3 1.1.8c0 .3-.2.5-.5.6.3.1.6.3.6.7 0 .5-.5.9-1.2.9s-1.2-.4-1.2-.9z"/><path d="M6 3.5h6M6 7h6M6 10.5h6"/>',
+} as const;
+
+const SHAPE_KIND_GLYPHS = {
+  rect: '<rect x="2" y="3" width="10" height="8" rx=".5"/>',
+  ellipse: '<ellipse cx="7" cy="7" rx="5" ry="4"/>',
+  line: '<path d="M2 12L12 2"/>',
+  arrow: '<path d="M2 12L12 2M7 2h5v5"/>',
+  path: '<path d="M2 11C4 3 6 3 8 8s3 4 4-6"/>',
+} as const;
+
+/**
+ * A short menu drawn as a segmented strip. A real `<select>` carries the
+ * value for keyboard users, assistive technology and the test harnesses,
+ * and is visually hidden; the buttons are its face. Each button sets the
+ * select and dispatches `change`, so there is one code path for both.
+ */
+function segmentedSelectField(
+  label: string,
+  choices: Array<{ value: string; title: string; icon?: string; text?: string }>,
+  value: string,
+  onChange: (v: string) => void,
+): HTMLElement {
+  const wrap = document.createElement('label');
+  wrap.className = 'field field-segmented';
+  const span = document.createElement('span');
+  span.textContent = label;
+  const select = document.createElement('select');
+  select.className = 'segmented-select';
+  select.setAttribute('aria-label', label);
+  for (const choice of choices) {
+    const opt = document.createElement('option');
+    opt.value = choice.value;
+    opt.textContent = choice.title;
+    select.appendChild(opt);
+  }
+  select.value = value;
+  const strip = document.createElement('div');
+  strip.className = 'segmented-buttons';
+  const buttons: HTMLButtonElement[] = [];
+  const reflect = () => {
+    for (const b of buttons) {
+      const on = b.dataset.value === select.value;
+      b.classList.toggle('is-active', on);
+      b.setAttribute('aria-pressed', String(on));
+    }
+  };
+  for (const choice of choices) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'segment-button';
+    b.dataset.value = choice.value;
+    b.title = choice.title;
+    b.setAttribute('aria-label', choice.title);
+    if (choice.icon) b.appendChild(inlineGlyph(choice.icon));
+    if (choice.text) b.append(choice.text);
+    // Keep the pointer-down on the canvas: a focus change would end a live
+    // text edit before the click lands.
+    b.addEventListener('pointerdown', (event) => event.preventDefault());
+    b.addEventListener('click', () => {
+      if (select.disabled || select.value === choice.value) return;
+      select.value = choice.value;
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    buttons.push(b);
+    strip.appendChild(b);
+  }
+  select.addEventListener('change', () => {
+    reflect();
+    onChange(select.value);
+  });
+  reflect();
+  wrap.append(span, select, strip);
+  return wrap;
+}
+
+/**
+ * Dress a checkbox field as one stop of a toggle strip: the box is hidden,
+ * the label text stays for assistive technology and a short word is shown.
+ */
+function toggleSegment(field: HTMLElement, short: string): HTMLElement {
+  field.classList.add('toggle-segment');
+  const shortSpan = document.createElement('span');
+  shortSpan.className = 'toggle-segment-short';
+  shortSpan.textContent = short;
+  shortSpan.setAttribute('aria-hidden', 'true');
+  field.appendChild(shortSpan);
+  field.title = field.querySelector('span')?.textContent ?? short;
+  return field;
 }
 
 /**
@@ -2613,6 +2886,23 @@ function trimRangeSlider(
   wrap.append(span, slider);
   return wrap;
 }
+
+/** In the layout editor the size field only reports what the theme gives. */
+function lockSizeToTheme(sizeField: HTMLElement): void {
+  const reason = 'Sizes are the deck\u2019s, not the layout\u2019s: change them under Theme \u203a Edit theme.';
+  for (const control of sizeField.querySelectorAll<HTMLInputElement | HTMLButtonElement>('input, button')) {
+    control.disabled = true;
+    control.title = reason;
+  }
+  sizeField.classList.add('theme-owned');
+  sizeField.title = reason;
+}
+
+type ThemeTypeRole = ThemeTextRole;
+const ROLE_ORDER: ThemeTypeRole[] = ['title', 'heading', 'body', 'caption', 'base'];
+const ROLE_LABELS: Record<ThemeTypeRole, string> = {
+  title: 'Title', heading: 'Heading', body: 'Body', caption: 'Caption', base: 'Base',
+};
 
 function button(label: string, onClick: () => void, variant = ''): HTMLButtonElement {
   const b = document.createElement('button');

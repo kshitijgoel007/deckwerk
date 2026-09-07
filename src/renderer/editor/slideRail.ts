@@ -6,7 +6,7 @@ import { applyDeckThemeToNewSlide } from '@shared/themes.js';
 import { applySlideLayout } from './slideLayouts.js';
 import { newComment, openCommentsPopover, openCount } from './comments.js';
 import type { Deck, Slide } from '@shared/deck.js';
-import type { EditorStore } from './store.js';
+import { sameSlideIgnoringNotes, type EditorStore } from './store.js';
 
 /**
  * The slide list. Text-first rather than thumbnail-first: rendering live
@@ -42,6 +42,16 @@ export class SlideRail {
   private highlightedSlideIndex = -1;
   private highlightedSelection = new Set<string>();
   private rowBySlideId = new Map<string, HTMLElement>();
+  /**
+   * Row DOM cached per slide object and position, like `thumbCache`. A rebuild
+   * keeps every row whose slide and index are unchanged attached exactly where
+   * it is: detaching a row, even for a moment, makes Chromium re-decode the
+   * images in its thumbnail, which showed as every thumbnail flashing white on
+   * each drop and each keystroke in the notes drawer.
+   */
+  private rowCache = new Map<Slide, { row: HTMLElement; index: number }>();
+  /** The slide object last drawn for each id, so a note edit can keep its row and thumbnail. */
+  private slideById = new Map<string, Slide>();
   /**
    * Thumbnail DOM cached per slide *object*. The store clones the deck on
    * every commit but untouched slides keep their object identity, so only the
@@ -167,6 +177,18 @@ export class SlideRail {
       this.render();
       return;
     }
+    // The store emits for every keystroke in the notes drawer and for every
+    // frame of a drag. Re-setting the active row's attributes and scrolling it
+    // into view each time invalidates the rail's paint, and with a deck full
+    // of large images that repaint shows the thumbnails blank while their
+    // pictures decode again. Nothing to do when the highlight is unchanged.
+    if (
+      slideIndex === this.highlightedSlideIndex
+      && slideSelection.size === this.highlightedSelection.size
+      && [...slideSelection].every((id) => this.highlightedSelection.has(id))
+    ) {
+      return;
+    }
     const changedIds = new Set<string>();
     for (const id of this.highlightedSelection) {
       if (!slideSelection.has(id)) changedIds.add(id);
@@ -206,6 +228,7 @@ export class SlideRail {
     this.highlightedSelection = new Set(slideSelection);
     this.thumbVisibilityObserver?.disconnect();
     this.rowBySlideId.clear();
+    this.rekeyNoteOnlyChanges(deck);
     // Drop cache entries for slides that no longer exist in this deck version.
     const live = new Set<unknown>(deck.slides);
     for (const key of this.thumbCache.keys()) {
@@ -218,21 +241,24 @@ export class SlideRail {
         this.thumbCache.delete(key);
       }
     }
-    this.host.replaceChildren();
+    for (const key of this.rowCache.keys()) {
+      if (!live.has(key)) this.rowCache.delete(key);
+    }
+    const children: HTMLElement[] = [];
 
     // Group consecutive hidden slides: runs of 2+ collapse to one placeholder
     // unless expanded. A run holding the active slide normally stays expanded;
     // an explicit bracket click may hide that row while preserving the editor.
     for (let i = 0; i < deck.slides.length; ) {
       if (!deck.slides[i].skipped) {
-        this.host.appendChild(this.buildItem(deck, i, slideIndex, slideSelection));
+        children.push(this.buildItem(deck, i, slideIndex, slideSelection));
         i += 1;
         continue;
       }
       let end = i;
       while (end + 1 < deck.slides.length && deck.slides[end + 1].skipped) end += 1;
       if (end === i) {
-        this.host.appendChild(this.buildItem(deck, i, slideIndex, slideSelection));
+        children.push(this.buildItem(deck, i, slideIndex, slideSelection));
         i += 1;
         continue;
       }
@@ -241,12 +267,10 @@ export class SlideRail {
       const explicitlyCollapsed = containsActive
         && deck.slides[slideIndex]?.id === this.collapsedActiveSlideId;
       if (!this.expandedRuns.has(runKey) && (!containsActive || explicitlyCollapsed)) {
-        this.host.appendChild(
-          this.buildCollapsedRun(deck, i, end, runKey, slideSelection),
-        );
+        children.push(this.buildCollapsedRun(deck, i, end, runKey, slideSelection));
       } else {
         this.expandedRuns.add(runKey);
-        this.host.appendChild(this.buildExpandedRun(deck, i, end, runKey, slideIndex, slideSelection));
+        children.push(this.buildExpandedRun(deck, i, end, runKey, slideIndex, slideSelection));
       }
       i = end + 1;
     }
@@ -262,7 +286,61 @@ export class SlideRail {
       ),
       railButton('Delete', () => this.deleteSlide()),
     );
-    this.host.appendChild(actions);
+    children.push(actions);
+    this.patchChildren(children);
+  }
+
+  /**
+   * Bring the host's children to `nodes` with the fewest moves: a node already
+   * in place is not touched, a node no longer wanted is removed, and only new
+   * or reordered nodes are inserted. Rows kept from the previous render never
+   * leave the document, so their thumbnails keep their decoded pictures.
+   */
+  private patchChildren(nodes: HTMLElement[]): void {
+    const wanted = new Set<Element>(nodes);
+    for (let k = 0; k < nodes.length; k++) {
+      let current: Element | null = this.host.children[k] ?? null;
+      while (current && !wanted.has(current)) {
+        const next: Element | null = current.nextElementSibling;
+        current.remove();
+        current = next;
+      }
+      if (current !== nodes[k]) this.host.insertBefore(nodes[k], current);
+    }
+    while (this.host.children.length > nodes.length) this.host.lastElementChild?.remove();
+  }
+
+  /**
+   * A speaker-note edit hands out a new slide object that draws the same
+   * picture. Move that slide's cached row and thumbnail over to the new object
+   * so the rebuild treats it as unchanged.
+   */
+  private rekeyNoteOnlyChanges(deck: Deck): void {
+    for (const slide of deck.slides) {
+      const previous = this.slideById.get(slide.id);
+      if (previous && previous !== slide && sameSlideIgnoringNotes(previous, slide)) {
+        const thumb = this.thumbCache.get(previous);
+        if (thumb) {
+          this.thumbCache.delete(previous);
+          this.thumbCache.set(slide, thumb);
+        }
+        const row = this.rowCache.get(previous);
+        if (row) {
+          this.rowCache.delete(previous);
+          this.rowCache.set(slide, row);
+        }
+      }
+    }
+    this.slideById = new Map(deck.slides.map((slide) => [slide.id, slide]));
+  }
+
+  /** Bring a kept row's selection chrome up to date without touching what is unchanged. */
+  private syncRowState(item: HTMLElement, active: boolean, selected: boolean): void {
+    if (item.classList.contains('active') !== active) item.classList.toggle('active', active);
+    if (item.classList.contains('selected') !== selected) item.classList.toggle('selected', selected);
+    if (item.getAttribute('aria-selected') !== String(selected)) {
+      item.setAttribute('aria-selected', String(selected));
+    }
   }
 
   /**
@@ -387,7 +465,7 @@ export class SlideRail {
       inner.style.height = `${deck.canvas.h}px`;
       if (slide.background.color) inner.style.background = slide.background.color;
       inner.appendChild(
-        renderSlide(slide, { resolveSrc: (src) => window.api.assetUrl(src), mediaPreload: 'metadata' }),
+        renderSlide(slide, { resolveSrc: (src) => window.api.assetUrl(src), mediaPreload: 'metadata', deferVideoSrc: true }),
       );
       for (const video of inner.querySelectorAll('video')) {
         video.removeAttribute('autoplay');
@@ -536,6 +614,24 @@ export class SlideRail {
     slideSelection: Set<string>,
   ): HTMLElement {
     const slide = deck.slides[i];
+    const cached = this.rowCache.get(slide);
+    if (cached && cached.index === i && cached.row.parentElement === this.host) {
+      // Same slide object at the same position: the row's listeners, comment
+      // badge and hidden badge are all still right. Refresh only what the
+      // store decides per render, and re-arm the visibility observer the
+      // rebuild disconnected.
+      const item = cached.row;
+      this.rowBySlideId.set(slide.id, item);
+      this.syncRowState(item, i === slideIndex, slideSelection.has(slide.id));
+      const thumb = item.querySelector<HTMLElement>(':scope > .rail-thumb');
+      if (thumb) {
+        this.pendingThumbs.set(thumb, { deck, slide });
+        this.thumbVisibilityObserver?.observe(thumb);
+      }
+      const dots = item.querySelector<HTMLElement>(':scope > .rail-presence');
+      if (dots) this.paintPresence(dots, slide.id);
+      return item;
+    }
     {
       const item = document.createElement('button');
       item.className = `rail-item${slideSelection.has(slide.id) ? ' selected' : ''}${i === slideIndex ? ' active' : ''}${slide.skipped ? ' skipped' : ''}`;
@@ -605,6 +701,7 @@ export class SlideRail {
         this.host.focus({ preventScroll: true });
       });
       item.addEventListener('contextmenu', (event) => this.onContextMenu(event, i));
+      this.rowCache.set(slide, { row: item, index: i });
       return item;
     }
   }

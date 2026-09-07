@@ -1,6 +1,6 @@
 import { emptyDeck, type Deck, type LayoutMaster, type Slide, type SlideElement } from '@shared/deck.js';
 import { defaultLayoutMasters, syncDeckWithLayoutMasters, type FixedLayout } from '@shared/layoutMasters.js';
-import { deckTheme, themeCss, type ThemePreset } from '@shared/themes.js';
+import { ROLE_TYPE_SCALE_PROPERTIES, deckTheme, themeCss, type ThemePreset } from '@shared/themes.js';
 import { renderSlide } from '../player/render.js';
 import { EditorCanvas } from './canvas.js';
 import { createShapeInsertPicker, insertText } from './elementCreation.js';
@@ -228,6 +228,7 @@ export class DesignWorkspace {
 
     const masterCanvas = new EditorCanvas(canvasHost, masterStore);
     const masterInspector = new Inspector(inspectorHost, masterStore);
+    masterInspector.editsLayoutMasters = true;
     wireCanvasInspector(masterCanvas, masterInspector);
     masterInspector.onEditLayouts = (layout) => masterStore.selectSlide(LAYOUTS.indexOf(layout));
 
@@ -398,6 +399,13 @@ function mastersFromEditingDeck(deck: Deck): NonNullable<Deck['layoutMasters']> 
     for (const element of elements) {
       element.layoutMasterId = undefined;
       element.class = element.class.filter((name) => name !== 'layout-master-element');
+      if (element.type === 'text') {
+        // Sizes are the deck's, not the layout's (see copyPlaceholderPresentation).
+        for (const property of ROLE_TYPE_SCALE_PROPERTIES) {
+          delete element.style[property];
+          if (element.contentStyle) delete element.contentStyle[property];
+        }
+      }
       if (element.type === 'text' && element.layoutPlaceholder) {
         const role = `role-${element.layoutPlaceholder}`;
         element.class = [...element.class.filter((name) => !name.startsWith('role-')), role, 'placeholder']

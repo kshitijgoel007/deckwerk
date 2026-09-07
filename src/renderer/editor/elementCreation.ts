@@ -1,6 +1,7 @@
 import type { ShapeEl, TextEl } from '@shared/deck.js';
 import { makeId } from '@shared/geometry.js';
 import { applyTableColumnWidths } from '@shared/paragraphs.js';
+import { newObjectColors } from '@shared/themes.js';
 import type { EditorStore } from './store.js';
 
 function nextZ(store: EditorStore): number {
@@ -61,11 +62,13 @@ export function insertShape(store: EditorStore, kind: 'rect' | 'ellipse'): Shape
   // inscribed ellipse round, and Shift keeps it that way while resizing.
   const w = kind === 'ellipse' ? 320 : 400;
   const h = kind === 'ellipse' ? 320 : 240;
+  // Born in the theme's accent so a new box already belongs on the slide.
+  const { fill } = newObjectColors(deck);
   const created: ShapeEl = {
     type: 'shape', id: makeId('shape'),
     x: Math.round(deck.canvas.w * 0.4), y: Math.round(deck.canvas.h * 0.4),
     w, h, rot: 0, z: nextZ(store), opacity: 1, class: [], style: {},
-    shape: kind, fill: '#3b82f6', stroke: null, strokeWidth: 2, radius: 8,
+    shape: kind, fill, stroke: null, strokeWidth: 2, radius: 8,
     path: null, pathSize: null, arrowStart: false, arrowEnd: false,
   };
   store.commit((d) => d.slides[store.get().slideIndex].elements.push(created));
@@ -80,11 +83,13 @@ export function insertLine(
   curved = false,
 ): ShapeEl {
   const { deck } = store.get();
+  // Lines read as ink, so they take the theme's text colour rather than its accent.
+  const { stroke } = newObjectColors(deck);
   const created: ShapeEl = {
     type: 'shape', id: makeId('shape'),
     x: Math.round(deck.canvas.w * 0.35), y: Math.round(deck.canvas.h * 0.5),
     w: 420, h: 2, rot: 0, z: nextZ(store), opacity: 1, class: [], style: {},
-    shape: kind, fill: null, stroke: '#111827', strokeWidth: 4, radius: 0,
+    shape: kind, fill: null, stroke, strokeWidth: 4, radius: 0,
     path: null, pathSize: null, arrowStart: false, arrowEnd: kind === 'arrow',
     control: curved
       ? { x: Math.round(deck.canvas.w * 0.35) + 210, y: Math.round(deck.canvas.h * 0.5) - 140 }

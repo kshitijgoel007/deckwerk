@@ -59,6 +59,14 @@ When neither `autoFit` nor `noWrap` is set, `applyGeometry` removes only `font-s
 
 ## Media lifecycle
 
+### Preview thumbnails each open a full video pipeline, and the churn deadlocks the renderer — fixed
+
+`src/renderer/player/previewPoster.ts` · severity critical
+
+Every rail, Morph and Speaker View thumbnail rendered a real `<video>`, fetched its header, seeked one frame, captured it and tore the element down. With 81 videos and a 40-thumbnail LRU that is hundreds of Chromium media pipelines built and destroyed per session. On 2026-09-06 the X-Reason ECCV deck's editor froze on switching slides: `sample` showed the renderer main thread and Media thread both parked in `__psynch_mutexwait`, ten `av:h264` decoder threads waiting behind them and workers blocked in `avio_seek` — a lock inversion inside Chromium, unreachable from JavaScript. The window painted but took no input until the app was force-quit.
+
+**Fix.** Preview surfaces render with `deferVideoSrc` (no source on the element) and take their frame from the main process (`posterCache.ts`, ffmpeg, served as `deck://posters/…`), so only the canvas and the Player ever own a pipeline. Imports also move a tail-indexed `moov` atom up front (`mp4FastStart.ts`), which removes the end-of-file seek every such clip needed before its first frame. `windowHealth.ts` offers a reload when a renderer hangs or dies anyway.
+
 ### Pending media is resolved by element id, so any copy of an uploading element keeps its placeholder forever — fixed
 
 `src/renderer/editor/canvas.ts:1886` · severity high

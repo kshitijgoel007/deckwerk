@@ -221,16 +221,32 @@ function htmlFormatState(html: string, format: TextFormat): boolean | null {
   return sawText ? true : null;
 }
 
-export function wholeTextFormatState(element: TextElement, format: TextFormat): boolean {
+export function wholeTextFormatState(
+  element: TextElement,
+  format: TextFormat,
+  inheritedWeight: number | null = null,
+): boolean {
   // An explicit box-level declaration wins; otherwise the state is what the
   // authored markup actually renders. Reading only `element.style` made
   // Cmd/Ctrl+B on a box of pasted-bold text toggle the wrong way: the box
   // read as "not bold", so the shortcut double-bolded instead of unbolding.
+  //
+  // A box following its theme declares nothing and can still be bold -- the
+  // theme's title weight. The caller passes the weight the cascade computed
+  // so the button reads (and toggles) what is on screen.
   if (format === 'bold') {
     const declared = element.style['font-weight'];
     if (declared) {
       return declared === 'bold' || Number.parseInt(declared, 10) >= 600;
     }
+    const markup = htmlFormatState(element.html, format);
+    if (markup === true) return true;
+    if (inheritedWeight !== null && inheritedWeight >= 600) {
+      // Runs that say "not bold" in so many words override the theme's weight;
+      // runs that say nothing inherit it.
+      return !/font-weight:\s*(normal|lighter|[1-5]00)\b/i.test(element.html);
+    }
+    return markup ?? false;
   } else if (format === 'italic') {
     const declared = element.style['font-style'];
     if (declared) return declared === 'italic';
@@ -284,9 +300,10 @@ const ROLE_PROPERTIES = [
  * the box so it wins outright. Clearing the overrides and letting the cascade
  * decide is not enough: a deck's theme.css keeps whichever `.role-*` rules
  * were installed when the deck was made, so on a deck themed since — the
- * common case — falling through dressed the box in the *old* theme. A later
- * deck-wide theme apply strips these inline values again as it installs its
- * own stylesheet, so the box rejoins the cascade when the theme next changes.
+ * common case — falling through dressed the box in the *old* theme. Holding
+ * its own size also keeps the box exactly as it is when the deck's default
+ * size for the role is edited later; a deck-wide theme apply strips these
+ * inline values again as it installs its own stylesheet.
  *
  * Pass `null` for a deck with no theme chosen at all: there is no "current
  * theme" to impose, and the deck's own stylesheet is the whole authority.

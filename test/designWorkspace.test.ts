@@ -198,6 +198,26 @@ describe('leaving the layout editor', () => {
     expect(store.get().deck.slides[0].elements.some((element) => element.layoutMasterId)).toBe(false);
   });
 
+  /**
+   * A master carries geometry, not a type scale: the deck's title size is set
+   * once in the theme. A size that reaches a master anyway (an older deck) is
+   * dropped on Done rather than stamped onto every slide. The locked size
+   * field itself is covered in textFormattingControls.test.ts.
+   */
+  it('keeps sizes with the theme, not the layout', () => {
+    const deck = authoredDeck();
+    const title = deck.layoutMasters!.standard.elements[0];
+    if (title.type !== 'text') throw new Error('the standard master starts with its title');
+    title.style['font-size'] = '64px';
+    const { workspace, store } = build(deck);
+    workspace.openLayoutEditor('standard');
+    clickInOverlay('.layout-editor-actions', 'Done');
+
+    const saved = store.get().deck.layoutMasters!.standard.elements[0];
+    expect(saved.type === 'text' && saved.style['font-size']).toBeUndefined();
+    expect(titleOf(store).style['font-size']).toBeUndefined();
+  });
+
   it('leaves the deck untouched on Cancel', () => {
     const { workspace, store, save } = build(authoredDeck());
     const before = JSON.stringify(store.get().deck);

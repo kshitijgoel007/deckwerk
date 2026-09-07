@@ -25,7 +25,7 @@ import {
   type ThemeTextRole,
   adoptThemeStyles,
   deckThemes,
-  fullThemeSelection,
+  chooseDeckTheme,
   themeById,
   themeCss,
   THEME_BLOCK_END,
@@ -43,7 +43,7 @@ import {
   waitForAgentResponse,
   writeAgentRequest,
 } from '../main/agentRuntime.js';
-import { adoptAuthoredIds } from '@shared/htmlSlides.js';
+import { adoptAuthoredIds, htmlSyncSummary } from '@shared/htmlSlides.js';
 import { DECK_FILE, importAsset, loadDeck } from '../main/deckStore.js';
 import { measureBuiltTextOverflows } from './compileHtml.js';
 import { serveBundle } from './previewServer.js';
@@ -87,8 +87,13 @@ const USAGE = `usage: slide-agent <command> [options]
 The loop — edit HTML, the editor syncs it back:
 
   context   [deck]                        the outline, and is the editor live
-  inspect   [deck] --html [--selected|--slide id|--all]
-                                          export slides as an editable page
+  new       [deck] [--count <n>]          a blank authoring page: the same
+                                          skeleton, with no slide ids and no
+                                          scope, so saving it only ADDS slides
+  inspect   [deck] --html [--selected|--slide id|number|--all]
+                                          export slides as an editable page —
+                                          editing a section replaces its slide,
+                                          removing one deletes it
   # then edit edit/<file>.html and save it; with the editor open the deck
   # follows within ~200ms. With it closed, apply the same file explicitly:
   apply     [deck] --html <file> [--after <slideId>] [--label <text>]
@@ -97,12 +102,13 @@ Everything else:
 
   docs                                    the full agent guide, as markdown
   capabilities                            every feature, with copyable JSON
-  validate  [deck] [--slide id|--selected]
+  validate  [deck] [--slide id|number|--selected]
                                           schema, ids, references, assets, and
                                           canvas overflows (scoped to your slides)
   asset import <deck> <paths...>          copy media into assets/, probed
   inspect   [deck] [--dom]                computed scenes, for questions
-  render    [deck] [--selected|--slide id|--all] --output <dir> [--annotate] [--built]
+  render    [deck] [--selected|--slide id|number|--all] --output <dir>
+            [--annotate] [--built]
                                           add --contact-sheet for one tiled
                                           overview of everything rendered
   preview   [deck] [--port <n>] [--open]  export through the real player and
@@ -116,21 +122,32 @@ Everything else:
   theme     delete [deck] --id <themeId>  drop a deck theme
   theme     choose [deck] --id <themeId>  the deck's current theme: what new
                                           slides are born wearing
-  theme     apply  [deck] --id <themeId> [--scope deck|slides] [--slide id|--all]
+  theme     apply  [deck] --id <themeId> [--scope deck|slides]
+            [--slide id|number|--all]
             [--roles title,heading,body,caption,base]
             [--properties fonts,weights,scale,text-color,background,object-colors]
             [--keep-overrides] [--detect-roles]
                                           restyle slides that already exist;
-                                          --scope deck also writes theme.css
+                                          every scope installs what it adopts
+                                          into theme.css and pins the rest
   comments  [deck] [--unresolved]         every comment, with its slide number.
                                           Humans leave instructions this way —
                                           check it at the start of a task.
   comments  [deck] --resolve <commentId>  mark a comment resolved (do this
                                           after acting on it; never delete)
-  comments  [deck] --add <text> (--slide <slideId> | --element <elementId>)
+  comments  [deck] --add <text> (--slide <id|number> | --element <elementId>)
                                           [--author <name>]  reply on a thread
   transaction apply <deck> <file.json>    JSON fallback, for tooling with no
                                           browser — not how slides are authored
+
+Adding slides vs. changing them: 'new' writes a page that can only add, while
+'inspect --html' exports a page that governs the slides it names — do not copy
+an export to author new slides, the copy inherits its scope and saving it
+would delete them. Every apply reports what it did under 'changes'.
+
+Anywhere a slide is named, --slide takes its id or its 1-based number — the
+number the rail shows and the number 'context' and 'comments' print. So
+"slide 44" is --slide 44, and its neighbours are --slide 43,44,45.
 
 Do not hand-compute geometry: write CSS and let the browser measure.
 `;
@@ -154,6 +171,8 @@ export async function runAgentCli(argv: string[], io: CliIo): Promise<number> {
         return await contextCommand(rest, io);
       case 'apply':
         return await applyCommand(rest, io);
+      case 'new':
+        return await newCommand(rest, io);
       case 'inspect':
         return await inspectCommand(rest, io);
       case 'render':
@@ -247,6 +266,10 @@ async function applyCommand(argv: string[], io: CliIo): Promise<number> {
   const overflows = await measureBuiltTextOverflows(deckDir, deck, slides);
 
   const code = await applyTransaction(deckDir, transaction, io, {
+    // Insert and replace are indistinguishable in the result otherwise: both
+    // end with the deck showing what was authored. Naming the deleted slides
+    // is the whole point — that is the outcome nobody asks for on purpose.
+    changes: htmlSyncSummary(transaction.operations),
     overflows,
     slides: slides.map((slide) => ({
       id: slide.id,
@@ -274,6 +297,33 @@ async function applyCommand(argv: string[], io: CliIo): Promise<number> {
   return code;
 }
 
+/**
+ * A page that can only add slides.
+ *
+ * Authors reached for a copy of an export because it was the only way to get a
+ * document that renders as a slide — and the copy carried the exported scope,
+ * so a save meant to add a slide deleted the ones it was copied from. This is
+ * the same skeleton with nothing to inherit.
+ */
+async function newCommand(argv: string[], io: CliIo): Promise<number> {
+  const { flags, options, positional } = parseFlags(argv, ['count']);
+  ensureKnownFlags('new', flags, []);
+  ensurePositionals('new', positional, 1);
+  const deckDir = resolveDeckDir(positional[0], io);
+  const raw = options.get('count') ?? '1';
+  const count = Number(raw);
+  if (!Number.isInteger(count) || count < 1 || count > 50) {
+    throw new UsageError(`--count takes a whole number of slides from 1 to 50, not "${raw}".`);
+  }
+  const deck = await loadDeck(deckDir);
+  io.out(slidesToHtml([], deck.canvas, {
+    typeCss: PLAYER_TYPE_CSS,
+    base: '../',
+    blank: count,
+  }));
+  return EXIT_OK;
+}
+
 async function inspectCommand(argv: string[], io: CliIo): Promise<number> {
   const { flags, positional } = parseFlags(argv);
   ensureKnownFlags('inspect', flags, ['html', 'dom', 'selected', 'slide', 'all']);
@@ -282,7 +332,7 @@ async function inspectCommand(argv: string[], io: CliIo): Promise<number> {
 
   if (flags.has('html')) {
     const deck = await loadDeck(deckDir);
-    ensureSlideIdsExist(flags, deck);
+    resolveRequestedSlides(flags, deck);
     const context = await currentContext(deckDir, { scenes: false });
     const wanted = selectionFilter(flags);
     const chosen = deck.slides.filter((slide, index) => !wanted || wanted({
@@ -326,7 +376,7 @@ async function inspectCommand(argv: string[], io: CliIo): Promise<number> {
     return EXIT_OK;
   }
 
-  ensureSlideIdsExist(flags, await loadDeck(deckDir));
+  resolveRequestedSlides(flags, await loadDeck(deckDir));
   const context = await currentContext(deckDir, { scenes: true });
   const wanted = selectionFilter(flags);
   io.out(json({
@@ -350,7 +400,7 @@ async function renderCommand(argv: string[], io: CliIo): Promise<number> {
 
   const context = await currentContext(deckDir, { scenes: false });
   const deck = await loadDeck(deckDir);
-  ensureSlideIdsExist(flags, deck);
+  resolveRequestedSlides(flags, deck);
   const wanted = selectionFilter(flags);
   const chosen = deck.slides
     .map((slide, index) => ({ id: slide.id, number: index + 1, index, slide }))
@@ -429,7 +479,7 @@ async function validateCommand(argv: string[], io: CliIo): Promise<number> {
     selectedSlideIds = (await currentContext(deckDir, { scenes: false })).selectedSlideIds;
     wanted = selectionFilter(flags);
     try {
-      ensureSlideIdsExist(flags, await loadDeck(deckDir));
+      resolveRequestedSlides(flags, await loadDeck(deckDir));
     } catch (error) {
       // A stale id is a usage error; an unparseable deck is already in `errors`.
       if (error instanceof UsageError) throw error;
@@ -539,7 +589,7 @@ async function commentsCommand(argv: string[], io: CliIo): Promise<number> {
   const deck = await loadDeck(deckDir);
   const resolveId = options.get('resolve');
   const addText = options.get('add');
-  const slideId = options.get('slide');
+  const slideRef = options.get('slide');
   const elementId = options.get('element');
 
   if (resolveId) {
@@ -556,7 +606,7 @@ async function commentsCommand(argv: string[], io: CliIo): Promise<number> {
   }
 
   if (addText) {
-    if (Boolean(slideId) === Boolean(elementId)) {
+    if (Boolean(slideRef) === Boolean(elementId)) {
       io.err('comments --add needs exactly one of --slide <slideId> or --element <elementId>');
       return EXIT_USAGE;
     }
@@ -567,9 +617,12 @@ async function commentsCommand(argv: string[], io: CliIo): Promise<number> {
       ts: new Date().toISOString(),
       resolved: false,
     };
+    // A number here is the slide number the listing above prints, so a reply
+    // can name the slide the same way the comment it answers did.
+    const slideId = slideRef ? slideIdForRef(deck, slideRef) ?? slideRef : undefined;
     const operation = addCommentOperation(deck, comment, slideId, elementId);
     if (!operation) {
-      io.err(`No such ${slideId ? `slide: ${slideId}` : `element: ${elementId}`}`);
+      io.err(`No such ${slideRef ? `slide: ${slideRef}` : `element: ${elementId}`}`);
       return EXIT_ERROR;
     }
     return applyTransaction(deckDir, {
@@ -827,7 +880,12 @@ function ensureKnownFlags(command: string, flags: Set<string>, allowed: string[]
   for (const flag of flags) {
     const name = flag.split('=', 1)[0];
     if (allowed.includes(name)) continue;
-    const hint = name === 'slides' ? ' Did you mean --slide <id>?'
+    // Pointing at `--slide` on a command that has no `--slide` sends the caller
+    // round the same loop again; say where slides *can* be named instead.
+    const slideFlag = name === 'slide' || name === 'slides';
+    const hint = slideFlag && allowed.includes('slide') ? ' Did you mean --slide <id|number>?'
+      : slideFlag ? ` ${command} covers the whole deck. Name slides with`
+        + ' --slide <id|number> on inspect, render, validate or theme apply.'
       : allowed.find((known) => known.startsWith(name) || name.startsWith(known))
         ? ` Did you mean --${allowed.find((known) => known.startsWith(name) || name.startsWith(known))}?`
         : '';
@@ -845,7 +903,11 @@ function ensurePositionals(command: string, positional: string[], max: number): 
   }
 }
 
-/** The ids named by `--slide`, each flag holding one id or a comma-separated list. */
+/**
+ * What `--slide` named, each flag holding one reference or a comma-separated
+ * list. These are ids only once `resolveRequestedSlides` has run over them;
+ * before that an entry may still be a slide number.
+ */
 function requestedSlideIds(flags: Set<string>): string[] {
   return [...flags]
     .filter((flag) => flag.startsWith('slide='))
@@ -855,17 +917,43 @@ function requestedSlideIds(flags: Set<string>): string[] {
 }
 
 /**
+ * A slide named by id, or by the 1-based number the editor's rail shows — the
+ * number `context` and `comments` print, and the number a human says out loud
+ * ("slide 44"). Ids are never bare integers, so the two cannot collide, and an
+ * agent handed "slide 44" can act on it without first mapping it to an id.
+ */
+function slideIdForRef(deck: Deck, ref: string): string | null {
+  // An exact id wins: a deck that came in from elsewhere may carry an id that
+  // happens to be all digits, and the id the caller holds is never a guess.
+  if (deck.slides.some((slide) => slide.id === ref)) return ref;
+  if (/^\d+$/.test(ref)) return deck.slides[Number(ref) - 1]?.id ?? null;
+  return null;
+}
+
+/**
+ * Rewrite every `--slide` into a real id, in place, so the selection built
+ * downstream sees ids only.
+ *
  * A `--slide` naming a slide that does not exist must be an error, not an
  * empty (or fallback) result: the caller is holding a stale id, and the sooner
  * it re-reads `context` the less it builds on the wrong slide.
  */
-function ensureSlideIdsExist(flags: Set<string>, deck: Deck): void {
-  const known = new Set(deck.slides.map((slide) => slide.id));
-  const missing = requestedSlideIds(flags).filter((id) => !known.has(id));
+function resolveRequestedSlides(flags: Set<string>, deck: Deck): void {
+  const refs = requestedSlideIds(flags);
+  if (refs.length === 0) return;
+  const missing: string[] = [];
+  const resolved = refs.map((ref) => {
+    const id = slideIdForRef(deck, ref);
+    if (id === null) missing.push(ref);
+    return id;
+  });
   if (missing.length > 0) {
     throw new UsageError(`No such slide: ${missing.join(', ')}.`
+      + ` This deck has ${deck.slides.length} slides; name one by id or by its 1-based number.`
       + ' Run `slide-agent context` for the current outline.');
   }
+  for (const flag of [...flags]) if (flag.startsWith('slide=')) flags.delete(flag);
+  for (const id of resolved) flags.add(`slide=${id}`);
 }
 
 /** `--selected` (default), `--slide <id>` (repeatable, or comma-separated) or `--all`. */
@@ -1170,16 +1258,25 @@ async function themeChooseCommand(argv: string[], io: CliIo): Promise<number> {
   const deck = await loadDeck(deckDir);
   const theme = resolveTheme(deck, id);
   const next = structuredClone(deck);
-  next.themeSelection = fullThemeSelection(theme.id);
-  return applyTransaction(deckDir, {
+  chooseDeckTheme(next, theme);
+  // Choosing installs the theme's defaults into the stylesheet new slides
+  // load; existing slides are pinned where they are. Written only once the
+  // transaction has landed, as in `theme apply`.
+  const cssPath = join(deckDir, next.theme);
+  const current = existsSync(cssPath) ? await readFile(cssPath, 'utf8') : '';
+  const css = withThemeBlock(current, themeStyleCss(next.themeStyle!, theme.name));
+  const code = await applyTransaction(deckDir, {
     version: AGENT_PROTOCOL_VERSION,
     label: `Choose ${theme.name}`,
     operations: diffDecks(deck, next),
   }, io, {
     theme: themeSummary(theme, deck.customThemes.some((candidate) => candidate.id === theme.id)),
+    stylesheet: next.theme,
     note: `New slides will be born wearing “${theme.name}”. Existing slides keep their `
-      + 'current styling — `theme apply` restyles those.',
+      + 'current look — `theme apply` restyles those.',
   });
+  if (code === EXIT_OK && css !== current) await writeFile(cssPath, css, 'utf8');
+  return code;
 }
 
 /** Property groups, so a narrowed apply reads as a list rather than six flags. */
@@ -1201,7 +1298,7 @@ async function themeApplyCommand(argv: string[], io: CliIo): Promise<number> {
   if (!id) throw new UsageError('theme apply needs --id <themeId>');
 
   const deck = await loadDeck(deckDir);
-  ensureSlideIdsExist(flags, deck);
+  resolveRequestedSlides(flags, deck);
   const theme = resolveTheme(deck, id);
 
   const roles = parseList(options.get('roles'), ['title', 'heading', 'body', 'caption', 'base'],
@@ -1211,13 +1308,14 @@ async function themeApplyCommand(argv: string[], io: CliIo): Promise<number> {
     .map(([name, key]) => [key, chosen.includes(name)]));
 
   // Which slides, decided the way every other command decides it: --all, named
-  // slides, or the editor's live selection. `--all` means every slide and
-  // nothing more — the install (deck defaults plus the stylesheet) is only
-  // ever asked for by name, with --scope deck.
+  // slides, or the editor's live selection. Every scope installs what it
+  // adopts into the deck defaults and theme.css; --scope deck is the one that
+  // also puts every slide on the cascade instead of pinning the rest.
   const scope = options.get('scope') ?? 'slides';
   if (scope !== 'deck' && scope !== 'slides') {
-    throw new UsageError(`Unknown scope "${scope}". Use --scope deck (defaults, every slide and`
-      + ' theme.css) or --scope slides (only the ones you name, the default).');
+    throw new UsageError(`Unknown scope "${scope}". Use --scope deck (every slide) or --scope slides`
+      + ' (only the ones you name, the default; the rest are pinned where they stand).'
+      + ' Both install what they adopt into theme.css.');
   }
   const context = await currentContext(deckDir, { scenes: false });
   const wanted = selectionFilter(flags);
@@ -1228,7 +1326,7 @@ async function themeApplyCommand(argv: string[], io: CliIo): Promise<number> {
     active: slide.id === context.activeSlideId,
   }));
   if (scope === 'slides' && targets.length === 0) {
-    io.err('No slides selected. Pass --slide <id> (repeatable) or --all for every slide,'
+    io.err('No slides selected. Pass --slide <id|number> (repeatable) or --all for every slide,'
       + ' or --scope deck to install the theme deck-wide.');
     return EXIT_ERROR;
   }
@@ -1252,14 +1350,15 @@ async function themeApplyCommand(argv: string[], io: CliIo): Promise<number> {
   }
   const warnings = themeApplyWarnings(deck, next, flags.has('detect-roles'));
 
-  // A deck-wide apply is also an install: the deck's composed defaults belong
-  // in the stylesheet the slides actually load, inside the generated block so
-  // the hand-written CSS around it survives. The block is prepared here but
-  // written only once the transaction has landed: a conflict or a refusal from
-  // the live editor must leave the deck folder exactly as it was, not with a
-  // stylesheet describing a theme deck.json never adopted.
+  // Every apply is also an install: the slides it restyles follow the deck's
+  // composed defaults, which belong in the stylesheet the slides actually
+  // load, inside the generated block so the hand-written CSS around it
+  // survives. The block is prepared here but written only once the transaction
+  // has landed: a conflict or a refusal from the live editor must leave the
+  // deck folder exactly as it was, not with a stylesheet describing a theme
+  // deck.json never adopted.
   let stylesheet: { path: string; css: string } | null = null;
-  if (scope === 'deck' && next.themeStyle) {
+  if (next.themeStyle && JSON.stringify(next.themeStyle) !== JSON.stringify(deck.themeStyle)) {
     const cssPath = join(deckDir, next.theme);
     const current = existsSync(cssPath) ? await readFile(cssPath, 'utf8') : '';
     warnings.push(...handWrittenOverrides(current, next.theme));
@@ -1328,10 +1427,15 @@ function handWrittenOverrides(css: string, file: string): string[] {
   const outside = (start !== -1 && end > start
     ? css.slice(0, start) + css.slice(end + THEME_BLOCK_END.length)
     : css).replace(/\/\*[\s\S]*?\*\//g, ' ');
+  const outranks = (selector: string): boolean => selector.split(',').some((part) => {
+    const single = part.trim();
+    const weight = (single.match(/[.#[]/g) ?? []).length + (/#/.test(single) ? 10 : 0);
+    return weight > 1;
+  });
   const selectors = [...outside.matchAll(/([^{}]+)\{([^}]*)\}/g)]
     .filter(([, , body]) => /font-family|font-size|font-weight|(^|[;\s])color\s*:/.test(body))
     .map(([, selector]) => selector.trim().replace(/\s+/g, ' '))
-    .filter((selector) => selector.length > 0 && !selector.startsWith('@'));
+    .filter((selector) => selector.length > 0 && !selector.startsWith('@') && outranks(selector));
   const unique = [...new Set(selectors)];
   if (unique.length === 0) return [];
   const shown = unique.slice(0, 6).join(', ');

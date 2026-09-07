@@ -69,9 +69,16 @@ if (!existsSync(exe('python'))) {
   run(python.command, [...python.prefix, '-m', 'venv', VENV]);
 }
 
-console.log('Installing keynote-parser, pillow and pyinstaller');
+// PyMuPDF rasterises the PDF figures Keynote users paste in from LaTeX. The
+// importer degrades without it, but only to the 256px thumbnail Keynote keeps
+// beside each PDF, which is exactly the blurry-figure bug a shipped binary
+// must not have.
+console.log('Installing keynote-parser, pillow, pymupdf and pyinstaller');
 run(exe('python'), ['-m', 'pip', 'install', '--quiet', '--upgrade', 'pip']);
-run(exe('python'), ['-m', 'pip', 'install', '--quiet', 'keynote-parser', 'pillow', 'pyinstaller']);
+run(exe('python'), [
+  '-m', 'pip', 'install', '--quiet',
+  'keynote-parser', 'pillow', 'pymupdf', 'pyinstaller',
+]);
 
 mkdirSync('build/importers', { recursive: true });
 
@@ -81,7 +88,8 @@ const IMPORTERS = [
     script: 'importers/keynote/import_keynote.py',
     // keynote-parser loads Apple's protobuf message modules dynamically, so
     // PyInstaller's static analysis cannot see them; likewise snappy's backend.
-    collect: ['keynote_parser', 'snappy'],
+    // PyMuPDF ships its MuPDF shared library as package data.
+    collect: ['keynote_parser', 'snappy', 'pymupdf'],
   },
   {
     name: 'pptx-import',

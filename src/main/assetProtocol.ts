@@ -3,6 +3,7 @@ import { Readable } from 'node:stream';
 import { protocol } from 'electron';
 import { resolveAsset } from './deckStore.js';
 import { deckDirForKey } from './deckWindows.js';
+import { POSTER_HOST, posterCacheDir } from './posterCache.js';
 
 /**
  * A custom `deck://` scheme for serving a deck's own assets to the renderer.
@@ -74,7 +75,9 @@ export function installAssetProtocol(): void {
     try {
       // deck://<deck key>/<relative path>
       const url = new URL(request.url);
-      const deckDir = deckDirForKey(url.hostname);
+      // `deck://posters/<name>.jpg` is the poster-frame cache, shared by every
+      // deck; anything else names a deck folder.
+      const deckDir = url.hostname === POSTER_HOST ? posterCacheDir() : deckDirForKey(url.hostname);
       if (!deckDir) return new Response('No deck open', { status: 404 });
       const relative = decodeURIComponent(url.pathname).replace(/^\/+/, '');
       if (!relative) return new Response('Not found', { status: 404 });

@@ -10,15 +10,25 @@ import type { EditorStore } from './store.js';
  * markup matches the inspector's `optionSection` so every side panel reads with
  * the same hierarchy.
  */
-function panelSection(title: string, extraClass = ''): HTMLElement {
+function panelSection(title: string, extraClass = ''): { section: HTMLElement; head: HTMLElement } {
   const section = document.createElement('section');
   section.className = `insp-option-section ${extraClass}`.trim();
+  const head = document.createElement('div');
+  head.className = 'insp-subtitle-row';
   const heading = document.createElement('h4');
   heading.className = 'insp-subtitle';
   heading.textContent = title;
-  section.appendChild(heading);
-  return section;
+  head.appendChild(heading);
+  section.appendChild(head);
+  return { section, head };
 }
+
+const TRIGGER_CHOICES: Array<{ value: TimelineEntry['trigger']['on']; label: string; title: string }> = [
+  { value: 'click', label: 'click', title: 'Advance on click' },
+  { value: 'afterPrev', label: 'after', title: 'After the previous step finishes' },
+  { value: 'withPrev', label: 'with', title: 'Together with the previous step' },
+  { value: 'mediaEnd', label: 'media', title: 'When the referenced media ends' },
+];
 
 /**
  * Authoring for builds.
@@ -65,36 +75,25 @@ export class TimelinePanel {
 
     const selection = this.store.get().selection;
 
-    const elementsSection = panelSection('Slide elements', 'build-elements-section');
-    this.host.appendChild(elementsSection);
+    const elements = panelSection('Elements', 'build-elements-section');
+    this.host.appendChild(elements.section);
 
-    // The list mirrors the canvas selection: picking an object on the slide
-    // lights up its row here, and picking a row selects it on the slide, so
-    // "add animation" never requires hunting through the list.
-    const list = document.createElement('div');
-    list.className = 'build-element-list';
-    for (const element of slide.elements) {
-      const row = document.createElement('button');
-      row.type = 'button';
-      row.className = 'build-element-row';
-      row.dataset.elementId = element.id;
-      row.classList.toggle('selected', selection.has(element.id));
-      renderElementLabel(row, element);
-      row.title = describeElement(element);
-      row.addEventListener('click', () => this.store.select([element.id]));
-      list.appendChild(row);
-    }
-    elementsSection.appendChild(list);
-
-    const add = document.createElement('button');
-    add.className = 'primary panel-action';
-    add.textContent = 'Add animation';
-    add.disabled = selection.size === 0;
-    add.title = add.disabled
-      ? 'Select an element on the slide or in the list first'
-      : 'Hide the selected elements until the next click';
-    add.addEventListener('click', () => this.addAnimationForSelection());
-    elementsSection.appendChild(add);
+    // The same numbers appear as badges on the canvas, so a card can be
+    // matched to the object it animates at a glance. A by-paragraph card
+    // spans several numbers — one per paragraph — collected under its id.
+    const numbersBySource = new Map<string, number[]>();
+    const numbersByTarget = new Map<string, number[]>();
+    expandTimeline(slide).forEach((unit, i) => {
+      const list = numbersBySource.get(unit.sourceId) ?? [];
+      list.push(i + 1);
+      numbersBySource.set(unit.sourceId, list);
+      const entry = slide.timeline.find((e) => e.id === unit.sourceId);
+      if (entry) {
+        const byTarget = numbersByTarget.get(entry.action.target) ?? [];
+        byTarget.push(i + 1);
+        numbersByTarget.set(entry.action.target, byTarget);
+      }
+    });
 
     // Text with several paragraphs can build in line by line: one stored
     // entry that fans out into a step per paragraph, in document order.
@@ -103,14 +102,54 @@ export class TimelinePanel {
       selected.length === 1 && selected[0].type === 'text' ? selected[0] : null;
     if (paraTarget && countParagraphs(paraTarget.html) > 1) {
       const addPara = document.createElement('button');
-      addPara.className = 'panel-action';
+      addPara.className = 'ghost build-add-paragraph';
       addPara.textContent = 'Add animation by paragraph';
       addPara.title = 'Reveal this text one paragraph per click';
       addPara.addEventListener('click', () => this.addParagraphAnimation(paraTarget.id));
-      elementsSection.appendChild(addPara);
+      elements.head.appendChild(addPara);
     }
 
-    const stepsSection = panelSection('Build steps', 'build-steps-section');
+    // The list mirrors the canvas selection: picking an object on the slide
+    // lights up its row here, and picking a row selects it on the slide, so
+    // "add animation" never requires hunting through the list. Each row
+    // carries the numbers of the steps that animate it, so the answer to
+    // "is this built yet" is on the row rather than in the cards below.
+    const list = document.createElement('div');
+    list.className = 'build-element-list';
+    for (const element of slide.elements) {
+      const row = document.createElement('button');
+      row.type = 'button';
+      row.className = 'build-element-row';
+      row.dataset.elementId = element.id;
+      row.dataset.kind = element.type === 'text'
+        ? (element.table || /<table\b/i.test(element.html) ? 'table'
+          : /<(ul|ol)\b/i.test(element.html) ? 'list' : 'text')
+        : element.type === 'shape' ? `shape-${element.shape}` : element.type;
+      row.classList.toggle('selected', selection.has(element.id));
+      renderElementLabel(row, element);
+      const steps = numbersByTarget.get(element.id);
+      if (steps) row.dataset.steps = steps.join(' ');
+      row.title = steps
+        ? `${describeElement(element)} · step ${steps.join(', ')}`
+        : describeElement(element);
+      row.addEventListener('click', () => this.store.select([element.id]));
+      list.appendChild(row);
+    }
+    elements.section.appendChild(list);
+
+    const add = document.createElement('button');
+    add.className = 'primary panel-action';
+    add.textContent = 'Add animation';
+    add.disabled = selection.size === 0;
+    add.title = add.disabled
+      ? 'Select an element on the slide or in the list first'
+      : selected.length === 1
+        ? `Hide “${describeElement(selected[0])}” until the next click`
+        : `Hide the ${selected.length} selected elements until the next click`;
+    add.addEventListener('click', () => this.addAnimationForSelection());
+    elements.section.appendChild(add);
+
+    const stepsSection = panelSection('Build steps', 'build-steps-section').section;
     this.host.appendChild(stepsSection);
 
     if (slide.timeline.length === 0) {
@@ -121,16 +160,6 @@ export class TimelinePanel {
       stepsSection.appendChild(hint);
       return;
     }
-
-    // The same numbers appear as badges on the canvas, so a card can be
-    // matched to the object it animates at a glance. A by-paragraph card
-    // spans several numbers — one per paragraph — collected under its id.
-    const numbersBySource = new Map<string, number[]>();
-    expandTimeline(slide).forEach((unit, i) => {
-      const list = numbersBySource.get(unit.sourceId) ?? [];
-      list.push(i + 1);
-      numbersBySource.set(unit.sourceId, list);
-    });
 
     // Steps are expanded units, but cards are stored entries: a by-paragraph
     // entry renders once, at the step where its first paragraph fires.
@@ -143,7 +172,7 @@ export class TimelinePanel {
       if (stepIndex === 0) {
         const label = document.createElement('div');
         label.className = 'step-label';
-        label.textContent = 'On slide enter';
+        label.textContent = 'On enter';
         block.appendChild(label);
         if (units.length === 0) {
           const none = document.createElement('div');
@@ -212,6 +241,7 @@ export class TimelinePanel {
 
     const action = document.createElement('select');
     action.className = 'build-action';
+    action.title = 'What this step does to the element';
     for (const t of ['appear', 'disappear', 'play', 'pause'] as const) {
       const opt = document.createElement('option');
       opt.value = t;
@@ -253,20 +283,52 @@ export class TimelinePanel {
     else name.textContent = '(missing element)';
     name.title = targetEl ? describeElement(targetEl) : '(missing element)';
 
+    // The trigger is a strip because there are four choices and they are
+    // compared, not browsed. A hidden <select> carries the value for keyboard
+    // users and the tests; the buttons are its face.
     const trigger = document.createElement('select');
-    trigger.className = 'build-trigger';
-    for (const t of ['click', 'afterPrev', 'withPrev', 'mediaEnd'] as const) {
+    trigger.className = 'build-trigger segmented-select';
+    trigger.setAttribute('aria-label', 'Trigger');
+    for (const choice of TRIGGER_CHOICES) {
       const opt = document.createElement('option');
-      opt.value = t;
-      opt.textContent = t === 'click' ? 'on click' : t;
+      opt.value = choice.value;
+      opt.textContent = choice.title;
       trigger.appendChild(opt);
     }
     trigger.value = entry.trigger.on;
-    trigger.addEventListener('change', () =>
+    const triggerStrip = document.createElement('div');
+    triggerStrip.className = 'segmented-buttons build-trigger-strip';
+    const triggerButtons: HTMLButtonElement[] = [];
+    const reflectTrigger = () => {
+      for (const b of triggerButtons) {
+        const on = b.dataset.value === trigger.value;
+        b.classList.toggle('is-active', on);
+        b.setAttribute('aria-pressed', String(on));
+      }
+    };
+    for (const choice of TRIGGER_CHOICES) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'segment-button';
+      b.dataset.value = choice.value;
+      b.textContent = choice.label;
+      b.title = choice.title;
+      b.setAttribute('aria-label', choice.title);
+      b.addEventListener('click', () => {
+        if (trigger.value === choice.value) return;
+        trigger.value = choice.value;
+        trigger.dispatchEvent(new Event('change', { bubbles: true }));
+      });
+      triggerButtons.push(b);
+      triggerStrip.appendChild(b);
+    }
+    trigger.addEventListener('change', () => {
+      reflectTrigger();
       this.mutate(entry.id, (e) => {
         e.trigger.on = trigger.value as 'click';
-      }),
-    );
+      });
+    });
+    reflectTrigger();
 
     const delay = document.createElement('input');
     delay.type = 'number';
@@ -275,11 +337,19 @@ export class TimelinePanel {
     delay.min = '0';
     delay.value = String(entry.trigger.delay);
     delay.title = 'Delay in milliseconds';
+    delay.setAttribute('aria-label', 'Delay in milliseconds');
     delay.addEventListener('change', () =>
       this.mutate(entry.id, (e) => {
         e.trigger.delay = Math.max(0, Number(delay.value) || 0);
       }),
     );
+    const delayWrap = document.createElement('span');
+    delayWrap.className = 'field-unit-wrap build-delay-wrap';
+    const unit = document.createElement('span');
+    unit.className = 'field-unit';
+    unit.textContent = 'ms';
+    unit.setAttribute('aria-hidden', 'true');
+    delayWrap.append(delay, unit);
 
     const remove = document.createElement('button');
     remove.className = 'icon-button';
@@ -294,18 +364,27 @@ export class TimelinePanel {
 
     // Selecting the row selects what it targets, so you can see what you're editing.
     row.addEventListener('click', (ev) => {
-      if ((ev.target as HTMLElement).tagName === 'SELECT') return;
+      const target = ev.target as HTMLElement;
+      if (target.closest('select, input, button')) return;
       this.store.select([entry.action.target]);
     });
 
+    // The element is the card's headline: that is what the canvas badge
+    // points at. How and when it fires comes on the lines below.
     const head = document.createElement('div');
     head.className = 'build-card-head';
-    if (byParagraph) head.append(grip, trigger, remove);
-    else head.append(grip, numChip, trigger, remove);
-    const body = document.createElement('div');
-    body.className = 'build-card-body';
-    body.append(action, name, delay);
-    row.append(head, body);
+    if (byParagraph) head.append(grip, name, remove);
+    else head.append(grip, numChip, name, remove);
+    const when = document.createElement('div');
+    when.className = 'build-card-body build-card-when';
+    when.append(trigger, triggerStrip, delayWrap);
+    const what = document.createElement('div');
+    what.className = 'build-card-body build-card-what';
+    const actionLabel = document.createElement('span');
+    actionLabel.className = 'build-action-label';
+    actionLabel.textContent = 'action';
+    what.append(actionLabel, action);
+    row.append(head, when, what);
 
     // The paragraphs build in document order and cannot be reordered, so they
     // are a read-only sub-list: each row's number matches its canvas badge.

@@ -27,14 +27,16 @@
  * them on demand) and so does the Player. See docs/media-loading.md.
  */
 
-import { ungateVideoLoad } from './mediaLoadGate.js';
+import { gateVideoLoad, ungateVideoLoad } from './mediaLoadGate.js';
+import { previewPosterProvider } from './previewPosterProvider.js';
+import { armPosterFrameSeek } from './render.js';
 
 /** Longest edge of a captured still. Thumbnails are small; frames need not be. */
 const MAX_CAPTURE_EDGE = 960;
 /** Data-URL stills are convenient but live on the JS heap; keep an LRU only. */
 const MAX_SNAPSHOTS = 64;
 
-/** Captured frames, keyed by source file plus in-point, as data URLs. */
+/** Captured frames, keyed by source file plus in-point: image URLs (a provider's) or data URLs (captured here). */
 const snapshots = new Map<string, string>();
 /** Elements waiting for a frame that is being captured, per key. */
 const waiting = new Map<string, Set<HTMLVideoElement>>();
@@ -116,6 +118,81 @@ function settle(key: string, dataUrl: string): void {
 }
 
 /**
+ * Give a video built without a source (`deferVideoSrc`) its source back, so
+ * it can load and be captured in the page. The fallback when no provider is
+ * installed or the provider could not cut the frame.
+ */
+function restoreDeferredSource(video: HTMLVideoElement): void {
+  delete video.dataset.posterPending;
+  const src = video.dataset.gateAbortedSrc;
+  if (!src || video.getAttribute('src')) return;
+  video.preload = 'none';
+  // An element that has been in the document without a source sits in
+  // NETWORK_NO_SOURCE, and assigning one then queues an 'emptied' event
+  // (load algorithm, step 5). The gate reads 'emptied' as "slot free", so
+  // registering before it fires would let the queue run past its limit.
+  const willEmpty = video.networkState !== HTMLMediaElement.NETWORK_EMPTY;
+  video.src = src;
+  delete video.dataset.gateAbortedSrc;
+  armPosterFrameSeek(video);
+  if (willEmpty) video.addEventListener('emptied', () => gateVideoLoad(video), { once: true });
+  else gateVideoLoad(video);
+}
+
+/**
+ * Ask the provider for the frame of every deferred video under `root`. One
+ * request per distinct frame; the answer settles every element waiting on it.
+ * Returns the videos the provider could not serve, for the in-page path.
+ */
+function requestProvidedStills(root: ParentNode): HTMLVideoElement[] {
+  const provider = previewPosterProvider();
+  const fallback: HTMLVideoElement[] = [];
+  for (const video of [...root.querySelectorAll('video')]) {
+    if (video.dataset.posterPending !== 'true') continue;
+    if (!provider) {
+      restoreDeferredSource(video);
+      fallback.push(video);
+      continue;
+    }
+    const key = frameKey(video);
+    const posterTime = Number(video.dataset.posterTime);
+    if (!key || !Number.isFinite(posterTime)) {
+      restoreDeferredSource(video);
+      fallback.push(video);
+      continue;
+    }
+    const cached = snapshots.get(key);
+    if (cached !== undefined) {
+      swapInStill(video, cached);
+      continue;
+    }
+    const pending = waiting.get(key);
+    if (pending) {
+      pending.add(video);
+      continue;
+    }
+    const group = new Set([video]);
+    waiting.set(key, group);
+    void provider(video.dataset.gateAbortedSrc ?? '', posterTime).then((url) => {
+      if (url) {
+        settle(key, url);
+        return;
+      }
+      // Nothing to show from the provider: let each waiter load in the page.
+      // `waiting` is dropped first so the capture path can claim the key.
+      const waiters = waiting.get(key) === group ? group : new Set<HTMLVideoElement>();
+      waiting.delete(key);
+      for (const waiter of waiters) {
+        if (!waiter.isConnected) continue;
+        restoreDeferredSource(waiter);
+        freezePreviewVideos(waiter.parentNode ?? waiter);
+      }
+    });
+  }
+  return fallback;
+}
+
+/**
  * Release preview videos whose owning thumbnail/surface has left its bounded
  * cache. The global `waiting` map would otherwise keep evicted DOM subtrees
  * alive indefinitely when a distinct poster frame never finished decoding.
@@ -156,10 +233,16 @@ const CAPTURE_EVENTS = ['seeked', 'loadeddata', 'canplay'] as const;
  * become stills synchronously — no fetch, no decode, no black frame at all.
  */
 export function freezePreviewVideos(root: ParentNode): void {
+  // Videos built without a source get their still from the provider; the ones
+  // it cannot serve have just had their source restored and fall through to
+  // the in-page capture below like any other preview video.
+  requestProvidedStills(root);
   for (const video of [...root.querySelectorAll('video')]) {
     // No poster stamp → a live surface (player, editor canvas). Not ours.
     if (video.dataset.posterTime === undefined) continue;
     if (video.dataset.holdFrame === 'true') continue;
+    // Still on its way from the provider.
+    if (video.dataset.posterPending === 'true') continue;
     const key = frameKey(video);
     if (!key) continue;
 

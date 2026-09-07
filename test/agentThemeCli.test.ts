@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { type Deck, emptyDeck, parseDeck } from '../src/shared/deck.js';
 import { EXIT_ERROR, EXIT_OK, EXIT_USAGE, runAgentCli } from '../src/cli/agentCli.js';
-import { THEMES, THEME_BLOCK_START, themeById } from '../src/shared/themes.js';
+import { STOCK_STYLESHEET_STYLE, THEMES, THEME_BLOCK_START, themeById } from '../src/shared/themes.js';
 import type { AgentContext } from '../src/shared/agent.js';
 import { agentRuntimePaths, deckRevision } from '../src/main/agentRuntime.js';
 
@@ -152,16 +152,32 @@ describe('slide-agent theme', () => {
     expect(deck.customThemes[0].name).toBe('Lab Night II');
   });
 
-  it('chooses a theme for slides yet to exist without touching the ones that do', async () => {
+  it('chooses a theme for slides yet to exist, pinning the ones that do where they stand', async () => {
     await cli('theme', 'create', '--spec', await derive());
     const { code, json } = await parsed('theme', 'choose', '--id', 'lab-night');
     expect(code).toBe(EXIT_OK);
     expect(json.note).toContain('New slides');
+    expect(json.stylesheet).toBe('theme.css');
     const deck = await onDisk();
+    // Choosing installs the full theme as the deck's current one...
     expect(deck.themeSelection?.preset).toBe('lab-night');
-    expect(deck.themePreset).toBeNull();
-    expect(deck.slides[0].elements[0].style['font-family']).toBe('Comic Sans MS');
-    expect(deck.slides[0].background.color).toBeNull();
+    expect(deck.themePreset).toBe('lab-night');
+    expect(deck.themeStyle?.colors.background).toBe('#12151a');
+    expect(deck.themeStyle?.fonts.title.family).toBe(themeById('almanac')!.fonts.title.family);
+    // ...and every existing slide keeps exactly the look it rendered at: its
+    // own inline values stay, and what it used to take from the stylesheet is
+    // pinned at the stock value before the stylesheet moves.
+    const title = deck.slides[0].elements[0];
+    expect(title.style['font-family']).toBe('Comic Sans MS');
+    expect(title.style['font-size']).toBe('96px');
+    expect(title.style['color']).toBe(STOCK_STYLESHEET_STYLE.colors.text);
+    expect(title.style['letter-spacing']).toBe(STOCK_STYLESHEET_STYLE.fonts.title.letterSpacing);
+    expect(deck.slides[0].background.color).toBe(STOCK_STYLESHEET_STYLE.colors.background);
+    expect(deck.slides[1].background.color).toBe(STOCK_STYLESHEET_STYLE.colors.background);
+    const css = await readFile(join(dir, 'theme.css'), 'utf8');
+    expect(css).toContain(THEME_BLOCK_START);
+    expect(css).toContain('#12151a');
+    expect(css).toContain('.callout { border: 4px solid red; }');
   });
 
   it('applies a deck theme deck-wide: defaults, slides and the generated stylesheet block', async () => {
@@ -175,52 +191,83 @@ describe('slide-agent theme', () => {
     expect(deck.themePreset).toBe('lab-night');
     expect(deck.themeStyle?.colors.background).toBe('#12151a');
     for (const slide of deck.slides) {
-      expect(slide.background.color).toBe('#12151a');
-      // Deck scope installs the values in the stylesheet, so the inline
+      // Every slide follows the stylesheet: the ground comes from `.slide`
+      // in theme.css rather than an inline copy, and the inline type
       // overrides that used to win are removed rather than rewritten.
+      expect(slide.background).toEqual({ color: null, image: null });
+      expect(slide.layoutBackgroundInherited).toBe(false);
       expect(slide.elements[0].style['font-family']).toBeUndefined();
       expect(slide.elements[0].style['font-size']).toBeUndefined();
+      expect(slide.elements[0].style['color']).toBeUndefined();
     }
+    expect(deck.themeStyle?.fonts.title.family).toBe(themeById('almanac')!.fonts.title.family);
 
     const css = await readFile(join(dir, 'theme.css'), 'utf8');
     expect(css).toContain(THEME_BLOCK_START);
     expect(css).toContain('#12151a');
-    // The author's own CSS survives the install, below the generated block.
+    // The author's own CSS survives the install, above the generated block,
+    // which is written last so equal-specificity rules cannot outrank it.
     expect(css).toContain('.callout { border: 4px solid red; }');
+    expect(css.indexOf('.callout')).toBeLessThan(css.indexOf(THEME_BLOCK_START));
     // Hand-written CSS that sets no type or colour cannot outrank the theme,
     // so it is not something to warn about.
     expect(json.warnings).toBeUndefined();
   });
 
   it('warns when hand-written CSS will outrank the block it just installed', async () => {
+    // The generated block is written last, so a single-class rule of equal
+    // specificity loses to it and is nothing to warn about; only a more
+    // specific selector (two classes here) still wins and earns a warning.
     await writeFile(
       join(dir, 'theme.css'),
-      '/* header prose, not a selector */\n.slide { font-family: "Comic Sans MS"; }\n',
+      '/* header prose, not a selector */\n'
+        + '.slide { font-family: "Comic Sans MS"; }\n'
+        + '.slide .role-title { font-size: 40px; }\n',
       'utf8',
     );
     const { json } = await parsed('theme', 'apply', '--id', 'noir', '--scope', 'deck');
-    expect(json.warnings?.join(' ')).toContain('.slide');
-    expect(json.warnings?.join(' ')).not.toContain('header prose');
+    const warnings = json.warnings?.join(' ') ?? '';
+    expect(warnings).toContain('.slide .role-title');
+    expect(warnings).not.toContain('Comic Sans');
+    expect(warnings).not.toContain('header prose');
+    expect(json.warnings).toHaveLength(1);
   });
 
-  it('restyles only the slides named, leaving the deck defaults and the rest alone', async () => {
+  it('restyles only the slides named, pinning the rest where they stand', async () => {
     const { code, json } = await parsed(
       'theme', 'apply', '--id', 'noir', '--scope', 'slides', '--slide', 'slide-2',
     );
     expect(code).toBe(EXIT_OK);
     expect(json.slides).toBe(1);
-    expect(json.stylesheet).toBeUndefined();
+    // Every apply installs what it adopts into the stylesheet's generated block.
+    expect(json.stylesheet).toBe('theme.css');
 
     const deck = await onDisk();
     const noir = themeById('noir')!;
-    expect(deck.slides[1].elements[0].style['font-family']).toBe(noir.fonts.title.family);
-    expect(deck.slides[0].elements[0].style['font-family']).toBe('Comic Sans MS');
-    // Slides scope is not an install: the deck defaults and the stylesheet are
-    // untouched, and only the choice for future slides is recorded.
-    expect(deck.themePreset).toBeNull();
-    expect(deck.themeStyle).toBeNull();
+    expect(deck.themePreset).toBe('noir');
     expect(deck.themeSelection?.preset).toBe('noir');
-    expect(await readFile(join(dir, 'theme.css'), 'utf8')).not.toContain(THEME_BLOCK_START);
+    expect(deck.themeStyle?.fonts.title.family).toBe(noir.fonts.title.family);
+    expect(deck.themeStyle?.colors.background).toBe(noir.colors.background);
+    const css = await readFile(join(dir, 'theme.css'), 'utf8');
+    expect(css).toContain(THEME_BLOCK_START);
+    expect(css).toContain(noir.colors.background);
+    expect(css).toContain('.callout { border: 4px solid red; }');
+
+    // The named slide carries no inline copies: it follows theme.css.
+    const target = deck.slides[1];
+    expect(target.elements[0].style['font-family']).toBeUndefined();
+    expect(target.elements[0].style['font-size']).toBeUndefined();
+    expect(target.elements[0].style['color']).toBeUndefined();
+    expect(target.background).toEqual({ color: null, image: null });
+
+    // The other slide keeps exactly the values it rendered at: its own inline
+    // typeface and size, and the stock defaults pinned for what the
+    // stylesheet no longer says.
+    const rest = deck.slides[0];
+    expect(rest.elements[0].style['font-family']).toBe('Comic Sans MS');
+    expect(rest.elements[0].style['font-size']).toBe('96px');
+    expect(rest.elements[0].style['color']).toBe(STOCK_STYLESHEET_STYLE.colors.text);
+    expect(rest.background.color).toBe(STOCK_STYLESHEET_STYLE.colors.background);
   });
 
   it('narrows an apply to the roles and properties asked for', async () => {
@@ -229,10 +276,23 @@ describe('slide-agent theme', () => {
       '--roles', 'title', '--properties', 'text-color',
     );
     expect(code).toBe(EXIT_OK);
-    const element = (await onDisk()).slides[0].elements[0];
-    expect(element.style['color']).toBe(themeById('noir')!.colors.text);
-    // Asked for the colour alone, so the typeface it arrived with stays.
+    const deck = await onDisk();
+    const noir = themeById('noir')!;
+    const element = deck.slides[0].elements[0];
+    // The colour is installed in the stylesheet and the box follows it...
+    expect(element.style['color']).toBeUndefined();
+    expect(deck.themeStyle?.fonts.title.color).toBe(noir.colors.text);
+    // Only the title role was asked for, so the deck-wide text colour stays stock.
+    expect(deck.themeStyle?.colors.text).toBe(STOCK_STYLESHEET_STYLE.colors.text);
+    expect(await readFile(join(dir, 'theme.css'), 'utf8')).toContain(noir.colors.text);
+    // ...but asked for the colour alone, so the typeface it arrived with stays,
+    // and the deck's other defaults are still the stock ones.
     expect(element.style['font-family']).toBe('Comic Sans MS');
+    expect(deck.themeStyle?.fonts.title.family).toBe(STOCK_STYLESHEET_STYLE.fonts.title.family);
+    expect(deck.themeStyle?.colors.background).toBe(STOCK_STYLESHEET_STYLE.colors.background);
+    // The slide outside the scope is pinned at the colour it rendered at.
+    expect(deck.slides[1].elements[0].style['color']).toBe(STOCK_STYLESHEET_STYLE.colors.text);
+    expect(deck.slides[1].background.color).toBeNull();
   });
 
   it('rejects an unknown theme, role or property with the menu of real ones', async () => {
@@ -393,35 +453,41 @@ describe('slide-agent theme', () => {
       const { code } = await cli('theme', 'apply', '--id', 'lab-night-light', '--slide', 'slide-2', '--properties', 'background');
       expect(code).toBe(EXIT_OK);
       const deck = await onDisk();
-      expect(deck.slides[1].background.color).not.toBeNull();
-      expect(deck.slides[1].background.color).not.toBe('#12151a');
-      expect(deck.slides[0].background.color).toBeNull();
+      // The light variant's ground is installed as the deck default; the
+      // target slide follows it, the other is pinned at the stock white.
+      expect(deck.themeStyle?.colors.background).not.toBe('#12151a');
+      expect(deck.themeStyle?.colors.background).not.toBe(STOCK_STYLESHEET_STYLE.colors.background);
+      expect(deck.slides[1].background).toEqual({ color: null, image: null });
+      expect(deck.slides[0].background.color).toBe(STOCK_STYLESHEET_STYLE.colors.background);
       const { json } = await parsed('theme', 'list');
-      expect(json).toMatchObject({ installed: null, chosen: 'lab-night-light', modified: false });
+      expect(json).toMatchObject({ installed: 'lab-night-light', chosen: 'lab-night-light', modified: true });
     });
   });
 
   describe('scope and the stylesheet', () => {
-    it('treats a bare --all as every slide, never as an install', async () => {
-      const cssBefore = await readFile(join(dir, 'theme.css'), 'utf8');
+    it('treats a bare --all as every slide, installing what it adopts', async () => {
       const { code, json } = await parsed('theme', 'apply', '--id', 'noir', '--all');
       expect(code).toBe(EXIT_OK);
       expect(json.scope).toBe('slides');
       expect(json.slides).toBe(2);
-      expect(json.stylesheet).toBeUndefined();
+      expect(json.stylesheet).toBe('theme.css');
 
       const deck = await onDisk();
       const noir = themeById('noir')!;
-      // Every slide is restyled inline...
+      // Every slide follows the stylesheet rather than carrying inline copies...
       for (const slide of deck.slides) {
-        expect(slide.background.color).toBe(noir.colors.background);
-        expect(slide.elements[0].style['font-family']).toBe(noir.fonts.title.family);
+        expect(slide.background).toEqual({ color: null, image: null });
+        expect(slide.elements[0].style['font-family']).toBeUndefined();
+        expect(slide.elements[0].style['font-size']).toBeUndefined();
       }
-      // ...and nothing that only --scope deck may touch has moved.
-      expect(deck.themePreset).toBeNull();
-      expect(deck.themeStyle).toBeNull();
+      // ...and the stylesheet now says what they follow.
+      expect(deck.themePreset).toBe('noir');
+      expect(deck.themeStyle?.fonts.title.family).toBe(noir.fonts.title.family);
       expect(deck.themeSelection?.preset).toBe('noir');
-      expect(await readFile(join(dir, 'theme.css'), 'utf8')).toBe(cssBefore);
+      const css = await readFile(join(dir, 'theme.css'), 'utf8');
+      expect(css).toContain(THEME_BLOCK_START);
+      expect(css).toContain(noir.colors.background);
+      expect(css).toContain('.callout { border: 4px solid red; }');
     });
 
     /**

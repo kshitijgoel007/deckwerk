@@ -6,6 +6,7 @@ import {
   isTopLevelListItem,
   listItemParagraphs,
   mergeParagraphIntoList,
+  outdentListItem,
   unbulletListItems,
 } from '../src/renderer/editor/listEditing.js';
 
@@ -246,5 +247,41 @@ describe('one item, one paragraph list', () => {
     const root = content('<ul><li>lead<p>tail</p></li></ul>');
     const paragraphs = listItemParagraphs(items(root)[0]);
     expect(paragraphs.map((p) => p.outerHTML)).toEqual(['<p>lead</p>', '<p>tail</p>']);
+  });
+});
+
+describe('moving an indented item out one level', () => {
+  it('promotes an item from the saved shape to sit after its parent', () => {
+    const root = content('<ul><li>one<ul><li>two</li></ul></li><li>three</li></ul>');
+    const two = items(root)[1];
+    expect(outdentListItem(two)).toBe(true);
+    expect(root.innerHTML).toBe('<ul><li>one</li><li>two</li><li>three</li></ul>');
+  });
+
+  it('promotes an item from the sibling shape Chromium writes while editing', () => {
+    const root = content('<ul><li>one</li><ul><li>two</li></ul></ul>');
+    const two = items(root)[1];
+    expect(outdentListItem(two)).toBe(true);
+    expect(root.innerHTML).toBe('<ul><li>one</li><li>two</li></ul>');
+  });
+
+  it('keeps the items that followed it one level deeper, under it', () => {
+    const root = content('<ul><li>one<ul><li>a</li><li>two</li><li>c</li></ul></li></ul>');
+    const two = items(root)[2];
+    expect(outdentListItem(two)).toBe(true);
+    expect(root.innerHTML).toBe('<ul><li>one<ul><li>a</li></ul></li><li>two<ul><li>c</li></ul></li></ul>');
+  });
+
+  it('moves only one level at a time', () => {
+    const root = content('<ul><li>one<ul><li>two<ul><li>three</li></ul></li></ul></li></ul>');
+    const three = items(root)[2];
+    expect(outdentListItem(three)).toBe(true);
+    expect(root.innerHTML).toBe('<ul><li>one<ul><li>two</li><li>three</li></ul></li></ul>');
+  });
+
+  it('declines for a top-level item', () => {
+    const root = content('<ul><li>one</li></ul>');
+    expect(outdentListItem(items(root)[0])).toBe(false);
+    expect(root.innerHTML).toBe('<ul><li>one</li></ul>');
   });
 });

@@ -127,13 +127,15 @@ export function fontFamilyField(
 
   const current = options.mixed ? null : primaryFamily(value);
 
+  // The theme case needs no note: the selected option already says "(Theme)".
   const showFallback = (family: string | null): void => {
     if (!family) {
-      fallbackNote.textContent = options.mixed && select.value === '__mixed__'
-        ? 'Mixed fonts selected.'
-        : 'Uses the theme’s font.';
+      const mixed = options.mixed && select.value === '__mixed__';
+      fallbackNote.textContent = mixed ? 'Mixed fonts selected.' : '';
+      fallbackNote.hidden = !mixed;
       return;
     }
+    fallbackNote.hidden = false;
     fallbackNote.textContent =
       `Falls back to: ${fallbackStackFor(family).join(', ')}`;
   };

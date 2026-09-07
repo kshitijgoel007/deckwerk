@@ -7,6 +7,7 @@ import type { ImportedAsset } from '@shared/ipc.js';
 import { classifyMediaName, CONVERTED_IMAGE_EXTS } from '@shared/media.js';
 import { serializeSpeakerNotes, SPEAKER_NOTES_FILE } from '@shared/speakerNotes.js';
 import { isWebSafeCodec, probeMedia, transcodeToH264, videoCodec } from './ffmpeg.js';
+import { needsFastStart, writeFastStart } from './mp4FastStart.js';
 import { convertHeicToPng } from './heic.js';
 
 /**
@@ -274,6 +275,17 @@ export async function importAsset(
       const convertedPath = join(assetsDir, converted);
       if (!existsSync(convertedPath)) await transcodeToH264(dest, convertedPath, onProgress);
       finalName = converted;
+    } else if (await needsFastStart(dest)) {
+      // Playable as-is, but indexed at the tail: Chromium would seek to the
+      // end of the file before painting any frame, through the asset
+      // protocol, for every thumbnail that shows the clip. Move the index up
+      // front with a byte-exact rewrite (no ffmpeg, nothing re-timed) and
+      // serve that copy under the same stem and extension.
+      const relocated = `${stem}.${hash}.fs${ext}`;
+      const relocatedPath = join(assetsDir, relocated);
+      onProgress?.(null);
+      if (!existsSync(relocatedPath)) await writeFastStart(dest, relocatedPath);
+      finalName = relocated;
     }
   }
   const finalPath = join(assetsDir, finalName);

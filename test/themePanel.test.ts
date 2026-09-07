@@ -4,7 +4,7 @@ import type { CssEditor } from '../src/renderer/editor/cssEditor.js';
 import { createThemePanel } from '../src/renderer/editor/themePanel.js';
 import { EditorStore } from '../src/renderer/editor/store.js';
 import { emptyDeck } from '../src/shared/deck.js';
-import { THEMES, fullThemeSelection } from '../src/shared/themes.js';
+import { STOCK_STYLESHEET_STYLE, THEMES, fullThemeSelection, themeStyleOf } from '../src/shared/themes.js';
 
 describe('theme panel', () => {
   beforeEach(() => document.body.replaceChildren());
@@ -41,9 +41,10 @@ describe('theme panel', () => {
       'insp-option-section theme-current-section',
       'insp-option-section theme-apply-section',
       'insp-option-section layouts-section',
+      'insp-option-section layout-apply-section',
     ]);
     expect([...panel.element.querySelectorAll('.insp-subtitle')].map((h) => h.textContent))
-      .toEqual(['Current theme', 'Apply theme', 'Layouts']);
+      .toEqual(['Current theme', 'Apply theme', 'Layouts', 'Apply layout']);
     expect(panel.element.querySelectorAll('.theme-active-host .theme-card')).toHaveLength(1);
     expect(panel.element.querySelector('.theme-chooser')?.hasAttribute('hidden')).toBe(true);
     expect(panel.element.querySelector('.theme-browser-intro p')).toBeNull();
@@ -54,7 +55,8 @@ describe('theme panel', () => {
     expect(onEditLayouts).toHaveBeenCalledTimes(1);
     const roleLabels = [...panel.element.querySelectorAll<HTMLElement>('.theme-adoption-controls .field-check span')]
       .map((label) => label.textContent);
-    expect(roleLabels.slice(0, 4)).toEqual(['Title', 'Heading', 'Body', 'Caption']);
+    expect(roleLabels.slice(0, 3)).toEqual(['Title', 'Body', 'Caption']);
+    expect(roleLabels).not.toContain('Heading');
     expect(roleLabels).not.toContain('Base');
   });
 
@@ -81,20 +83,27 @@ describe('theme panel', () => {
     expect(panel.dismiss()).toBe(false);
   });
 
-  it('records the chosen theme for new slides without restyling existing ones', () => {
-    const store = new EditorStore(emptyDeck('Theme panel'), '/tmp/theme-panel');
+  it('installs the chosen theme for new slides and pins existing slides where they are', () => {
+    const deck = emptyDeck('Theme panel');
+    // A title on the stock stylesheet alone: no inline type, no theme installed.
+    deck.slides[0].elements.push({
+      id: 'title-1', type: 'text', x: 0, y: 0, w: 800, h: 200, rot: 0, z: 1, opacity: 1,
+      class: ['role-title'], style: {}, html: 'Existing title',
+      align: 'left', valign: 'middle',
+    });
+    const store = new EditorStore(deck, '/tmp/theme-panel');
     const setStatusMessage = vi.fn();
     const save = vi.fn();
+    const saveThemeCss = vi.fn();
     const panel = createThemePanel({
       store,
       cssEditor: { getValue: () => '', setValue: vi.fn() } as unknown as CssEditor,
       save,
       setStatusMessage,
-      saveThemeCss: vi.fn(),
+      saveThemeCss,
       onThemePreview: vi.fn(),
     });
     document.body.appendChild(panel.element);
-    const before = JSON.stringify(store.get().deck.slides);
 
     // Open the chooser, then pick a card other than the one already showing.
     panel.element.querySelector<HTMLButtonElement>('.theme-active-card')!.click();
@@ -104,11 +113,40 @@ describe('theme panel', () => {
     const card = cards.find((element) => element.textContent?.includes(target.name));
     card!.click();
 
-    expect(store.get().deck.themeSelection?.preset).toBe(target.id);
-    // Choosing installs nothing and repaints nothing that already exists.
-    expect(store.get().deck.themePreset).toBeNull();
-    expect(store.get().deck.themeStyle).toBeNull();
-    expect(JSON.stringify(store.get().deck.slides)).toBe(before);
+    // Choosing installs the whole theme as the deck's defaults, and theme.css
+    // follows it at once so new slides can sit on the cascade.
+    expect(store.get().deck.themeSelection).toEqual(fullThemeSelection(target.id));
+    expect(store.get().deck.themePreset).toBe(target.id);
+    expect(store.get().deck.themeStyle).toEqual(themeStyleOf(target));
+    const css = saveThemeCss.mock.calls.at(-1)?.[0] as string;
+    expect(css).toContain([
+      '.role-title {',
+      `  font-family: ${target.fonts.title.family};`,
+      `  font-size: ${target.fonts.title.size}px;`,
+      `  font-weight: ${target.fonts.title.weight};`,
+      `  line-height: ${target.fonts.title.lineHeight};`,
+      `  letter-spacing: ${target.fonts.title.letterSpacing};`,
+    ].join('\n'));
+    expect(css).toContain(`.slide {\n  background: ${target.colors.background};\n  color: ${target.colors.text};`);
+
+    // The existing title is pinned at exactly what it rendered at before: the
+    // stock value for every property the new theme would have moved, nothing
+    // for the properties the two agree on.
+    const was = STOCK_STYLESHEET_STYLE.fonts.title;
+    const will = target.fonts.title;
+    const pinned = (before: string, after: string): string | undefined => (before === after ? undefined : before);
+    const title = store.get().deck.slides[0].elements.find((element) => element.id === 'title-1')!;
+    expect(title.style).toEqual(Object.fromEntries(Object.entries({
+      'font-family': pinned(was.family, will.family),
+      'font-weight': pinned(String(was.weight), String(will.weight)),
+      'font-size': pinned(`${was.size}px`, `${will.size}px`),
+      'line-height': pinned(String(was.lineHeight), String(will.lineHeight)),
+      'letter-spacing': pinned(was.letterSpacing, will.letterSpacing),
+      color: pinned(STOCK_STYLESHEET_STYLE.colors.text, will.color ?? target.colors.text),
+    }).filter(([, value]) => value !== undefined)));
+    expect(title.style).not.toEqual({});
+    expect(store.get().deck.slides[0].background.color)
+      .toBe(pinned(STOCK_STYLESHEET_STYLE.colors.background, target.colors.background) ?? null);
     expect(save).toHaveBeenCalled();
     expect(setStatusMessage.mock.calls.at(-1)?.[0]).toContain('New slides will use');
     expect(setStatusMessage.mock.calls.at(-1)?.[0]).toContain(target.name);
@@ -230,7 +268,7 @@ describe('theme panel', () => {
     expect(markedPrevious()).toEqual(['swiss']);
   });
 
-  it('carries the theme\'s font weight onto the slides it restyles', () => {
+  it('carries the theme\'s font weight into theme.css for the slides it restyles', () => {
     const deck = emptyDeck('Theme panel');
     deck.slides[0].elements.push({
       id: 'title-1', type: 'text', x: 0, y: 0, w: 800, h: 200, rot: 0, z: 1, opacity: 1,
@@ -239,12 +277,13 @@ describe('theme panel', () => {
     });
     // The store opens with the first slide selected, which is the apply scope.
     const store = new EditorStore(deck, '/tmp/theme-panel');
+    const saveThemeCss = vi.fn();
     const panel = createThemePanel({
       store,
       cssEditor: { getValue: () => '', setValue: vi.fn() } as unknown as CssEditor,
       save: vi.fn(),
       setStatusMessage: vi.fn(),
-      saveThemeCss: vi.fn(),
+      saveThemeCss,
       onThemePreview: vi.fn(),
     });
     document.body.appendChild(panel.element);
@@ -256,10 +295,17 @@ describe('theme panel', () => {
       .find((element) => element.textContent?.includes(colloquium.name))!.click();
     panel.element.querySelector<HTMLButtonElement>('.theme-apply-action button')!.click();
 
-    // The family without its weight is what left condensed titles at 700.
+    // The family without its weight is what left condensed titles at 700. Now
+    // both travel together: the title's own 700 is cleared so it follows the
+    // deck's defaults, and those carry Colloquium's medium into theme.css.
     const title = store.get().deck.slides[0].elements.find((element) => element.id === 'title-1')!;
-    expect(title.style['font-family']).toBe(colloquium.fonts.title.family);
-    expect(title.style['font-weight']).toBe(String(colloquium.fonts.title.weight));
+    expect(title.style['font-weight']).toBeUndefined();
+    expect(title.style['font-family']).toBeUndefined();
+    expect(store.get().deck.themeStyle?.fonts.title.family).toBe(colloquium.fonts.title.family);
+    expect(store.get().deck.themeStyle?.fonts.title.weight).toBe(colloquium.fonts.title.weight);
+    expect(saveThemeCss).toHaveBeenLastCalledWith(expect.stringContaining(
+      `.role-title {\n  font-family: ${colloquium.fonts.title.family};\n  font-size: ${colloquium.fonts.title.size}px;\n  font-weight: ${colloquium.fonts.title.weight};`,
+    ));
   });
 
   it('offers a theme the deck carries itself, and applies it like any built-in', () => {
@@ -279,12 +325,13 @@ describe('theme panel', () => {
       align: 'left', valign: 'middle',
     });
     const store = new EditorStore(deck, '/tmp/theme-panel');
+    const saveThemeCss = vi.fn();
     const panel = createThemePanel({
       store,
       cssEditor: { getValue: () => '', setValue: vi.fn() } as unknown as CssEditor,
       save: vi.fn(),
       setStatusMessage: vi.fn(),
-      saveThemeCss: vi.fn(),
+      saveThemeCss,
       onThemePreview: vi.fn(),
     });
     document.body.appendChild(panel.element);
@@ -300,8 +347,14 @@ describe('theme panel', () => {
     expect(panel.currentTheme()?.id).toBe('lab-night-light');
     panel.element.querySelector<HTMLButtonElement>('.theme-apply-action button')!.click();
 
+    // The title's own Comic Sans is cleared so it follows theme.css, which now
+    // carries the deck theme's title face.
     const title = store.get().deck.slides[0].elements.find((element) => element.id === 'title-1')!;
-    expect(title.style['font-family']).toBe(deck.customThemes[0].fonts.title.family);
+    expect(title.style['font-family']).toBeUndefined();
+    expect(store.get().deck.themeStyle?.fonts.title.family).toBe(deck.customThemes[0].fonts.title.family);
+    expect(saveThemeCss).toHaveBeenLastCalledWith(expect.stringContaining(
+      `.role-title {\n  font-family: ${deck.customThemes[0].fonts.title.family};`,
+    ));
   });
 
   it('offers the presets of a deck opened after the panel was built', () => {
@@ -347,5 +400,51 @@ describe('theme panel', () => {
     panel.noteDeckOpened(plain);
     expect(panel.element.querySelectorAll('.theme-gallery')).toHaveLength(1);
     expect(cardIds()).not.toContain('lab-night');
+  });
+});
+
+describe('the theme editor’s type scale', () => {
+  it('edits one role’s default size into theme.css without moving existing slides', () => {
+    const deck = emptyDeck('Scale panel');
+    deck.themePreset = THEMES[0].id;
+    deck.themeStyle = structuredClone({
+      fonts: THEMES[0].fonts, palette: THEMES[0].palette, colors: THEMES[0].colors,
+    });
+    deck.slides[0].elements.push({
+      id: 'following', type: 'text', x: 0, y: 0, w: 100, h: 50, rot: 0, z: 1, opacity: 1,
+      class: ['role-title'], style: {}, html: 'Following',
+      align: 'left', valign: 'top', autoFit: false,
+    });
+    const store = new EditorStore(deck, '/tmp/theme-panel-scale');
+    const saveThemeCss = vi.fn();
+    const panel = createThemePanel({
+      store,
+      cssEditor: { getValue: () => '', setValue: vi.fn() } as unknown as CssEditor,
+      save: vi.fn(),
+      setStatusMessage: vi.fn(),
+      saveThemeCss,
+    });
+    document.body.appendChild(panel.element);
+    [...panel.element.querySelectorAll('button')]
+      .find((node) => node.textContent === 'Edit theme…')!.click();
+
+    const sizes = [...panel.element.querySelectorAll<HTMLElement>('.theme-role-size')];
+    expect(sizes.map((node) => node.querySelector('span')?.textContent)).toEqual([
+      'Title size', 'Body size', 'Caption size',
+    ]);
+    const title = sizes[0].querySelector('input')!;
+    const before = THEMES[0].fonts.title.size;
+    expect(Number(title.value)).toBe(before);
+    title.value = '100';
+    title.dispatchEvent(new Event('change', { bubbles: true }));
+
+    expect(store.get().deck.themeStyle?.fonts.title.size).toBe(100);
+    expect(saveThemeCss).toHaveBeenLastCalledWith(expect.stringMatching(/\.role-title \{[^}]*font-size: 100px/));
+    // The existing title kept the size it rendered at; only new slides and an
+    // explicit Apply see 100px.
+    expect(store.get().deck.slides[0].elements.find((el) => el.id === 'following')?.style)
+      .toEqual({ 'font-size': `${before}px` });
+    expect(panel.element.querySelector('.theme-scale-hint')?.textContent)
+      .toBe('Sizes for new slides. Existing slides keep theirs until you apply the theme to them.');
   });
 });

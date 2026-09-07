@@ -66,6 +66,7 @@ describe('slide-agent CLI', () => {
     stateDir = await mkdtemp(join(tmpdir(), 'agent-cli-state-'));
     process.env.DECKWERK_STATE_DIR = stateDir;
     await mkdir(join(dir, 'assets'), { recursive: true });
+    await mkdir(join(dir, 'edit'), { recursive: true });
     const deck = emptyDeck('CLI deck');
     deck.slides = [
       slideOf('slide-1', [text('title-1', 'First')]),
@@ -282,13 +283,123 @@ describe('slide-agent CLI', () => {
     const result = await cli('inspect', '--html', '--slides', 'slide-1');
     expect(result.code).toBe(EXIT_USAGE);
     expect(result.stderr).toMatch(/--slides/);
-    expect(result.stderr).toMatch(/--slide <id>/);
+    expect(result.stderr).toMatch(/--slide <id\|number>/);
   });
 
   it('refuses a slide id that does not exist instead of falling back', async () => {
     const result = await cli('inspect', '--html', '--slide', 'slide-999');
     expect(result.code).toBe(EXIT_USAGE);
     expect(result.stderr).toMatch(/No such slide: slide-999/);
+  });
+
+  it('names a slide by the number the rail and the outline print', async () => {
+    // A human says "slide 44"; `context` and `comments` print that number.
+    // Making it an id first was a round trip every task paid for.
+    const byNumber = await cli('inspect', '--html', '--slide', '2');
+    expect(byNumber.code).toBe(EXIT_OK);
+    expect(byNumber.stdout).toContain('data-slide-id="slide-2"');
+    expect(byNumber.stdout.match(/<section/g)?.length).toBe(1);
+
+    // "that slide and its neighbours", the way it is actually asked for.
+    const neighbours = await cli('inspect', '--html', '--slide', '1,2');
+    expect(neighbours.stdout.match(/<section/g)?.length).toBe(2);
+
+    // Resolved before anything downstream selects on it, so what a command
+    // reports back is the id.
+    const scoped = await parsed('validate', '--slide', '2');
+    expect(scoped.json.scope).toEqual(['slide-2']);
+
+    const past = await cli('inspect', '--html', '--slide', '3');
+    expect(past.code).toBe(EXIT_USAGE);
+    expect(past.stderr).toMatch(/No such slide: 3\./);
+    expect(past.stderr).toMatch(/2 slides/);
+  });
+
+  it('writes a blank authoring page that can only add slides', async () => {
+    // Copying an export to author new slides deleted the slides it was copied
+    // from: the copy inherited the scope marker. This is the file to copy
+    // nothing for — it governs nothing, so it has nothing to destroy.
+    const page = await cli('new', '--count', '2');
+    expect(page.code).toBe(EXIT_OK);
+    expect(page.stdout).not.toContain('slide-editor-scope');
+    // The stylesheet mentions the attribute; no section may carry one.
+    expect(page.stdout).not.toContain('data-slide-id="');
+    // Still a real page: the browser has to show it as a slide.
+    expect(page.stdout).toContain('<base href="../">');
+    expect(page.stdout).toMatch(/class="slide"/);
+
+    await writeFile(join(dir, 'edit', 'add.html'), page.stdout, 'utf8');
+    const applied = await parsed('apply', '--html', join(dir, 'edit', 'add.html'));
+    expect(applied.code).toBe(EXIT_OK);
+    expect(applied.json.changes).toMatchObject({ replaced: [], deleted: [] });
+    expect((applied.json.changes as { inserted: string[] }).inserted).toHaveLength(2);
+    // Appended, with the slides it was written against untouched.
+    expect((await onDisk()).slides.map((slide) => slide.id).slice(0, 2))
+      .toEqual(['slide-1', 'slide-2']);
+
+    expect((await cli('new', '--count', '0')).code).toBe(EXIT_USAGE);
+  });
+
+  it('reports what a save did to the deck, deletions by name', async () => {
+    // `applied: true` reads the same whether a slide was added or destroyed.
+    const exported = await cli('inspect', '--html', '--slide', '2');
+    const file = join(dir, 'edit', 'work.html');
+    // The shape of the mistake: the exported section is gone, replaced by a
+    // new one. The scope still names slide-2, so slide-2 is deleted.
+    await writeFile(file, exported.stdout.replace(
+      /<section class="slide" data-slide-id="slide-2"[\s\S]*?<\/section>/,
+      '<section class="slide"><h1 class="role-title">New</h1></section>',
+    ), 'utf8');
+
+    const applied = await parsed('apply', '--html', file);
+    expect(applied.code).toBe(EXIT_OK);
+    const changes = applied.json.changes as {
+      replaced: string[]; inserted: string[]; deleted: string[];
+    };
+    expect(changes.deleted).toEqual(['slide-2']);
+    expect(changes.inserted).toHaveLength(1);
+    expect(changes.replaced).toEqual([]);
+  });
+
+  it('says how to turn a copied section into a new slide', async () => {
+    // Duplicating a section is the obvious way to start a slide from an
+    // existing one, and it carries the id along with it.
+    const exported = await cli('inspect', '--html', '--slide', '1');
+    const section = exported.stdout.match(
+      /<section class="slide" data-slide-id="slide-1"[\s\S]*?<\/section>/,
+    )?.[0];
+    expect(section).toBeTruthy();
+    const file = join(dir, 'edit', 'dup.html');
+    await writeFile(file, exported.stdout.replace(section!, `${section}\n${section}`), 'utf8');
+
+    const applied = await cli('apply', '--html', file);
+    expect(applied.code).not.toBe(EXIT_OK);
+    expect(applied.stderr).toMatch(/Two sections carry data-slide-id="slide-1"/);
+    expect(applied.stderr).toMatch(/delete its data-slide-id/);
+  });
+
+  it('sends a caller that scopes the wrong command to one that takes --slide', async () => {
+    // `context` has no scope flags at all. The old error said only that the
+    // flag was unknown, which left the caller guessing at the route.
+    const result = await cli('context', '--slide', '2');
+    expect(result.code).toBe(EXIT_USAGE);
+    expect(result.stderr).toMatch(/context covers the whole deck/);
+    expect(result.stderr).toMatch(/inspect, render, validate or theme apply/);
+  });
+
+  it('replies to a comment on the slide number the listing printed', async () => {
+    const added = await parsed('comments', '--add', 'restructure this', '--slide', '2');
+    expect(added.code).toBe(EXIT_OK);
+
+    const listed = await parsed('comments');
+    expect(listed.json.comments).toHaveLength(1);
+    const [row] = listed.json.comments as Array<{ slide: number; slideId: string }>;
+    expect(row.slide).toBe(2);
+    expect(row.slideId).toBe('slide-2');
+
+    const missing = await cli('comments', '--add', 'nope', '--slide', '9');
+    expect(missing.code).toBe(EXIT_ERROR);
+    expect(missing.stderr).toMatch(/No such slide: 9/);
   });
 
   it('exports several named slides into one file', async () => {

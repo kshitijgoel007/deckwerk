@@ -82,8 +82,9 @@ describe('Build panel interactions', () => {
     expect(rows.map((r) => r.querySelector('.build-num')?.textContent)).toEqual(['1', '2']);
     expect(rows[0].querySelector('.build-target-name')?.textContent).toContain('Alpha');
     expect(rows[1].querySelector('.build-target-name')?.textContent).toContain('Beta');
-    // The trigger select sits in the card header.
-    expect(rows[0].querySelector('.build-card-head select.build-trigger')).toBeTruthy();
+    // The element is the card's headline; the trigger sits on the line below.
+    expect(rows[0].querySelector('.build-card-head .build-target-name')).toBeTruthy();
+    expect(rows[0].querySelector('.build-card-when select.build-trigger')).toBeTruthy();
     // Elements are named by their content or shape, not their raw type.
     const listNames = [...host.querySelectorAll('.build-element-row')]
       .map((r) => r.textContent);

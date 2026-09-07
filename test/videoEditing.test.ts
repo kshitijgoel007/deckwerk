@@ -177,13 +177,13 @@ describe('compact video inspector', () => {
     expect(sections.map((section) => section.querySelector('h4')?.textContent))
       .toEqual([
         'Playback',
-        'Sizing',
-        'Masking - non-destructive & revertible',
+        'Trim',
+        'Mask',
         'Border',
         'Effects',
-        'Trim',
       ]);
     expect(sections[0].textContent).toContain('Play preview');
+    expect(sections[2].textContent).toContain('Keep aspect ratio');
     expect(inspectorHost.querySelectorAll('.z-order-row > button')).toHaveLength(4);
     expect(inspectorHost.textContent).not.toContain('Crop with the handles');
   });

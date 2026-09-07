@@ -38,6 +38,8 @@ export const IPC = {
   presentState: 'present:state',
   trimOpen: 'trim:open',
   trimRun: 'trim:run',
+  /** A poster frame for a preview surface, cut by ffmpeg in the main process. */
+  videoPoster: 'video:poster',
   trimProgress: 'trim:progress',
   trimDone: 'trim:done',
   rasterOpen: 'raster:open',
@@ -329,6 +331,19 @@ export interface MediaInfo {
 }
 
 /** A trim/crop job handed to ffmpeg. Crop is in source pixels. */
+/** One frame of a deck video, for a thumbnail that must never play it. */
+export interface VideoPosterRequest {
+  /** Deck-relative path of the clip. */
+  src: string;
+  /** Seconds into the clip. */
+  time: number;
+}
+
+export interface VideoPosterResult {
+  /** A URL this window can put on an `<img>`, or null when no frame could be cut. */
+  url: string | null;
+}
+
 export interface TrimRequest {
   deckDir: string;
   /** Deck-relative source, e.g. "assets/demo.mp4". */

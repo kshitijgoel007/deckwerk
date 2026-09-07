@@ -98,17 +98,26 @@ describe('theme variants', () => {
       replaceOverrides: true, detectRoles: false,
     };
     adoptThemeStyles(deck, dark, apply, 0, new Set(), new Set(['slide-1']));
-    expect(deck.slides[0].background.color).toBe(dark.colors.background);
+    // The variant is installed like any preset: the slide's ground follows
+    // theme.css, which now paints the dark background.
+    expect(deck.slides[0].background).toEqual({ color: null, image: null });
+    expect(deck.themePreset).toBe('basic-dark');
+    expect(deck.themeStyle?.colors.background).toBe(dark.colors.background);
+    expect(deck.themeStyle?.fonts.title.color).toBe(dark.colors.text);
+    expect(deck.slides[0].elements[0].style).toEqual({});
     expect(deck.themeSelection?.preset).toBe('basic-dark');
 
-    // A slide created afterwards is born wearing the dark variant.
+    // A slide created afterwards is born wearing the dark variant through
+    // theme.css alone: nothing is written onto it.
     deck.slides.push({
       id: 'slide-2', name: '', background: { color: null, image: null },
       notes: '', elements: [], timeline: [],
     });
     applySlideLayout(deck.slides[1], 'standard', deck.layoutMasters);
+    const born = JSON.stringify(deck.slides[1]);
     applyDeckThemeToNewSlide(deck, 1);
-    expect(deck.slides[1].background.color).toBe(dark.colors.background);
+    expect(JSON.stringify(deck.slides[1])).toBe(born);
+    expect(deck.slides[1].background.color).toBeNull();
 
     // fullThemeSelection round-trips the variant id too.
     deck.themeSelection = fullThemeSelection('noir-light');

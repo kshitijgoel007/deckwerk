@@ -4,6 +4,7 @@ import { fitScale } from '@shared/geometry.js';
 import { fitAutoTextElement } from '@shared/autoFit.js';
 import { isPendingSrc, pendingName, pendingToken } from '@shared/media.js';
 import { gateVideoLoad } from './mediaLoadGate.js';
+import { previewPosterProvider } from './previewPosterProvider.js';
 import { prepareSlideLinks } from './links.js';
 import { quadraticPath, shapeSvg } from '@shared/shapeSvg.js';
 import { isMediaBorderPaint, typedPropertyOwnsCss } from '@shared/nativeCss.js';
@@ -38,6 +39,16 @@ export interface RenderOptions {
    * queues for seconds while videos sit black. See docs/media-loading.md.
    */
   mediaPreload?: 'auto' | 'metadata';
+  /**
+   * Preview surfaces that will freeze their videos into stills
+   * (`freezePreviewVideos`) set this so the `<video>` is built *without* a
+   * source: the still comes from the poster provider (previewPosterProvider.ts)
+   * and no media pipeline is ever opened for it. The element keeps the source
+   * in `data-gate-aborted-src`, so a surface without a provider can restore
+   * it and capture the frame in the page as before. Only meaningful with
+   * `mediaPreload: 'metadata'`.
+   */
+  deferVideoSrc?: boolean;
 }
 
 export { quadraticPath };
@@ -926,9 +937,23 @@ function renderVideo(
   // media (the collab client) is left alone: the attribute would only add a
   // preflight-shaped failure mode for no gain.
   if (preload === 'metadata' && isCrossOrigin(src)) video.crossOrigin = 'anonymous';
-  video.src = src;
+  // Deferral only pays when someone will supply the still. Without a provider
+  // (the browser collab client) the element takes its source now, exactly as
+  // before: a source assigned later runs the load algorithm on an element
+  // Chromium has already put in NETWORK_NO_SOURCE, whose queued 'emptied'
+  // the load gate would read as a freed slot.
+  const deferSrc = preload === 'metadata' && opts.deferVideoSrc === true && previewPosterProvider() !== null;
+  if (deferSrc) {
+    // No src, no fetch, no decoder: the still is cut elsewhere. Stashed where
+    // the gate keeps an aborted source, so recovery and capture code that
+    // already read that slot need no second path.
+    video.dataset.gateAbortedSrc = src;
+    video.dataset.posterPending = 'true';
+  } else {
+    video.src = src;
+  }
   applyVideoPlaybackState(video, el, opts);
-  if (preload === 'metadata') {
+  if (preload === 'metadata' && !deferSrc) {
     // Preview surfaces mount many videos at once (one per rail thumbnail);
     // letting them all fetch together monopolises the origin's connections.
     // They start as 'none' — src set, nothing fetched — and the gate promotes

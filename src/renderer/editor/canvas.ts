@@ -1,5 +1,7 @@
 import type { Deck, Slide, SlideElement } from '@shared/deck.js';
 import { type Rect, fitScale, makeId } from '@shared/geometry.js';
+
+type XY = { x: number; y: number };
 import {
   applyElementBoxStyles,
   applyMediaFitStyles,
@@ -41,6 +43,7 @@ import {
   isEmptyListItem,
   isTopLevelListItem,
   liftItemOutOfItem,
+  outdentListItem,
   mergeParagraphIntoList,
   unbulletListItems,
 } from './listEditing.js';
@@ -71,10 +74,11 @@ import {
   type SpacingGuide,
   sizeGuides,
   snapMove,
+  snapPoint,
   snapResize,
   spacingGuides,
 } from './snapping.js';
-import type { EditorStore } from './store.js';
+import { sameSlideIgnoringNotes, type EditorStore } from './store.js';
 
 export type TableSelection = {
   elementId: string;
@@ -432,7 +436,13 @@ type DragMode =
       origin: Rect;
     }
   | { kind: 'marquee'; startCanvas: { x: number; y: number } }
-  | { kind: 'endpoint'; which: 'start' | 'end'; elementId: string }
+  | {
+      kind: 'endpoint';
+      which: 'start' | 'end';
+      elementId: string;
+      /** Original endpoints of every selected line, keyed by id. */
+      origins: Map<string, { start: XY; end: XY }>;
+    }
   | { kind: 'curve-control'; elementId: string };
 
 export class EditorCanvas {
@@ -680,7 +690,16 @@ export class EditorCanvas {
       return;
     }
 
-    if (slide === this.renderedSlide) {
+    // A speaker-note edit hands out a new slide object that draws exactly the
+    // same picture. Treat it like the same slide: re-styling every element and
+    // repainting the slide layer for each keystroke in the notes drawer made
+    // the heavy images on screen re-decode, and the sidebar thumbnails with
+    // them.
+    if (
+      slide === this.renderedSlide
+      || (this.renderedSlide !== null && sameSlideIgnoringNotes(this.renderedSlide, slide))
+    ) {
+      this.renderedSlide = slide;
       this.rescale();
       this.drawOverlay(deck, slide.elements, selection);
       this.scheduleTableHeightSync();
@@ -1206,17 +1225,23 @@ export class EditorCanvas {
     const scale = fitted * this.zoom;
     this.scale = scale;
 
+    // Rewriting an inline style to the value it already holds still
+    // invalidates the stage's style and paint; the store emits on every
+    // keystroke and drag frame, so only write what changed.
+    const setStyle = (node: HTMLElement, property: string, value: string): void => {
+      if (node.style.getPropertyValue(property) !== value) node.style.setProperty(property, value);
+    };
     for (const layer of [this.slideLayer, this.overlay]) {
-      layer.style.width = `${deck.canvas.w}px`;
-      layer.style.height = `${deck.canvas.h}px`;
+      setStyle(layer, 'width', `${deck.canvas.w}px`);
+      setStyle(layer, 'height', `${deck.canvas.h}px`);
     }
-    this.stage.style.width = `${deck.canvas.w}px`;
-    this.stage.style.height = `${deck.canvas.h}px`;
-    this.stage.style.transform = `scale(${scale})`;
-    this.stage.style.setProperty('--editor-inv-scale', String(1 / scale));
-    this.stage.style.transformOrigin = 'top left';
-    this.stage.style.left = `${(r.width - deck.canvas.w * scale) / 2 + this.pan.x}px`;
-    this.stage.style.top = `${(r.height - deck.canvas.h * scale) / 2 + this.pan.y}px`;
+    setStyle(this.stage, 'width', `${deck.canvas.w}px`);
+    setStyle(this.stage, 'height', `${deck.canvas.h}px`);
+    setStyle(this.stage, 'transform', `scale(${scale})`);
+    setStyle(this.stage, '--editor-inv-scale', String(1 / scale));
+    setStyle(this.stage, 'transform-origin', 'top left');
+    setStyle(this.stage, 'left', `${(r.width - deck.canvas.w * scale) / 2 + this.pan.x}px`);
+    setStyle(this.stage, 'top', `${(r.height - deck.canvas.h * scale) / 2 + this.pan.y}px`);
     this.syncZoomInput();
     this.onViewportChange?.();
   }
@@ -1551,9 +1576,11 @@ export class EditorCanvas {
           path.setAttribute('stroke-width', String(3 / this.scale));
           svg.appendChild(path);
           box.appendChild(svg);
-          frag.appendChild(box);
-          continue;
         }
+        // Every selected line keeps its own endpoint handles, like the resize
+        // handles on a multi-selection: dragging one end moves the same end
+        // of every selected line by the same amount, so a bundle of arrows
+        // can be shortened or lengthened together.
         for (const which of ['start', 'end'] as const) {
           const h = document.createElement('div');
           h.className = 'handle handle-endpoint';
@@ -1877,10 +1904,18 @@ export class EditorCanvas {
     const endpoint = target.dataset?.endpoint;
     if (endpoint && target.dataset.elementId) {
       this.store.beginTransaction();
+      const selected = this.store.get().selection;
+      const origins = new Map<string, { start: XY; end: XY }>();
+      for (const e of slide.elements) {
+        if (e.id !== target.dataset.elementId && !selected.has(e.id)) continue;
+        if (e.type !== 'shape' || (e.shape !== 'line' && e.shape !== 'arrow')) continue;
+        origins.set(e.id, lineEndpoints(e));
+      }
       this.drag = {
         kind: 'endpoint',
         which: endpoint as 'start' | 'end',
         elementId: target.dataset.elementId,
+        origins,
       };
       return;
     }
@@ -2330,11 +2365,48 @@ export class EditorCanvas {
         const drag = this.drag;
         const el = slide.elements.find((e) => e.id === drag.elementId);
         if (!el || el.type !== 'shape') break;
-        const pts = lineEndpoints(el);
-        const moved = { ...pts, [drag.which]: point };
-        const geo = lineFromEndpoints(moved.start, moved.end, el.h);
+        const pts = drag.origins.get(drag.elementId) ?? lineEndpoints(el);
+        const anchor = drag.which === 'end' ? pts.start : pts.end;
+        // Shift constrains the line to 45-degree steps, as in Keynote: the
+        // dragged end is projected onto the nearest such ray from the fixed
+        // end, so the length follows the pointer while the angle snaps.
+        let dragged = point;
+        if (ev.shiftKey) {
+          dragged = snapToAngleStep(anchor, point, 45);
+          this.guides = [];
+        } else if (ev.metaKey) {
+          // Command suspends snapping for fine placement, as for moves.
+          this.guides = [];
+        } else {
+          // Otherwise the dragged end snaps to the same alignment guides as a
+          // move: canvas edges and centre lines, other elements' edges and
+          // centres, and the line's own fixed end so a nearly level arrow can
+          // be made exactly level.
+          const others = slide.elements
+            .filter((e) => !drag.origins.has(e.id))
+            .map((e) => rotatedBounds(e));
+          const snapped = snapPoint(point, deck.canvas, others, threshold, {
+            x: [anchor.x],
+            y: [anchor.y],
+          });
+          dragged = snapped.point;
+          this.guides = snapped.guides;
+        }
+        // The dragged end sets a delta; the same end of every other selected
+        // line moves by that delta, so parallel arrows stay parallel and a
+        // bundle shortens together.
+        const delta = { x: dragged.x - pts[drag.which].x, y: dragged.y - pts[drag.which].y };
         this.store.updateSelected((target) => {
-          if (target.id !== drag.elementId) return;
+          const origin = drag.origins.get(target.id);
+          if (!origin) return;
+          const moved = {
+            ...origin,
+            [drag.which]: {
+              x: origin[drag.which].x + delta.x,
+              y: origin[drag.which].y + delta.y,
+            },
+          };
+          const geo = lineFromEndpoints(moved.start, moved.end, target.h);
           target.x = Math.round(geo.x);
           target.y = Math.round(geo.y);
           target.w = Math.round(geo.w);
@@ -2368,6 +2440,20 @@ export class EditorCanvas {
   }
 
   private onPointerUp(ev: PointerEvent): void {
+    // The pointer-down on these controls never reached the canvas (see
+    // onPointerDown), so this pointer-up is not the end of a canvas gesture.
+    // Ending the store transaction here closed the speaker notes drawer's
+    // typing transaction on the very click that focused it: every keystroke
+    // after that was a standalone commit, which rebuilt the slide rail (and
+    // consumed an undo step) per character.
+    if (
+      this.drag.kind === 'none'
+      && (ev.target as HTMLElement | null)?.closest?.(
+        '.welcome-screen, .zoom-controls, .notes-toggle, .notes-drawer',
+      )
+    ) {
+      return;
+    }
     const textEdit = !this.dragStarted ? this.pendingTextEdit : null;
     if (this.drag.kind === 'marquee' && this.marquee) {
       const slide = this.store.slide;
@@ -4433,19 +4519,27 @@ export class EditorCanvas {
     if (mode === 'return' && !isEmptyListItem(item)) return false;
     if (mode === 'backspace' && !caretAtBlockStart(item, range)) return false;
     if (!isTopLevelListItem(body, item)) {
-      // One level at a time. An item Chromium left inside another item is
-      // moved up here, node and caret together; a properly nested item is
-      // handed to the browser, whose input event carries the change into
-      // history and live sync like any other edit.
-      if (item.parentElement?.tagName === 'LI') {
-        beforeChange?.();
-        liftItemOutOfItem(item);
-        const node = body.closest<HTMLElement>('.element');
-        if (node) scheduleAutoFit(node);
-        this.commitLiveTextDom('Move the line out one level');
-        return true;
-      }
-      document.execCommand?.('outdent');
+      // One level at a time, node and caret together. Neither shape goes to
+      // `execCommand('outdent')`: from the saved `li > ul > li` shape Chromium
+      // leaves the item inside its parent item, which still paints indented.
+      beforeChange?.();
+      // Moving the node drops the live selection out of it; put the caret back
+      // where it stood so the next key still finds the item.
+      const caret = { node: range.startContainer, offset: range.startOffset };
+      const moved = item.parentElement?.tagName === 'LI'
+        ? liftItemOutOfItem(item)
+        : outdentListItem(item);
+      if (!moved) return false;
+      const next = document.createRange();
+      next.setStart(caret.node, caret.offset);
+      next.collapse(true);
+      live?.removeAllRanges();
+      live?.addRange(next);
+      this.textSelectionRange = next.cloneRange();
+      body.focus();
+      const node = body.closest<HTMLElement>('.element');
+      if (node) scheduleAutoFit(node);
+      this.commitLiveTextDom('Move the line out one level');
       return true;
     }
     beforeChange?.();
@@ -5985,6 +6079,28 @@ export function lineEndpoints(el: {
     start: { x: cx - dx, y: cy - dy },
     end: { x: cx + dx, y: cy + dy },
   };
+}
+
+/**
+ * Project `point` onto the nearest ray from `anchor` whose angle is a multiple
+ * of `stepDeg`. The projected length is the pointer's component along that
+ * ray, so dragging past the anchor flips to the opposite ray rather than
+ * collapsing the line.
+ */
+export function snapToAngleStep(
+  anchor: { x: number; y: number },
+  point: { x: number; y: number },
+  stepDeg: number,
+): { x: number; y: number } {
+  const dx = point.x - anchor.x;
+  const dy = point.y - anchor.y;
+  if (dx === 0 && dy === 0) return point;
+  const step = (stepDeg * Math.PI) / 180;
+  const angle = Math.round(Math.atan2(dy, dx) / step) * step;
+  const ux = Math.cos(angle);
+  const uy = Math.sin(angle);
+  const length = dx * ux + dy * uy;
+  return { x: anchor.x + ux * length, y: anchor.y + uy * length };
 }
 
 /** Rebuild a line element's box+rotation from two endpoints. */

@@ -8,7 +8,16 @@ import { Inspector } from '../src/renderer/editor/inspector.js';
 import { wireCanvasInspector } from '../src/renderer/editor/shellWiring.js';
 import { EditorStore } from '../src/renderer/editor/store.js';
 import { closePopover } from '../src/renderer/editor/ui.js';
-import { themeById, themeStyleOf } from '../src/shared/themes.js';
+import {
+  installThemeStyle,
+  themeById,
+  themeStyleCss,
+  themeStyleOf,
+  withThemeBlock,
+} from '../src/shared/themes.js';
+import { createThemePanel } from '../src/renderer/editor/themePanel.js';
+import type { CssEditor } from '../src/renderer/editor/cssEditor.js';
+import { SlideRail } from '../src/renderer/editor/slideRail.js';
 
 /**
  * Text formatting driven the way an author drives it: every assertion below
@@ -207,7 +216,7 @@ describe('text formatting from the inspector controls', () => {
       .map((node) => node.textContent?.trim());
 
     expect(labels('.text-typography-options .field > span')).toEqual([
-      'Font family', 'Font size', 'Font weight', 'Role', 'Colour',
+      'Role', 'Font family', 'Font size', 'Font weight', 'Style', 'Colour',
     ]);
     expect(labels('.text-layout-options .field > span')).toEqual([
       'Auto-fit text to box', 'Disable automatic line breaks', 'List',
@@ -1541,7 +1550,7 @@ describe('text formatting from the inspector controls', () => {
     const { store, canvasHost, inspectorHost } = setup([textElement('text-1')]);
     const role = () => field(inspectorHost, 'Role').querySelector('select')!;
     expect([...role().options].map((option) => option.textContent))
-      .toEqual(['Title', 'Body', 'Caption', 'None']);
+      .toEqual(['Title', 'Heading', 'Body', 'Caption', 'Base', 'None']);
     expect(role().value).toBe('');
 
     pick(role(), 'role-title');
@@ -2006,6 +2015,24 @@ describe('the semantic role as formatting', () => {
     expect(text.style).toEqual({ color: '#ff0000' });
   });
 
+  it('shows but locks the size field while editing layout masters', () => {
+    const { store, inspector, inspectorHost } = setup(
+      [textElement('text-1', { class: ['role-title'], style: {}, html: 'Slide title' })],
+      (deck) => {
+        deck.themePreset = 'editorial';
+        deck.themeStyle = themeStyleOf(themeById('editorial')!);
+      },
+    );
+    inspector.editsLayoutMasters = true;
+    store.select([]);
+    store.select(['text-1']);
+
+    const sizeField = field(inspectorHost, 'Font size');
+    expect(sizeField.classList.contains('theme-owned')).toBe(true);
+    expect(sizeField.querySelector('input')!.disabled).toBe(true);
+    expect([...sizeField.querySelectorAll('button')].every((node) => node.disabled)).toBe(true);
+  });
+
   it('restyles every box in a multi-selection', () => {
     const { store, inspectorHost } = setup(
       [textElement('text-1', IMPORTED), textElement('text-2', IMPORTED)],
@@ -2023,5 +2050,406 @@ describe('the semantic role as formatting', () => {
       expect(text.style['font-size']).toBe(`${title.size}px`);
       expect(text.style.color).toBe('#ff0000');
     }
+  });
+});
+
+/**
+ * Theming as formatting, driven the way an author drives it: the Theme tab's
+ * own gallery cards, its Apply button and its type-scale fields, the rail's
+ * "+ Slide", and the inspector's fields and B/I/U buttons -- every step a
+ * click or a typed value on the shipping controls, mounted next to the
+ * shipping canvas. What theme.css says reaches the canvas through a live
+ * stylesheet fed by the panel's own `saveThemeCss`, so the values read back
+ * are computed styles: what the box renders at, not what deck.json claims.
+ *
+ * The contract under test: applying a theme to a slide puts every box on it
+ * onto the theme (the inspector says "(Theme)", the size shown is the size
+ * rendered); changing a theme default or choosing another theme moves no
+ * existing slide, only slides created afterwards and slides the author applies
+ * it to; and formatting after an apply behaves like formatting anywhere else.
+ */
+describe('theming through the panel, the rail and the inspector', () => {
+  beforeEach(() => {
+    closePopover();
+    document.body.replaceChildren();
+    document.head.querySelectorAll('style[data-test-theme]').forEach((node) => node.remove());
+  });
+
+  /** An imported box: type at every level, the way PowerPoint imports arrive. */
+  const IMPORTED_TITLE = {
+    class: ['role-title'],
+    style: {
+      'font-family': 'Papyrus', 'font-size': '88px', 'font-weight': '400',
+      'line-height': '1.08', 'letter-spacing': '-0.02em', color: '#ff0000',
+    },
+    contentStyle: { 'font-size': '88px' },
+    html: '<p style="margin: 0;"><span style="color: #ff0000; font-size: 85px; font-weight: 700;">Deck</span>'
+      + '<span style="font-size: 0.68em; vertical-align: super;">1</span></p>',
+  };
+  const IMPORTED_BODY = {
+    class: ['role-body'],
+    style: { 'font-family': 'Papyrus', 'font-size': '18px', color: '#00ff00' },
+    html: '<p><span style="font-size: 18px;">Body copy</span></p>',
+  };
+
+  interface ThemedHarness extends Harness {
+    panel: ReturnType<typeof createThemePanel>;
+    railHost: HTMLElement;
+    themeCss: () => string;
+  }
+
+  /** Canvas, inspector, rail and Theme tab on one store, stylesheet wired live. */
+  function themedSetup(
+    slides: SlideElement[][],
+    deckPatch: (deck: Deck) => void = () => {},
+  ): ThemedHarness {
+    const base = setup(slides[0], (deck) => {
+      for (const [index, elements] of slides.entries()) {
+        if (index === 0) continue;
+        deck.slides.push({
+          id: `slide-${index + 1}`, name: '', background: { color: null, image: null },
+          notes: '', elements, timeline: [],
+        });
+      }
+      deckPatch(deck);
+    });
+    const sheet = document.createElement('style');
+    sheet.dataset.testTheme = '';
+    document.head.appendChild(sheet);
+    let css = '';
+    const publish = (next: string): void => { css = next; sheet.textContent = withInheritance(next); };
+    const cssEditor = {
+      getValue: () => css,
+      setValue: publish,
+      hasFocus: () => false,
+    } as unknown as CssEditor;
+    const panel = createThemePanel({
+      store: base.store,
+      cssEditor,
+      save: () => {},
+      setStatusMessage: () => {},
+      saveThemeCss: publish,
+      onThemePreview: () => {},
+    });
+    if (!('scrollIntoView' in Element.prototype)) {
+      Object.defineProperty(Element.prototype, 'scrollIntoView', { configurable: true, value: () => {} });
+    }
+    const railHost = document.createElement('nav');
+    new SlideRail(railHost, base.store);
+    document.body.append(panel.element, railHost);
+    // The shell mirrors theme.css from the deck's composed defaults on open
+    // and on every change (main.ts syncThemeStylesheet); the harness does the
+    // same so the canvas always renders the stylesheet the deck describes.
+    publish(STOCK_THEME_CSS);
+    const mirror = (): void => {
+      const style = base.store.get().deck.themeStyle;
+      if (!style) return;
+      const next = withThemeBlock(css, themeStyleCss(style));
+      if (next !== css) cssEditor.setValue(next);
+    };
+    mirror();
+    base.store.subscribe(mirror);
+    // Re-select so the inspector reads the canvas after the sheet is in place.
+    base.store.select([]);
+    base.store.select(slides[0].map((element) => element.id));
+    return { ...base, panel, railHost, themeCss: () => css };
+  }
+
+  /**
+   * jsdom matches a rule against the element it names but does not inherit
+   * the result down to `.text-content`, which is where the canvas and the
+   * inspector read type from. A browser does. So every `.slide` / `.role-*`
+   * block in the stylesheet is repeated for its `.text-content`, exactly as
+   * inheritance would deliver it -- and only for the inherited type
+   * properties, so an inline value on the content node still wins, as it does
+   * on screen.
+   */
+  function withInheritance(css: string): string {
+    const TYPE = ['font-family', 'font-size', 'font-weight', 'line-height', 'letter-spacing', 'color'];
+    const companions: string[] = [];
+    for (const [, , selector, body] of css.matchAll(/(^|\n)(\.slide|\.role-[a-z]+)\s*\{([^}]*)\}/g)) {
+      for (const line of body.split(';').map((declaration) => declaration.trim())) {
+        const property = TYPE.find((name) => line.startsWith(`${name}:`));
+        if (!property) continue;
+        // An inline value on the box wins over what it would inherit, as it
+        // does on screen; the attribute guard stands in for that.
+        const box = selector === '.slide'
+          ? `.slide .element-text:not([style*="${property}"])`
+          : `.slide ${selector}:not([style*="${property}"])`;
+        companions.push(`${box} .text-content { ${line}; }`);
+      }
+    }
+    return `${css}\n${companions.join('\n')}`;
+  }
+
+  /** The stylesheet a new deck ships with (src/main/deckStore.ts DEFAULT_THEME). */
+  const STOCK_THEME_CSS = `
+.slide { background: #ffffff; color: #111111; font-family: "Helvetica Neue", Inter, system-ui, sans-serif; }
+.element-text { font-size: 48px; line-height: 1.28; }
+.role-title, .title { font-size: 92px; font-weight: 700; letter-spacing: -0.02em; }
+.role-body { font-size: 48px; line-height: 1.3; }
+.role-caption, .caption { font-size: 30px; color: #666666; }
+`;
+
+  /**
+   * What the text renders at. jsdom stops inheriting at the wrapper, so a
+   * value the content node did not receive is read off the box it would have
+   * inherited from -- the same answer a browser gives.
+   */
+  const computed = (host: HTMLElement, id: string) => {
+    const content = getComputedStyle(contentOf(host, id));
+    const box = getComputedStyle(nodeOf(host, id));
+    const pick = (property: 'fontFamily' | 'fontSize' | 'fontWeight' | 'color' | 'letterSpacing') =>
+      content[property] || box[property];
+    return {
+      fontFamily: pick('fontFamily'), fontSize: pick('fontSize'), fontWeight: pick('fontWeight'),
+      color: pick('color'), letterSpacing: pick('letterSpacing'),
+    };
+  };
+  const sizeField = (host: HTMLElement) => field(host, 'Font size');
+  const sizeInput = (host: HTMLElement) => sizeField(host).querySelector<HTMLInputElement>('input')!;
+  const themeMark = (node: HTMLElement) => node.querySelector('.theme-value-indicator')?.textContent ?? null;
+  const formatButton = (host: HTMLElement, label: string) =>
+    host.querySelector<HTMLButtonElement>(`.text-format-buttons button[aria-label="${label}"]`)!;
+  const panelButton = (panel: HTMLElement, text: string) =>
+    [...panel.querySelectorAll<HTMLButtonElement>('button')].find((node) => node.textContent === text)!;
+
+  /** Choose a theme the way an author does: open the chooser, click its card. */
+  function chooseCard(panel: HTMLElement, themeId: string): void {
+    panel.querySelector<HTMLButtonElement>('.theme-active-card')!.click();
+    const card = panel.querySelector<HTMLButtonElement>(`.theme-gallery .theme-card[data-theme-id="${themeId}"]`);
+    if (!card) throw new Error(`no gallery card for ${themeId}`);
+    card.click();
+  }
+
+  /** Set the Apply section's scope, then press Apply. */
+  function applyTheme(panel: HTMLElement, scope: 'slides' | 'slide' | 'deck' | 'selection'): void {
+    const select = panel.querySelector<HTMLSelectElement>('.theme-adoption-controls select')!;
+    pick(select, scope);
+    const button = [...panel.querySelectorAll<HTMLButtonElement>('.theme-apply-action button')][0];
+    button.click();
+  }
+
+  /** Tick every property box so an apply carries the whole theme. */
+  function tickEveryProperty(panel: HTMLElement): void {
+    for (const box of panel.querySelectorAll<HTMLInputElement>('.theme-adoption-controls input[type="checkbox"]')) {
+      if (!box.checked) box.click();
+    }
+  }
+
+  const snapshot = (host: HTMLElement, id: string) => {
+    const style = computed(host, id);
+    return [style.fontFamily, style.fontSize, style.fontWeight, style.color, style.letterSpacing].join(' | ');
+  };
+
+  it('puts every box on the slide onto the theme, and says so', () => {
+    const { store, canvasHost, inspectorHost, panel } = themedSetup(
+      [[textElement('title', IMPORTED_TITLE), textElement('body', IMPORTED_BODY)]],
+    );
+    chooseCard(panel.element, 'editorial');
+    tickEveryProperty(panel.element);
+    applyTheme(panel.element, 'slide');
+    const theme = themeById('editorial')!;
+
+    // Nothing of the theme is copied onto the boxes -- at any level.
+    for (const id of ['title', 'body']) {
+      const text = textOf(store, id);
+      for (const property of ['font-family', 'font-size', 'font-weight', 'line-height', 'letter-spacing', 'color']) {
+        expect(text.style[property], `${id} ${property}`).toBeUndefined();
+      }
+      expect(text.contentStyle).toBeUndefined();
+      expect(text.html).not.toMatch(/font-size:\s*\d+px/);
+      expect(text.html).not.toMatch(/color:/);
+    }
+    // The superscript keeps its relative size: it scales with the box.
+    expect(textOf(store, 'title').html).toContain('font-size: 0.68em');
+
+    // The stylesheet the canvas renders now carries the theme.
+    expect(computed(canvasHost, 'title').fontSize).toBe(`${theme.fonts.title.size}px`);
+    expect(computed(canvasHost, 'body').fontSize).toBe(`${theme.fonts.body.size}px`);
+    expect(computed(canvasHost, 'title').fontWeight).toBe(String(theme.fonts.title.weight));
+
+    // And the inspector reports it as the theme's, with the rendered value.
+    store.select(['title']);
+    expect(sizeInput(inspectorHost).value).toBe(String(theme.fonts.title.size));
+    expect(themeMark(sizeField(inspectorHost))).toBe('(Theme)');
+    expect(themeMark(field(inspectorHost, 'Font weight'))).toBe('(Theme)');
+    const family = field(inspectorHost, 'Font family').querySelector<HTMLSelectElement>('select')!;
+    expect(family.value).toBe('');
+    expect(family.selectedOptions[0]?.textContent).toContain('(Theme)');
+    expect(store.get().deck.themePreset).toBe('editorial');
+  });
+
+  it('shows the size that renders, and a typed size lands exactly', () => {
+    const { store, canvasHost, inspectorHost, panel } = themedSetup([[textElement('title', IMPORTED_TITLE)]]);
+    chooseCard(panel.element, 'editorial');
+    tickEveryProperty(panel.element);
+    applyTheme(panel.element, 'slide');
+    store.select(['title']);
+    const size = themeById('editorial')!.fonts.title.size;
+    expect(sizeInput(inspectorHost).value).toBe(String(size));
+    expect(computed(canvasHost, 'title').fontSize).toBe(`${size}px`);
+
+    type(sizeInput(inspectorHost), String(size - 1));
+    expect(textOf(store, 'title').style['font-size']).toBe(`${size - 1}px`);
+    expect(computed(canvasHost, 'title').fontSize).toBe(`${size - 1}px`);
+    expect(sizeInput(inspectorHost).value).toBe(String(size - 1));
+    expect(themeMark(sizeField(inspectorHost))).toBeNull();
+
+    // Clearing the field hands the size back to the theme.
+    sizeField(inspectorHost).querySelector<HTMLButtonElement>('.icon-button')!.click();
+    expect(textOf(store, 'title').style['font-size']).toBeUndefined();
+    expect(computed(canvasHost, 'title').fontSize).toBe(`${size}px`);
+    expect(themeMark(sizeField(inspectorHost))).toBe('(Theme)');
+  });
+
+  it('lets bold, italic and underline be applied after the theme, box-level, size untouched', () => {
+    const { store, canvasHost, inspectorHost, panel } = themedSetup([[textElement('title', IMPORTED_TITLE)]]);
+    chooseCard(panel.element, 'editorial');
+    tickEveryProperty(panel.element);
+    applyTheme(panel.element, 'slide');
+    store.select(['title']);
+    const theme = themeById('editorial')!;
+
+    // The theme's title is bold, and the button says so before anything is typed.
+    expect(formatButton(inspectorHost, 'Bold (Cmd/Ctrl+B)').getAttribute('aria-pressed')).toBe('true');
+    formatButton(inspectorHost, 'Bold (Cmd/Ctrl+B)').click();
+    expect(textOf(store, 'title').style['font-weight']).toBe('400');
+    expect(computed(canvasHost, 'title').fontWeight).toBe('400');
+    expect(formatButton(inspectorHost, 'Bold (Cmd/Ctrl+B)').getAttribute('aria-pressed')).toBe('false');
+    formatButton(inspectorHost, 'Bold (Cmd/Ctrl+B)').click();
+    expect(textOf(store, 'title').style['font-weight']).toBe('700');
+
+    formatButton(inspectorHost, 'Italic (Cmd/Ctrl+I)').click();
+    expect(textOf(store, 'title').style['font-style']).toBe('italic');
+    formatButton(inspectorHost, 'Underline (Cmd/Ctrl+U)').click();
+    expect(textOf(store, 'title').style['text-decoration']).toBe('underline');
+
+    // None of that touched the size: still the theme's, still rendered as such.
+    expect(textOf(store, 'title').style['font-size']).toBeUndefined();
+    expect(computed(canvasHost, 'title').fontSize).toBe(`${theme.fonts.title.size}px`);
+    expect(themeMark(sizeField(inspectorHost))).toBe('(Theme)');
+    expect(textOf(store, 'title').html).toContain('font-size: 0.68em');
+  });
+
+  it('changes a theme size for new slides only: applied slides keep theirs', () => {
+    const { store, canvasHost, inspectorHost, panel, railHost } = themedSetup([[textElement('title', IMPORTED_TITLE)]]);
+    chooseCard(panel.element, 'editorial');
+    tickEveryProperty(panel.element);
+    applyTheme(panel.element, 'slide');
+    const before = themeById('editorial')!.fonts.title.size;
+    expect(computed(canvasHost, 'title').fontSize).toBe(`${before}px`);
+
+    // Edit the deck's title size in the Theme tab.
+    panelButton(panel.element, 'Edit theme…').click();
+    const titleSize = [...panel.element.querySelectorAll<HTMLElement>('.theme-role-size')]
+      .find((node) => node.querySelector('span')?.textContent === 'Title size')!
+      .querySelector<HTMLInputElement>('input')!;
+    type(titleSize, '60');
+    expect(store.get().deck.themeStyle?.fonts.title.size).toBe(60);
+    expect(panel.element.querySelector('.theme-scale-hint')?.textContent).toContain('Existing slides keep theirs');
+
+    // The applied slide did not move: it now carries the size it had, and the
+    // inspector shows that as the box's own value.
+    expect(computed(canvasHost, 'title').fontSize).toBe(`${before}px`);
+    store.select(['title']);
+    expect(sizeInput(inspectorHost).value).toBe(String(before));
+    expect(themeMark(sizeField(inspectorHost))).toBeNull();
+
+    // A slide added from the rail is born at the new size, on the cascade.
+    [...railHost.querySelectorAll<HTMLButtonElement>('button')]
+      .find((node) => node.textContent === '+ Slide')!.click();
+    expect(store.get().slideIndex).toBe(1);
+    const fresh = store.slide!.elements.find((element) =>
+      element.type === 'text' && element.layoutPlaceholder === 'title')!;
+    expect(fresh.style['font-size']).toBeUndefined();
+    expect(computed(canvasHost, fresh.id).fontSize).toBe('60px');
+
+    // Applying the theme to the first slide again moves it to the new size.
+    store.selectSlide(0);
+    applyTheme(panel.element, 'slide');
+    expect(textOf(store, 'title').style['font-size']).toBeUndefined();
+    expect(computed(canvasHost, 'title').fontSize).toBe('60px');
+  });
+
+  it('changes a theme weight and typeface the same way', () => {
+    const { store, canvasHost, panel } = themedSetup([[textElement('title', IMPORTED_TITLE)]]);
+    chooseCard(panel.element, 'hacker');
+    tickEveryProperty(panel.element);
+    applyTheme(panel.element, 'slide');
+    const was = snapshot(canvasHost, 'title');
+
+    store.commit((deck) => {
+      const style = structuredClone(deck.themeStyle!);
+      style.fonts.title.weight = 300;
+      style.fonts.title.family = 'Fixture Display, serif';
+      installThemeStyle(deck, style, deck.themePreset!, { slides: new Set(), elements: new Set() });
+    });
+    expect(snapshot(canvasHost, 'title')).toBe(was);
+    expect(textOf(store, 'title').style['font-weight']).toBe(String(themeById('hacker')!.fonts.title.weight));
+    expect(textOf(store, 'title').style['font-family']).toBe(themeById('hacker')!.fonts.title.family);
+    expect(store.get().deck.themeStyle?.fonts.title.weight).toBe(300);
+  });
+
+  it('switches themes back and forth without moving a slide that was not applied', () => {
+    const { store, canvasHost, panel, railHost } = themedSetup(
+      [[textElement('title', { class: ['role-title'], style: {}, html: 'Following the stock stylesheet' })]],
+    );
+    const stock = snapshot(canvasHost, 'title');
+
+    chooseCard(panel.element, 'editorial');
+    expect(snapshot(canvasHost, 'title')).toBe(stock);
+    chooseCard(panel.element, 'hacker');
+    expect(snapshot(canvasHost, 'title')).toBe(stock);
+    chooseCard(panel.element, 'editorial');
+    expect(snapshot(canvasHost, 'title')).toBe(stock);
+    expect(store.get().deck.themePreset).toBe('editorial');
+
+    // A slide added now follows the current choice, and only it.
+    [...railHost.querySelectorAll<HTMLButtonElement>('button')]
+      .find((node) => node.textContent === '+ Slide')!.click();
+    const fresh = store.slide!.elements.find((element) =>
+      element.type === 'text' && element.layoutPlaceholder === 'title')!;
+    expect(fresh.style).toEqual({});
+    expect(computed(canvasHost, fresh.id).fontSize).toBe(`${themeById('editorial')!.fonts.title.size}px`);
+    chooseCard(panel.element, 'hacker');
+    expect(computed(canvasHost, fresh.id).fontSize).toBe(`${themeById('editorial')!.fonts.title.size}px`);
+    store.selectSlide(0);
+    expect(snapshot(canvasHost, 'title')).toBe(stock);
+  });
+
+  it('applies to one slide and leaves the other exactly as it rendered', () => {
+    const { store, canvasHost, panel } = themedSetup([
+      [textElement('t1', { class: ['role-title'], style: {}, html: 'One' })],
+      [textElement('t2', { class: ['role-title'], style: {}, html: 'Two' })],
+    ]);
+    const first = snapshot(canvasHost, 't1');
+    store.selectSlide(1);
+    chooseCard(panel.element, 'editorial');
+    tickEveryProperty(panel.element);
+    applyTheme(panel.element, 'slide');
+
+    expect(textOf(store, 't2').style).toEqual({});
+    expect(computed(canvasHost, 't2').fontSize).toBe(`${themeById('editorial')!.fonts.title.size}px`);
+    store.selectSlide(0);
+    expect(snapshot(canvasHost, 't1')).toBe(first);
+
+    // Deck scope is the explicit "everything": now the first slide follows too.
+    applyTheme(panel.element, 'deck');
+    expect(textOf(store, 't1').style).toEqual({});
+    expect(computed(canvasHost, 't1').fontSize).toBe(`${themeById('editorial')!.fonts.title.size}px`);
+  });
+
+  it('undoes an apply as one step, bringing the imported type back', () => {
+    const { store, canvasHost, panel } = themedSetup([[textElement('title', IMPORTED_TITLE)]]);
+    chooseCard(panel.element, 'editorial');
+    tickEveryProperty(panel.element);
+    applyTheme(panel.element, 'slide');
+    expect(textOf(store, 'title').style['font-size']).toBeUndefined();
+
+    store.undo();
+    expect(textOf(store, 'title').style).toEqual(IMPORTED_TITLE.style);
+    expect(textOf(store, 'title').html).toBe(IMPORTED_TITLE.html);
+    expect(computed(canvasHost, 'title').fontSize).toBe('88px');
   });
 });

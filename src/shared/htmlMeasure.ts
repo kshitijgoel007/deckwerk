@@ -1061,6 +1061,42 @@ export function measureSlides(doc: Document): MeasuredSlide[] {
       || (CONTENT_TAGS.has(tag) && tag !== 'img' && tag !== 'video'
         && node.dataset.element !== 'table');
 
+    const box = {
+      x: rect.left - origin.left,
+      y: rect.top - origin.top,
+      w: rect.width,
+      h: rect.height,
+    };
+    // A text box the browser sized to its content — a flex item, an
+    // inline-block, a table cell's label — is exactly as wide as its glyphs,
+    // to the hundredth of a pixel. Stored that way, the slide holds only in
+    // the renderer that measured it: a rail thumbnail drawn at another scale,
+    // or the same text pasted into a deck whose theme measures a hair wider,
+    // wraps the last word onto a second line. Give such a box a little slack
+    // on the side the text does not align to, so ordinary rounding never
+    // wraps it. A box whose width the author wrote inline — every export, in
+    // particular — is left alone, which is what keeps a round trip stable.
+    if (typeOf(node) === 'text' && !verbatim && !/(^|;)\s*width\s*:/i.test(rawStyle ?? '')) {
+      const range = node.ownerDocument.createRange();
+      range.selectNodeContents(node);
+      // Layout-less DOMs (jsdom) have no Range geometry; there is nothing to
+      // protect there either.
+      const content = typeof range.getBoundingClientRect === 'function'
+        ? range.getBoundingClientRect()
+        : null;
+      range.detach?.();
+      if (content && content.width > 0 && rect.width - content.width < 1) {
+        const slack = Math.max(4, Math.round(rect.width * 0.02 * 100) / 100);
+        const align = style.textAlign;
+        if (align === 'center') {
+          box.x -= slack / 2;
+        } else if (align === 'right' || align === 'end') {
+          box.x -= slack;
+        }
+        box.w += slack;
+      }
+    }
+
     return {
       tag,
       elementId: node.dataset.elementId ?? null,
@@ -1069,12 +1105,7 @@ export function measureSlides(doc: Document): MeasuredSlide[] {
       classes: independent ? [] : [...node.classList].filter((name) =>
         name !== 'slide' && name !== 'element' && !name.startsWith('element-')),
       dataset: { ...node.dataset } as Record<string, string>,
-      rect: {
-        x: rect.left - origin.left,
-        y: rect.top - origin.top,
-        w: rect.width,
-        h: rect.height,
-      },
+      rect: box,
       rotation,
       // Verbatim markup still carries its authored CSS inside the isolated
       // shadow root. Reapplying presentation or opacity to the slide-element

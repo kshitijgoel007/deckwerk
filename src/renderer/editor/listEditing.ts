@@ -236,6 +236,43 @@ export function liftItemOutOfItem(item: HTMLElement): boolean {
   return true;
 }
 
+/**
+ * Move an indented item out one level, the way shift-Tab means it.
+ *
+ * Two shapes hold an indented item: the saved one, where the sub-list sits
+ * inside the parent item (`li > ul > li`), and the one Chromium's indent
+ * command writes while editing, where the sub-list is a *sibling* of its item
+ * (`ul > ul > li`). `execCommand('outdent')` handles only the second; from
+ * the saved shape it leaves the item inside the parent item (`li > li`),
+ * which still paints indented, so the key appeared to do nothing.
+ *
+ * The item lands directly after the item (or list) that held it. Items that
+ * followed it at the deeper level stay deeper: they become its own sub-list,
+ * so the list reads the same order as before with one item promoted.
+ * Moving the node itself keeps the caret in it.
+ */
+export function outdentListItem(item: HTMLElement): boolean {
+  if (item.tagName !== 'LI') return false;
+  const list = item.parentElement;
+  if (!list || !LIST_TAGS.test(list.tagName)) return false;
+  const host = list.parentElement;
+  if (!host || !(host.tagName === 'LI' || LIST_TAGS.test(host.tagName))) return false;
+  const following: Element[] = [];
+  for (let next = item.nextElementSibling; next; next = next.nextElementSibling) {
+    following.push(next);
+  }
+  if (following.length > 0) {
+    const carry = list.cloneNode(false) as HTMLElement;
+    carry.removeAttribute('start');
+    carry.append(...following);
+    item.append(carry);
+  }
+  if (host.tagName === 'LI') host.after(item);
+  else list.after(item);
+  if (list.childElementCount === 0) list.remove();
+  return true;
+}
+
 /** Does this item hold no text and no media — an empty bullet? */
 export function isEmptyListItem(item: HTMLElement): boolean {
   if (item.querySelector('img, video, svg, embed, li')) return false;

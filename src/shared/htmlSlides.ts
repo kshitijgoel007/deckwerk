@@ -83,6 +83,52 @@ export interface MeasuredSlide {
 
 const SCOPE_MARKER = 'slide-editor-scope:';
 
+/** A section an author fills in — no id, so it can only ever become a new slide. */
+const BLANK_SECTION = `<section class="slide">
+  <h1 class="role-title">Title</h1>
+</section>`;
+
+/**
+ * The counterpart to SCOPE_RULES, for a page that governs nothing yet.
+ *
+ * There is deliberately no scope marker here: a file that never names an
+ * existing slide cannot replace or delete one, so the destructive half of the
+ * loop is simply unreachable from this page until it has been saved once.
+ */
+const BLANK_RULES = `<!--
+  A blank authoring page. It governs no existing slide, so saving it can only
+  ADD slides — every section with class "slide" below is a new one, appended
+  to the deck in this order.
+
+  Add, remove and edit sections freely; open this file in a browser to see
+  exactly what the deck will get. After the first save each section is stamped
+  with the id it was given, and from then on this file governs those slides:
+  editing one replaces it, and removing one deletes it.
+-->`;
+
+/**
+ * The rules of the file, written into the file.
+ *
+ * The marker above is opaque and lives in the head, where nothing about it
+ * suggests that saving this document can *delete* slides. That gap has a
+ * predictable cost: an author who wants to add a slide copies this file to get
+ * a working skeleton, the copy inherits the scope, and saving it deletes
+ * everything the original exported. Saying so here puts the warning in the one
+ * place a copier is guaranteed to be looking.
+ */
+const SCOPE_RULES = `<!--
+  This file governs exactly the slides listed in the marker above, and saving
+  it is what changes them:
+
+    * editing inside a section that has a data-slide-id - REPLACES that slide
+    * adding a section with class "slide" and no data-slide-id - ADDS a slide
+    * removing a section that was exported here - DELETES that slide
+
+  To add slides, do not copy this file: the copy inherits the scope above and
+  saving it would delete these slides. Run \`slide-agent new\` for a blank
+  authoring page, which appends whatever sections you put in it.
+-->`;
+
 export interface HtmlExportOptions {
   /**
    * The player's semantic type rules, inlined so the file needs nothing from
@@ -93,6 +139,13 @@ export interface HtmlExportOptions {
   base?: string;
   /** The deck's stylesheet, relative to `base`. */
   theme?: string;
+  /**
+   * Emit a blank authoring page holding this many starter sections instead of
+   * an export: no scope marker and no slide ids, so every section in it is a
+   * new slide. This is the file to write when the intent is to *add* slides —
+   * it cannot replace or delete one, whatever is done to it.
+   */
+  blank?: number;
 }
 
 /**
@@ -115,14 +168,20 @@ export function slidesToHtml(
   canvas: { w: number; h: number },
   options: HtmlExportOptions = {},
 ): string {
+  const blank = options.blank ?? 0;
   const scope = encodeURIComponent(JSON.stringify(slides.map((slide) => slide.id)));
-  const body = slides.map((slide) => slideToHtml(slide, canvas)).join('\n');
+  const body = blank > 0
+    ? Array.from({ length: blank }, () => BLANK_SECTION).join('\n')
+    : slides.map((slide) => slideToHtml(slide, canvas)).join('\n');
+  const title = blank > 0
+    ? `${blank} new slide${blank === 1 ? '' : 's'}`
+    : (slides.length === 1 ? slides[0].name || slides[0].id : `${slides.length} slides`);
   return `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<!-- ${SCOPE_MARKER}${scope} -->
-<title>${escape(slides.length === 1 ? slides[0].name || slides[0].id : `${slides.length} slides`)}</title>
+${blank > 0 ? BLANK_RULES : `<!-- ${SCOPE_MARKER}${scope} -->\n${SCOPE_RULES}`}
+<title>${escape(title)}</title>
 <base href="${escape(options.base ?? '../')}">
 <style>${authoringCss(canvas)}</style>
 <style>${options.typeCss ?? ''}</style>
@@ -354,7 +413,14 @@ export function htmlSyncOperations(
   const existingIds = new Set(deck.slides.map((slide) => slide.id));
   const authoredIds = slides.map((slide) => slide.id);
   if (new Set(authoredIds).size !== authoredIds.length) {
-    throw new Error('HTML contains duplicate slide ids');
+    const repeated = authoredIds.find((id, index) => authoredIds.indexOf(id) !== index);
+    // Almost always a section copied to make a new slide, with the id copied
+    // too. Saying which id, and what to do about it, turns a dead end into a
+    // one-attribute fix.
+    throw new Error(`Two sections carry data-slide-id="${repeated}".`
+      + ' A slide id names one slide, so this file cannot say which one to replace.'
+      + ' If one of them is meant to be a new slide, delete its data-slide-id'
+      + ' attribute — a section without one is inserted, not a replacement.');
   }
 
   if (scope === null) {
@@ -418,6 +484,42 @@ export function htmlSyncOperations(
     }));
   }
   return operations;
+}
+
+/**
+ * What a set of sync operations does to the deck, in the terms an author cares
+ * about: which slides were rewritten, which are new, which are gone.
+ *
+ * Insert and replace look identical from the outside — both end with the deck
+ * showing the words you wrote — so an author who meant to add a slide and
+ * actually replaced one has nothing to notice. This is what makes the
+ * difference reportable, and deletion in particular impossible to miss.
+ */
+export function htmlSyncSummary(operations: AgentOperation[]): {
+  replaced: string[]; inserted: string[]; deleted: string[]; moved: number;
+} {
+  const inserted: string[] = [];
+  for (const operation of operations) {
+    if (operation.op === 'insertSlides') inserted.push(...operation.slides.map((slide) => slide.id));
+  }
+  return {
+    replaced: operations.flatMap((op) => (op.op === 'replaceSlide' ? [op.slideId] : [])),
+    inserted,
+    deleted: operations.flatMap((op) => (op.op === 'deleteSlide' ? [op.slideId] : [])),
+    moved: operations.filter((op) => op.op === 'moveSlide').length,
+  };
+}
+
+/** The same summary as a phrase for a toast or a log line. */
+export function describeHtmlSync(summary: ReturnType<typeof htmlSyncSummary>): string {
+  const parts = [
+    summary.replaced.length > 0 ? `${summary.replaced.length} replaced` : '',
+    summary.inserted.length > 0 ? `${summary.inserted.length} added` : '',
+    // Last and always spelled out: it is the only one that loses work.
+    summary.deleted.length > 0 ? `${summary.deleted.length} DELETED` : '',
+  ].filter(Boolean);
+  if (parts.length === 0) return summary.moved > 0 ? 'reordered' : 'no change';
+  return parts.join(', ') + (summary.moved > 0 ? ', reordered' : '');
 }
 
 /**

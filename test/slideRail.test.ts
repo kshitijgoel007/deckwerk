@@ -5,7 +5,7 @@ import { suggestMorphPairs } from '../src/shared/morph.js';
 import { Inspector } from '../src/renderer/editor/inspector.js';
 import { SlideRail } from '../src/renderer/editor/slideRail.js';
 import { EditorStore } from '../src/renderer/editor/store.js';
-import { THEMES, adoptThemeStyles, fullThemeSelection } from '../src/shared/themes.js';
+import { STOCK_STYLESHEET_STYLE, THEMES, adoptThemeStyles, fullThemeSelection } from '../src/shared/themes.js';
 import { defaultLayoutMasters, syncDeckWithLayoutMasters } from '../src/shared/layoutMasters.js';
 import { applySlideLayout } from '../src/renderer/editor/slideLayouts.js';
 import { PLAYER_TYPE_CSS } from '../src/shared/playerTypeCss.js';
@@ -683,11 +683,16 @@ describe('adding a slide', () => {
 
     rail.addSlide();
 
+    // The apply installed the family into the deck's defaults, so the new
+    // slide sits on theme.css: nothing is copied onto it, and it wears the
+    // family through the stylesheet alone.
     const { deck, slideIndex } = store.get();
     const added = deck.slides[slideIndex];
     const title = added.elements.find((el) => el.class.includes('role-title'))!;
-    expect(title.style['font-family']).toBe(theme.fonts.title.family);
-    expect(added.background.color).toBe(theme.colors.background);
+    expect(title.style['font-family']).toBeUndefined();
+    expect(deck.themeStyle?.fonts.title.family).toBe(theme.fonts.title.family);
+    expect(deck.themePreset).toBe(theme.id);
+    expect(added.background).toEqual({ color: null, image: null });
   });
 
   it('leaves a new slide to the stylesheet when no theme has been applied', () => {
@@ -702,22 +707,35 @@ describe('adding a slide', () => {
   it('themes a slide inserted with Return in the rail from a merely chosen theme', () => {
     const { store, host } = setup();
     const theme = THEMES[2];
-    // What picking a card in the theme gallery records: a choice, no restyling.
-    store.commit((deck) => { deck.themeSelection = fullThemeSelection(theme.id); });
-    const untouched = JSON.stringify(store.get().deck.slides[0]);
+    // An older deck's shape: a choice recorded, never installed. An existing
+    // title sits on the stock stylesheet so the test can show it stays put.
+    store.commit((deck) => {
+      deck.themeSelection = fullThemeSelection(theme.id);
+      deck.slides[0].elements.push({
+        id: 'existing', type: 'text', x: 0, y: 0, w: 800, h: 160, rot: 0, z: 1, opacity: 1,
+        class: ['role-title'], style: {}, html: 'Already here', align: 'left', valign: 'top',
+      });
+    });
 
     host.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
 
+    // The new slide installs the chosen theme and follows it: no copies on
+    // its boxes, the theme in the deck's defaults.
     const { deck, slideIndex } = store.get();
     expect(deck.slides).toHaveLength(3);
     const added = deck.slides[slideIndex];
     const title = added.elements.find((el) => el.class.includes('role-title'))!;
-    expect(title.style['font-family']).toBe(theme.fonts.title.family);
-    expect(title.style['font-size']).toBe(`${theme.fonts.title.size}px`);
-    expect(title.style.color).toBe(theme.fonts.title.color ?? theme.colors.text);
-    expect(added.background.color).toBe(theme.colors.background);
-    // The slides that were already there are left exactly as they were.
-    expect(JSON.stringify(deck.slides[0])).toBe(untouched);
+    expect(title.style).toEqual({});
+    expect(added.background).toEqual({ color: null, image: null });
+    expect(deck.themePreset).toBe(theme.id);
+    expect(deck.themeStyle?.fonts.title.family).toBe(theme.fonts.title.family);
+    // The slide that was already there keeps rendering as it did: what it drew
+    // from the stock stylesheet is now written on it, where the theme differs.
+    const existing = deck.slides[0].elements.find((el) => el.id === 'existing')!;
+    expect(existing.style['font-family']).toBe(STOCK_STYLESHEET_STYLE.fonts.title.family);
+    expect(existing.style['font-size']).toBe(`${STOCK_STYLESHEET_STYLE.fonts.title.size}px`);
+    expect(existing.style.color).toBe(STOCK_STYLESHEET_STYLE.colors.text);
+    expect(deck.slides[0].background.color).toBe(STOCK_STYLESHEET_STYLE.colors.background);
   });
 });
 
@@ -804,5 +822,61 @@ describe('the slide picker after a layout change', () => {
     }, { history: false });
 
     expect(visibleThumbText(host)[0]).toEqual([]);
+  });
+});
+
+describe('rebuilding the rail without detaching untouched rows', () => {
+  beforeEach(() => document.body.replaceChildren());
+
+  it('keeps unchanged rows and thumbnails attached across an edit to another slide', () => {
+    const { store, host } = setup();
+    const rowsBefore = [...host.querySelectorAll<HTMLElement>('.rail-item')];
+    const thumbsBefore = [...host.querySelectorAll<HTMLElement>('.rail-thumb')];
+    expect(rowsBefore.length).toBeGreaterThan(1);
+    const detached: Node[] = [];
+    const observer = new MutationObserver((records) => {
+      for (const record of records) detached.push(...record.removedNodes);
+    });
+    observer.observe(host, { childList: true });
+
+    store.commit((deck) => { deck.slides[0].name = 'Renamed'; }, { label: 'Rename' });
+    observer.disconnect();
+
+    const rowsAfter = [...host.querySelectorAll<HTMLElement>('.rail-item')];
+    expect(rowsAfter[0]).not.toBe(rowsBefore[0]);
+    expect(rowsAfter[1]).toBe(rowsBefore[1]);
+    expect(host.querySelectorAll('.rail-thumb')[1]).toBe(thumbsBefore[1]);
+    // The untouched row never left the document, even for a moment.
+    expect(detached).not.toContain(rowsBefore[1]);
+  });
+
+  it('keeps a slide’s row and thumbnail when only its speaker note changed', () => {
+    const { store, host } = setup();
+    const row = host.querySelector<HTMLElement>('.rail-item');
+    const thumb = host.querySelector<HTMLElement>('.rail-thumb');
+    const detached: Node[] = [];
+    const observer = new MutationObserver((records) => {
+      for (const record of records) detached.push(...record.removedNodes);
+    });
+    observer.observe(host, { childList: true, subtree: true });
+
+    // Typing in the notes drawer, one commit per keystroke, outside a transaction.
+    store.commit((deck) => { deck.slides[0].notes = 'r'; }, { label: 'Edit speaker notes' });
+    store.commit((deck) => { deck.slides[0].notes = 're'; }, { label: 'Edit speaker notes' });
+    observer.disconnect();
+
+    expect(host.querySelector('.rail-item')).toBe(row);
+    expect(host.querySelector('.rail-thumb')).toBe(thumb);
+    expect(detached.filter((node) => node === row || node === thumb)).toEqual([]);
+  });
+
+  it('still moves the highlight onto the kept rows', () => {
+    const { store, host } = setup();
+    store.commit((deck) => { deck.slides[0].name = 'Renamed'; }, { label: 'Rename' });
+    store.selectSlide(1);
+    const rows = [...host.querySelectorAll<HTMLElement>('.rail-item')];
+    expect(rows[0].classList.contains('active')).toBe(false);
+    expect(rows[1].classList.contains('active')).toBe(true);
+    expect(rows[1].getAttribute('aria-selected')).toBe('true');
   });
 });

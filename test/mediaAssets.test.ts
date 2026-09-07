@@ -145,7 +145,7 @@ describe('media assets and borders', () => {
     store.select(['image']);
 
     const sections = [...host.querySelectorAll<HTMLElement>('.insp-option-section')];
-    const masking = sections.find((section) => section.querySelector('h4')?.textContent?.startsWith('Masking'))!;
+    const masking = sections.find((section) => section.querySelector('h4')?.textContent === 'Mask')!;
     const border = sections.find((section) => section.querySelector('h4')?.textContent === 'Border')!;
     const circle = masking.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
     const width = border.querySelector<HTMLInputElement>('input[type="number"]')!;

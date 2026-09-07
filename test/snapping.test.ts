@@ -3,6 +3,7 @@ import {
   HANDLES,
   sizeGuides,
   snapMove,
+  snapPoint,
   snapResize,
   spacingDelta,
   spacingGuides,
@@ -318,5 +319,26 @@ describe('which objects count as row neighbours', () => {
     const beside = { x: 800, y: 400, w: 200, h: 200 };
     // Only `beside` is a row member, and one neighbour makes no distribution.
     expect(spacingGuides(rect, [above, beside], 'x')).toEqual([]);
+  });
+});
+
+describe('snapPoint', () => {
+  it('snaps each axis independently to element edges, centres and extras', () => {
+    const others = [{ x: 100, y: 300, w: 640, h: 360 }];
+    // x is 4px off the neighbour's right edge (740); y is 3px off the
+    // supplied anchor (500) and far from everything else.
+    const out = snapPoint({ x: 744, y: 503 }, CANVAS, others, 6, { y: [500] });
+    expect(out.point).toEqual({ x: 740, y: 500 });
+    expect(out.guides).toEqual(expect.arrayContaining([
+      { axis: 'x', at: 740 },
+      { axis: 'y', at: 500 },
+    ]));
+    expect(out.guides).toHaveLength(2);
+  });
+
+  it('leaves a point alone when nothing is within the threshold', () => {
+    const out = snapPoint({ x: 1234, y: 777 }, CANVAS, [], 6);
+    expect(out.point).toEqual({ x: 1234, y: 777 });
+    expect(out.guides).toHaveLength(0);
   });
 });

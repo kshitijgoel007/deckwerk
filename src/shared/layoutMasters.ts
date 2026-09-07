@@ -1,4 +1,5 @@
 import type { Deck, LayoutMaster, Slide, SlideElement, TextEl } from './deck.js';
+import { ROLE_TYPE_SCALE_PROPERTIES } from './themes.js';
 
 export type FixedLayout = 'freeform' | 'standard' | 'title';
 
@@ -80,16 +81,23 @@ function copyPlaceholderPresentation(
   // lives. Replacing wholesale on this path meant merely opening the layout
   // editor and pressing Done dropped the deck's typography back to the
   // stylesheet's on every slide at once, as if the deck had changed theme.
+  //
+  // A master carries geometry and, at most, a face and weight -- never a type
+  // scale. The size of a title is the deck's, set once for every title in the
+  // theme; a size typed on a placeholder used to stamp itself onto every slide
+  // and silently take those boxes off the deck's scale for good.
+  const sourceStyle = withoutTypeScale(source.style);
+  const strippedContent = source.contentStyle ? withoutTypeScale(source.contentStyle) : undefined;
+  const sourceContentStyle = strippedContent && Object.keys(strippedContent).length > 0
+    ? strippedContent
+    : undefined;
   if (replaceStyle) {
-    target.style = structuredClone(source.style);
-    target.contentStyle = source.contentStyle ? structuredClone(source.contentStyle) : undefined;
+    target.style = sourceStyle;
+    target.contentStyle = sourceContentStyle;
   } else {
-    target.style = { ...target.style, ...structuredClone(source.style) };
-    if (source.contentStyle) {
-      target.contentStyle = {
-        ...(target.contentStyle ?? {}),
-        ...structuredClone(source.contentStyle),
-      };
+    target.style = { ...target.style, ...sourceStyle };
+    if (sourceContentStyle) {
+      target.contentStyle = { ...(target.contentStyle ?? {}), ...sourceContentStyle };
     }
   }
   target.align = source.align;
@@ -111,6 +119,12 @@ function copyPlaceholderPresentation(
     ...(stillPrompting ? ['placeholder'] : []),
   ].filter((name, index, names) => names.indexOf(name) === index);
   target.layoutPlaceholder = source.layoutPlaceholder;
+}
+
+function withoutTypeScale(style: Record<string, string>): Record<string, string> {
+  const copy: Record<string, string> = structuredClone(style);
+  for (const property of ROLE_TYPE_SCALE_PROPERTIES) delete copy[property];
+  return copy;
 }
 
 function decorationCopy(slideId: string, source: SlideElement, order: number): SlideElement {
@@ -195,3 +209,31 @@ export function syncDeckWithLayoutMasters(deck: Deck): void {
   }
 }
 
+
+/**
+ * Put a slide's text boxes back where its layout puts them.
+ *
+ * This is "Apply layout": the geometric counterpart of "Apply theme". Only
+ * position, size, rotation and alignment travel from the master to the slot's
+ * text box -- no styling, no new boxes, no decorations, no background. A slide
+ * on the freeform layout has nothing to align to. Returns how many boxes moved.
+ */
+export function realignSlideToLayout(slide: Slide, masters: Deck['layoutMasters'] = null): number {
+  const layout = (slide.layout ?? 'freeform') as FixedLayout;
+  const master = masters?.[layout] ?? defaultLayoutMasters()[layout];
+  let moved = 0;
+  for (const source of master.elements) {
+    if (source.type !== 'text' || !source.layoutPlaceholder) continue;
+    const target = textForSlot(slide, source.layoutPlaceholder);
+    if (!target) continue;
+    target.x = source.x;
+    target.y = source.y;
+    target.w = source.w;
+    target.h = source.h;
+    target.rot = source.rot;
+    target.align = source.align;
+    target.valign = source.valign;
+    moved += 1;
+  }
+  return moved;
+}
