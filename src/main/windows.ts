@@ -117,6 +117,7 @@ function openWebLinksExternally(win: BrowserWindow): void {
  * the same time. Reassert the state after the window is ready and visible.
  */
 function showFullscreenWindow(win: BrowserWindow): void {
+  if (HEADLESS_TEST) return;
   win.show();
   win.setFullScreen(true);
 }
@@ -132,6 +133,7 @@ export function createEditorWindow(query = '', state?: WindowContinuityState): B
     show: false,
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     webPreferences: {
+      backgroundThrottling: !HEADLESS_TEST,
       preload: preload(),
       contextIsolation: true,
       nodeIntegration: false,
@@ -161,6 +163,7 @@ export function createCollabHostWindow(url: string, state?: WindowContinuityStat
     show: false,
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     webPreferences: {
+      backgroundThrottling: !HEADLESS_TEST,
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
@@ -199,6 +202,7 @@ export function createPresentWindow(
     autoHideMenuBar: true,
     show: false,
     webPreferences: {
+      backgroundThrottling: !HEADLESS_TEST,
       preload: preload(),
       contextIsolation: true,
       nodeIntegration: false,
@@ -234,6 +238,7 @@ export function createPresenterWindow(
     title: 'Speaker View',
     show: false,
     webPreferences: {
+      backgroundThrottling: !HEADLESS_TEST,
       preload: preload(), contextIsolation: true, nodeIntegration: false, sandbox: false,
     },
   });
@@ -252,6 +257,7 @@ export function createPresenterWindow(
  * visible there. The workspace setting is a no-op on Windows.
  */
 export function showSpeakerWindowAboveFullscreen(win: BrowserWindow): void {
+  if (HEADLESS_TEST) return;
   win.setAlwaysOnTop(true, 'floating');
   win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   showFullscreenWindow(win);
@@ -266,6 +272,7 @@ export function createPdfWindow(query: string): BrowserWindow {
     show: false,
     backgroundColor: '#000000',
     webPreferences: {
+      backgroundThrottling: !HEADLESS_TEST,
       preload: preload(),
       contextIsolation: true,
       nodeIntegration: false,
@@ -287,6 +294,7 @@ export function createTrimWindow(): BrowserWindow {
     title: 'Trim & Crop',
     show: false,
     webPreferences: {
+      backgroundThrottling: !HEADLESS_TEST,
       preload: preload(),
       contextIsolation: true,
       nodeIntegration: false,
@@ -294,7 +302,7 @@ export function createTrimWindow(): BrowserWindow {
       autoplayPolicy: 'no-user-gesture-required',
     },
   });
-  win.once('ready-to-show', () => win.show());
+  win.once('ready-to-show', () => { if (!HEADLESS_TEST) win.show(); });
   loadRenderer(win, 'trim');
   return win;
 }
@@ -310,13 +318,14 @@ export function createRasterWindow(): BrowserWindow {
     title: 'Raster Paint',
     show: false,
     webPreferences: {
+      backgroundThrottling: !HEADLESS_TEST,
       preload: preload(),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
     },
   });
-  win.once('ready-to-show', () => win.show());
+  win.once('ready-to-show', () => { if (!HEADLESS_TEST) win.show(); });
   loadRenderer(win, 'raster');
   return win;
 }

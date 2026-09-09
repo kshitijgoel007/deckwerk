@@ -196,10 +196,18 @@ describe.skipIf(!electronBinary)('text formatting in the collaboration browser',
       (value) => value.items.length === 2);
     expect(bulleted.html).toBe('<ul><li>First point</li><li>Second point</li></ul>');
     // Markers must actually paint; a list that renders `list-style: none` looks
-    // identical in the deck data and wrong on screen.
-    expect(await editor.evaluate<string>(`getComputedStyle(
-      document.querySelector('#canvas [data-element-id="${BODY_ID}"] .text-body li')
-    ).listStyleType`)).not.toBe('none');
+    // identical in the deck data and wrong on screen. type.css draws the
+    // marker itself in the item's `::before` box (so the hanging indent is
+    // exactly the marker's width), which is what counts as painting here.
+    expect(await editor.evaluate<boolean>(`(() => {
+      const item = document.querySelector('#canvas [data-element-id="${BODY_ID}"] .text-body li');
+      if (getComputedStyle(item).listStyleType !== 'none') return true;
+      const marker = getComputedStyle(item, '::before');
+      const painted = marker.content !== 'none' && marker.display !== 'none'
+        && parseFloat(marker.minWidth || marker.width) > 0
+        && (marker.content !== '""' || marker.backgroundImage !== 'none');
+      return painted;
+    })()`), 'the bullet marker does not paint').toBe(true);
 
     /* --- paragraph spacing ------------------------------------------------ */
 

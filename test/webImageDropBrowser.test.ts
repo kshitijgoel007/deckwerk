@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from 'node:child_process';
+import { type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -8,13 +8,12 @@ import { saveDeck } from '../src/main/deckStore.js';
 import { emptyDeck } from '../src/shared/deck.js';
 import {
   Cdp,
-  collectProcessOutput,
   electronBinary,
   eventually,
   findTarget,
-  freePort,
   stopBrowser,
 } from './support/browserSession.js';
+import { isEditorTarget, launchDesktopApp, materializeDesktopApp } from './support/desktopApp.js';
 
 /**
  * Dragging an image out of a web page onto a slide, in the desktop app.
@@ -32,14 +31,8 @@ import {
  */
 
 const PNG = join(process.cwd(), 'decks', 'demo-deck', 'assets', 'swatch.png');
-const requiredBuildOutputs = [
-  'out/main/index.js',
-  'out/preload/index.mjs',
-  'out/renderer/editor/index.html',
-];
 const runnable = Boolean(electronBinary)
-  && existsSync(PNG)
-  && requiredBuildOutputs.every((path) => existsSync(join(process.cwd(), path)));
+  && existsSync(PNG);
 
 let workDir = '';
 let appProcess: ChildProcess | null = null;
@@ -63,23 +56,16 @@ describe.skipIf(!runnable)('dropping a web image into the desktop app', () => {
     await saveDeck(deckDir, emptyDeck('Web image drop'));
     await writeFile(join(deckDir, 'theme.css'), '.slide { background: #fff; }\n', 'utf8');
 
-    const debugPort = await freePort();
-    appProcess = spawn(electronBinary, [
-      '.',
-      `--remote-debugging-port=${debugPort}`,
-      '--remote-allow-origins=*',
-      `--user-data-dir=${profileDir}`,
-      deckDir,
-    ], {
-      cwd: process.cwd(),
-      stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, ELECTRON_DISABLE_SECURITY_WARNINGS: '1' },
-    });
-    const appLog = collectProcessOutput(appProcess);
+    const appDir = join(workDir, 'app');
+    await materializeDesktopApp(appDir, 'deckwerk-web-image-drop-test');
+    const app = await launchDesktopApp(appDir, [deckDir], { profileDir });
+    appProcess = app.process;
+    const debugPort = app.debugPort;
+    const appLog = app.log;
 
     const target = await findTarget(
       debugPort,
-      (candidate) => candidate.title === 'DeckWerk' || candidate.url.includes('/editor/index.html'),
+      isEditorTarget,
       appLog,
     );
     editor = await Cdp.connect(target.webSocketDebuggerUrl!);
@@ -133,7 +119,7 @@ describe.skipIf(!runnable)('dropping a web image into the desktop app', () => {
     })()`), 'the dragged web image never rendered on the slide',
       (value) => value.complete && value.naturalWidth === 800, 30_000);
 
-    expect(painted.src).toMatch(/^deck:\/\/asset\/assets\/.+\.png$/);
+    expect(painted.src).toMatch(/^deck:\/\/[^/]+\/assets\/.+\.png$/);
     // Dropped media is left selected, ready to be moved.
     expect(painted.selected).toBe(true);
 
@@ -155,7 +141,7 @@ describe.skipIf(!runnable)('dropping a web image into the desktop app', () => {
       };
     })()`);
     expect(box.pending).toBe(false);
-    expect(box.src).toBe(`deck://asset/assets/${assets[0]}`);
+    expect(box.src).toMatch(new RegExp(`^deck://[^/]+/assets/${assets[0].replace(/[.]/g, '\\.')}$`));
     expect(box.ratio).toBeCloseTo(800 / 600, 1);
   }, 60_000);
 });

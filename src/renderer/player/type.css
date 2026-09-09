@@ -82,14 +82,89 @@
   padding-left: 0;
 }
 
-/* The marker is laid out inside the item and the item hangs its wrapped
-   lines: the bullet (or number) starts at the box edge with no whitespace
-   before it, while continuation lines line up under the first line's text. */
+/*
+ * The marker is laid out inside the item and the item hangs its wrapped
+ * lines: the bullet (or number) starts at the box edge with no whitespace
+ * before it, while continuation lines line up under the first line's text.
+ *
+ * The item paints that marker itself, because the hanging indent has to be
+ * the marker's width and nothing else, and a native marker's width is not a
+ * number CSS can ask for. It was an em-relative guess — 1.4em, against
+ * Chromium's real 1.32em for a disc in Helvetica Neue, 1.29em in a monospace,
+ * and 0.61em for the nested dash — so every line after the first, wrapped or
+ * after a hard break, started a few pixels right of the line above it, and
+ * half an em right of it under a dash. An inline-block of a width we choose
+ * closes that gap by construction: the marker box *is* the indent.
+ */
 .text-body li {
   margin: 0.15em 0;
   list-style-position: inside;
+  list-style-type: none;
   padding-left: 1.4em;
   text-indent: -1.4em;
+}
+
+/* Suppressed, not removed. `list-style-type` stays the way an author or an
+   import asks for one of the browser's own markers (see below), and engines
+   without `::marker` content still honour the `list-style-type: none` above. */
+.text-body li::marker {
+  content: '';
+}
+
+/* The marker box. Its width is the item's hanging indent — keep the two in
+   step — and the item's own hanging indent must not shift what it draws. */
+.text-body li::before {
+  content: '';
+  display: inline-block;
+  /* min-width, not width: a marker wider than the indent (a two-digit
+     number) then pushes its own line along rather than painting over it. */
+  min-width: 1.4em;
+  text-indent: 0;
+}
+
+/* Chromium's disc, reproduced: a filled circle 0.3125em across, sitting
+   0.16em above the baseline. That is what the native marker paints, to within
+   a device pixel at every size — and unlike the U+2022 glyph it does not
+   change size with the theme's typeface. */
+.text-body ul > li::before {
+  height: 0.3125em;
+  vertical-align: 0.16em;
+  background:
+    radial-gradient(circle closest-side, currentColor 100%, transparent 100%)
+    left top / 0.3125em 0.3125em no-repeat;
+}
+
+/* Indented bullets (tab while editing a list) switch to a dash marker. */
+.text-body ul ul > li::before {
+  content: '-';
+  /* Not the drawn disc: a glyph, laid out like the numbers are. */
+  height: auto;
+  vertical-align: baseline;
+  background: none;
+}
+
+/* Numbered items count themselves. `list-item` is the counter Chromium's own
+   marker reads, so `<ol start>` and `<li value>` keep working. */
+.text-body ol > li::before {
+  content: counter(list-item) '.';
+}
+
+/* An authored `list-style-type` is a request for one of the browser's markers
+   — square, lower-roman, a string. Those items keep the native marker, and
+   with it the approximate hanging indent it has always had. The item's own
+   `list-style-type: none` above outranks anything it merely inherits, so a
+   type set on the list itself has to be handed back explicitly. */
+.text-body li[style*="list-style-type"],
+.text-body [style*="list-style-type"] li {
+  list-style-type: inherit;
+}
+.text-body li[style*="list-style-type"]::marker,
+.text-body [style*="list-style-type"] li::marker {
+  content: normal;
+}
+.text-body li[style*="list-style-type"]::before,
+.text-body [style*="list-style-type"] li::before {
+  content: none;
 }
 
 /* Blocks nested in an item (a wrapped paragraph, a sub-list) are not the
@@ -107,8 +182,10 @@
 }
 
 /* An authored marker colour is independent of character-level text runs.
-   Without this opt-in, native markers keep following the list item's colour
-   and theme.css can continue to style them normally. */
+   Without this opt-in, markers keep following the list item's colour and
+   theme.css can continue to style them normally. The drawn disc takes its
+   fill from `currentColor`, so colouring the box colours the marker. */
+.text-body li[data-list-marker-color]::before,
 .text-body li[data-list-marker-color]::marker {
   color: var(--list-marker-color) !important;
 }
@@ -131,11 +208,6 @@
 
 .text-body th { font-weight: 700; }
 
-/* Indented bullets (tab while editing a list) switch to a dash marker. */
-.text-body ul ul {
-  list-style-type: "-  ";
-}
-
 /* A paragraph is a block, and the only gap between two of them is the deck's
    own paragraph spacing — never the browser's 1em default, which would make
    text jump the moment the editor turned imported `<br>` breaks into blocks. */
@@ -153,6 +225,12 @@
   margin-bottom: 0;
 }
 [data-paragraph-spacing] .text-content > * + *,
-[data-paragraph-spacing] .text-body li + li {
+[data-paragraph-spacing] .text-body li + li:not(:is(ul, ol) :is(ul, ol) li) {
   margin-top: var(--paragraph-spacing, 0);
 }
+
+/* Indented bullets are a group under their parent item, not paragraphs of
+   their own: no paragraph spacing between them, and none before the first of
+   them. The :not() above leaves every nested item — in the saved
+   `li > ul > li` shape and in the `ul > ul > li` shape Chromium's indent
+   writes while editing — to the reset, which zeroes it. */

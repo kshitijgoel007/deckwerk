@@ -1,3 +1,4 @@
+import { createRequire } from 'node:module';
 import { existsSync } from 'node:fs';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -49,11 +50,13 @@ describe('assets the app needs at run time', () => {
     expect(existsSync(join(resources, 'deckwerk-icon.png'))).toBe(true);
     expect(existsSync(join(resources, 'deckwerk-icon.icns'))).toBe(true);
 
-    const pkg = JSON.parse(await readFile(join(process.cwd(), 'package.json'), 'utf8')) as {
-      build: { productName: string; mac: { icon: string } };
+    // The electron-builder configuration lives in its own module (signing is
+    // conditional there), not in package.json's `build` field.
+    const builder = createRequire(import.meta.url)(join(process.cwd(), 'electron-builder.config.cjs')) as {
+      productName: string; mac: { icon: string };
     };
-    expect(pkg.build.productName).toBe('DeckWerk');
-    expect(pkg.build.mac.icon).toBe('resources/deckwerk-icon.icns');
+    expect(builder.productName).toBe('DeckWerk');
+    expect(builder.mac.icon).toBe('resources/deckwerk-icon.icns');
     const main = await readFile(join(process.cwd(), 'src/main/index.ts'), 'utf8');
     expect(main).toContain("app.setName('DeckWerk')");
     expect(main).toContain("app.dock.setIcon(developmentIcon)");

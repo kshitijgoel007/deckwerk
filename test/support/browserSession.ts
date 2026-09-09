@@ -834,7 +834,7 @@ export async function launchBrowser(
  * two-core runner -- and twice in six nightlies it missed 15 s with nothing in
  * its log; every later launch in the same job was fine. Locally 15 s stays.
  */
-const FIND_TARGET_TIMEOUT_MS = process.env.CI ? 60_000 : 15_000;
+const FIND_TARGET_TIMEOUT_MS = process.env.CI ? 60_000 : 30_000;
 
 export async function findTarget(
   port: number,
@@ -857,11 +857,20 @@ export async function findTarget(
   throw new Error(`timed out waiting for Electron target\n${browserLog()}`);
 }
 
+/**
+ * How long `eventually` waits by default. Everything it waits for — a
+ * renderer applying a transaction, a server storing a deck, a page painting —
+ * finishes in well under a second on an idle machine; the budget is for the
+ * machine that is also running several other Electron suites. A test that
+ * knows its wait is long passes its own.
+ */
+export const EVENTUALLY_TIMEOUT_MS = process.env.CI ? 40_000 : 20_000;
+
 export async function eventually<T>(
   read: () => Promise<T>,
   message: string,
   accept: (value: T) => boolean = Boolean,
-  timeoutMs = 10_000,
+  timeoutMs = EVENTUALLY_TIMEOUT_MS,
 ): Promise<T> {
   const deadline = Date.now() + timeoutMs;
   let last: T | undefined;

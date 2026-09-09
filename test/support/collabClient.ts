@@ -17,14 +17,40 @@ import { build } from 'vite';
 let pending: Promise<string> | null = null;
 
 export function collabClientDir(): Promise<string> {
-  pending ??= prepareCollabClient();
+  pending ??= sharedBuild({
+    cacheName: 'slide-editor-vitest-collab',
+    inputs: ['src', 'vite.collab.config.ts', 'package-lock.json'],
+    produce: async (outDir, checkout) => {
+      await build({
+        configFile: join(checkout, 'vite.collab.config.ts'),
+        logLevel: 'silent',
+        build: { outDir, emptyOutDir: true },
+      });
+    },
+  });
   return pending;
 }
 
-async function prepareCollabClient(): Promise<string> {
+/**
+ * A build shared by every test worker, and by every run whose sources have
+ * not changed since.
+ *
+ * The output lives under the OS temp directory, keyed by a hash of the
+ * inputs. Workers race for a lock directory; the loser waits for the winner's
+ * `.ready` marker. A build takes seconds and the tests that need one number
+ * in the dozens, so without this every worker would rebuild the same thing —
+ * or, worse, run against whatever stale build happened to be lying in the
+ * checkout.
+ */
+export async function sharedBuild(options: {
+  cacheName: string;
+  /** Files or directories, relative to the checkout, whose content keys the build. */
+  inputs: string[];
+  produce: (outDir: string, checkout: string) => Promise<void>;
+}): Promise<string> {
   const checkout = process.cwd();
-  const hash = await sourceHash(checkout);
-  const cacheRoot = join(tmpdir(), 'slide-editor-vitest-collab');
+  const hash = await sourceHash(checkout, options.inputs);
+  const cacheRoot = join(tmpdir(), options.cacheName);
   const outDir = join(cacheRoot, hash);
   const ready = join(outDir, '.ready');
   const lock = join(cacheRoot, `${hash}.lock`);
@@ -41,7 +67,7 @@ async function prepareCollabClient(): Promise<string> {
       break;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-      for (let attempt = 0; attempt < 600; attempt += 1) {
+      for (let attempt = 0; attempt < 1800; attempt += 1) {
         if (existsSync(ready)) return outDir;
         if (!existsSync(lock)) break;
         if (await buildLockIsStale(lock)) {
@@ -51,7 +77,7 @@ async function prepareCollabClient(): Promise<string> {
         await wait(100);
       }
       if (existsSync(lock)) {
-        throw new Error(`Timed out waiting for shared collaboration-client build: ${lock}`);
+        throw new Error(`Timed out waiting for shared build: ${lock}`);
       }
     }
   }
@@ -59,11 +85,8 @@ async function prepareCollabClient(): Promise<string> {
   try {
     if (existsSync(ready)) return outDir;
     await rm(outDir, { recursive: true, force: true });
-    await build({
-      configFile: join(checkout, 'vite.collab.config.ts'),
-      logLevel: 'silent',
-      build: { outDir, emptyOutDir: true },
-    });
+    await mkdir(outDir, { recursive: true });
+    await options.produce(outDir, checkout);
     await writeFile(ready, `${hash}\n`, 'utf8');
     return outDir;
   } finally {
@@ -92,12 +115,8 @@ async function buildLockIsStale(lock: string): Promise<boolean> {
   }
 }
 
-async function sourceHash(checkout: string): Promise<string> {
-  const roots = [
-    resolve(checkout, 'src'),
-    resolve(checkout, 'vite.collab.config.ts'),
-    resolve(checkout, 'package-lock.json'),
-  ];
+async function sourceHash(checkout: string, inputs: string[]): Promise<string> {
+  const roots = inputs.map((input) => resolve(checkout, input));
   const files: string[] = [];
   for (const root of roots) {
     if (!existsSync(root)) continue;

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { applyAgentTransaction } from '../src/shared/agent.js';
 import { emptyDeck } from '../src/shared/deck.js';
 import { prepareHtmlDraftRenderPage } from '../src/cli/compileHtml.js';
@@ -309,6 +309,14 @@ describe('the walk', () => {
  */
 describe('compiling a saved authoring file in the editor', () => {
   const theme = '.slide { background: #ffffff; }';
+
+  // The compile resolves asset paths through the preload bridge, against the
+  // host that names this window's deck; jsdom has no bridge, so stand one in.
+  beforeEach(() => {
+    (globalThis as unknown as { window: Window }).window.api = {
+      assetUrl: (src: string) => `deck://test-deck/${src}`,
+    } as never;
+  });
 
   /** An export of `exportedWith`, with the author's own slides in its body. */
   const edited = (exportedWith: Parameters<typeof slidesToHtml>[0], body: string): string =>

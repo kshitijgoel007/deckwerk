@@ -1,7 +1,6 @@
-import { spawn, type ChildProcess } from 'node:child_process';
+import { type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { createServer } from 'node:net';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -18,6 +17,7 @@ import {
 import { emptyDeck } from '../src/shared/deck.js';
 // The production-input harness: real pointer and key events, not `.click()`.
 import { Cdp } from './support/browserSession.js';
+import { isEditorTarget, launchDesktopApp, materializeDesktopApp } from './support/desktopApp.js';
 
 /**
  * Regression for the embedded-Agent presentation hand-off.
@@ -43,15 +43,7 @@ const electron = (() => {
   }
 })();
 
-const requiredBuildOutputs = [
-  'out/main/index.js',
-  'out/preload/index.mjs',
-  'out/renderer/editor/index.html',
-  'out/renderer/present/index.html',
-  'dist/collab/index.html',
-];
-const runnable = Boolean(electron)
-  && requiredBuildOutputs.every((path) => existsSync(join(process.cwd(), path)));
+const runnable = Boolean(electron);
 
 class FakeAgent {
   private queue: ServerMessage[] = [];
@@ -74,7 +66,10 @@ class FakeAgent {
     });
     const agent = new FakeAgent(socket);
     agent.send({ kind: 'hello', version: COLLAB_PROTOCOL_VERSION, name: 'Fake Agent' });
-    const welcome = await agent.nextOfKind('welcome');
+    // Opening the room reads the deck and its history off disk; on a loaded
+    // machine (the rest of the suite, a second Electron app) that can take
+    // longer than the per-message default.
+    const welcome = await agent.nextOfKind('welcome', 20_000);
     return { agent, welcome };
   }
 
@@ -152,23 +147,16 @@ describe.skipIf(!runnable)('embedded Agent presentation synchronization', () => 
       '',
     ].join('\n'), 'utf8');
 
-    const debugPort = await freePort();
-    appProcess = spawn(electron, [
-      '.',
-      `--remote-debugging-port=${debugPort}`,
-      '--remote-allow-origins=*',
-      `--user-data-dir=${profileDir}`,
-      deckDir,
-    ], {
-      cwd: process.cwd(),
-      stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, ELECTRON_DISABLE_SECURITY_WARNINGS: '1' },
-    });
-    const appLog = collectProcessOutput(appProcess);
+    const appDir = join(workDir, 'app');
+    await materializeDesktopApp(appDir, 'deckwerk-agent-presentation-sync');
+    const app = await launchDesktopApp(appDir, [deckDir], { profileDir });
+    appProcess = app.process;
+    const debugPort = app.debugPort;
+    const appLog = app.log;
 
     const editorTarget = await findTarget(
       debugPort,
-      (target) => target.title === 'DeckWerk' || target.url.includes('/editor/index.html'),
+      isEditorTarget,
       appLog,
     );
     editor = await Cdp.connect(editorTarget.webSocketDebuggerUrl!);
@@ -220,7 +208,9 @@ describe.skipIf(!runnable)('embedded Agent presentation synchronization', () => 
     // the subsequent toolbar click exercises its normal save/present sequence.
     await eventually(async () => editor!.evaluate<boolean>(
       `document.querySelector('[data-element-id="fake-agent-marker"]')?.textContent?.includes(${JSON.stringify(marker)}) === true`,
-    ), 'native editor did not receive the fake Agent transaction');
+    // The native peer applies it over its WebSocket bridge; on a loaded machine
+    // the round trip can outlast the default wait.
+    ), 'native editor did not receive the fake Agent transaction', Boolean, 30_000);
     await eventually(async () => editor!.evaluate<boolean>(`
       window.api.getDeck().then((session) => session?.deck?.slides?.[0]?.elements
         ?.some((element) => element.id === 'fake-agent-marker') === true)
@@ -321,25 +311,7 @@ async function eventually<T>(
   throw new Error(`${message}: ${detail}`);
 }
 
-function collectProcessOutput(child: ChildProcess): () => string {
-  let stdout = '';
-  let stderr = '';
-  child.stdout?.on('data', (chunk) => (stdout += String(chunk)));
-  child.stderr?.on('data', (chunk) => (stderr += String(chunk)));
-  return () => [stdout, stderr].filter(Boolean).join('\n').trim();
-}
 
-async function freePort(): Promise<number> {
-  const server = createServer();
-  await new Promise<void>((resolve, reject) => {
-    server.once('error', reject);
-    server.listen({ host: '127.0.0.1', port: 0, exclusive: true }, resolve);
-  });
-  const address = server.address();
-  if (!address || typeof address === 'string') throw new Error('could not allocate debug port');
-  await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
-  return address.port;
-}
 
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));

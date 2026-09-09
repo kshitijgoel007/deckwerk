@@ -18,6 +18,7 @@ import {
 import { createThemePanel } from '../src/renderer/editor/themePanel.js';
 import type { CssEditor } from '../src/renderer/editor/cssEditor.js';
 import { SlideRail } from '../src/renderer/editor/slideRail.js';
+import typeCss from '../src/renderer/player/type.css?raw';
 
 /**
  * Text formatting driven the way an author drives it: every assertion below
@@ -2451,5 +2452,109 @@ describe('theming through the panel, the rail and the inspector', () => {
     expect(textOf(store, 'title').style).toEqual(IMPORTED_TITLE.style);
     expect(textOf(store, 'title').html).toBe(IMPORTED_TITLE.html);
     expect(computed(canvasHost, 'title').fontSize).toBe('88px');
+  });
+});
+
+/**
+ * Bullets, indentation and paragraph spacing after a cut and paste — the
+ * three symptoms one slide of a real talk showed at once: a bullet cut from
+ * one item and pasted above another arrived wearing the source item's
+ * hanging indent and line height as inline style, the indented item it
+ * displaced kept two literal newlines that `white-space: pre-wrap` painted as
+ * blank lines, and the deck's paragraph spacing opened a gap between the
+ * indented bullets as if each were a paragraph of its own.
+ *
+ * The paste itself is Chromium's; what the editor owns is the repair that
+ * runs on the `insertFromPaste` input event, and the markup that is saved.
+ */
+describe('bullets and paragraphs after a cut and paste', () => {
+  beforeEach(() => {
+    closePopover();
+    document.body.replaceChildren();
+  });
+
+  /** Chromium's clipboard fragment for a run cut out of a bullet of this editor. */
+  const CUT_BULLET_RUN = '<span style="color: rgb(0, 0, 0); font-family: &quot;Avenir Next&quot;; '
+    + 'font-size: 48px; font-weight: 700; letter-spacing: 0px; text-indent: -1.4em; '
+    + 'white-space: pre-wrap; line-height: 1.32; text-align: left;">Clear gains ahead.</span>';
+
+  function paste(canvas: EditorCanvas, canvasHost: HTMLElement, id: string, pastedBody: string): HTMLElement {
+    canvas.beginTextEdit(id);
+    const content = contentOf(canvasHost, id);
+    // What the box holds once Chromium has inserted the fragment at the caret.
+    content.innerHTML = pastedBody;
+    content.dispatchEvent(new InputEvent('input', { inputType: 'insertFromPaste', bubbles: true }));
+    return content;
+  }
+
+  it('drops the hanging indent, line height and other box layout a cut bullet carries as inline style', () => {
+    const { store, canvas, canvasHost } = setup([
+      textElement('text-1', { html: '<ul><li>one</li><li>two</li></ul>' }),
+    ]);
+    const content = paste(canvas, canvasHost, 'text-1',
+      `<ul><li>one</li><li>${CUT_BULLET_RUN}two</li></ul>`);
+    const run = content.querySelector<HTMLElement>('li span')!;
+    for (const property of ['text-indent', 'line-height', 'white-space']) {
+      expect(run.style.getPropertyValue(property), `${property} is the source box's, not the run's`).toBe('');
+    }
+    // Character formatting the author meant to carry stays.
+    expect(run.style.fontWeight).toBe('700');
+    expect(run.style.color).toBe('rgb(0, 0, 0)');
+    canvas.endTextEditing(true);
+    expect(textOf(store, 'text-1').html).not.toContain('text-indent');
+    expect(textOf(store, 'text-1').html).toContain('Clear gains ahead.');
+  });
+
+  it('removes the blank lines that newlines around a nested bullet would paint', () => {
+    const { store, canvas, canvasHost } = setup([
+      textElement('text-1', { html: '<ul><li>one</li></ul>' }),
+    ]);
+    paste(canvas, canvasHost, 'text-1',
+      '<ul>\n<li>one<ul><li>nested\n\n</li>\n</ul>\n\n</li>\n<li>two</li>\n</ul>');
+    canvas.endTextEditing(true);
+    expect(textOf(store, 'text-1').html)
+      .toBe('<ul><li>one<ul><li>nested</li></ul></li><li>two</li></ul>');
+  });
+
+  it('does not turn the newlines between pasted paragraphs into empty paragraphs', () => {
+    const { store, canvas, canvasHost } = setup([
+      textElement('text-1', { html: '<p>start</p>' }),
+    ]);
+    paste(canvas, canvasHost, 'text-1', '<p>start</p>\n<p>pasted one</p>\n\n<p>pasted two</p>\n');
+    canvas.endTextEditing(true);
+    expect(textOf(store, 'text-1').html).toBe('<p>start</p><p>pasted one</p><p>pasted two</p>');
+  });
+
+  it('keeps a typed space and a deliberate soft break while trimming markup newlines', () => {
+    const { store, canvas, canvasHost } = setup([
+      textElement('text-1', { html: '<ul><li>one</li></ul>' }),
+    ]);
+    paste(canvas, canvasHost, 'text-1',
+      '<ul><li>one two&nbsp;<br>three\n</li><li><br></li></ul>');
+    canvas.endTextEditing(true);
+    expect(textOf(store, 'text-1').html)
+      .toBe('<ul><li>one two&nbsp;<br>three</li><li><br></li></ul>');
+  });
+
+  it('adopts a bullet pasted as a bare item above another into the same list', () => {
+    const { store, canvas, canvasHost } = setup([
+      textElement('text-1', { html: '<ul><li>one</li><li>two</li></ul>' }),
+    ]);
+    // Pasting a whole copied item at the start of "two" — Chromium keeps the
+    // fragment's <li> and lets the list around it fall away.
+    paste(canvas, canvasHost, 'text-1', '<ul><li>one</li></ul><li>cut</li><ul><li>two</li></ul>');
+    canvas.endTextEditing(true);
+    expect(textOf(store, 'text-1').html).toBe('<ul><li>one</li><li>cut</li><li>two</li></ul>');
+  });
+
+  it('spaces top-level bullets as paragraphs and leaves indented bullets grouped', () => {
+    // type.css is the renderer's stylesheet; jsdom cannot cascade its
+    // selectors, so the rule is pinned as text here and measured for real in
+    // listCutPasteBrowser.test.ts.
+    const css = typeCss;
+    const spacing = /\[data-paragraph-spacing\] \.text-body li \+ li(.*?)\s*\{/.exec(css);
+    expect(spacing, 'the paragraph-spacing rule for list items').not.toBeNull();
+    expect(spacing![1].trim(), 'nested items are excluded from paragraph spacing')
+      .toBe(':not(:is(ul, ol) :is(ul, ol) li)');
   });
 });

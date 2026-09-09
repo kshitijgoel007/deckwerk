@@ -1,7 +1,7 @@
 import { resolve } from 'node:path';
 import { configDefaults, defineConfig } from 'vitest/config';
 import { LONG_TEST_FILES } from './test/longTestFiles.js';
-import { SERIAL_TEST_FILES } from './test/serialTestFiles.js';
+import { BROWSER_TEST_FILES } from './test/testTiers.js';
 
 /**
  * IMPORTANT FOR AGENTS: run the complete suite outside restricted sandboxes.
@@ -13,28 +13,20 @@ import { SERIAL_TEST_FILES } from './test/serialTestFiles.js';
  * Tests and one-off scripts run against the same `@shared` alias the app build
  * uses, so a module imports identically wherever it is loaded from.
  */
-// Each browser test launches a full Electron app (several processes) plus a
-// collab server and sometimes ffmpeg. Running as many in parallel as the box
-// has cores oversubscribes a small CI runner badly enough that Electron stops
-// responding inside test timeouts — one heavy suite starves the rest, and
-// unrelated suites then fail with "could not select" / timeout. Capping
-// concurrency on CI gives each browser suite enough CPU to finish; local
-// machines with more cores keep running fully parallel.
-const ciWorkerCap = process.env.CI
-  ? { minWorkers: 1, maxWorkers: 2 }
-  : {};
-
+/**
+ * The unit tier: everything that does not launch Electron. These are jsdom
+ * and Node suites, cheap enough to run one per core. The Electron suites run
+ * with bounded parallelism from vitest.browser.config.ts, and the ones that
+ * share machine-wide state one at a time from vitest.serial.config.ts; the
+ * long end-to-end scenarios stay behind `npm run test:long`.
+ */
 export default defineConfig({
   resolve: {
     alias: { '@shared': resolve(__dirname, 'src/shared') },
   },
   test: {
-    ...ciWorkerCap,
     include: ['test/**/*.test.ts'],
-    // Keep the ordinary correctness gate responsive. These broad end-to-end
-    // scenarios remain available through `npm run test:long` while they are
-    // split into narrower tests or otherwise made cheaper.
-    exclude: [...configDefaults.exclude, ...LONG_TEST_FILES, ...SERIAL_TEST_FILES],
+    exclude: [...configDefaults.exclude, ...LONG_TEST_FILES, ...BROWSER_TEST_FILES],
     // Vitest stubs CSS imports to an empty string, `?raw` included — which
     // would quietly hand the HTML exporter no type rules and let a test pass
     // on a page the app would never produce. Only `type.css` is exempted, so

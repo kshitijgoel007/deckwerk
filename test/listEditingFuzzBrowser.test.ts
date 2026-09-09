@@ -161,8 +161,11 @@ async function runWalk(seed: number): Promise<void> {
   const actions = [
     'bullet all', 'number all', 'free all', 'caret', 'return', 'empty bullet',
     'backspace at start', 'type', 'indent', 'outdent', 'undo',
-    'other box', 'escape and re-enter',
+    'other box', 'escape and re-enter', 'cut words', 'cut bullet', 'paste',
   ] as const;
+  // The clipboard holds whatever the last cut put there; a paste before any
+  // cut would paste another test's leftovers, which reproduces nothing.
+  let clipboardArmed = false;
 
   await session.reset('<p>alpha</p><p>beta</p><p>gamma</p><p>delta</p>');
   await session.edit();
@@ -248,6 +251,34 @@ async function runWalk(seed: number): Promise<void> {
         await moveCaret(next);
         expect(compact(await session.text()), `${label}: the excursion left the list box unchanged`)
           .toBe(before);
+        break;
+      }
+      case 'cut words': {
+        // The words of an item, without its line break: Chromium's clipboard
+        // fragment is an inline run wearing the item's computed style.
+        await moveCaret(next, 'start');
+        await session.cdp.chord('End', 'End', 35, 8);
+        await session.cdp.chord('x', 'KeyX', 88, MOD, ['cut']);
+        clipboardArmed = true;
+        break;
+      }
+      case 'cut bullet': {
+        // The item with its line break: the fragment is a list of one item.
+        await moveCaret(next, 'start');
+        await session.cdp.chord('ArrowDown', 'ArrowDown', 40, 8);
+        await session.cdp.chord('x', 'KeyX', 88, MOD, ['cut']);
+        clipboardArmed = true;
+        break;
+      }
+      case 'paste': {
+        if (!clipboardArmed) break;
+        await moveCaret(next, next() < 0.5 ? 'start' : 'middle');
+        await session.cdp.chord('v', 'KeyV', 86, MOD, ['paste']);
+        // The repair runs on the input event; the seal and the store follow.
+        await wait(150);
+        const markup = await session.markup();
+        expect(markup, `${label}: pasted layout style survived`)
+          .not.toMatch(/text-indent|line-height:|white-space:/);
         break;
       }
       case 'escape and re-enter': {

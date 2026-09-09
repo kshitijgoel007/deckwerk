@@ -1,21 +1,19 @@
-import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { type ChildProcess } from 'node:child_process';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { build } from 'electron-vite';
 import { saveDeckHistory } from '../src/main/deckHistoryStore.js';
 import { saveDeck } from '../src/main/deckStore.js';
 import { emptyDeck, type Slide, type TextEl } from '../src/shared/deck.js';
 import {
   Cdp,
-  collectProcessOutput,
   electronBinary,
   eventually,
   findTarget,
-  freePort,
   stopBrowser,
 } from './support/browserSession.js';
+import { isEditorTarget, launchDesktopApp, materializeDesktopApp } from './support/desktopApp.js';
 
 /**
  * Opt-in production-Electron soak for the large-deck interaction regression.
@@ -66,45 +64,22 @@ describe.skipIf(!RUN_EXHAUSTIVE || !electronBinary || noWindowManager)('exhausti
   it('keeps selection, consecutive drags, history flushes, and rail navigation responsive', async () => {
     responsivenessFailures = [];
     workDir = await mkdtemp(join(tmpdir(), 'deckwerk-text-box-fuzz-'));
-    const checkout = process.cwd();
     const appDir = join(workDir, 'app');
-    const outDir = join(appDir, 'out');
     const deckDir = join(workDir, 'deck');
     const profileDir = join(workDir, 'electron-profile');
     await mkdir(appDir, { recursive: true });
     await mkdir(profileDir, { recursive: true });
 
     await createScaleFixture(deckDir);
-    await build({
-      root: checkout,
-      configFile: join(checkout, 'electron.vite.config.ts'),
-      logLevel: 'silent',
-      build: { outDir },
-    });
-    await writeFile(join(appDir, 'package.json'), JSON.stringify({
-      name: 'deckwerk-text-box-interaction-fuzz',
-      private: true,
-      type: 'module',
-      main: 'out/main/index.js',
-    }), 'utf8');
-    await symlink(join(checkout, 'node_modules'), join(appDir, 'node_modules'), 'dir');
+    await materializeDesktopApp(appDir, 'deckwerk-text-box-interaction-fuzz');
 
-    const debugPort = await freePort();
-    appProcess = spawn(electronBinary, [
-      appDir,
-      `--remote-debugging-port=${debugPort}`,
-      '--remote-allow-origins=*',
-      `--user-data-dir=${profileDir}`,
-      deckDir,
-    ], {
-      cwd: checkout,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, ELECTRON_DISABLE_SECURITY_WARNINGS: '1' },
-    });
-    const appLog = collectProcessOutput(appProcess);
+    const app = await launchDesktopApp(appDir, [deckDir], { profileDir });
+    appProcess = app.process;
+    const debugPort = app.debugPort;
+    const appLog = app.log;
     const target = await findTarget(
       debugPort,
-      (candidate) => candidate.title === 'DeckWerk' || candidate.url.includes('/editor/index.html'),
+      isEditorTarget,
       appLog,
       30_000,
     );

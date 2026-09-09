@@ -31,7 +31,9 @@ function slideOf(id: string, elements: unknown[] = []): Slide {
   return parseDeck({ version: 1, slides: [{ id, name: id, elements }] }).slides[0];
 }
 
-describe('slide-agent CLI', () => {
+// `new` and `apply --html` compile an authoring page: a few seconds each once
+// the unit tier is running one worker per core.
+describe('slide-agent CLI', { timeout: 60_000 }, () => {
   let dir: string;
   let stateDir: string;
   let out: string[];

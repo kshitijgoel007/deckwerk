@@ -579,8 +579,10 @@ function adoptOrphanListItems(root: ParentNode & Node): void {
   for (const item of [...root.querySelectorAll('li')]) {
     const parent = item.parentElement;
     if (parent && LIST_TAGS.has(parent.tagName)) continue;
-    const previous = item.previousElementSibling;
-    if (previous && LIST_TAGS.has(previous.tagName)) {
+    // The node directly before it — not the previous *element*, which would
+    // reach past text and move the item ahead of the words it followed.
+    const previous = item.previousSibling;
+    if (previous instanceof Element && LIST_TAGS.has(previous.tagName)) {
       previous.appendChild(item);
       continue;
     }
@@ -590,17 +592,114 @@ function adoptOrphanListItems(root: ParentNode & Node): void {
   }
 }
 
+/** Whitespace that is only ever markup formatting, never a typed character. */
+const MARKUP_WHITESPACE = /^[ \t\r\n]*$/;
+/** Blocks whose own text a person reads (lists and tables are containers). */
+const TEXT_BLOCK_TAGS = new Set([...BLOCK_TAGS, 'TD', 'TH']
+  // Preformatted text owns its newlines.
+  .filter((tag) => !LIST_TAGS.has(tag) && tag !== 'TABLE' && tag !== 'PRE'));
+
+function isBlockNode(node: Node | null | undefined): boolean {
+  return node instanceof Element && BLOCK_TAGS.has(node.tagName);
+}
+
+/**
+ * Drop the whitespace that other applications' markup (and a copy made from
+ * this editor's own rendered box) carries between and around blocks.
+ *
+ * `.text-body` is `white-space: pre-wrap`, so this whitespace is not inert
+ * here the way it is on a web page: a newline between two `<li>`s, or a
+ * trailing `\n\n` at the end of an item pasted from another bullet, paints as
+ * a blank line, and a text node between two top-level blocks would be
+ * promoted to an empty paragraph of its own by `collectParagraphs`. Only
+ * ASCII whitespace at block boundaries goes: a typed space or non-breaking
+ * space inside a line, and the `<br>` a deliberate blank line is written as,
+ * are content and stay.
+ */
+function stripStructuralWhitespace(root: ParentNode & Node): void {
+  // Between blocks — at the top level, between items, and either side of a
+  // nested list inside an item — whitespace-only text is formatting.
+  const containers: (ParentNode & Node)[] = [root, ...root.querySelectorAll('*')];
+  for (const container of containers) {
+    const children = [...container.childNodes];
+    const isList = container instanceof Element && LIST_TAGS.has(container.tagName);
+    children.forEach((child, index) => {
+      if (!(child instanceof Text) || !MARKUP_WHITESPACE.test(child.data)) return;
+      const previous = index > 0 ? children[index - 1] : null;
+      const next = index + 1 < children.length ? children[index + 1] : null;
+      // A list's children are items; text there is never content.
+      if (isList || isBlockNode(previous) || isBlockNode(next)) child.remove();
+    });
+  }
+  // Inside a block, a newline at the edge of a text run is a line break the
+  // source never showed: pretty-printed markup and a clipboard fragment wrap
+  // their lines where a page would collapse the newline to a space. At the
+  // block's edges, beside a nested block and beside a `<br>` it is a blank
+  // line and goes; between two inline runs it is the space the source showed.
+  // Newlines inside a run of words are left alone.
+  const EDGE_NEWLINE_START = /^[ \t\r\n]*\n[ \t\r\n]*/;
+  const EDGE_NEWLINE_END = /[ \t\r\n]*\n[ \t\r\n]*$/;
+  const isBreak = (node: Node | null): boolean =>
+    node instanceof Element && node.tagName === 'BR';
+  /** The node laid out before (or after) `text`, looking past inline wrappers. */
+  const neighbour = (text: Node, block: Node, side: 'previous' | 'next'): Node | null => {
+    let node: Node | null = text;
+    while (node && node !== block) {
+      const sibling = side === 'previous' ? node.previousSibling : node.nextSibling;
+      if (sibling) return sibling;
+      node = node.parentNode;
+    }
+    return null;
+  };
+  const hardEdge = (node: Node | null): boolean => node === null || isBlockNode(node) || isBreak(node);
+  // The root counts as a block too: its bare inline runs become paragraphs
+  // below, and must arrive there already trimmed.
+  const blocks: (ParentNode & Node)[] = [
+    root,
+    ...[...root.querySelectorAll('*')].filter((node) => TEXT_BLOCK_TAGS.has(node.tagName)),
+  ];
+  for (const block of blocks) {
+    const doc = block.ownerDocument ?? document;
+    const walker = doc.createTreeWalker(block, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT, {
+      acceptNode: (node) => {
+        if (node instanceof Element) {
+          return isBlockNode(node) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_SKIP;
+        }
+        return NodeFilter.FILTER_ACCEPT;
+      },
+    });
+    const texts: Text[] = [];
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) texts.push(node as Text);
+    for (const text of texts) {
+      if (!text.data.includes('\n')) continue;
+      const before = neighbour(text, block, 'previous');
+      const after = neighbour(text, block, 'next');
+      if (MARKUP_WHITESPACE.test(text.data)) {
+        if (hardEdge(before) || hardEdge(after)) text.remove();
+        else text.data = ' ';
+        continue;
+      }
+      text.data = text.data
+        .replace(EDGE_NEWLINE_START, hardEdge(before) ? '' : ' ')
+        .replace(EDGE_NEWLINE_END, hardEdge(after) ? '' : ' ');
+    }
+  }
+}
+
 /** Contenteditable can split one list into adjacent sibling lists on Return. */
 function mergeAdjacentLists(root: ParentNode & Node): void {
   let current = root.firstElementChild;
   while (current) {
-    const next = current.nextElementSibling;
+    // Directly adjacent: a bare run of text between two lists is a paragraph
+    // that keeps them apart, and merging past it would move the text.
+    const following = current.nextSibling;
+    const next = following instanceof Element ? following : null;
     if (next && LIST_TAGS.has(current.tagName) && next.tagName === current.tagName) {
       while (next.firstChild) current.appendChild(next.firstChild);
       next.remove();
       continue;
     }
-    current = next;
+    current = current.nextElementSibling;
   }
 }
 
@@ -615,9 +714,15 @@ function mergeAdjacentLists(root: ParentNode & Node): void {
 export function normalizeParagraphHtml(html: string, splitBreaks = false): string {
   const template = document.createElement('template');
   template.innerHTML = html;
+  // Whitespace first: the repairs below join what sits directly beside each
+  // other, and markup formatting between two blocks must not keep them apart.
+  stripStructuralWhitespace(template.content);
   adoptOrphanListItems(template.content);
   nestStrayLists(template.content);
   mergeAdjacentLists(template.content);
+  // Nesting a stray list into the item before it puts that item's trailing
+  // space beside a block; the same pass takes it out.
+  stripStructuralWhitespace(template.content);
   const paragraphs: HTMLElement[] = [];
   const generated = new Set<HTMLElement>();
   collectParagraphs(template.content, paragraphs, generated, splitBreaks);

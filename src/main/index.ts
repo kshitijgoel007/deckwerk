@@ -687,6 +687,24 @@ function deckDirFromArgv(): string | null {
   return null;
 }
 
+/**
+ * The browser integration tests drive this process with every window hidden
+ * (see windows.ts). Chromium treats a window it cannot see as background —
+ * timers quantised to one-second ticks, requestAnimationFrame stopped, muted
+ * video suspended — which would make every timing a test measures a property
+ * of the throttle rather than of the code under test. Switch the throttles
+ * off for that mode only; a user's hidden windows keep saving power.
+ */
+if (process.env['DECKWERK_HEADLESS_TEST'] === '1') {
+  for (const flag of [
+    'disable-background-timer-throttling',
+    'disable-renderer-backgrounding',
+    'disable-backgrounding-occluded-windows',
+    'disable-background-media-suspend',
+  ]) app.commandLine.appendSwitch(flag);
+  app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
+}
+
 app.whenReady().then(async () => {
   // Packaged macOS builds get this from the bundle's .icns. During local
   // development Electron would otherwise keep its own icon in the Dock and
@@ -1419,6 +1437,10 @@ function registerHandlers(): void {
   const copyJoinLink = (urls: string[], deckId: string, agent = false): void => {
     const joinUrl = collaborationInviteUrl(urls, deckId, agent);
     if (!joinUrl) return;
+    // The OS clipboard is the developer's, not the test's: an integration run
+    // must not overwrite what they were about to paste, nor what a clipboard
+    // test running beside this one just put there.
+    if (process.env['DECKWERK_HEADLESS_TEST'] === '1') return;
     clipboard.writeText(agent ? agentClipboardPrompt(joinUrl, deckId) : joinUrl);
   };
 

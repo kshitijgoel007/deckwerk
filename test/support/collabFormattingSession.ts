@@ -296,7 +296,7 @@ export class FormattingSession {
       const have = new Set([...select.options].map((option) => option.value));
       return ${JSON.stringify(wanted)}.find((family) => have.has(family)) ?? null;
     })()`), `${label}: none of ${JSON.stringify(wanted)} appeared in the font list`,
-      (value) => value !== null);
+      (value) => value !== null, 30_000);
     await this.editor.choose(`${PANEL} .font-family-field select`, chosen!, label);
     return chosen!;
   }

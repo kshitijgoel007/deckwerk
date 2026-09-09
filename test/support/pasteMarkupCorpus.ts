@@ -381,6 +381,36 @@ export const MARKUP_INVARIANTS = `(root) => {
       problems.push('top-level ' + child.tagName + ' is not a block the editor can format');
     }
   }
+  // The box is white-space: pre-wrap, so whitespace that a web page would
+  // collapse paints here. Between items and blocks it is a blank line.
+  const isBlock = (node) => node && node.nodeType === 1
+    && /^(P|DIV|UL|OL|LI|TABLE|H1|H2|H3|H4|H5|H6|BLOCKQUOTE|PRE)$/.test(node.tagName);
+  const walker = root.ownerDocument.createTreeWalker(root, 4);
+  for (let text = walker.nextNode(); text; text = walker.nextNode()) {
+    const parent = text.parentNode;
+    const inPre = parent && parent.closest && parent.closest('pre');
+    if (!inPre && (/^[ \\t\\r]*\\n/.test(text.data) || /\\n[ \\t\\r]*$/.test(text.data))) {
+      problems.push('a text run starts or ends with a newline, which paints as a line break: '
+        + JSON.stringify(text.data) + ' in ' + (parent ? parent.tagName.toLowerCase() : '?'));
+    }
+    if (!/^[ \\t\\r\\n]*$/.test(text.data) || !text.data) continue;
+    if (parent && /^(UL|OL)$/.test(parent.tagName)) problems.push('whitespace text directly inside a list');
+    else if (isBlock(text.previousSibling) || isBlock(text.nextSibling)) {
+      problems.push('whitespace text between blocks');
+    }
+  }
+  // A copied run wears the computed layout of the block it came from; on an
+  // inline run those declarations are junk, and on a block they fight the
+  // box's paragraph spacing and indentation.
+  for (const node of root.querySelectorAll('[style]')) {
+    if (node.matches('img, video, svg, table, colgroup, col, td, th')) continue;
+    for (const property of ['text-indent', 'line-height', 'white-space', 'margin', 'margin-top',
+      'margin-bottom', 'margin-left', 'margin-right', 'display', 'float']) {
+      if (node.style.getPropertyValue(property)) {
+        problems.push('pasted layout declaration ' + property + ' survived on ' + node.tagName.toLowerCase());
+      }
+    }
+  }
   return [...new Set(problems)];
 }`;
 

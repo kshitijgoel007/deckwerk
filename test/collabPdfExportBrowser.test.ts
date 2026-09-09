@@ -108,13 +108,14 @@ describe.skipIf(!electronBinary)('collaboration PDF export', () => {
     // dialog's build checkbox → Export.
     // The toolbar's dropdowns are not distinguishable by CSS alone, so mark the
     // one under test and then click it for real.
-    const tagged = await editor.evaluate<boolean>(`(() => {
+    // The toolbar is drawn after the store has its deck; wait for it rather
+    // than reading it in the same tick.
+    await eventually(async () => editor!.evaluate<boolean>(`(() => {
       const trigger = [...document.querySelectorAll('#toolbar .shape-menu-trigger')]
         .find((candidate) => candidate.textContent?.trim() === 'Save As…');
       trigger?.setAttribute('data-test', 'save-as');
       return Boolean(trigger);
-    })()`);
-    expect(tagged).toBe(true);
+    })()`), 'the toolbar never offered Save As…');
     await editor.click('#toolbar [data-test="save-as"]', 'Save As… menu');
     const menu = await editor.evaluate<string[]>(
       `[...document.querySelectorAll('#toolbar .shape-menu-item')].map((item) => item.textContent)`);

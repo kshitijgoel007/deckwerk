@@ -1,19 +1,16 @@
-import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { type ChildProcess } from 'node:child_process';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { build } from 'electron-vite';
 import { saveDeck } from '../../src/main/deckStore.js';
 import { emptyDeck } from '../../src/shared/deck.js';
 import {
   Cdp,
-  collectProcessOutput,
-  electronBinary,
   eventually,
   findTarget,
-  freePort,
   stopBrowser,
 } from './browserSession.js';
+import { isEditorTarget, launchDesktopApp, materializeDesktopApp } from './desktopApp.js';
 
 /**
  * Launch the REAL desktop app (main process, preload, autosave — no collab
@@ -35,27 +32,13 @@ export async function launchDesktopEditor(
   textHtml: string,
 ): Promise<DesktopEditor> {
   const workDir = await mkdtemp(join(tmpdir(), 'mode-focus-desktop-'));
-  const checkout = process.cwd();
   const appDir = join(workDir, 'app');
-  const outDir = join(appDir, 'out');
   const deckDir = join(workDir, 'deck');
   const profileDir = join(workDir, 'electron-profile');
   await mkdir(appDir, { recursive: true });
   await mkdir(profileDir, { recursive: true });
 
-  await build({
-    root: checkout,
-    configFile: join(checkout, 'electron.vite.config.ts'),
-    logLevel: 'silent',
-    build: { outDir },
-  });
-  await writeFile(join(appDir, 'package.json'), JSON.stringify({
-    name: 'deckwerk-mode-focus-test',
-    private: true,
-    type: 'module',
-    main: 'out/main/index.js',
-  }), 'utf8');
-  await symlink(join(checkout, 'node_modules'), join(appDir, 'node_modules'), 'dir');
+  await materializeDesktopApp(appDir, 'deckwerk-mode-focus-test');
 
   const deck = emptyDeck('Mode focus durability');
   deck.slides[0].elements.push({
@@ -81,22 +64,13 @@ export async function launchDesktopEditor(
     '',
   ].join('\n'), 'utf8');
 
-  const debugPort = await freePort();
-  const appProcess: ChildProcess = spawn(electronBinary, [
-    appDir,
-    `--remote-debugging-port=${debugPort}`,
-    '--remote-allow-origins=*',
-    `--user-data-dir=${profileDir}`,
-    deckDir,
-  ], {
-    cwd: checkout,
-    stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env, ELECTRON_DISABLE_SECURITY_WARNINGS: '1' },
-  });
-  const appLog = collectProcessOutput(appProcess);
+  const app = await launchDesktopApp(appDir, [deckDir], { profileDir });
+  const appProcess: ChildProcess = app.process;
+  const debugPort = app.debugPort;
+  const appLog = app.log;
   const target = await findTarget(
     debugPort,
-    (candidate) => candidate.title === 'DeckWerk' || candidate.url.includes('/editor/index.html'),
+    isEditorTarget,
     appLog,
     20_000,
   );

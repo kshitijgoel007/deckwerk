@@ -67,22 +67,43 @@ let cachedFamilies: string[] | null = null;
  * Families installed on this machine, sorted and deduped. Cached for the
  * session — the list is large and the OS font set doesn't change mid-edit.
  */
+/**
+ * How long the picker waits for the Local Font Access API before it shows the
+ * probed list instead. The API answers in milliseconds once permitted, but in
+ * a window without focus (a second window, a busy machine, a test browser)
+ * its permission prompt can sit unanswered indefinitely, and the dropdown
+ * would say "Loading fonts…" for as long as it did.
+ */
+const LOCAL_FONTS_PATIENCE_MS = 1_500;
+
+function probedFontFamilies(): string[] {
+  return PROBE_LIST.filter((f) => {
+    try { return document.fonts.check(`16px "${f}"`); } catch { return false; }
+  });
+}
+
 export async function installedFontFamilies(): Promise<string[]> {
   if (cachedFamilies) return cachedFamilies;
   let families: string[] = [];
-  try {
-    if (window.queryLocalFonts) {
-      const fonts = await window.queryLocalFonts();
-      families = [...new Set(fonts.map((f) => f.family))];
-    }
-  } catch {
-    // Permission denied or API unusable; fall through to probing.
-  }
-  if (families.length === 0) {
-    families = PROBE_LIST.filter((f) => {
-      try { return document.fonts.check(`16px "${f}"`); } catch { return false; }
+  if (window.queryLocalFonts) {
+    const local = window.queryLocalFonts()
+      .then((fonts) => [...new Set(fonts.map((f) => f.family))].sort((a, b) => a.localeCompare(b)))
+      .catch((): string[] => []); // Permission denied or API unusable: probe instead.
+    const patience = new Promise<null>((resolve) => {
+      setTimeout(() => resolve(null), LOCAL_FONTS_PATIENCE_MS);
     });
+    const answered = await Promise.race([local, patience]);
+    if (answered) {
+      families = answered;
+    } else {
+      // Show what probing finds now; when the API does answer, later pickers
+      // get the complete list.
+      void local.then((complete) => {
+        if (complete.length > 0) cachedFamilies = complete;
+      });
+    }
   }
+  if (families.length === 0) families = probedFontFamilies();
   families.sort((a, b) => a.localeCompare(b));
   cachedFamilies = families;
   return families;

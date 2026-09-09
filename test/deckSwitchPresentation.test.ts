@@ -1,6 +1,6 @@
-import { spawn, type ChildProcess } from 'node:child_process';
+import { type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -8,14 +8,13 @@ import { saveDeck, serializeDeck } from '../src/main/deckStore.js';
 import { emptyDeck, type Deck } from '../src/shared/deck.js';
 import {
   Cdp,
-  collectProcessOutput,
   electronBinary,
   eventually,
   findTarget,
-  freePort,
   stopBrowser,
   wait,
 } from './support/browserSession.js';
+import { isEditorTarget, launchDesktopApp, materializeDesktopApp } from './support/desktopApp.js';
 
 /**
  * Which deck does Present actually present, with more than one open?
@@ -36,15 +35,8 @@ import {
  * from the IPC handler inwards is the shipping code.
  */
 
-const requiredBuildOutputs = [
-  'out/main/index.js',
-  'out/preload/index.mjs',
-  'out/renderer/editor/index.html',
-  'out/renderer/present/index.html',
-];
 const runnable = Boolean(electronBinary)
-  && process.platform !== 'win32'
-  && requiredBuildOutputs.every((path) => existsSync(join(process.cwd(), path)));
+  && process.platform !== 'win32';
 
 const MARKER_ID = 'deck-marker';
 
@@ -329,16 +321,9 @@ describe.skipIf(!runnable)('presenting with several presentations open', () => {
     const profileDir = join(workDir, 'electron-profile');
     await mkdir(appDir, { recursive: true });
     await mkdir(profileDir, { recursive: true });
-    // The app runs from the checkout's build, but out of its own working
+    // The app runs from the shared build, but out of its own working
     // directory, which is where the importer stub is found.
-    await symlink(join(process.cwd(), 'out'), join(appDir, 'out'), 'dir');
-    await symlink(join(process.cwd(), 'node_modules'), join(appDir, 'node_modules'), 'dir');
-    await writeFile(join(appDir, 'package.json'), JSON.stringify({
-      name: 'deckwerk-deck-switch-test',
-      private: true,
-      type: 'module',
-      main: 'out/main/index.js',
-    }), 'utf8');
+    await materializeDesktopApp(appDir, 'deckwerk-deck-switch-test');
 
     alphaDir = join(workDir, 'alpha');
     bravoDir = join(workDir, 'bravo');
@@ -353,26 +338,13 @@ describe.skipIf(!runnable)('presenting with several presentations open', () => {
     dialogQueue = join(workDir, 'dialogs.json');
     await scriptDialogs();
 
-    debugPort = await freePort();
-    appProcess = spawn(electronBinary, [
-      appDir,
-      `--remote-debugging-port=${debugPort}`,
-      '--remote-allow-origins=*',
-      `--user-data-dir=${profileDir}`,
-      alphaDir,
-    ], {
-      cwd: appDir,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      env: {
-        ...process.env,
-        ELECTRON_DISABLE_SECURITY_WARNINGS: '1',
-        DECKWERK_TEST_DIALOGS: dialogQueue,
-      },
-    });
-    appLog = collectProcessOutput(appProcess);
+    const app = await launchDesktopApp(appDir, [alphaDir], { profileDir, cwd: appDir, env: { DECKWERK_TEST_DIALOGS: dialogQueue } });
+    appProcess = app.process;
+    debugPort = app.debugPort;
+    appLog = app.log;
     await findTarget(
       debugPort,
-      (candidate) => candidate.url.includes('/editor/index.html'),
+      isEditorTarget,
       appLog,
       30_000,
     );

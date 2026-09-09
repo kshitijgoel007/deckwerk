@@ -93,6 +93,37 @@ const PASTE_UNWRAPPED = 'font, marquee, center, header, footer, nav, aside, main
   + ' section, figure, figcaption, label, fieldset, legend, video';
 
 /**
+ * Declarations that describe the *box* a run was copied out of rather than
+ * the run itself. Chromium serialises the computed style of the copied
+ * selection onto the fragment, so text cut from a bullet arrives wearing the
+ * item's hanging indent (`text-indent: -1.4em`), its line height, alignment
+ * and white-space; Word wraps paragraphs in margins of its own. Pasted into a
+ * box that owns all of those through its theme and inspector, they either do
+ * nothing (an indent on an inline run) or fight the box (a paragraph margin
+ * that ignores the paragraph spacing). Character-level formatting — weight,
+ * style, colour, decoration, size, spacing — is what the author meant to
+ * carry over, and stays; so does a paragraph's alignment, which the inspector
+ * writes the same way.
+ */
+const PASTE_LAYOUT_PROPERTIES = [
+  'text-indent', 'line-height', 'white-space',
+  'white-space-collapse', 'text-wrap', 'text-wrap-mode', 'orphans', 'widows',
+  'display', 'float', 'clear', 'position', 'top', 'right', 'bottom', 'left',
+  'z-index', 'width', 'height', 'min-width', 'max-width', 'min-height',
+  'max-height', 'margin', 'margin-top', 'margin-right', 'margin-bottom',
+  'margin-left', 'margin-block', 'margin-block-start', 'margin-block-end',
+  'margin-inline', 'margin-inline-start', 'margin-inline-end', 'padding',
+  'padding-top', 'padding-right', 'padding-bottom', 'padding-left',
+  'padding-block', 'padding-block-start', 'padding-block-end', 'padding-inline',
+  'padding-inline-start', 'padding-inline-end', 'text-size-adjust',
+  '-webkit-text-size-adjust', '-webkit-text-stroke-width', 'tab-size',
+  'overflow-wrap', 'word-break', 'caret-color', 'outline', 'cursor',
+  'user-select', '-webkit-user-select', 'pointer-events',
+];
+/** Elements whose geometry is content: an image's size, a cell's padding. */
+const PASTE_LAYOUT_KEPT = 'img, video, svg, table, colgroup, col, td, th';
+
+/**
  * How far a raised or lowered run shrinks. The value is em-relative on
  * purpose: the run then keeps tracking whatever size it inherits, including
  * the size auto-fit writes on `.text-content`.
@@ -187,6 +218,11 @@ export function sanitizePastedTextHtml(html: string): string {
       const property = node.style.item(index);
       if (property.startsWith('mso-')) node.style.removeProperty(property);
     }
+    if (!node.getAttribute('style')?.trim()) node.removeAttribute('style');
+  }
+  for (const node of root.querySelectorAll<HTMLElement>('[style]')) {
+    if (node.matches(PASTE_LAYOUT_KEPT) || !node.style) continue;
+    for (const property of PASTE_LAYOUT_PROPERTIES) node.style.removeProperty(property);
     if (!node.getAttribute('style')?.trim()) node.removeAttribute('style');
   }
   for (const node of root.querySelectorAll<HTMLElement>('*')) {

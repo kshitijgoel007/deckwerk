@@ -12,6 +12,22 @@ filesystem-watcher processes. Sandbox failures otherwise surface as misleading
 `EPERM`, timeouts, `EMFILE`, or null child-process exits; `npm test` has a
 fail-fast preflight for the localhost restriction.
 
+`npm test` runs three tiers in turn and summarises them (scripts/run-test-tiers.cjs):
+`test:unit` (jsdom and Node suites, one worker per core), `test:browser` (every
+suite that launches Electron, a few at a time), and `test:serial` (suites that
+share machine-wide state — the OS clipboard, presentation windows — one at a
+time). Which tier a file belongs to is derived from its imports and the
+clipboard chords it sends (test/testTiers.ts), so a new Electron suite needs no
+registration. A single Electron suite runs with its tier's config, e.g.
+`npx vitest run --config vitest.browser.config.ts test/<name>.test.ts`; running
+it under the default config also works but is not what CI does.
+
+Desktop-app suites launch the REAL app from one shared electron-vite build
+(test/support/desktopApp.ts), cached under the OS temp directory by source
+hash, with every window hidden. Never point a test at the checkout's `out/`
+directory — that is whatever was last built by hand — and never leave a suite
+skipping itself when a build is missing.
+
 ## UI consistency
 
 Every new UI element must match the rest of the application. Reuse the shared

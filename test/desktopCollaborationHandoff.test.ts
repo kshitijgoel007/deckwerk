@@ -1,23 +1,20 @@
-import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { type ChildProcess } from 'node:child_process';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { build } from 'electron-vite';
-import { build as buildVite } from 'vite';
 import { saveDeck } from '../src/main/deckStore.js';
 import { emptyDeck } from '../src/shared/deck.js';
 import {
   Cdp,
-  collectProcessOutput,
   electronBinary,
   eventually,
   findTarget,
-  freePort,
   launchBrowser,
   stopBrowser,
   type RunningBrowser,
 } from './support/browserSession.js';
+import { launchDesktopApp, materializeDesktopApp } from './support/desktopApp.js';
 
 let workDir = '';
 let appProcess: ChildProcess | null = null;
@@ -156,32 +153,13 @@ describe.skipIf(!electronBinary || noWindowManager)('desktop collaboration hando
     timeout: 180_000,
   }, async () => {
     workDir = await mkdtemp(join(tmpdir(), 'deckwerk-collaboration-handoff-'));
-    const checkout = process.cwd();
     const appDir = join(workDir, 'app');
-    const outDir = join(appDir, 'out');
     const deckDir = join(workDir, 'handoff-deck');
     const profileDir = join(workDir, 'electron-profile');
-    await mkdir(join(appDir, 'dist'), { recursive: true });
+    await mkdir(appDir, { recursive: true });
     await mkdir(profileDir, { recursive: true });
 
-    await build({
-      root: checkout,
-      configFile: join(checkout, 'electron.vite.config.ts'),
-      logLevel: 'silent',
-      build: { outDir },
-    });
-    await writeFile(join(appDir, 'package.json'), JSON.stringify({
-      name: 'deckwerk-collaboration-handoff-test',
-      private: true,
-      type: 'module',
-      main: 'out/main/index.js',
-    }), 'utf8');
-    await symlink(join(checkout, 'node_modules'), join(appDir, 'node_modules'), 'dir');
-    await buildVite({
-      configFile: join(checkout, 'vite.collab.config.ts'),
-      logLevel: 'silent',
-      build: { outDir: join(appDir, 'dist', 'collab') },
-    });
+    await materializeDesktopApp(appDir, 'deckwerk-collaboration-handoff-test');
 
     const deck = emptyDeck('Collaboration handoff');
     deck.slides[0]!.elements.push({
@@ -192,23 +170,10 @@ describe.skipIf(!electronBinary || noWindowManager)('desktop collaboration hando
     await saveDeck(deckDir, deck);
     await writeFile(join(deckDir, 'theme.css'), '.slide { background: #fff; }\n', 'utf8');
 
-    const debugPort = await freePort();
-    appProcess = spawn(electronBinary, [
-      appDir,
-      `--remote-debugging-port=${debugPort}`,
-      '--remote-allow-origins=*',
-      `--user-data-dir=${profileDir}`,
-      deckDir,
-    ], {
-      cwd: checkout,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      env: {
-        ...process.env,
-        ELECTRON_DISABLE_SECURITY_WARNINGS: '1',
-        DECKWERK_HEADLESS_TEST: '1',
-      },
-    });
-    const appLog = collectProcessOutput(appProcess);
+    const app = await launchDesktopApp(appDir, [deckDir], { profileDir, env: { DECKWERK_HEADLESS_TEST: '1' } });
+    appProcess = app.process;
+    const debugPort = app.debugPort;
+    const appLog = app.log;
     const editorTarget = await findTarget(
       debugPort,
       (candidate) => candidate.url.includes('/editor/index.html'),
@@ -272,9 +237,11 @@ describe.skipIf(!electronBinary || noWindowManager)('desktop collaboration hando
     );
     peer = await Cdp.connect(peerTarget.webSocketDebuggerUrl!);
     await eventually(async () => peer!.evaluate<boolean>(
-      `document.documentElement.dataset.collabReady === 'true'
+      `document.documentElement?.dataset.collabReady === 'true'
         && window.store?.get?.().deck.title === 'Collaboration handoff'`,
-    ), 'external collaboration peer did not receive the desktop deck');
+    // The peer's page is served by the desktop app's own process, which is
+    // also laying out its editor; give a loaded machine time to answer.
+    ), 'external collaboration peer did not receive the desktop deck', Boolean, 30_000);
 
     await editor.hoverWithin('#canvas .stage', 0.7, 0.65, 'native desktop canvas');
     await editor.click('#canvas [data-element-id="handoff-title"]', 'desktop title');

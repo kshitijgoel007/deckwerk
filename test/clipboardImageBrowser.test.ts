@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from 'node:child_process';
+import { type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -9,14 +9,13 @@ import { emptyDeck } from '../src/shared/deck.js';
 import { startCollabServer, type RunningCollabServer } from '../src/server/collabServer.js';
 import {
   Cdp,
-  collectProcessOutput,
   electronBinary,
   eventually,
   findTarget,
-  freePort,
   stopBrowser,
   launchBrowser,
 } from './support/browserSession.js';
+import { isEditorTarget, launchDesktopApp, materializeDesktopApp } from './support/desktopApp.js';
 import { collabClientDir } from './support/collabClient.js';
 
 /**
@@ -29,14 +28,8 @@ import { collabClientDir } from './support/collabClient.js';
  */
 
 const PNG = join(process.cwd(), 'decks', 'demo-deck', 'assets', 'swatch.png');
-const requiredBuildOutputs = [
-  'out/main/index.js',
-  'out/preload/index.mjs',
-  'out/renderer/editor/index.html',
-];
 const runnable = Boolean(electronBinary)
-  && existsSync(PNG)
-  && requiredBuildOutputs.every((path) => existsSync(join(process.cwd(), path)));
+  && existsSync(PNG);
 
 interface SavedClipboardItem {
   types: Array<{ type: string; base64: string }>;
@@ -86,23 +79,16 @@ describe.skipIf(!runnable)('clipboard screenshot paste in Electron Chromium', ()
     await saveDeck(deckDir, emptyDeck('Clipboard screenshot'));
     await writeFile(join(deckDir, 'theme.css'), '.slide { background: #fff; }\n', 'utf8');
 
-    const debugPort = await freePort();
-    appProcess = spawn(electronBinary, [
-      '.',
-      `--remote-debugging-port=${debugPort}`,
-      '--remote-allow-origins=*',
-      `--user-data-dir=${profileDir}`,
-      deckDir,
-    ], {
-      cwd: process.cwd(),
-      stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, ELECTRON_DISABLE_SECURITY_WARNINGS: '1' },
-    });
-    const appLog = collectProcessOutput(appProcess);
+    const appDir = join(workDir, 'app');
+    await materializeDesktopApp(appDir, 'deckwerk-clipboard-image-test');
+    const app = await launchDesktopApp(appDir, [deckDir], { profileDir });
+    appProcess = app.process;
+    const debugPort = app.debugPort;
+    const appLog = app.log;
 
     const target = await findTarget(
       debugPort,
-      (candidate) => candidate.title === 'DeckWerk' || candidate.url.includes('/editor/index.html'),
+      isEditorTarget,
       appLog,
     );
     editor = await Cdp.connect(target.webSocketDebuggerUrl!);
@@ -177,7 +163,8 @@ describe.skipIf(!runnable)('clipboard screenshot paste in Electron Chromium', ()
       value.complete && value.naturalWidth === 800 && value.naturalHeight === 600
     ));
 
-    expect(pasted.src).toMatch(/^deck:\/\/asset\/assets\/Screenshot\.[a-f0-9]{8}\.png$/);
+    // The host is the deck's own key (see assetProtocol.ts); the path is the asset.
+    expect(pasted.src).toMatch(/^deck:\/\/[^/]+\/assets\/Screenshot\.[a-f0-9]{8}\.png$/);
     expect(pasted.selected).toBe(true);
     expect(pasted.status).toContain('Pasted 1 element');
 
