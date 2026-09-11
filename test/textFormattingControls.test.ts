@@ -1725,21 +1725,28 @@ describe('the layout preset as formatting', () => {
     return harness;
   }
 
-  const presetSelect = (host: HTMLElement): HTMLSelectElement =>
-    field(host, 'Preset').querySelector<HTMLSelectElement>('select')!;
+  /** Open the Layout popover and click the master named `label`. */
+  const pickLayout = (host: HTMLElement, label: string): void => {
+    host.querySelector<HTMLButtonElement>('.layout-pick')!.click();
+    [...host.querySelectorAll<HTMLButtonElement>('.layout-popover-item')]
+      .find((item) => item.getAttribute('aria-label') === `Put slide on ${label}`)!.click();
+  };
 
-  it('offers the layout presets once the selection is the slide itself', () => {
+  it('offers the layout masters once the selection is the slide itself', () => {
     const { store, inspectorHost } = layoutHarness();
     store.clearSelection();
-    expect([...presetSelect(inspectorHost).options].map((option) => option.textContent))
-      .toEqual(['Freeform', 'Title + body', 'Title slide', 'Edit layouts…']);
-    expect(presetSelect(inspectorHost).value).toBe('standard');
+    expect(inspectorHost.querySelector('.layout-pick')!.textContent).toBe('Title + Body');
+    inspectorHost.querySelector<HTMLButtonElement>('.layout-pick')!.click();
+    expect([...inspectorHost.querySelectorAll('.layout-popover-item em')].map((node) => node.textContent))
+      .toEqual(['Freeform', 'Title + Body', 'Title']);
+    expect([...inspectorHost.querySelectorAll('.layout-popover-footer button')].map((node) => node.textContent))
+      .toEqual(['Edit layouts…']);
   });
 
   it('keeps authored text authored when the preset changes', () => {
     const { store, canvasHost, inspectorHost } = layoutHarness();
     store.clearSelection();
-    pick(presetSelect(inspectorHost), 'title');
+    pickLayout(inspectorHost, 'Title');
 
     const title = textOf(store, 'text-title');
     expect(title.html).toBe('Authored title');
@@ -1750,7 +1757,7 @@ describe('the layout preset as formatting', () => {
     expect(bodyOf(canvasHost, 'text-title').textContent).toBe('Authored title');
   });
 
-  it('takes geometry and typography from the master the preset names', () => {
+  it('takes geometry and alignment from the master, never its typography', () => {
     const { store, canvasHost, inspectorHost } = layoutHarness();
     store.commit((deck) => {
       const master = deck.layoutMasters!.title.elements[0];
@@ -1759,19 +1766,21 @@ describe('the layout preset as formatting', () => {
       master.align = 'center';
     }, { history: false });
     store.clearSelection();
-    pick(presetSelect(inspectorHost), 'title');
+    pickLayout(inspectorHost, 'Title');
 
+    // Layout is one axis, theme the other: a master's face stays with the
+    // master; the box keeps following the deck theme for its type.
     const title = textOf(store, 'text-title');
     expect({ x: title.x, y: title.y, w: title.w, h: title.h })
       .toEqual({ x: 180, y: 350, w: 1560, h: 300 });
-    expect(title.style['font-family']).toBe('Georgia');
+    expect(title.style['font-family']).toBeUndefined();
     expect(title.align).toBe('center');
     // The canvas repainted rather than keeping the old box.
     expect(nodeOf(canvasHost, 'text-title').style.left).toBe('180px');
     expect(bodyOf(canvasHost, 'text-title').style.textAlign).toBe('center');
   });
 
-  it('hands object-level typography back to the master, keeping inline runs', () => {
+  it('leaves the box\u2019s own styling alone when the layout changes', () => {
     const { store, inspectorHost } = layoutHarness();
     store.select(['text-title']);
     store.updateSelected((element) => {
@@ -1781,14 +1790,13 @@ describe('the layout preset as formatting', () => {
     document.querySelectorAll<HTMLButtonElement>('.color-picker-palette-button')[0].click();
     expect(textOf(store, 'text-title').style.color).toBe('#112233');
 
-    // Editing the master is deck-wide formatting: it hands the placeholder's
-    // presentation back to the layout, so a hand-picked object colour goes
-    // with it while formatting inside the text survives. Nothing here is
-    // per-slide-override tracking; this pins what the model actually does.
+    // Changing layout is geometry only. A hand-picked colour is free styling
+    // and stays; formatting inside the text stays; only the Theme axis resets
+    // colour, and that is a different control.
     store.clearSelection();
-    pick(presetSelect(inspectorHost), 'title');
+    pickLayout(inspectorHost, 'Title');
 
-    expect(textOf(store, 'text-title').style.color).toBeUndefined();
+    expect(textOf(store, 'text-title').style.color).toBe('#112233');
     expect(textOf(store, 'text-title').html).toBe('Authored <b>title</b>');
   });
 
@@ -1798,7 +1806,7 @@ describe('the layout preset as formatting', () => {
     const before = textOf(store, 'text-title');
     const geometry = { x: before.x, y: before.y, w: before.w, h: before.h };
 
-    pick(presetSelect(inspectorHost), 'title');
+    pickLayout(inspectorHost, 'Title');
     store.undo();
 
     const title = textOf(store, 'text-title');
@@ -1849,10 +1857,10 @@ describe('the semantic role as formatting', () => {
     expect(text.style['font-weight']).toBe(String(title.weight));
     expect(text.style['line-height']).toBe(String(title.lineHeight));
     expect(text.style['letter-spacing']).toBe(title.letterSpacing);
-    // Every stale declaration is gone from every level, or the ones on
-    // `.text-content` and on the runs would outrank what was just written.
+    // The box's own copies at both levels are gone, so what was just written
+    // wins. Formatting inside the markup is content, not role, and stays.
     expect(text.contentStyle).toBeUndefined();
-    expect(text.html).not.toMatch(/font-size/);
+    expect(text.html).toContain('font-size: 18px');
   });
 
   /**
@@ -1978,7 +1986,7 @@ describe('the semantic role as formatting', () => {
     expect(text.style['-webkit-text-fill-color']).toBe('rgb(255, 255, 255)');
     expect(text.style['font-size']).toBeUndefined();
     expect(text.html).toContain('color: rgb(255, 255, 255)');
-    expect(text.html).not.toMatch(/font-size/);
+    expect(text.html).toContain('font-size: 61px');
     expect(text.html).toContain('Over a photograph');
   });
 
@@ -1995,7 +2003,7 @@ describe('the semantic role as formatting', () => {
     const text = textOf(store, 'text-1');
     expect(text.class).toEqual(['role-caption']);
     expect(text.style).toEqual({ color: '#ff0000' });
-    expect(text.html).not.toMatch(/font-size/);
+    expect(text.html).toContain('font-size: 18px');
   });
 
   it('clears the role and its type together', () => {
@@ -2341,14 +2349,15 @@ describe('theming through the panel, the rail and the inspector', () => {
     const before = themeById('editorial')!.fonts.title.size;
     expect(computed(canvasHost, 'title').fontSize).toBe(`${before}px`);
 
-    // Edit the deck's title size in the Theme tab.
-    panelButton(panel.element, 'Edit theme…').click();
+    // Edit the deck's title size in the Design tab: a draft until Done.
+    panelButton(panel.element, 'Edit…').click();
     const titleSize = [...panel.element.querySelectorAll<HTMLElement>('.theme-role-size')]
       .find((node) => node.querySelector('span')?.textContent === 'Title size')!
       .querySelector<HTMLInputElement>('input')!;
     type(titleSize, '60');
+    expect(store.get().deck.themeStyle?.fonts.title.size).toBe(before);
+    panelButton(panel.element, 'Done').click();
     expect(store.get().deck.themeStyle?.fonts.title.size).toBe(60);
-    expect(panel.element.querySelector('.theme-scale-hint')?.textContent).toContain('Existing slides keep theirs');
 
     // The applied slide did not move: it now carries the size it had, and the
     // inspector shows that as the box's own value.

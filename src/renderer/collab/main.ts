@@ -238,10 +238,9 @@ const themePanel = createThemePanel({
   setStatusMessage,
   saveThemeCss: (css) => bridge.sendTheme(css),
   onThemePreview: (theme) => (theme ? designWorkspace.show(theme) : designWorkspace.hide()),
-  onEditLayouts: () => designWorkspace.openLayoutEditor(
-    (store.slide?.layout ?? 'freeform'),
-  ),
-  createLayoutPreview: (theme, onActivate) => designWorkspace.createLayoutSummary(theme, onActivate),
+  onEditLayouts: (layout) => designWorkspace.openLayoutEditor(layout),
+  onPreviewSlide: (slide, label) => designWorkspace.previewSlideOnCanvas(slide, label),
+  onPreviewThemeDraft: (theme) => designWorkspace.previewThemeDraft(theme),
 });
 rail.onSlideActivate = () => {
   themePanel.dismiss();
@@ -249,6 +248,11 @@ rail.onSlideActivate = () => {
 };
 document.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape') return;
+  if (inspector.dismissPopovers()) {
+    event.preventDefault();
+    event.stopPropagation();
+    return;
+  }
   const escaped = designWorkspace.escape();
   if (escaped === 'theme') themePanel.dismiss();
   const dismissedThemeEditor = !escaped && themePanel.dismiss();
@@ -259,6 +263,7 @@ document.addEventListener('keydown', (event) => {
   }
 }, true);
 inspector.onEditLayouts = (layout) => designWorkspace.openLayoutEditor(layout);
+inspector.onPreviewSlide = (slide, label) => designWorkspace.previewSlideOnCanvas(slide, label);
 el('themePanel').appendChild(themePanel.element);
 el('themePanel').classList.add('theme-panel');
 
@@ -565,7 +570,16 @@ function buildToolbar(): void {
 
   const left = document.createElement('div');
   left.className = 'bar-group';
-  left.append(createDeckWerkButton());
+  const divider = (): HTMLElement => {
+    const line = document.createElement('span');
+    line.className = 'bar-divider';
+    line.setAttribute('aria-hidden', 'true');
+    return line;
+  };
+  const deckName = document.createElement('span');
+  deckName.className = 'bar-deck-name';
+  deckName.textContent = deckId;
+  left.append(createDeckWerkButton(), divider(), deckName, divider());
   // In a hosted session the server pins one deck; switching, creating or
   // importing presentations is the host's business, not a joiner's.
   if (!serverConfig.hosted) {
@@ -678,7 +692,7 @@ function buildToolbar(): void {
 
 const PANELS = [
   { id: 'inspector', label: 'Props' },
-  { id: 'themePanel', label: 'Theme' },
+  { id: 'themePanel', label: 'Design' },
   { id: 'timeline', label: 'Build' },
   { id: 'history', label: 'History' },
 ] as const;
@@ -708,6 +722,7 @@ function showPanel(id: string): void {
   if (id === 'inspector') inspector.render();
   if (id === 'themePanel') el('themePanel').scrollTop = 0;
   if (id !== 'themePanel') designWorkspace.hide();
+  rail.setDesignLabels(id === 'themePanel');
   canvas.setBuildBadgesVisible(id === 'timeline');
 }
 

@@ -9,7 +9,7 @@ import { STOCK_STYLESHEET_STYLE, THEMES, fullThemeSelection, themeStyleOf } from
 describe('theme panel', () => {
   beforeEach(() => document.body.replaceChildren());
 
-  it('keeps adoption controls first, then separates the active theme from layouts', () => {
+  it('shows what the deck wears, then one Apply block with a dry run', () => {
     const store = new EditorStore(emptyDeck('Theme panel'), '/tmp/theme-panel');
     const cssEditor = {
       getValue: () => '',
@@ -25,39 +25,43 @@ describe('theme panel', () => {
       saveThemeCss: vi.fn(),
       onThemePreview,
       onEditLayouts,
-      createLayoutPreview: (_theme, onActivate) => {
-        const button = document.createElement('button');
-        button.className = 'layout-test-preview';
-        button.addEventListener('click', onActivate);
-        return button;
-      },
     });
     document.body.appendChild(panel.element);
 
-    // The Theme tab is built from the Props tab's sections, in the order you
-    // read them: which theme the deck wears, what to do with it, then layouts.
+    // Deck defaults first -- theme, its Light/Dark default, the masters --
+    // then the one operation that puts them onto existing slides.
     expect([...panel.element.children].map((child) => child.className)).toEqual([
       'theme-browser-intro',
       'insp-option-section theme-current-section',
       'insp-option-section theme-apply-section',
-      'insp-option-section layouts-section',
-      'insp-option-section layout-apply-section',
     ]);
+    expect(panel.element.querySelector('.insp-title')?.textContent).toBe('Design');
     expect([...panel.element.querySelectorAll('.insp-subtitle')].map((h) => h.textContent))
-      .toEqual(['Current theme', 'Apply theme', 'Layouts', 'Apply layout']);
+      .toEqual(['This deck wears', 'Apply to existing slides']);
     expect(panel.element.querySelectorAll('.theme-active-host .theme-card')).toHaveLength(1);
     expect(panel.element.querySelector('.theme-chooser')?.hasAttribute('hidden')).toBe(true);
-    expect(panel.element.querySelector('.theme-browser-intro p')).toBeNull();
+    expect(panel.element.querySelectorAll('.design-masters .layout-popover-item')).toHaveLength(3);
     expect(onThemePreview).not.toHaveBeenCalled();
     panel.element.querySelector<HTMLButtonElement>('.theme-active-host .theme-card')!.click();
     expect(onThemePreview).toHaveBeenCalledTimes(1);
-    panel.element.querySelector<HTMLButtonElement>('.layout-test-preview')!.click();
+    [...panel.element.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent === 'Edit layouts…')!.click();
     expect(onEditLayouts).toHaveBeenCalledTimes(1);
-    const roleLabels = [...panel.element.querySelectorAll<HTMLElement>('.theme-adoption-controls .field-check span')]
+
+    // The apply block: scope, four property groups plus role detection, and
+    // the readout under them. Roles hide behind Options.
+    const groupLabels = [...panel.element.querySelectorAll<HTMLElement>('.design-apply-controls .field-check > span')]
+      .map((label) => label.firstChild?.textContent);
+    expect(groupLabels).toEqual([
+      'Typography', 'Type scale', 'Colour', 'Position and size', 'Detect roles for untagged text',
+    ]);
+    expect(panel.element.querySelector<HTMLElement>('.design-more-options')!.hidden).toBe(true);
+    [...panel.element.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent === 'Options…')!.click();
+    const roleLabels = [...panel.element.querySelectorAll<HTMLElement>('.design-more-options .field-check span')]
       .map((label) => label.textContent);
-    expect(roleLabels.slice(0, 3)).toEqual(['Title', 'Body', 'Caption']);
-    expect(roleLabels).not.toContain('Heading');
-    expect(roleLabels).not.toContain('Base');
+    expect(roleLabels).toEqual(['Title', 'Body', 'Caption']);
+    expect(panel.element.querySelectorAll('.design-readout-list .design-readout-row').length).toBeGreaterThan(0);
   });
 
   it('dismisses theme picking and the inline theme editor', () => {
@@ -73,8 +77,11 @@ describe('theme panel', () => {
     document.body.appendChild(panel.element);
 
     panel.element.querySelector<HTMLButtonElement>('.theme-active-card')!.click();
-    panel.element.querySelector<HTMLButtonElement>('.theme-section-action')!.click();
     expect(panel.element.querySelector<HTMLElement>('.theme-chooser')!.hidden).toBe(false);
+    expect(panel.dismiss()).toBe(true);
+    // Opening the theme editor closes the chooser: a draft is edited alone.
+    panel.element.querySelector<HTMLButtonElement>('.theme-edit-button')!.click();
+    expect(panel.element.querySelector<HTMLElement>('.theme-chooser')!.hidden).toBe(true);
     expect(panel.element.querySelector<HTMLElement>('.theme-inline-editor')!.hidden).toBe(false);
 
     expect(panel.dismiss()).toBe(true);
@@ -404,7 +411,7 @@ describe('theme panel', () => {
 });
 
 describe('the theme editor’s type scale', () => {
-  it('edits one role’s default size into theme.css without moving existing slides', () => {
+  it('edits one role’s default size into theme.css on Done, without moving existing slides', () => {
     const deck = emptyDeck('Scale panel');
     deck.themePreset = THEMES[0].id;
     deck.themeStyle = structuredClone({
@@ -417,16 +424,17 @@ describe('the theme editor’s type scale', () => {
     });
     const store = new EditorStore(deck, '/tmp/theme-panel-scale');
     const saveThemeCss = vi.fn();
+    const onPreviewThemeDraft = vi.fn();
     const panel = createThemePanel({
       store,
       cssEditor: { getValue: () => '', setValue: vi.fn() } as unknown as CssEditor,
       save: vi.fn(),
       setStatusMessage: vi.fn(),
       saveThemeCss,
+      onPreviewThemeDraft,
     });
     document.body.appendChild(panel.element);
-    [...panel.element.querySelectorAll('button')]
-      .find((node) => node.textContent === 'Edit theme…')!.click();
+    panel.element.querySelector<HTMLButtonElement>('.theme-edit-button')!.click();
 
     const sizes = [...panel.element.querySelectorAll<HTMLElement>('.theme-role-size')];
     expect(sizes.map((node) => node.querySelector('span')?.textContent)).toEqual([
@@ -438,13 +446,46 @@ describe('the theme editor’s type scale', () => {
     title.value = '100';
     title.dispatchEvent(new Event('change', { bubbles: true }));
 
+    // The edit is a draft: previewed on the canvas, not yet on the deck.
+    expect(store.get().deck.themeStyle?.fonts.title.size).toBe(before);
+    expect((onPreviewThemeDraft.mock.calls.at(-1)?.[0] as { fonts: { title: { size: number } } }).fonts.title.size).toBe(100);
+    expect(saveThemeCss).not.toHaveBeenCalled();
+
+    [...panel.element.querySelectorAll<HTMLButtonElement>('.theme-inline-editor button')]
+      .find((node) => node.textContent === 'Done')!.click();
+    expect(onPreviewThemeDraft).toHaveBeenLastCalledWith(null);
     expect(store.get().deck.themeStyle?.fonts.title.size).toBe(100);
     expect(saveThemeCss).toHaveBeenLastCalledWith(expect.stringMatching(/\.role-title \{[^}]*font-size: 100px/));
     // The existing title kept the size it rendered at; only new slides and an
     // explicit Apply see 100px.
     expect(store.get().deck.slides[0].elements.find((el) => el.id === 'following')?.style)
       .toEqual({ 'font-size': `${before}px` });
-    expect(panel.element.querySelector('.theme-scale-hint')?.textContent)
-      .toBe('Sizes for new slides. Existing slides keep theirs until you apply the theme to them.');
+    expect(panel.element.querySelector<HTMLElement>('.theme-inline-editor')!.hidden).toBe(true);
+  });
+
+  it('throws a draft away on Cancel', () => {
+    const deck = emptyDeck('Scale panel');
+    deck.themePreset = THEMES[0].id;
+    deck.themeStyle = structuredClone({
+      fonts: THEMES[0].fonts, palette: THEMES[0].palette, colors: THEMES[0].colors,
+    });
+    const store = new EditorStore(deck, '/tmp/theme-panel-scale');
+    const panel = createThemePanel({
+      store,
+      cssEditor: { getValue: () => '', setValue: vi.fn() } as unknown as CssEditor,
+      save: vi.fn(),
+      setStatusMessage: vi.fn(),
+      saveThemeCss: vi.fn(),
+    });
+    document.body.appendChild(panel.element);
+    const before = JSON.stringify(store.get().deck);
+    panel.element.querySelector<HTMLButtonElement>('.theme-edit-button')!.click();
+    const title = panel.element.querySelector<HTMLElement>('.theme-role-size')!.querySelector('input')!;
+    title.value = '100';
+    title.dispatchEvent(new Event('change', { bubbles: true }));
+    [...panel.element.querySelectorAll<HTMLButtonElement>('.theme-inline-editor button')]
+      .find((node) => node.textContent === 'Cancel')!.click();
+    expect(JSON.stringify(store.get().deck)).toBe(before);
+    expect(store.canUndo()).toBe(false);
   });
 });

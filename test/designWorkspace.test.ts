@@ -35,16 +35,21 @@ function installDomShims(): void {
 }
 
 function build(deck: Deck = emptyDeck('Design')): {
-  workspace: DesignWorkspace; store: EditorStore; save: ReturnType<typeof vi.fn>;
+  workspace: DesignWorkspace;
+  store: EditorStore;
+  save: ReturnType<typeof vi.fn>;
+  setStatusMessage: ReturnType<typeof vi.fn>;
 } {
   const canvasHost = document.createElement('main');
   document.body.appendChild(canvasHost);
   const store = new EditorStore(deck, '/tmp/design');
   const save = vi.fn();
+  const setStatusMessage = vi.fn();
   return {
     store,
     save,
-    workspace: new DesignWorkspace({ canvasHost, store, save, setStatusMessage: vi.fn() }),
+    setStatusMessage,
+    workspace: new DesignWorkspace({ canvasHost, store, save, setStatusMessage }),
   };
 }
 
@@ -172,8 +177,9 @@ describe('leaving the layout editor', () => {
     return element;
   };
 
-  it('pushes a new master object onto the deck on Done, keeping authored copy', () => {
-    const { workspace, store, save } = build(authoredDeck());
+  it('saves the edited master on Done and leaves every slide as it is', () => {
+    const { workspace, store, save, setStatusMessage } = build(authoredDeck());
+    const slideBefore = JSON.stringify(store.get().deck.slides[0]);
     workspace.openLayoutEditor('standard');
     clickInOverlay('.layout-editor-tools', 'Text');
     clickInOverlay('.layout-editor-actions', 'Done');
@@ -183,19 +189,19 @@ describe('leaving the layout editor', () => {
       element.type === 'text' && element.layoutPlaceholder
     ))).toHaveLength(1);
 
-    // Every slide on that layout gains a locked copy of it, and its own
-    // authored title is untouched by the round trip.
-    const copies = store.get().deck.slides[0].elements.filter((element) => element.layoutMasterId);
-    expect(copies).toHaveLength(1);
-    expect(copies[0].class).toContain('layout-master-element');
+    // Editing a master is editing a deck default: the slide on that layout is
+    // untouched until the author applies the layout (Props or Design).
+    expect(JSON.stringify(store.get().deck.slides[0])).toBe(slideBefore);
     expect(titleOf(store).html).toBe('Authored title');
-    expect(titleOf(store).class).not.toContain('placeholder');
+    expect(setStatusMessage.mock.calls.at(-1)?.[0]).toContain('until you apply the layout');
 
     expect(save).toHaveBeenCalled();
     expect(document.querySelector('.layout-editor-overlay')).toBeNull();
     // One undoable step for the whole layout edit.
     store.undo();
-    expect(store.get().deck.slides[0].elements.some((element) => element.layoutMasterId)).toBe(false);
+    expect(store.get().deck.layoutMasters!.standard.elements.filter((element) => !(
+      element.type === 'text' && element.layoutPlaceholder
+    ))).toHaveLength(0);
   });
 
   /**

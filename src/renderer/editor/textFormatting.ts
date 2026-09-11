@@ -339,8 +339,7 @@ export function applyTextRole(
   element.style = style;
   if (Object.keys(contentStyle).length > 0) element.contentStyle = contentStyle;
   else delete element.contentStyle;
-
-  for (const property of ROLE_PROPERTIES) {
-    element.html = setHtmlTextProperty(element.html, property, null);
-  }
+  // Runs inside the markup are content formatting, not role formatting: a
+  // bold word or a small unit after a figure survives a change of role. Only
+  // the box's own copies of the type properties are the role's to replace.
 }

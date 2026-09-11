@@ -312,7 +312,7 @@ describe('the theme panel apply button', () => {
 
   function setOption(panel: HTMLElement, label: string, checked: boolean): void {
     const box = [...panel.querySelectorAll<HTMLLabelElement>('label.field-check')]
-      .find((candidate) => candidate.querySelector('span')?.textContent === label)!;
+      .find((candidate) => candidate.querySelector('span')?.textContent?.trim().startsWith(label))!;
     const input = box.querySelector<HTMLInputElement>('input')!;
     if (input.checked !== checked) input.click();
   }
@@ -323,11 +323,10 @@ describe('the theme panel apply button', () => {
     store.selectSlide(0);
     store.selectSlide(2, true); // rail range: s1..s3
     panel.syncScope(store.get().slideSelection.size);
-    expect(panel.applyButtonLabel()).toBe('Apply theme to 3 selected slides');
+    expect(panel.applyButtonLabel()).toBe('Apply to 3 slides');
 
-    setOption(panel.element, 'Size + spacing', true);
-    setOption(panel.element, 'Text colour', true);
-    setOption(panel.element, 'Slide background', true);
+    setOption(panel.element, 'Type scale', true);
+    setOption(panel.element, 'Colour', true);
     panel.element.querySelector<HTMLButtonElement>('.theme-apply-action button')!.click();
 
     const theme = panel.currentTheme()!;
@@ -353,9 +352,9 @@ describe('the theme panel apply button', () => {
     const panel = buildPanel(store);
     store.selectSlide(1);
     panel.syncScope(store.get().slideSelection.size);
-    expect(panel.applyButtonLabel()).toBe('Apply theme to 1 selected slide');
+    expect(panel.applyButtonLabel()).toBe('Apply to 1 slide');
 
-    setOption(panel.element, 'Slide background', true);
+    setOption(panel.element, 'Colour', true);
     panel.element.querySelector<HTMLButtonElement>('.theme-apply-action button')!.click();
 
     const theme = panel.currentTheme()!;
@@ -382,7 +381,7 @@ describe('the theme panel apply button', () => {
     store.selectSlide(1); // collapse back to one slide
     panel.syncScope(1);
 
-    setOption(panel.element, 'Slide background', true);
+    setOption(panel.element, 'Colour', true);
     panel.element.querySelector<HTMLButtonElement>('.theme-apply-action button')!.click();
     const theme = panel.currentTheme()!;
     const { deck } = store.get();
