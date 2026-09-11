@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { writeFile } from 'node:fs/promises';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Deck } from '@shared/deck.js';
@@ -27,6 +27,13 @@ export interface RenderRequest {
   /** Also compose one tiled, numbered overview of every captured slide. */
   contactSheet?: boolean;
   selectedElementIds: string[];
+  /**
+   * An already exported bundle of this deck to capture from, instead of
+   * exporting a scratch copy. A web export that wants a thumbnail of itself
+   * has just written one; copying a gigabyte of media again for a screenshot
+   * would be absurd.
+   */
+  bundleDir?: string;
 }
 
 export interface RenderedImage {
@@ -42,10 +49,16 @@ export interface RenderResult {
 }
 
 export async function renderSlidesToPng(request: RenderRequest): Promise<RenderResult> {
-  const bundleDir = await tempDir('slide-agent-bundle-');
-  await exportDeck(request.deckDir, request.deck, bundleDir);
+  let bundleDir = request.bundleDir;
+  if (!bundleDir) {
+    bundleDir = await tempDir('slide-agent-bundle-');
+    await exportDeck(request.deckDir, request.deck, bundleDir);
+  }
 
-  const jobPath = join(bundleDir, 'capture-job.json');
+  // The job file lives with the captures, never in a caller's bundle: a web
+  // export handed in here is the folder the author is about to publish.
+  await mkdir(request.outDir, { recursive: true });
+  const jobPath = join(request.outDir, 'capture-job.json');
   await writeFile(jobPath, JSON.stringify({
     bundleDir,
     outDir: request.outDir,

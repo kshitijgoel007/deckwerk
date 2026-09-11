@@ -41,6 +41,7 @@ import type {
   PresentationCommand,
   PresentationState,
   PdfExportRequest,
+  WebExportRequest,
   PresentOptions,
   RasterSaveRequest,
   RasterResult,
@@ -75,6 +76,7 @@ import {
   saveTheme,
 } from './deckStore.js';
 import { exportDeck } from './exportDeck.js';
+import { writeExportThumbnail } from './exportThumbnail.js';
 import { probeMedia, runTrim } from './ffmpeg.js';
 import { attachRendererHealth } from './windowHealth.js';
 import { POSTER_HOST, posterFor } from './posterCache.js';
@@ -1347,7 +1349,11 @@ function registerHandlers(): void {
       }),
   );
 
-  ipcMain.handle(IPC.exportBundle, async (event, operationId?: string): Promise<string | null> => {
+  ipcMain.handle(IPC.exportBundle, async (
+    event,
+    request: WebExportRequest = {},
+    operationId?: string,
+  ): Promise<string | null> => {
     const s = requireSession(event);
     const target = await showSaveDialog({
       title: 'Export as a standalone web page',
@@ -1359,6 +1365,9 @@ function registerHandlers(): void {
     const dir = deckFolderPath(target.filePath);
     await exportDeck(s.dir, s.deck, dir, (message, ratio) => {
       reportOperation(event, operationId, message, ratio);
+    }, { quality: request.quality ?? 'original', dropSkipped: true });
+    await writeExportThumbnail(s.dir, s.deck, dir, (message) => {
+      reportOperation(event, operationId, message, null);
     });
     return dir;
   });

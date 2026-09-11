@@ -206,6 +206,19 @@
         "--strictPort"
       ],
       "port": 5641
+    },
+    {
+      "name": "team-site",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": [
+        "--dir",
+        "/Users/vincentsitzmann/Coding/scenerepresentations-org-2025",
+        "dev:team",
+        "--",
+        "--port",
+        "4321"
+      ],
+      "port": 4321
     }
   ]
 }

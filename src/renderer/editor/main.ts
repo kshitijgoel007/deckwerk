@@ -31,6 +31,7 @@ import { authoredHtmlSync, fileName } from './htmlCompile.js';
 import { createShapeInsertPicker, createTableInsertPicker, insertText } from './elementCreation.js';
 import { createToolbarPicker, createToolbarSplitButton } from './exportPicker.js';
 import { showPdfExportDialog } from './pdfExportDialog.js';
+import { showWebExportDialog } from './webExportDialog.js';
 import { makePanelResizable } from './panelResize.js';
 import { DelayedOperationProgress, type OperationHandle } from './operationProgress.js';
 import { DesignWorkspace } from './designWorkspace.js';
@@ -372,7 +373,6 @@ function buildToolbar(): void {
   deckNameLabel.className = 'bar-deck-name';
   left.append(
     createDeckWerkButton(),
-    barDivider(),
     deckNameLabel,
     barDivider(),
     barButton('New', newPresentation),
@@ -454,13 +454,15 @@ async function startPresentation(speakerView = false): Promise<void> {
 }
 
 async function exportWeb(): Promise<void> {
+  const choice = await showWebExportDialog();
+  if (!choice) return;
   try {
     const dir = await runOperation('Preparing web export…', async (operation) => {
       operation.update('Saving deck.json and theme.css');
       await cssEditor.flush();
       await save();
       operation.update('Waiting for an export folder');
-      return window.api.exportBundle(operation.id);
+      return window.api.exportBundle({ quality: choice.quality }, operation.id);
     });
     if (dir) setStatusMessage(`Exported to ${dir}`);
   } catch (err) {

@@ -636,11 +636,19 @@ slide-agent inspect $DECK --slide results      # confirm the result
 ## Seeing a deck without the app at all
 
 ```bash
-npm run export -- path/to/my-talk /tmp/talk-web
+npm run export -- path/to/my-talk /tmp/talk-web                      # balanced quality
+npm run export -- path/to/my-talk /tmp/talk-web --quality original   # byte-for-byte media
+npm run export -- path/to/my-talk /tmp/talk-web --quality compact    # smallest folder
 ```
 
 `index.html#N` selects slide N (1-based). The export runs the identical player
-the app uses, so what it shows is what the projector shows.
+the app uses, so what it shows is what the projector shows. Only media the
+shown slides reference is copied, skipped slides are dropped, and below
+`original` quality video is cut to the range the slides actually play (the
+elements' in/out points are shifted to match) and re-encoded as VP9 WebM,
+stills as WebP, both sized to how large the slide shows them. `thumbnail.jpg` is the first slide
+(pass `--no-thumbnail` to skip the Electron capture) and `export.json` records
+the title, slide count and quality, for pages that list decks.
 
 ## Reliability rules (from the 2026-09 review — keep the bug classes extinct)
 

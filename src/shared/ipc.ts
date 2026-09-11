@@ -243,6 +243,20 @@ export interface PresentOptions {
 }
 
 export type PdfBuildMode = 'initial' | 'final' | 'every';
+/**
+ * How hard a web export squeezes the deck's media.
+ *
+ * `original` copies every referenced file byte for byte. `balanced` re-encodes
+ * video as H.264 and stills as WebP at sizes a projector cannot tell apart from
+ * the originals. `compact` trades visible sharpness for a folder small enough
+ * to sit on a static web host.
+ */
+export type WebExportQuality = 'original' | 'balanced' | 'compact';
+
+export interface WebExportRequest {
+  quality?: WebExportQuality;
+}
+
 export interface PdfExportRequest {
   mode?: PdfBuildMode;
   includeHidden?: boolean;
