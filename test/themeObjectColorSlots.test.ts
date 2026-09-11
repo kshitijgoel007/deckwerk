@@ -120,14 +120,17 @@ describe('shape colours through a light/dark theme switch', () => {
     expect((deck.slides[0].elements[0] as { stroke: string }).stroke).toBe('#6b6862');
   });
 
-  it('still quantises a colour that is nobody’s swatch to the nearest one', () => {
-    const deck = deckOfFills(['#e83a30', 'rgba(255, 255, 255, 0.4)']);
+  it('leaves a colour that is nobody’s swatch exactly as the author set it', () => {
+    const deck = deckOfFills(['#e83a30', '#ffffff', 'rgba(255, 255, 255, 0.4)']);
     const swiss = themeById('swiss')!;
     adoptThemeStyles(deck, swiss, { ...OBJECTS_ONLY }, 0, new Set());
-    // Swiss's decisive red, reached the old way — no slot claims #e83a30.
-    expect(fillsOf(deck)[0]).toBe('#e12d39');
+    // No slot claims #e83a30, so it is the author's own red and stays. White
+    // stays too: snapped to the nearest swatch it landed on the theme's
+    // ground, and every white arrow on the slide disappeared.
+    expect(fillsOf(deck)[0]).toBe('#e83a30');
+    expect(fillsOf(deck)[1]).toBe('#ffffff');
     // A deliberate translucency survives a theme.
-    expect(fillsOf(deck)[1]).toBe('rgba(255, 255, 255, 0.4)');
+    expect(fillsOf(deck)[2]).toBe('rgba(255, 255, 255, 0.4)');
   });
 
   it('honours slots for a theme the deck carries itself', () => {

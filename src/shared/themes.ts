@@ -925,7 +925,12 @@ function canonicalHex(color: string): string | null {
 
 /**
  * Where a shape colour lands under `palette`: the matching slot when the
- * colour is a known swatch, and the nearest colour otherwise.
+ * colour is a known swatch, and unchanged otherwise.
+ *
+ * A colour that is nobody's swatch is the author's own choice and stays.
+ * Snapping it to the nearest swatch used to send a white or pale arrow to the
+ * palette's ground slot, so following the theme made every arrow on the slide
+ * vanish into the background.
  */
 export function remapObjectColor(
   color: string,
@@ -935,7 +940,7 @@ export function remapObjectColor(
   const key = canonicalHex(color);
   const slot = key === null ? undefined : slots.get(key);
   if (slot !== undefined && slot < palette.length) return palette[slot];
-  return nearestPaletteColor(color, palette);
+  return color;
 }
 
 /**

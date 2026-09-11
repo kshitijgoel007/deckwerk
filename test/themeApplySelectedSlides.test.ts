@@ -145,11 +145,12 @@ describe('adoptThemeStyles at slides scope', () => {
     // Untagged text is `base`, outside the role list: left exactly as it was.
     expect(s2.elements.find((el) => el.id === 's2-plain')!.style)
       .toEqual({ 'font-size': '40px', color: '#ff0000' });
+    // Shape colours that are nobody's swatch are the author's own and stay.
     const box = s2.elements.find((el) => el.id === 's2-box')!;
     expect(box.type).toBe('shape');
     if (box.type === 'shape') {
-      expect(theme.palette).toContain(box.fill);
-      expect(theme.palette).toContain(box.stroke);
+      expect(box.fill).toBe('#e83a30');
+      expect(box.stroke).toBe('#00ff00');
     }
   });
 

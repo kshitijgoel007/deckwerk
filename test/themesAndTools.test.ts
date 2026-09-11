@@ -203,13 +203,27 @@ describe('applying a theme', () => {
     expect(t2.style['color']).toBe('#ffffff');
   });
 
-  it('objectColors remaps shape colours to the palette', () => {
+  it('objectColors moves swatch colours by slot and leaves the author\u2019s own colours alone', () => {
     const deck = sampleDeck();
-    const theme = THEMES[3]; // Grid: has a strong red
-    applyThemeToDeck(deck, theme, { ...NO_APPLY, objectColors: true });
+    const from = THEMES[0];
+    const to = THEMES[3];
+    // A shape painted from the current theme's accent swatch travels to the
+    // new theme's accent; a colour that is nobody's swatch is free styling.
+    deck.slides[0].elements.push({
+      id: 'swatched', type: 'shape', x: 0, y: 0, w: 10, h: 10, rot: 0, z: 4, opacity: 1,
+      class: [], style: {}, shape: 'rect', fill: from.palette[2], stroke: '#ffffff',
+      strokeWidth: 2, radius: 0, path: null, pathSize: null, arrowStart: false, arrowEnd: true,
+    });
+    applyThemeToDeck(deck, to, { ...NO_APPLY, objectColors: true });
     const s1 = deck.slides[0].elements.find((e) => e.id === 's1')!;
     if (s1.type !== 'shape') throw new Error('expected shape');
-    expect(theme.palette).toContain(s1.fill);
+    expect(s1.fill).toBe('#e83a30');
+    const swatched = deck.slides[0].elements.find((e) => e.id === 'swatched')!;
+    if (swatched.type !== 'shape') throw new Error('expected shape');
+    expect(swatched.fill).toBe(to.palette[2]);
+    // The white arrow stays white: snapping it to the nearest swatch used to
+    // land it on the theme's ground and make it vanish.
+    expect(swatched.stroke).toBe('#ffffff');
   });
 
   it('backgrounds sets the slide ground', () => {
