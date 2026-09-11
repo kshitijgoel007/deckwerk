@@ -576,42 +576,35 @@ export class Inspector {
   }
 
   private themeAxisSection(slides: Slide[]): HTMLElement {
-    const section = optionSection('Theme', 'slide-theme-options');
     const ids = new Set(slides.map((slide) => slide.id));
     const deck = this.store.get().deck;
     const theme = deckTheme(deck);
-    const name = document.createElement('p');
-    name.className = 'insp-hint design-readout';
-    name.textContent = theme
-      ? `${theme.name} · the deck theme. Change it in Design.`
-      : 'No deck theme chosen. Choose one in Design.';
-    section.content.appendChild(name);
+    // The deck theme is the section's caption; changing it lives in Design.
+    const section = optionSection('Theme', 'slide-theme-options', theme?.name ?? 'None');
 
     const options = themeResetOptions();
     const { report } = dryRunDesign(deck, theme, options, ids);
     const follow = document.createElement('button');
     follow.type = 'button';
     follow.className = 'bar-button follow-theme';
-    follow.textContent = ids.size === 1 ? 'Follow deck theme on this slide' : `Follow deck theme on ${ids.size} slides`;
+    follow.textContent = 'Follow theme';
     follow.disabled = !theme || !reportChangesAnything(report);
+    follow.title = follow.disabled
+      ? 'Type and colours already follow the deck theme'
+      : 'Reset type and colours to the deck theme. Layout and other styling stay.';
     follow.addEventListener('mouseenter', () => {
-      if (!follow.disabled) this.previewDesign(options, ids, 'Follow deck theme');
+      if (!follow.disabled) this.previewDesign(options, ids, 'Follow theme');
     });
     follow.addEventListener('mouseleave', () => this.onPreviewSlide?.(null, ''));
-    follow.addEventListener('click', () => this.commitDesign(options, ids, 'Follow deck theme'));
+    follow.addEventListener('click', () => this.commitDesign(options, ids, 'Follow theme'));
     section.content.appendChild(follow);
 
-    const line = document.createElement('p');
-    line.className = 'insp-hint design-readout follow-readout';
-    if (!theme) line.textContent = '';
-    else if (follow.disabled) line.textContent = 'Every property on the theme axis follows the deck theme.';
-    else {
-      line.append('Resets the theme axis: ');
-      const detail = document.createElement('em');
-      detail.textContent = summarizeDesignReport(report);
-      line.append(detail, '. Layout and other styling stay.');
+    if (!follow.disabled) {
+      const line = document.createElement('p');
+      line.className = 'insp-hint design-readout follow-readout';
+      line.textContent = summarizeDesignReport(report);
+      section.content.appendChild(line);
     }
-    section.content.appendChild(line);
     return section.section;
   }
 
@@ -642,12 +635,6 @@ export class Inspector {
         mixed: backgrounds.mixed,
       },
     ));
-    const note = document.createElement('p');
-    note.className = 'insp-hint design-readout';
-    note.textContent = backgrounds.mixed || backgrounds.value !== null
-      ? 'Your own colour. Follow deck theme puts the theme ground back.'
-      : 'From the theme. Pick any colour; the Theme axis resets it.';
-    section.content.appendChild(note);
     return section.section;
   }
 
