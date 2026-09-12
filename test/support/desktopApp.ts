@@ -22,6 +22,17 @@ import { collabClientDir, sharedBuild } from './collabClient.js';
  * off in that mode, so hidden does not mean slow.
  */
 
+/**
+ * Under CI's Xvfb there is no developer's desk to protect, and hiding is
+ * actively harmful there: X11 without a window manager never gives a window
+ * that was never mapped the input focus, so `navigator.clipboard.write`
+ * throws "Document is not focused" and keyboard chords land nowhere. The
+ * desktop suites passed on Linux CI while windows were shown and began
+ * failing the day they were hidden. Show them there; keep them hidden on a
+ * developer's machine.
+ */
+const SHOW_WINDOWS_ON_CI = Boolean(process.env.CI) && process.platform === 'linux';
+
 let pending: Promise<string> | null = null;
 
 /** The directory holding a fresh `out/` of the desktop app. */
@@ -99,7 +110,7 @@ export function launchDesktopApp(appDir: string, args: string[], options: {
       env: {
         ...process.env,
         ELECTRON_DISABLE_SECURITY_WARNINGS: '1',
-        ...(options.visible ? {} : { DECKWERK_HEADLESS_TEST: '1' }),
+        ...(options.visible || SHOW_WINDOWS_ON_CI ? {} : { DECKWERK_HEADLESS_TEST: '1' }),
         ...options.env,
       },
     });
