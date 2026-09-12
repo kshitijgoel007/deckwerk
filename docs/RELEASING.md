@@ -25,14 +25,20 @@ Nothing here can be cross-built:
   during `npm ci`, and `src/main/ffmpeg.ts` ships whatever it finds.
 - The Keynote and PowerPoint importers are PyInstaller freezes, and
   PyInstaller cannot cross-compile — not even between macOS architectures.
-  Hence a `macos-14` (arm64) job and a `macos-13` (Intel) job rather than one
-  universal build.
+  Hence a `macos-15` (arm64) job and a `macos-15-intel` (x64) job rather than
+  one universal build. GitHub retires runner images regularly (`macos-13` is
+  gone, `macos-14` deprecated); the current table is at
+  github.com/actions/runner-images.
 - Notarization only runs on macOS; Azure Trusted Signing only runs on Windows,
   because electron-builder drives it through a PowerShell module.
 
 Linux builds on `ubuntu-22.04` deliberately. A binary linked against a newer
 glibc will not start on an older distribution, while the reverse is fine, so
-the oldest supported base wins.
+the oldest supported base wins. `ubuntu-22.04` is deprecated from
+2026-09-17 and removed 2027-04-17; move to `ubuntu-24.04` before then.
+
+If `TAP_GITHUB_TOKEN` is not set, the Homebrew job logs a warning and skips
+rather than failing the release.
 
 ## One-time setup
 
