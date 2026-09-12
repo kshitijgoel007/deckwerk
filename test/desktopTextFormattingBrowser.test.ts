@@ -12,7 +12,12 @@ import {
   findTarget,
   stopBrowser,
 } from './support/browserSession.js';
-import { isEditorTarget, launchDesktopApp, materializeDesktopApp } from './support/desktopApp.js';
+import {
+  isEditorTarget,
+  launchDesktopApp,
+  materializeDesktopApp,
+  NEEDS_VISIBLE_WINDOW_ON_CI,
+} from './support/desktopApp.js';
 
 /**
  * Production-desktop coverage for the complete inline-formatting journey.
@@ -113,7 +118,8 @@ describe.skipIf(!electronBinary)('desktop inline-formatting matrix', () => {
       '',
     ].join('\n'), 'utf8');
 
-    const app = await launchDesktopApp(appDir, [deckDir], { profileDir });
+    // Real clipboard traffic and keyboard chords need the window focused.
+    const app = await launchDesktopApp(appDir, [deckDir], { profileDir, visible: NEEDS_VISIBLE_WINDOW_ON_CI });
     appProcess = app.process;
     const debugPort = app.debugPort;
     const appLog = app.log;
