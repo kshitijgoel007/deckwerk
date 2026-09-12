@@ -653,9 +653,10 @@ describe('slide rail keyboard insertion', () => {
 
     store.selectSlide(69);
     railHost.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-    inspectorHost.querySelector<HTMLButtonElement>('.layout-pick')!.click();
-    [...inspectorHost.querySelectorAll<HTMLButtonElement>('.layout-popover-item')]
-      .find((item) => item.getAttribute('aria-label') === 'Put slide on Title + Body')!.click();
+    const layout = [...inspectorHost.querySelectorAll<HTMLSelectElement>('select')].find((select) =>
+      [...select.options].some((option) => option.value === 'standard'))!;
+    layout.value = 'standard';
+    layout.dispatchEvent(new Event('change', { bubbles: true }));
 
     expect(store.slide?.layout).toBe('standard');
     expect(store.slide?.elements.map((element) => element.class[0])).toEqual([

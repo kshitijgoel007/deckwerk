@@ -324,7 +324,7 @@ describe('the theme panel apply button', () => {
     store.selectSlide(0);
     store.selectSlide(2, true); // rail range: s1..s3
     panel.syncScope(store.get().slideSelection.size);
-    expect(panel.applyButtonLabel()).toBe('Apply to 3 slides');
+    expect(panel.applyButtonLabel()).toBe('Apply theme to 3 selected slides');
 
     setOption(panel.element, 'Type scale', true);
     setOption(panel.element, 'Colour', true);
@@ -353,7 +353,7 @@ describe('the theme panel apply button', () => {
     const panel = buildPanel(store);
     store.selectSlide(1);
     panel.syncScope(store.get().slideSelection.size);
-    expect(panel.applyButtonLabel()).toBe('Apply to 1 slide');
+    expect(panel.applyButtonLabel()).toBe('Apply theme to 1 selected slide');
 
     setOption(panel.element, 'Colour', true);
     panel.element.querySelector<HTMLButtonElement>('.theme-apply-action button')!.click();

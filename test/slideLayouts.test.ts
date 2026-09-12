@@ -17,10 +17,6 @@ function readPlayerCss(): string {
     readFileSync(join(dir, name), 'utf8'));
 }
 
-const layoutItem = (host: HTMLElement, label: string): HTMLButtonElement =>
-  [...host.querySelectorAll<HTMLButtonElement>('.layout-popover-item')]
-    .find((item) => item.getAttribute('aria-label') === `Put slide on ${label}`)!;
-
 describe('slide layouts', () => {
   beforeEach(() => document.body.replaceChildren());
 
@@ -67,23 +63,15 @@ describe('slide layouts', () => {
 
     expect(host.querySelector('.insp-title')?.textContent).toBe('slide');
     expect([...host.querySelectorAll('.insp-subtitle')].map((heading) => heading.textContent))
-      .toEqual(['Layout', 'Theme', 'Background', 'Morph']);
+      .toEqual(['Layout', 'Morph']);
     expect([...host.querySelectorAll<HTMLElement>('.insp-group')]
       .some((section) => section.querySelector('h3')?.textContent === 'Slide')).toBe(false);
 
-    // The layout picker is a popover of the masters: hovering previews on the
-    // canvas, clicking puts the slide on it.
-    const pick = host.querySelector<HTMLButtonElement>('.layout-pick')!;
-    expect(pick.textContent).toBe('Freeform');
-    expect(host.querySelector<HTMLElement>('.layout-popover')!.hidden).toBe(true);
-    pick.click();
-    expect(host.querySelector<HTMLElement>('.layout-popover')!.hidden).toBe(false);
-    expect([...host.querySelectorAll('.layout-popover-item em')].map((node) => node.textContent))
-      .toEqual(['Freeform', 'Title + Body', 'Title']);
-    layoutItem(host, 'Title + Body').click();
+    const layout = [...host.querySelectorAll<HTMLSelectElement>('select')].find((select) =>
+      [...select.options].some((option) => option.value === 'standard'))!;
+    layout.value = 'standard';
+    layout.dispatchEvent(new Event('change', { bubbles: true }));
     expect(store.slide!.layout).toBe('standard');
-    expect(host.querySelector<HTMLButtonElement>('.layout-pick')!.textContent).toBe('Title + Body');
-    expect(host.querySelector<HTMLElement>('.layout-popover')!.hidden).toBe(true);
 
     host.querySelector<HTMLButtonElement>('.color-picker-trigger')!.click();
     const color = document.querySelector<HTMLInputElement>('input[aria-label="Hex color"]')!;
@@ -112,14 +100,16 @@ describe('slide layouts', () => {
 
     expect(host.querySelector('.insp-title')?.textContent).toBe('slides');
     expect([...host.querySelectorAll('.insp-subtitle')].map((heading) => heading.textContent))
-      .toEqual(['Layout', 'Theme', 'Background', 'Morph']);
-    expect(host.querySelector<HTMLButtonElement>('.layout-pick')!.textContent).toBe('Mixed');
-    expect(host.querySelector('.field-color > span')?.textContent).toBe('Colour (mixed)');
+      .toEqual(['Layout', 'Morph']);
+    const layout = [...host.querySelectorAll<HTMLSelectElement>('select')].find((select) =>
+      [...select.options].some((option) => option.value === 'standard'))!;
+    expect(layout.value).toBe('__mixed__');
+    expect(host.querySelector('.field-color > span')?.textContent).toBe('Background (mixed)');
     expect(host.querySelector('.color-picker-trigger')?.getAttribute('aria-label'))
-      .toBe('Colour (mixed): mixed');
+      .toBe('Background (mixed): mixed');
 
-    host.querySelector<HTMLButtonElement>('.layout-pick')!.click();
-    layoutItem(host, 'Title + Body').click();
+    layout.value = 'standard';
+    layout.dispatchEvent(new Event('change', { bubbles: true }));
     expect(store.selectedSlides().map((slide) => slide.layout)).toEqual(['standard', 'standard']);
 
     host.querySelector<HTMLButtonElement>('.color-picker-trigger')!.click();

@@ -16,18 +16,7 @@ import type {
 } from './canvas.js';
 import { type AlignMode, alignElements } from './align.js';
 import { sameDeckIgnoringNotes, type EditorStore } from './store.js';
-import type { SlideLayout } from './slideLayouts.js';
-import {
-  applyDesign,
-  dryRunDesign,
-  layoutName,
-  layoutOnlyOptions,
-  reportChangesAnything,
-  summarizeDesignReport,
-  themeResetOptions,
-  type DesignApplyOptions,
-} from '@shared/designApply.js';
-import { FIXED_LAYOUTS, masterTile } from './layoutPreview.js';
+import { LAYOUT_LABELS, applySlideLayout, type SlideLayout } from './slideLayouts.js';
 import { MorphPanel } from './morphPanel.js';
 import { fontFamilyField, primaryFamily } from './fontPicker.js';
 import { deckTheme, deckThemes, themeById, type ThemeTextRole } from '@shared/themes.js';
@@ -192,18 +181,7 @@ export class Inspector {
   private morphPanel: MorphPanel;
   /** Enter the dedicated editor for the three fixed layout masters. */
   onEditLayouts?: (layout: SlideLayout) => void;
-  /** Show a dry-run slide on the canvas in place of the real one; `null` clears it. */
-  onPreviewSlide?: (slide: Slide | null, label: string) => void;
-  /** Whether the layout popover is open, so a re-render keeps it open. */
-  private layoutPopoverOpen = false;
-  private closeLayoutPopover: (() => void) | null = null;
 
-  /** Close the layout popover if it is open. Returns whether anything closed. */
-  dismissPopovers(): boolean {
-    if (!this.closeLayoutPopover) return false;
-    this.closeLayoutPopover();
-    return true;
-  }
 
   constructor(host: HTMLElement, store: EditorStore) {
     this.host = host;
@@ -406,232 +384,90 @@ export class Inspector {
     this.host.appendChild(this.morphHost);
   }
 
-  /**
-   * Slide-level controls apply uniformly to every slide selected in the rail.
-   *
-   * Two of them are reset axes rather than styling: Layout puts the slides on
-   * a master (geometry only) and Theme makes them follow the deck theme (type
-   * and colours, ground included). Everything else here — the background — is
-   * the author's own styling, initialised from the theme and free to change.
-   * Both axes run the same `applyDesign` the Design tab uses for its batch
-   * Apply, and both say beforehand what they will do.
-   */
+  /** Slide-level controls apply uniformly to every slide selected in the rail. */
   private slideLayoutSection(slides: Slide[]): HTMLElement {
-    const wrap = document.createElement('div');
-    wrap.className = 'slide-design-sections';
-    wrap.append(
-      this.layoutAxisSection(slides),
-      this.themeAxisSection(slides),
-      this.backgroundSection(slides),
-    );
-    return wrap;
-  }
-
-  /** The current slide when it is in `ids`, else the first slide in `ids`. */
-  private previewTarget(ids: Set<string>): Slide | undefined {
-    const { deck, slideIndex } = this.store.get();
-    const current = deck.slides[slideIndex];
-    if (current && ids.has(current.id)) return current;
-    return deck.slides.find((slide) => ids.has(slide.id));
-  }
-
-  private previewDesign(options: DesignApplyOptions, ids: Set<string>, label: string): void {
-    const target = this.previewTarget(ids);
-    if (!target || !this.onPreviewSlide) return;
-    const deck = this.store.get().deck;
-    const { deck: previewDeck, report } = dryRunDesign(deck, deckTheme(deck), options, ids);
-    const shown = previewDeck.slides.find((slide) => slide.id === target.id) ?? null;
-    this.onPreviewSlide(shown, `${label} · ${summarizeDesignReport(report)}`);
-  }
-
-  private commitDesign(options: DesignApplyOptions, ids: Set<string>, label: string): void {
-    this.onPreviewSlide?.(null, '');
-    let summary = '';
-    this.store.commit((deck) => {
-      const report = applyDesign(deck, deckTheme(deck), options, ids);
-      summary = summarizeDesignReport(report);
-    }, { label: `${label} · ${summary || 'design'}` });
-  }
-
-  private layoutAxisSection(slides: Slide[]): HTMLElement {
     const section = optionSection('Layout', 'slide-layout-options');
-    const ids = new Set(slides.map((slide) => slide.id));
-    const layouts = sharedValue(slides.map((slide) => (slide.layout ?? 'freeform') as SlideLayout));
-    const deck = this.store.get().deck;
-    const theme = deckTheme(deck);
-
-    const field = document.createElement('div');
-    field.className = 'field slide-layout-field';
-    const label = document.createElement('span');
-    label.textContent = 'Layout';
-    const pick = document.createElement('button');
-    pick.type = 'button';
-    pick.className = 'layout-pick';
-    pick.textContent = layouts.mixed ? 'Mixed' : layoutName(layouts.value);
-    pick.setAttribute('aria-haspopup', 'true');
-    pick.setAttribute('aria-expanded', String(this.layoutPopoverOpen));
-    field.append(label, pick);
-    section.content.appendChild(field);
-
-    // What Apply would do to put the slides back on their own layout: the
-    // author sees drift without opening the picker, and can fix it in place.
-    const readout = document.createElement('p');
-    readout.className = 'insp-hint design-readout layout-readout';
-    if (layouts.mixed) {
-      readout.textContent = 'Slides are on different layouts. Pick one to put them all on it.';
-    } else if ((layouts.value ?? 'freeform') === 'freeform') {
-      readout.textContent = 'Boxes sit where you put them.';
-    } else {
-      const own = layoutOnlyOptions(layouts.value!);
-      const { report } = dryRunDesign(deck, theme, own, ids);
-      if (report.moved.length > 0 || report.retagged.length > 0) {
-        readout.append(`Off its layout: `);
-        const detail = document.createElement('em');
-        detail.textContent = summarizeDesignReport(report);
-        readout.append(detail, '. ');
-        const realign = document.createElement('button');
-        realign.type = 'button';
-        realign.className = 'design-readout-action';
-        realign.textContent = 'Re-align';
-        realign.addEventListener('mouseenter', () => this.previewDesign(own, ids, `Re-align to ${layoutName(layouts.value)}`));
-        realign.addEventListener('mouseleave', () => this.onPreviewSlide?.(null, ''));
-        realign.addEventListener('click', () => this.commitDesign(own, ids, `Re-align to ${layoutName(layouts.value)}`));
-        readout.appendChild(realign);
-      } else {
-        readout.textContent = 'All boxes in their layout positions.';
-      }
-    }
-    section.content.appendChild(readout);
-
-    const popover = document.createElement('div');
-    popover.className = 'layout-popover';
-    popover.hidden = !this.layoutPopoverOpen;
-    const grid = document.createElement('div');
-    grid.className = 'layout-popover-grid';
-    const hint = document.createElement('div');
-    hint.className = 'layout-popover-footer';
-    const hintText = document.createElement('span');
-    const idleHint = 'Hover to preview on the canvas. Click to put the slide on it.';
-    hintText.textContent = idleHint;
-    const editLayouts = document.createElement('button');
-    editLayouts.type = 'button';
-    editLayouts.className = 'bar-button';
-    editLayouts.textContent = 'Edit layouts…';
-    editLayouts.addEventListener('click', () => {
-      close();
-      this.onEditLayouts?.(layouts.mixed ? 'freeform' : layouts.value ?? 'freeform');
-    });
-    hint.append(hintText, editLayouts);
-    for (const layout of FIXED_LAYOUTS) {
-      const item = document.createElement('button');
-      item.type = 'button';
-      item.className = `layout-popover-item${!layouts.mixed && layouts.value === layout ? ' selected' : ''}`;
-      item.setAttribute('aria-label', `Put slide on ${layoutName(layout)}`);
-      const { frame } = masterTile(layout, deck.layoutMasters, theme, { caption: false });
-      const caption = document.createElement('em');
-      caption.textContent = layoutName(layout);
-      item.append(frame, caption);
-      const options = layoutOnlyOptions(layout);
-      item.addEventListener('mouseenter', () => {
-        const { report } = dryRunDesign(deck, theme, options, ids);
-        hintText.textContent = `${layoutName(layout)}: ${summarizeDesignReport(report)}.`;
-        this.previewDesign(options, ids, layoutName(layout));
-      });
-      item.addEventListener('mouseleave', () => {
-        hintText.textContent = idleHint;
-        this.onPreviewSlide?.(null, '');
-      });
-      item.addEventListener('click', () => {
-        close();
-        this.commitDesign(options, ids, `Put ${ids.size === 1 ? 'slide' : `${ids.size} slides`} on ${layoutName(layout)}`);
-      });
-      grid.appendChild(item);
-    }
-    popover.append(grid, hint);
-    section.content.appendChild(popover);
-
-    const onOutside = (event: PointerEvent): void => {
-      if (section.section.contains(event.target as Node)) return;
-      close();
-    };
-    const close = (): void => {
-      if (!this.layoutPopoverOpen) return;
-      this.layoutPopoverOpen = false;
-      popover.hidden = true;
-      pick.setAttribute('aria-expanded', 'false');
-      document.removeEventListener('pointerdown', onOutside, true);
-      this.closeLayoutPopover = null;
-      this.onPreviewSlide?.(null, '');
-    };
-    const open = (): void => {
-      this.layoutPopoverOpen = true;
-      popover.hidden = false;
-      pick.setAttribute('aria-expanded', 'true');
-      document.addEventListener('pointerdown', onOutside, true);
-      this.closeLayoutPopover = close;
-    };
-    if (this.layoutPopoverOpen) open();
-    pick.addEventListener('click', () => (this.layoutPopoverOpen ? close() : open()));
-    return section.section;
-  }
-
-  private themeAxisSection(slides: Slide[]): HTMLElement {
-    const ids = new Set(slides.map((slide) => slide.id));
-    const deck = this.store.get().deck;
-    const theme = deckTheme(deck);
-    // The deck theme is the section's caption; changing it lives in Design.
-    const section = optionSection('Theme', 'slide-theme-options', theme?.name ?? 'None');
-
-    const options = themeResetOptions();
-    const { report } = dryRunDesign(deck, theme, options, ids);
-    const follow = document.createElement('button');
-    follow.type = 'button';
-    follow.className = 'bar-button follow-theme';
-    follow.textContent = 'Follow theme';
-    follow.disabled = !theme || !reportChangesAnything(report);
-    follow.title = follow.disabled
-      ? 'Type and colours already follow the deck theme'
-      : 'Reset type and colours to the deck theme. Layout and other styling stay.';
-    follow.addEventListener('mouseenter', () => {
-      if (!follow.disabled) this.previewDesign(options, ids, 'Follow theme');
-    });
-    follow.addEventListener('mouseleave', () => this.onPreviewSlide?.(null, ''));
-    follow.addEventListener('click', () => this.commitDesign(options, ids, 'Follow theme'));
-    section.content.appendChild(follow);
-
-    if (!follow.disabled) {
-      const line = document.createElement('p');
-      line.className = 'insp-hint design-readout follow-readout';
-      line.textContent = summarizeDesignReport(report);
-      section.content.appendChild(line);
-    }
-    return section.section;
-  }
-
-  private backgroundSection(slides: Slide[]): HTMLElement {
-    const section = optionSection('Background', 'slide-background-options');
     const selectedIds = new Set(slides.map((slide) => slide.id));
-    const deck = this.store.get().deck;
-    const theme = deckTheme(deck);
-    const backgrounds = sharedValue(slides.map((slide) => slide.background.color ?? null));
-    const themeGround = deck.themeStyle?.colors.background ?? theme?.colors.background ?? null;
+    const layouts = sharedValue(slides.map((slide) => slide.layout ?? 'freeform'));
+    const layout = document.createElement('label');
+    layout.className = 'field';
+    const layoutLabel = document.createElement('span');
+    layoutLabel.textContent = 'Preset';
+    const layoutSelect = document.createElement('select');
+    if (layouts.mixed) {
+      const mixed = document.createElement('option');
+      mixed.value = '__mixed__';
+      mixed.textContent = 'Mixed';
+      mixed.disabled = true;
+      layoutSelect.appendChild(mixed);
+    }
+    for (const [value, label] of LAYOUT_LABELS) {
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = label;
+      layoutSelect.appendChild(option);
+    }
+    const editLayouts = document.createElement('option');
+    editLayouts.value = '__edit_layouts__';
+    editLayouts.textContent = 'Edit layouts…';
+    layoutSelect.appendChild(editLayouts);
+    layoutSelect.value = layouts.mixed ? '__mixed__' : layouts.value ?? 'freeform';
+    layoutSelect.addEventListener('change', () => {
+      if (layoutSelect.value === '__mixed__') return;
+      if (layoutSelect.value === '__edit_layouts__') {
+        const current = layouts.mixed ? 'freeform' : layouts.value ?? 'freeform';
+        layoutSelect.value = layouts.mixed ? '__mixed__' : current;
+        this.onEditLayouts?.(current);
+        return;
+      }
+      this.store.commit((next) => {
+        for (const slide of next.slides) {
+          if (selectedIds.has(slide.id)) {
+            applySlideLayout(slide, layoutSelect.value as SlideLayout, next.layoutMasters);
+          }
+        }
+      }, {
+        label: `Apply ${layoutSelect.selectedOptions[0]?.textContent ?? 'slide'} layout`,
+      });
+    });
+    layout.append(layoutLabel, layoutSelect);
+    section.content.appendChild(layout);
+
+    const masters = this.store.get().deck.layoutMasters;
+    const backgroundValues = slides.map((slide) => (
+      slide.layoutBackgroundInherited ? null : slide.background.color ?? null
+    ));
+    const backgrounds = sharedValue(backgroundValues);
+    const inheritedBackground = sharedValue(slides.map((slide) => {
+      const layoutName = (slide.layout ?? 'freeform') as SlideLayout;
+      return masters?.[layoutName].background.color
+        ?? this.store.get().deck.themeStyle?.colors.background
+        ?? null;
+    }));
     section.content.appendChild(colorField(
-      backgrounds.mixed ? 'Colour (mixed)' : 'Colour',
+      backgrounds.mixed ? 'Background (mixed)' : 'Background',
       backgrounds.value,
       (value) => {
         this.store.commit((next) => {
           for (const slide of next.slides) {
             if (!selectedIds.has(slide.id)) continue;
-            // A ground is the theme's default or the author's own; a layout
-            // master's colour is never consulted.
-            slide.background = { color: value, image: null };
-            slide.layoutBackgroundInherited = false;
+            const layoutName = (slide.layout ?? 'freeform') as SlideLayout;
+            if (value === null && next.layoutMasters) {
+              slide.background = structuredClone(next.layoutMasters[layoutName].background);
+              slide.layoutBackgroundInherited = true;
+            } else {
+              slide.background = { color: value, image: null };
+              slide.layoutBackgroundInherited = false;
+            }
           }
         }, { label: slides.length > 1 ? 'Set slide backgrounds' : 'Set slide background' });
       },
       {
-        inheritedValue: themeGround,
-        clear: { kind: 'theme', label: 'Use theme background' },
+        inheritedValue: inheritedBackground.mixed ? null : inheritedBackground.value,
+        clear: {
+          kind: 'theme',
+          label: masters ? 'Use layout background' : 'Use theme background',
+        },
         mixed: backgrounds.mixed,
       },
     ));

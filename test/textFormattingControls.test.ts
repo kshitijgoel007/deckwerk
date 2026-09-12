@@ -1725,28 +1725,21 @@ describe('the layout preset as formatting', () => {
     return harness;
   }
 
-  /** Open the Layout popover and click the master named `label`. */
-  const pickLayout = (host: HTMLElement, label: string): void => {
-    host.querySelector<HTMLButtonElement>('.layout-pick')!.click();
-    [...host.querySelectorAll<HTMLButtonElement>('.layout-popover-item')]
-      .find((item) => item.getAttribute('aria-label') === `Put slide on ${label}`)!.click();
-  };
+  const presetSelect = (host: HTMLElement): HTMLSelectElement =>
+    field(host, 'Preset').querySelector<HTMLSelectElement>('select')!;
 
-  it('offers the layout masters once the selection is the slide itself', () => {
+  it('offers the layout presets once the selection is the slide itself', () => {
     const { store, inspectorHost } = layoutHarness();
     store.clearSelection();
-    expect(inspectorHost.querySelector('.layout-pick')!.textContent).toBe('Title + Body');
-    inspectorHost.querySelector<HTMLButtonElement>('.layout-pick')!.click();
-    expect([...inspectorHost.querySelectorAll('.layout-popover-item em')].map((node) => node.textContent))
-      .toEqual(['Freeform', 'Title + Body', 'Title']);
-    expect([...inspectorHost.querySelectorAll('.layout-popover-footer button')].map((node) => node.textContent))
-      .toEqual(['Edit layouts…']);
+    expect([...presetSelect(inspectorHost).options].map((option) => option.textContent))
+      .toEqual(['Freeform', 'Title + body', 'Title slide', 'Edit layouts…']);
+    expect(presetSelect(inspectorHost).value).toBe('standard');
   });
 
   it('keeps authored text authored when the preset changes', () => {
     const { store, canvasHost, inspectorHost } = layoutHarness();
     store.clearSelection();
-    pickLayout(inspectorHost, 'Title');
+    pick(presetSelect(inspectorHost), 'title');
 
     const title = textOf(store, 'text-title');
     expect(title.html).toBe('Authored title');
@@ -1757,7 +1750,7 @@ describe('the layout preset as formatting', () => {
     expect(bodyOf(canvasHost, 'text-title').textContent).toBe('Authored title');
   });
 
-  it('takes geometry and alignment from the master, never its typography', () => {
+  it('takes geometry and typography from the master the preset names', () => {
     const { store, canvasHost, inspectorHost } = layoutHarness();
     store.commit((deck) => {
       const master = deck.layoutMasters!.title.elements[0];
@@ -1766,21 +1759,19 @@ describe('the layout preset as formatting', () => {
       master.align = 'center';
     }, { history: false });
     store.clearSelection();
-    pickLayout(inspectorHost, 'Title');
+    pick(presetSelect(inspectorHost), 'title');
 
-    // Layout is one axis, theme the other: a master's face stays with the
-    // master; the box keeps following the deck theme for its type.
     const title = textOf(store, 'text-title');
     expect({ x: title.x, y: title.y, w: title.w, h: title.h })
       .toEqual({ x: 180, y: 350, w: 1560, h: 300 });
-    expect(title.style['font-family']).toBeUndefined();
+    expect(title.style['font-family']).toBe('Georgia');
     expect(title.align).toBe('center');
     // The canvas repainted rather than keeping the old box.
     expect(nodeOf(canvasHost, 'text-title').style.left).toBe('180px');
     expect(bodyOf(canvasHost, 'text-title').style.textAlign).toBe('center');
   });
 
-  it('leaves the box\u2019s own styling alone when the layout changes', () => {
+  it('hands object-level typography back to the master, keeping inline runs', () => {
     const { store, inspectorHost } = layoutHarness();
     store.select(['text-title']);
     store.updateSelected((element) => {
@@ -1790,13 +1781,14 @@ describe('the layout preset as formatting', () => {
     document.querySelectorAll<HTMLButtonElement>('.color-picker-palette-button')[0].click();
     expect(textOf(store, 'text-title').style.color).toBe('#112233');
 
-    // Changing layout is geometry only. A hand-picked colour is free styling
-    // and stays; formatting inside the text stays; only the Theme axis resets
-    // colour, and that is a different control.
+    // Editing the master is deck-wide formatting: it hands the placeholder's
+    // presentation back to the layout, so a hand-picked object colour goes
+    // with it while formatting inside the text survives. Nothing here is
+    // per-slide-override tracking; this pins what the model actually does.
     store.clearSelection();
-    pickLayout(inspectorHost, 'Title');
+    pick(presetSelect(inspectorHost), 'title');
 
-    expect(textOf(store, 'text-title').style.color).toBe('#112233');
+    expect(textOf(store, 'text-title').style.color).toBeUndefined();
     expect(textOf(store, 'text-title').html).toBe('Authored <b>title</b>');
   });
 
@@ -1806,7 +1798,7 @@ describe('the layout preset as formatting', () => {
     const before = textOf(store, 'text-title');
     const geometry = { x: before.x, y: before.y, w: before.w, h: before.h };
 
-    pickLayout(inspectorHost, 'Title');
+    pick(presetSelect(inspectorHost), 'title');
     store.undo();
 
     const title = textOf(store, 'text-title');

@@ -3,7 +3,7 @@ import { recoverPreviewFrames } from '../player/previewFrameRecovery.js';
 import { freezePreviewVideos, releasePreviewVideos } from '../player/previewPoster.js';
 import { renderSlide } from '../player/render.js';
 import { applyDeckThemeToNewSlide } from '@shared/themes.js';
-import { layoutName } from '@shared/designApply.js';
+import { LAYOUT_LABELS_BY_ID } from './layoutPreview.js';
 import { applySlideLayout } from './slideLayouts.js';
 import { newComment, openCommentsPopover, openCount } from './comments.js';
 import type { Deck, Slide } from '@shared/deck.js';
@@ -660,7 +660,7 @@ export class SlideRail {
       const design = document.createElement('span');
       design.className = 'rail-design-label';
       const ownGround = slide.background.color !== null || slide.background.image !== null;
-      design.textContent = `${layoutName(slide.layout as Parameters<typeof layoutName>[0])}${ownGround ? ' · own background' : ''}`;
+      design.textContent = `${LAYOUT_LABELS_BY_ID[(slide.layout ?? 'freeform') as keyof typeof LAYOUT_LABELS_BY_ID]}${ownGround ? ' · own background' : ''}`;
       item.appendChild(design);
       // Presence dots live on the row (not the cached thumbnail), in the left
       // gutter beside the slide's top edge. Rows are rebuilt fresh each time,

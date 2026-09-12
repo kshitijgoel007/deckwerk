@@ -9,7 +9,7 @@ import { STOCK_STYLESHEET_STYLE, THEMES, fullThemeSelection, themeStyleOf } from
 describe('theme panel', () => {
   beforeEach(() => document.body.replaceChildren());
 
-  it('shows what the deck wears, then one Apply block with a dry run', () => {
+  it('keeps the theme first, its Apply second, then layouts and their Apply', () => {
     const store = new EditorStore(emptyDeck('Theme panel'), '/tmp/theme-panel');
     const cssEditor = {
       getValue: () => '',
@@ -28,40 +28,35 @@ describe('theme panel', () => {
     });
     document.body.appendChild(panel.element);
 
-    // Deck defaults first -- theme, its Light/Dark default, the masters --
-    // then the one operation that puts them onto existing slides.
     expect([...panel.element.children].map((child) => child.className)).toEqual([
       'theme-browser-intro',
       'insp-option-section theme-current-section',
       'insp-option-section theme-apply-section',
+      'insp-option-section layouts-section',
+      'insp-option-section layout-apply-section',
     ]);
-    expect(panel.element.querySelector('.insp-title')?.textContent).toBe('Design');
     expect([...panel.element.querySelectorAll('.insp-subtitle')].map((h) => h.textContent))
-      .toEqual(['This deck wears', 'Apply to existing slides']);
+      .toEqual(['Current theme', 'Apply theme', 'Layouts', 'Apply layout']);
     expect(panel.element.querySelectorAll('.theme-active-host .theme-card')).toHaveLength(1);
     expect(panel.element.querySelector('.theme-chooser')?.hasAttribute('hidden')).toBe(true);
-    expect(panel.element.querySelectorAll('.design-masters .layout-popover-item')).toHaveLength(3);
     expect(onThemePreview).not.toHaveBeenCalled();
     panel.element.querySelector<HTMLButtonElement>('.theme-active-host .theme-card')!.click();
     expect(onThemePreview).toHaveBeenCalledTimes(1);
-    [...panel.element.querySelectorAll<HTMLButtonElement>('button')]
-      .find((button) => button.textContent === 'Edit layouts…')!.click();
-    expect(onEditLayouts).toHaveBeenCalledTimes(1);
 
-    // The apply block: scope, four property groups plus role detection, and
-    // the readout under them. Roles hide behind Options.
-    const groupLabels = [...panel.element.querySelectorAll<HTMLElement>('.design-apply-controls .field-check > span')]
+    // The three masters, drawn in the theme; clicking one edits it.
+    const masters = panel.element.querySelectorAll<HTMLButtonElement>('.layouts-section .design-master');
+    expect(masters).toHaveLength(3);
+    masters[1].click();
+    expect(onEditLayouts).toHaveBeenCalledWith('standard');
+
+    // Roles are always on show; properties are three decisions plus detection.
+    const labels = [...panel.element.querySelectorAll<HTMLElement>('.theme-adoption-controls .field-check > span')]
       .map((label) => label.firstChild?.textContent);
-    expect(groupLabels).toEqual([
-      'Typography', 'Type scale', 'Colour', 'Position and size', 'Detect roles for untagged text',
+    expect(labels).toEqual([
+      'Title', 'Body', 'Caption',
+      'Typography', 'Type scale', 'Colour', 'Detect roles for untagged text',
     ]);
-    expect(panel.element.querySelector<HTMLElement>('.design-more-options')!.hidden).toBe(true);
-    [...panel.element.querySelectorAll<HTMLButtonElement>('button')]
-      .find((button) => button.textContent === 'Options…')!.click();
-    const roleLabels = [...panel.element.querySelectorAll<HTMLElement>('.design-more-options .field-check span')]
-      .map((label) => label.textContent);
-    expect(roleLabels).toEqual(['Title', 'Body', 'Caption']);
-    expect(panel.element.querySelectorAll('.design-readout-list .design-readout-row').length).toBeGreaterThan(0);
+    expect(labels).not.toContain('Heading');
   });
 
   it('dismisses theme picking and the inline theme editor', () => {

@@ -824,11 +824,6 @@ rail.onSlideActivate = () => {
 };
 document.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape') return;
-  if (inspector.dismissPopovers()) {
-    event.preventDefault();
-    event.stopPropagation();
-    return;
-  }
   const escaped = designWorkspace.escape();
   if (escaped === 'theme') themePanel.dismiss();
   const dismissedThemeEditor = !escaped && themePanel.dismiss();
@@ -839,7 +834,6 @@ document.addEventListener('keydown', (event) => {
   }
 }, true);
 inspector.onEditLayouts = (layout) => designWorkspace.openLayoutEditor(layout);
-inspector.onPreviewSlide = (slide, label) => designWorkspace.previewSlideOnCanvas(slide, label);
 /* --- side panel tabs --- */
 
 const PANELS = [

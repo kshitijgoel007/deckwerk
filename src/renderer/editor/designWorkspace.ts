@@ -1,5 +1,5 @@
 import { emptyDeck, type Deck, type Slide, type SlideElement } from '@shared/deck.js';
-import { defaultLayoutMasters, type FixedLayout } from '@shared/layoutMasters.js';
+import { defaultLayoutMasters, syncDeckWithLayoutMasters, type FixedLayout } from '@shared/layoutMasters.js';
 import { ROLE_TYPE_SCALE_PROPERTIES, deckTheme, themeCss, type ThemePreset } from '@shared/themes.js';
 import { renderSlide } from '../player/render.js';
 import {
@@ -305,26 +305,13 @@ export class DesignWorkspace {
 
     const close = (save: boolean): void => {
       if (save) {
-        // Editing a master is editing a deck default: new slides are born on
-        // it, and existing slides move only through Apply (Props' layout
-        // picker or Design's batch Apply). Syncing the whole deck from here
-        // was the one place layout editing behaved unlike theme editing.
         const edited = mastersFromEditingDeck(masterStore.get().deck);
-        const changed = JSON.stringify(edited) !== JSON.stringify(
-          this.deps.store.get().deck.layoutMasters ?? defaultLayoutMasters(),
-        );
-        if (changed) {
-          this.deps.store.commit((deck) => {
-            deck.layoutMasters = edited;
-          }, { label: 'Edit layout masters' });
-          void this.deps.save();
-          const onLayouts = this.deps.store.get().deck.slides
-            .filter((slide) => (slide.layout ?? 'freeform') !== 'freeform').length;
-          this.deps.setStatusMessage(onLayouts > 0
-            ? `Updated the fixed layouts. ${onLayouts} slide${onLayouts === 1 ? '' : 's'} stay`
-              + `${onLayouts === 1 ? 's' : ''} as ${onLayouts === 1 ? 'it is' : 'they are'} until you apply the layout.`
-            : 'Updated the fixed layouts.');
-        }
+        this.deps.store.commit((deck) => {
+          deck.layoutMasters = edited;
+          syncDeckWithLayoutMasters(deck);
+        }, { label: 'Edit layout masters' });
+        void this.deps.save();
+        this.deps.setStatusMessage('Updated the three fixed layouts.');
       }
       overlay.remove();
       this.editingOverlay = null;
