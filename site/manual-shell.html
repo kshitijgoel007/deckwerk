@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{title}} — DeckWerk manual</title>
+<link rel="icon" href="/assets/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="/"><img src="/assets/icon.svg" alt="">DeckWerk</a>
+    <nav>
+      <a href="/#features">Features</a>
+      <a href="/manual/">Manual</a>
+      <a href="https://github.com/vsitzmann/deckwerk">GitHub</a>
+      <a class="cta" href="/#install">Install</a>
+    </nav>
+  </div>
+</header>
+<main class="wrap manual">
+  <aside>
+    <p class="eyebrow"><a href="/manual/">User manual</a></p>
+    <ul>
+{{nav}}
+    </ul>
+  </aside>
+  <article class="prose">
+{{body}}
+    <nav class="pager">{{pager}}</nav>
+  </article>
+</main>
+<footer>
+  <div class="wrap">
+    <span>© Vincent Sitzmann</span>
+    <a href="https://github.com/vsitzmann/deckwerk">github.com/vsitzmann/deckwerk</a>
+    <span class="spacer"></span>
+    <span>MIT License</span>
+  </div>
+</footer>
+</body>
+</html>

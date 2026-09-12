@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- A pair of offset slide frames gives the monospace initials a compact
+       deck silhouette while staying crisp at Dock and app-switcher sizes. -->
+  <rect x="68" y="68" width="888" height="888" rx="144" fill="#1a1b26"/>
+
+  <rect x="232" y="188" width="604" height="604" fill="none" stroke="#565f89" stroke-width="24"/>
+  <rect x="196" y="224" width="604" height="604" fill="#1a1b26" stroke="#c0caf5" stroke-width="28"/>
+
+  <text x="498" y="626" fill="#c0caf5" font-family="Monaspace Krypton" font-size="300" font-weight="700" text-anchor="middle">DW</text>
+</svg>

@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DeckWerk — an opinionated slide editor for talks made of video</title>
+<meta name="description" content="DeckWerk is an open-source, cross-platform WYSIWYG slide editor for research talks, lectures and demos where the visual material is the substance. Linux first. Video first. Agents welcome.">
+<link rel="icon" href="/assets/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/style.css">
+<meta property="og:title" content="DeckWerk">
+<meta property="og:description" content="An opinionated slide editor for talks made of video. Linux first. Agents welcome. Open source.">
+<meta property="og:image" content="https://deckwerk.org/assets/editor.png">
+<meta property="og:url" content="https://deckwerk.org/">
+<meta name="twitter:card" content="summary_large_image">
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="/"><img src="/assets/icon.svg" alt="">DeckWerk</a>
+    <nav>
+      <a href="#why">Why</a>
+      <a href="#features">Features</a>
+      <a href="/manual/">Manual</a>
+      <a href="https://github.com/vsitzmann/deckwerk">GitHub</a>
+      <a class="cta" href="#install">Install</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <section class="hero">
+    <div class="wrap">
+      <p class="eyebrow">Open-source · Linux, macOS, Windows</p>
+      <h1>DeckWerk<sup>1</sup></h1>
+      <p class="tag">An opinionated slide editor for talks made of video.</p>
+      <p class="sub">Drop a clip on a slide and it plays. Crop it, trim it, morph it into the next slide, present it. <b>Linux is a first-class platform.</b> Agents edit the same deck you do. Collaborators join from a link on your network, no accounts.</p>
+      <div class="actions">
+        <a class="btn primary" href="#install">Install DeckWerk</a>
+        <a class="btn ghost" href="/manual/">Read the manual</a>
+      </div>
+      <p class="footnote"><sup>1</sup> <i>Deck</i> as in slide deck, and <i>Werk</i>, the German word for a work, a creation, or a craft.</p>
+    </div>
+    <div class="shot">
+      <div class="frame"><img src="/assets/editor.png" width="3200" height="2000" alt="The DeckWerk editor: slide rail on the left, a warm-paper title slide in the middle, and the Props inspector with layout and Morph controls on the right." fetchpriority="high"></div>
+    </div>
+  </section>
+
+  <section class="band" id="why">
+    <div class="wrap cols">
+      <div>
+        <p class="eyebrow">Why another slide editor</p>
+        <h2>Most presentation software doesn't run on Linux. Web slides barely play video.</h2>
+        <p>DeckWerk exists so that research talks, lectures and demos can be built and delivered from a Linux laptop without compromise. It is optimized for presentations centred on video and image content; animation, tables, plotting and templating are reduced to the minimum.</p>
+        <p>That makes it opinionated. DeckWerk is not trying to reproduce every feature of PowerPoint or Keynote. It is trying to make one particular kind of visual, media-rich presentation easy to create, and easy to collaborate on in trusted networks such as labs and companies.</p>
+      </div>
+      <ul class="principles">
+        <li><span class="n">01</span><div><h3>Cross-platform</h3><p>It has to work on Linux. It also runs on macOS and Windows, and a deck opens identically on all three.</p></div></li>
+        <li><span class="n">02</span><div><h3>Video is a first-class object</h3><p>Drag a video onto a slide. Crop, trim, add effects and present without leaving the editor. Media is transcoded into compatible formats automatically.</p></div></li>
+        <li><span class="n">03</span><div><h3>Native agent integration</h3><p>Agents author slides in the HTML and CSS they already excel at, reuse a deck's assets and typography, and make surgical edits through a revision-bound API.</p></div></li>
+        <li><span class="n">04</span><div><h3>Effortless collaboration on trusted networks</h3><p>A session runs from a laptop or a headless server. Anyone on the same LAN or tailnet opens a link and edits with you, cursors and selections included.</p></div></li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="section" id="features">
+    <div class="wrap">
+      <div class="section-head">
+        <p class="eyebrow">What you get</p>
+        <h2>The features a visual talk needs. Not many more.</h2>
+        <p class="lede">Each of these is covered in the <a href="/manual/">manual</a>. Everything else works the way you would expect from a slide editor.</p>
+      </div>
+      <div class="grid">
+        <div class="card dark"><span class="n">01</span><h3>Video</h3><p>Drag and drop, then crop, trim and mask non-destructively. Clips stay ordinary video files.</p></div>
+        <div class="card"><span class="n">02</span><h3>Images</h3><p>The same tools: masks, circular crops, blur, posterize and greyscale, stacked in any order.</p></div>
+        <div class="card accent"><span class="n">03</span><h3>Morph</h3><p>Magic-move between slides. Auto-pair what can be matched confidently, pair the rest by hand.</p></div>
+        <div class="card"><span class="n">04</span><h3>Builds</h3><p>Reveal a text box, a paragraph, a bullet or a shape at a time. Preview the timeline in place.</p></div>
+        <div class="card"><span class="n">05</span><h3>Math</h3><p>Native LaTeX, inline and display, rendered on the slide as you type.</p></div>
+        <div class="card blue"><span class="n">06</span><h3>Themes</h3><p>Typefaces and a colour scheme, light or dark, applied across the deck. Themes never touch your layout.</p></div>
+        <div class="card dark"><span class="n">07</span><h3>Agents</h3><p>Ask for a new slide in the style of the deck, or a fix to an existing one. Watch it appear live, undo it like any other edit.</p></div>
+        <div class="card green"><span class="n">08</span><h3>Collaboration</h3><p>One click starts a session and copies an invite link. Colleagues join from a browser and see each other work.</p></div>
+        <div class="card"><span class="n">09</span><h3>History</h3><p>A full edit history, including agent edits and the undos of other collaborators.</p></div>
+        <div class="card"><span class="n">10</span><h3>Presenter mode</h3><p>Speaker notes, next slide and a clock on your screen; the deck on theirs.</p></div>
+        <div class="card"><span class="n">11</span><h3>Keynote import</h3><p>Bring existing talks across, media and all.</p></div>
+        <div class="card accent"><span class="n">12</span><h3>Web export</h3><p>Export a self-contained folder that plays in any browser, with video compressed to just the ranges the slides use.</p></div>
+      </div>
+      <div class="shots">
+        <figure><div class="frame"><img src="/assets/build.png" width="3200" height="2000" alt="The Build tab: numbered badges on each element of a slide and a list of build steps that reveal them one click at a time." loading="lazy"></div><figcaption>Build: reveal a box, a paragraph or a shape at a time.</figcaption></figure>
+        <figure><div class="frame"><img src="/assets/morph.png" width="3200" height="2000" alt="The Props tab with Morph enabled between two slides, showing the source and target slide previews." loading="lazy"></div><figcaption>Morph: auto-pair objects across slides, or pair them by hand.</figcaption></figure>
+      </div>
+    </div>
+  </section>
+
+  <section class="section install" id="install">
+    <div class="wrap">
+      <div class="section-head">
+        <p class="eyebrow">Install</p>
+        <h2>One command on most systems.</h2>
+        <p class="lede">DeckWerk is in alpha and under active development. It already authors and delivers real talks, but interfaces and the file format may still change.</p>
+      </div>
+      <div class="grid">
+        <div class="pkg">
+          <h3>Linux</h3>
+          <p>From Flathub, on any distribution with Flatpak.</p>
+          <pre class="cmd"><span class="p">$ </span>flatpak install flathub org.deckwerk.DeckWerk</pre>
+          <p class="alt">Prefer no Flatpak? An <code>.AppImage</code> and a <code>.deb</code> are attached to every <a href="https://github.com/vsitzmann/deckwerk/releases">release</a>.</p>
+        </div>
+        <div class="pkg">
+          <h3>macOS</h3>
+          <p>Signed and notarized, via Homebrew. Apple silicon and Intel.</p>
+          <pre class="cmd"><span class="p">$ </span>brew install --cask vsitzmann/tap/deckwerk</pre>
+          <p class="alt">Or download the <code>.dmg</code> from the <a href="https://github.com/vsitzmann/deckwerk/releases/latest">latest release</a>.</p>
+        </div>
+        <div class="pkg">
+          <h3>Windows</h3>
+          <p>A signed installer, from the latest release.</p>
+          <p><a class="btn ghost" href="https://github.com/vsitzmann/deckwerk/releases/latest">Download for Windows</a></p>
+          <p class="alt">Windows 10 and 11, x64.</p>
+        </div>
+      </div>
+      <div class="pkg source">
+        <h3>Any platform: build it yourself</h3>
+        <p>Three commands, no cross-compilation tricks. Works on distributions the packages above don't cover. Prerequisites are in <a href="https://github.com/vsitzmann/deckwerk/blob/main/docs/BUILDING.md">docs/BUILDING.md</a>.</p>
+        <pre class="cmd"><span class="p">$ </span>git clone https://github.com/vsitzmann/deckwerk.git
+<span class="p">$ </span>cd deckwerk &amp;&amp; npm ci &amp;&amp; npm run dist</pre>
+      </div>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="wrap two">
+      <div>
+        <p class="eyebrow">Made for</p>
+        <h2>Talks where the visual material is the substance.</h2>
+        <ul class="plain">
+          <li>Research talks and technical presentations</li>
+          <li>Video-heavy project demos</li>
+          <li>Lectures built around visual examples</li>
+          <li>Talks with many images, clips, diagrams and animations</li>
+          <li>Decks edited together by people and AI agents</li>
+        </ul>
+      </div>
+      <div>
+        <p class="eyebrow">Your files stay yours</p>
+        <h2>A deck is a folder.</h2>
+        <p>A presentation is a directory on your disk: the slides as JSON, the theme as CSS, the media as ordinary video and image files, plus the edit history. Nothing is uploaded anywhere before you can edit, present, share or archive it. Put it in git if you like.</p>
+<pre class="tree">my-talk/
+├── deck.json      <span class="c"># the slides</span>
+├── theme.css      <span class="c"># fonts and colours</span>
+├── notes.md       <span class="c"># speaker notes</span>
+├── assets/        <span class="c"># your .mp4 and .png, untouched</span>
+└── deck-history   <span class="c"># every edit, human or agent</span></pre>
+      </div>
+    </div>
+  </section>
+
+  <section class="name">
+    <div class="wrap">
+      <p class="word"><i>Deck</i> + <i>Werk</i></p>
+      <p>Made by <a href="https://vsitzmann.github.io">Vincent Sitzmann</a> so that polished talks can be written and given from Linux. MIT licensed. Contributions, bug reports and vibe-coded pull requests are welcome.</p>
+      <span class="status">Alpha · under active development</span>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>© Vincent Sitzmann</span>
+    <a href="https://github.com/vsitzmann/deckwerk">github.com/vsitzmann/deckwerk</a>
+    <a href="https://github.com/vsitzmann/deckwerk/releases">Releases</a>
+    <a href="/manual/">Manual</a>
+    <span class="spacer"></span>
+    <span>MIT License</span>
+  </div>
+</footer>
+
+</body>
+</html>
