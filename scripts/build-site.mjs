@@ -9,7 +9,8 @@
 import { cpSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { marked } from 'marked';
+import { marked, Renderer } from 'marked';
+const defaultLink = Renderer.prototype.link;
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const site = resolve(root, 'site');
@@ -33,19 +34,20 @@ const chapters = readdirSync(manual)
 
 // Chapters link to one another as `06-headless-server.md`; on the site each
 // chapter lives at /manual/<slug>/.
-const renderer = new marked.Renderer();
-const baseLink = renderer.link.bind(renderer);
-renderer.link = function (token) {
-  const m = token.href.match(/^(\d+-[\w-]+)\.md(#.*)?$/);
-  if (m) token.href = `../${m[1]}/${m[2] ?? ''}`;
-  return baseLink(token);
-};
-// "> Screenshot placeholder: …" notes are authoring reminders, not content.
-renderer.blockquote = function (token) {
-  if (/^Screenshot placeholder:/i.test(token.text.trim())) return '';
-  return `<blockquote>${this.parser.parse(token.tokens)}</blockquote>\n`;
-};
-marked.use({ renderer, gfm: true });
+marked.use({
+  gfm: true,
+  renderer: {
+    link(token) {
+      const m = token.href.match(/^(\d+-[\w-]+)\.md(#.*)?$/);
+      if (m) token = { ...token, href: `../${m[1]}/${m[2] ?? ''}` };
+      return defaultLink.call(this, token);
+    },
+    blockquote(token) {
+      if (/^Screenshot placeholder:/i.test(token.text.trim())) return '';
+      return `<blockquote>${this.parser.parse(token.tokens)}</blockquote>\n`;
+    },
+  },
+});
 
 const nav = (current) =>
   chapters
