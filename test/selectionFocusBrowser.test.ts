@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { electronBinary } from './support/browserSession.js';
+import { electronBinary, eventually } from './support/browserSession.js';
 import {
   MOD,
   SHAPE,
@@ -244,7 +244,10 @@ describe.skipIf(!electronBinary)('table cell selection', () => {
     await session.reset();
     await session.doubleClick(TABLE);
     await session.clickCell(2, 2);
-    expect((await session.state()).table?.elementId, 'a single cell is the range').toBe(TABLE);
+    // The cell click lands while the double-click is still opening the table
+    // for editing; on a loaded runner the range appears a beat later.
+    await eventually(async () => (await session.state()).table?.elementId,
+      'a single cell is the range', (id) => id === TABLE);
 
     await session.clickEmpty();
     const state = await session.state();
