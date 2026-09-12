@@ -2,6 +2,8 @@
 
 **DeckWerk is an opinionated cross-platform what-you-see-is-what-you-get slide editor by Vincent Sitzmann.**
 
+Website and manual: **[deckwerk.org](https://deckwerk.org)**
+
 I designed DeckWerk to bring the ability to create and present polished talks to Linux. It is optimized for presentations centered on video and image content, with animation, tables, plotting, templating, and similar features reduced to the minimum.
 
 DeckWerk is intended for research talks, lectures, demos, and other presentations in which the visual material is the substance.
