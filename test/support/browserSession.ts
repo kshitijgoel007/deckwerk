@@ -196,11 +196,36 @@ export class Cdp {
     });
   }
 
+  /** A real right click at an absolute viewport coordinate, opening a menu there. */
+  async rightClickAt(x: number, y: number): Promise<void> {
+    await this.mouse('mouseMoved', x, y, 0);
+    await this.call('Input.dispatchMouseEvent', {
+      type: 'mousePressed', x, y, button: 'right', buttons: 2, clickCount: 1,
+    });
+    await this.call('Input.dispatchMouseEvent', {
+      type: 'mouseReleased', x, y, button: 'right', buttons: 0, clickCount: 1,
+    });
+  }
+
   /** A real left click at an absolute viewport coordinate. */
   async clickAt(x: number, y: number): Promise<void> {
     await this.mouse('mouseMoved', x, y, 0);
     await this.mouse('mousePressed', x, y, 1);
     await this.mouse('mouseReleased', x, y, 1);
+  }
+
+  /**
+   * A real double-click at a point. The second press carries clickCount 2, the
+   * way the OS reports it: two clickCount-1 presses rely on Chromium pairing
+   * them by wall-clock interval, which a loaded CI runner routinely exceeds.
+   */
+  async doubleClickAt(x: number, y: number): Promise<void> {
+    await this.mouse('mouseMoved', x, y, 0);
+    await this.mouse('mousePressed', x, y, 1);
+    await this.mouse('mouseReleased', x, y, 1);
+    await wait(35);
+    await this.mouse('mousePressed', x, y, 2);
+    await this.mouse('mouseReleased', x, y, 2);
   }
 
   /** A real left click at a point inside the matching node, given as 0..1. */

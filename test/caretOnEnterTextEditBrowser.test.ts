@@ -133,8 +133,7 @@ describe.skipIf(!electronBinary)('caret placement when a click opens a text edit
     // halves of the gesture agree about which line the click belongs to.
     await deselect();
     const lastWord = 'juliett';
-    await cdp.clickAt(blank.x, blank.y);
-    await cdp.clickAt(blank.x, blank.y);
+    await cdp.doubleClickAt(blank.x, blank.y);
     expect(
       await cdp.evaluate<Caret>(CARET),
       'a double-click in the blank area takes the nearest word',
