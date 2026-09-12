@@ -270,13 +270,20 @@ describe.skipIf(!electronBinary)('mode flags and focus lifecycle', () => {
     expect(await session.problems(), 'invariants after post-session typing').toEqual([]);
   });
 
-  it('escapes one layer at a time with the theme editor open during a text edit', {
+  // The layer this guards is gone: "Make layout and theme two reset axes with
+  // one Apply and a dry run" (c4543b9) removed the inline theme editor and the
+  // "Edit theme…" button that opened it, so there is no second panel to stack
+  // over a live text edit here any more. The Escape-layering rule it checked
+  // still matters — rewrite this against a layer that exists today (the Design
+  // tab's layout editor is the obvious candidate, and modeFocusSession's probe
+  // would need to report it) rather than deleting the case outright.
+  it.skip('escapes one layer at a time with the theme editor open during a text edit', {
     timeout: 120_000,
   }, async () => {
     await session.reset();
 
-    // Open the Theme tab and its inline theme editor.
-    await session.cdp.clickByText('#side-tabs button', 'Theme', 'Theme tab');
+    // Open the Design tab and its inline theme editor.
+    await session.cdp.clickByText('#side-tabs button', 'Design', 'Design tab');
     await wait(150);
     await session.cdp.clickByText('button', 'Edit theme…', 'Edit theme button');
     await wait(150);
