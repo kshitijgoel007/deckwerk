@@ -148,7 +148,13 @@ describe.skipIf(!electronBinary)('desktop inline-formatting matrix', () => {
         if (selectBoxFirst || attempt > 0) {
           await editor!.click(`#canvas [data-element-id="${TEXT_ID}"]`, `${label}: text box`);
         }
-        await editor!.evaluate('new Promise((resolve) => requestAnimationFrame(() => resolve(true)))');
+        // A hidden window under CI's bare Xvfb may never get a compositor
+        // frame, so a bare rAF await hangs (see settleFrames in
+        // support/exhaustiveTextFormatting.ts); the timer bounds the wait.
+        await editor!.evaluate(`new Promise((resolve) => {
+          const timer = setTimeout(() => resolve('timer'), 100);
+          requestAnimationFrame(() => { clearTimeout(timer); resolve('frame'); });
+        })`);
         if (doubleClickSelection) {
           await editor!.doubleClickTextAtOffset(CONTENT, range.start + 1, label);
         } else {

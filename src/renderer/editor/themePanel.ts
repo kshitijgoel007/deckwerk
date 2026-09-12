@@ -1,5 +1,5 @@
 import type { Deck, Slide, ThemeStyle } from '@shared/deck.js';
-import { realignSlideToLayout, type FixedLayout } from '@shared/layoutMasters.js';
+import type { FixedLayout } from '@shared/layoutMasters.js';
 import {
   THEMES,
   adoptThemeStyles,
@@ -118,8 +118,6 @@ export interface ThemePanel {
   /** Keep scope controls consistent with the rail selection. */
   syncScope(slideSelectionCount: number): void;
   applyButtonLabel(): string;
-  /** Label of the Apply layout button; follows the same scope as Apply theme. */
-  layoutApplyButtonLabel(): string;
   /** Close the theme chooser/editor and end its central preview session. */
   dismiss(): boolean;
 }
@@ -147,9 +145,7 @@ export function createThemePanel(deps: ThemePanelDeps): ThemePanel {
   let themeGallery: ThemeGallery | null = null;
   let themeScopeSelect: HTMLSelectElement | null = null;
   let themeApplyButton: HTMLButtonElement | null = null;
-  let layoutApplyButton: HTMLButtonElement | null = null;
   let themeReadout: HTMLElement | null = null;
-  let layoutReadout: HTMLElement | null = null;
   let mastersHost: HTMLElement | null = null;
   let mastersKey = '';
   let modeButtons = new Map<ThemeMode, HTMLButtonElement>();
@@ -245,7 +241,9 @@ export function createThemePanel(deps: ThemePanelDeps): ThemePanel {
   function chooseTheme(theme: ThemePreset): void {
     const deck = store.get().deck;
     if (deck.themeSelection?.preset === theme.id && deck.themePreset === theme.id) return;
-    store.commit((target) => chooseDeckTheme(target, theme), { label: `Choose ${theme.name}` });
+    // The stylesheet the slides really load: pinning reads their current look from it.
+    const currentCss = cssEditor.getValue();
+    store.commit((target) => chooseDeckTheme(target, theme, currentCss), { label: `Choose ${theme.name}` });
     refreshThemeCss();
     themeGallery?.setInstalled(theme.id);
     void save();
@@ -316,20 +314,6 @@ export function createThemePanel(deps: ThemePanelDeps): ThemePanel {
           : 'Apply theme to current slide';
   }
 
-  /**
-   * Apply layout shares Apply theme's scope: it is the same question, asked of
-   * geometry instead of styling. Objects are not a layout scope, so "selected
-   * objects" means the slide those objects sit on.
-   */
-  function layoutApplyButtonLabel(): string {
-    const count = store.get().slideSelection.size;
-    return themeAdoption.scope === 'deck'
-      ? 'Apply layout to deck'
-      : themeAdoption.scope === 'slides'
-        ? `Apply layout to ${count} selected slide${count === 1 ? '' : 's'}`
-        : 'Apply layout to current slide';
-  }
-
   /* --- dry runs and previews --- */
 
   function adoptOnClone(): { deck: Deck; ids: Set<string> } | null {
@@ -344,6 +328,7 @@ export function createThemePanel(deps: ThemePanelDeps): ThemePanel {
       slideIndex,
       new Set(selection),
       new Set(slideSelection),
+      cssEditor.getValue(),
     );
     return { deck: clone, ids: scopeSlideIds() };
   }
@@ -371,20 +356,6 @@ export function createThemePanel(deps: ThemePanelDeps): ThemePanel {
     return { boxes, backgrounds };
   }
 
-  /** What Apply layout would change: boxes re-aligned and freeform slides skipped. */
-  function layoutChanges(): { deck: Deck; moved: number; freeform: number; ids: Set<string> } {
-    const deck = structuredClone(store.get().deck);
-    const ids = scopeSlideIds();
-    let moved = 0;
-    let freeform = 0;
-    for (const slide of deck.slides) {
-      if (!ids.has(slide.id)) continue;
-      if ((slide.layout ?? 'freeform') === 'freeform') { freeform += 1; continue; }
-      moved += realignSlideToLayout(slide, deck.layoutMasters);
-    }
-    return { deck, moved, freeform, ids };
-  }
-
   function plural(count: number, noun: string): string {
     return `${count} ${noun}${count === 1 ? '' : noun.endsWith('x') ? 'es' : 's'}`;
   }
@@ -408,16 +379,6 @@ export function createThemePanel(deps: ThemePanelDeps): ThemePanel {
           ? 'Installs the theme; nothing on these slides changes.'
           : parts.join(', ');
       }
-    }
-    if (layoutReadout && layoutApplyButton) {
-      const { moved, freeform, ids } = layoutChanges();
-      layoutApplyButton.textContent = layoutApplyButtonLabel();
-      layoutApplyButton.disabled = moved === 0;
-      layoutReadout.textContent = moved > 0
-        ? `${plural(moved, 'box')} re-aligned${freeform ? `, ${plural(freeform, 'freeform slide')} skipped` : ''}`
-        : freeform === ids.size && ids.size > 0
-          ? 'Freeform slides have no layout to align to.'
-          : 'Every box is where its layout puts it.';
     }
     void slideSelection;
   }
@@ -443,6 +404,7 @@ export function createThemePanel(deps: ThemePanelDeps): ThemePanel {
     if (!theme) return;
     clearPreview();
     const { slideIndex, slideSelection, selection } = store.get();
+    const currentCss = cssEditor.getValue();
     store.commit((deck) => adoptThemeStyles(
       deck,
       theme,
@@ -450,6 +412,7 @@ export function createThemePanel(deps: ThemePanelDeps): ThemePanel {
       slideIndex,
       new Set(selection),
       new Set(slideSelection),
+      currentCss,
     ));
     // Every scope installs what it adopted (see adoptThemeStyles), so the
     // stylesheet the slides load has to follow the deck's defaults each time.
@@ -466,35 +429,6 @@ export function createThemePanel(deps: ThemePanelDeps): ThemePanel {
         ? `${slideSelection.size} selected slide${slideSelection.size === 1 ? '' : 's'}`
         : themeAdoption.scope === 'slide' ? 'current slide' : 'selection';
     setStatusMessage(`Used selected “${theme.name}” styles for ${scopeName}.`);
-  }
-
-  /**
-   * Re-align every in-scope slide's text boxes to its own layout master.
-   * Nothing about the slide's look changes: this is for boxes that were
-   * nudged, resized or imported off-grid and should sit where the layout says.
-   */
-  function applyLayout(): void {
-    clearPreview();
-    const ids = scopeSlideIds();
-    let moved = 0;
-    let freeform = 0;
-    store.commit((target) => {
-      for (const slide of target.slides) {
-        if (!ids.has(slide.id)) continue;
-        if ((slide.layout ?? 'freeform') === 'freeform') { freeform += 1; continue; }
-        moved += realignSlideToLayout(slide, target.layoutMasters);
-      }
-    }, { label: 'Apply layout' });
-    void save();
-    renderReadouts();
-    const scopeName = themeAdoption.scope === 'deck'
-      ? 'the deck'
-      : ids.size === 1 ? 'the current slide' : `${ids.size} selected slides`;
-    setStatusMessage(moved === 0
-      ? (freeform === ids.size
-        ? `Nothing to align: ${scopeName} uses the freeform layout.`
-        : `No text boxes to align on ${scopeName}.`)
-      : `Re-aligned ${moved} text box${moved === 1 ? '' : 'es'} to the layout on ${scopeName}.`);
   }
 
   /* --- layouts strip --- */
@@ -730,21 +664,7 @@ export function createThemePanel(deps: ThemePanelDeps): ThemePanel {
     const layoutsSection = panelSection('Layouts', 'layouts-section');
     layoutsSection.append(mastersHost, mastersRow);
 
-    /* --- apply layout --- */
-    layoutReadout = hintLine('', 'layout-readout');
-    const layoutApplyAction = document.createElement('div');
-    layoutApplyAction.className = 'theme-apply-action';
-    layoutApplyButton = barButton(layoutApplyButtonLabel(), applyLayout, 'primary panel-action');
-    layoutApplyButton.addEventListener('mouseenter', () => {
-      if (layoutApplyButton!.disabled) return;
-      previewSlideFrom(layoutChanges().deck, 'Apply layout');
-    });
-    layoutApplyButton.addEventListener('mouseleave', clearPreview);
-    layoutApplyAction.append(layoutApplyButton);
-    const layoutApplySection = panelSection('Apply layout', 'layout-apply-section');
-    layoutApplySection.append(layoutReadout, layoutApplyAction);
-
-    wrap.append(intro, themeSection, applySection, layoutsSection, layoutApplySection);
+    wrap.append(intro, themeSection, applySection, layoutsSection);
     refreshPreviousBadge();
     renderActiveTheme();
     renderMasters(true);
@@ -790,11 +710,12 @@ export function createThemePanel(deps: ThemePanelDeps): ThemePanel {
     draft = null;
     if (themeEditor) themeEditor.hidden = true;
     deps.onPreviewThemeDraft?.(null);
+    const currentCss = cssEditor.getValue();
     if (changed) {
       store.commit((target) => {
         // A default changes for new slides and the next Apply; slides already
         // on the stylesheet are pinned where they are (installThemeStyle).
-        installThemeStyle(target, style, base.id, { slides: new Set(), elements: new Set() });
+        installThemeStyle(target, style, base.id, { slides: new Set(), elements: new Set() }, currentCss);
         selectedThemeId = base.id;
       }, { label: `Edit theme ${base.name}` });
       refreshThemeCss();
@@ -909,7 +830,6 @@ export function createThemePanel(deps: ThemePanelDeps): ThemePanel {
     refreshSwatches,
     syncScope,
     applyButtonLabel,
-    layoutApplyButtonLabel,
     dismiss: () => {
       const wasOpen = themePreviewOpen
         || Boolean(chooser && !chooser.hidden)

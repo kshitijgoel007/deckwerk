@@ -200,6 +200,74 @@ export function syncSlideWithLayoutMaster(
   }
 }
 
+/** The layout slot a text box stands in, by its placeholder record or its role class. */
+export function layoutSlotOf(element: SlideElement): 'title' | 'body' | null {
+  if (element.type !== 'text') return null;
+  if (element.layoutPlaceholder) return element.layoutPlaceholder;
+  if (element.class.includes(roleClass('title'))) return 'title';
+  if (element.class.includes(roleClass('body'))) return 'body';
+  return null;
+}
+
+/**
+ * Where the layout puts a text box of this role. Purely a function of the
+ * role: every title-role box snaps to the title slot, every body-role box to
+ * the body slot, whichever box on the slide it is. The slide's own layout
+ * master answers first; a freeform slide, which places nothing, falls back to
+ * the standard layout so the box still has a default to return to. Null when
+ * the box has no role or no master defines the slot.
+ */
+export function layoutGeometryFor(
+  slide: Slide,
+  element: SlideElement,
+  masters: Deck['layoutMasters'] = null,
+): Pick<TextEl, 'x' | 'y' | 'w' | 'h' | 'rot' | 'align' | 'valign'> | null {
+  const slot = layoutSlotOf(element);
+  if (!slot) return null;
+  const layout = (slide.layout ?? 'freeform') as FixedLayout;
+  const all = masters ?? defaultLayoutMasters();
+  const slotIn = (master: LayoutMaster): TextEl | undefined => master.elements.find(
+    (candidate): candidate is TextEl => candidate.type === 'text' && candidate.layoutPlaceholder === slot,
+  );
+  const source = slotIn(all[layout]) ?? slotIn(all.standard);
+  if (!source) return null;
+  const { x, y, w, h, rot, align, valign } = source;
+  return { x, y, w, h, rot, align, valign };
+}
+
+/** True when the box already sits exactly where its layout puts it. */
+export function elementFollowsLayout(
+  slide: Slide,
+  element: SlideElement,
+  masters: Deck['layoutMasters'] = null,
+): boolean {
+  const target = layoutGeometryFor(slide, element, masters);
+  if (!target || element.type !== 'text') return false;
+  return (['x', 'y', 'w', 'h', 'rot', 'align', 'valign'] as const)
+    .every((key) => element[key] === target[key]);
+}
+
+/**
+ * Put ONE text box back where its role's layout slot is: the per-box
+ * counterpart of `realignSlideToLayout`, for the title that is a few pixels
+ * off with no way to find the right spot but trial and error. Never touches
+ * the rest of the slide; geometry and alignment only, styling and content
+ * stay. Returns whether anything moved.
+ */
+export function realignElementToLayout(
+  slide: Slide,
+  elementId: string,
+  masters: Deck['layoutMasters'] = null,
+): boolean {
+  const element = slide.elements.find((candidate) => candidate.id === elementId);
+  if (!element || element.type !== 'text') return false;
+  const target = layoutGeometryFor(slide, element, masters);
+  if (!target) return false;
+  if (elementFollowsLayout(slide, element, masters)) return false;
+  Object.assign(element, target);
+  return true;
+}
+
 /** Synchronize every slide that uses one of the fixed layouts. */
 export function syncDeckWithLayoutMasters(deck: Deck): void {
   if (!deck.layoutMasters) return;

@@ -1,4 +1,5 @@
 import type { SlideElement } from '@shared/deck.js';
+import { elementFollowsLayout, layoutGeometryFor, realignElementToLayout } from '@shared/layoutMasters.js';
 import { EditorCanvas } from './canvas.js';
 import { setCircularMask } from '@shared/mediaMask.js';
 import { mediaNaturalSize } from './mediaNatural.js';
@@ -427,6 +428,17 @@ export function makeContextActions(
         { label: 'Bring to front', action: () => store.updateSelected((e) => (e.z += 1000)) },
         { label: 'Send to back', action: () => store.updateSelected((e) => (e.z -= 1000)) },
       );
+      if (el.type === 'text' && store.slide
+        && layoutGeometryFor(store.slide, el, store.get().deck.layoutMasters)
+        && !elementFollowsLayout(store.slide, el, store.get().deck.layoutMasters)) {
+        items.push('separator', {
+          label: 'Reset to layout position',
+          action: () => store.commit((deck) => {
+            const slide = deck.slides.find((candidate) => candidate.elements.some((e) => e.id === el.id));
+            if (slide) realignElementToLayout(slide, el.id, deck.layoutMasters);
+          }, { label: 'Reset to layout position' }),
+        });
+      }
       if (el.type === 'image' || el.type === 'video') {
         items.push('separator', {
           label: canvas.maskingElement() === el.id ? 'Done editing mask' : 'Edit mask (crop)',

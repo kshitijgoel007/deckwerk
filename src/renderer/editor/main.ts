@@ -834,6 +834,7 @@ document.addEventListener('keydown', (event) => {
   }
 }, true);
 inspector.onEditLayouts = (layout) => designWorkspace.openLayoutEditor(layout);
+inspector.onPreviewSlide = (slide, label) => designWorkspace.previewSlideOnCanvas(slide, label);
 /* --- side panel tabs --- */
 
 const PANELS = [

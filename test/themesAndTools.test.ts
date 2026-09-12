@@ -209,6 +209,8 @@ describe('applying a theme', () => {
     const to = THEMES[3];
     // A shape painted from the current theme's accent swatch travels to the
     // new theme's accent; a colour that is nobody's swatch is free styling.
+    // "Current" is literal: only swatches of themes the deck has worn travel.
+    deck.themePreset = from.id;
     deck.slides[0].elements.push({
       id: 'swatched', type: 'shape', x: 0, y: 0, w: 10, h: 10, rot: 0, z: 4, opacity: 1,
       class: [], style: {}, shape: 'rect', fill: from.palette[2], stroke: '#ffffff',

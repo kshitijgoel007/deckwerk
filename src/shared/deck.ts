@@ -170,6 +170,14 @@ const TextElement = BaseElement.extend({
   effects: z.array(MediaEffectSchema).optional(),
   /** Required semantic slot when this text is a fixed layout placeholder. */
   layoutPlaceholder: z.enum(['title', 'body']).optional(),
+  /**
+   * CSS properties the author set on the whole box deliberately (bold, a
+   * chosen face, a colour). The rest of `style` may be copies the app wrote
+   * to pin the box while the theme changed under it. The theme may replace
+   * those copies; it never touches an override. A box with any override is
+   * shown as "Body+", InDesign-style, and "Follow theme" clears them.
+   */
+  overrides: z.array(z.string()).optional(),
 });
 
 const ImageElement = BaseElement.extend({

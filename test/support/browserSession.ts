@@ -214,6 +214,20 @@ export class Cdp {
     await this.mouse('mouseReleased', x, y, 1);
   }
 
+  /**
+   * A real double-click at a point. The second press carries clickCount 2, the
+   * way the OS reports it: two clickCount-1 presses rely on Chromium pairing
+   * them by wall-clock interval, which a loaded CI runner routinely exceeds.
+   */
+  async doubleClickAt(x: number, y: number): Promise<void> {
+    await this.mouse('mouseMoved', x, y, 0);
+    await this.mouse('mousePressed', x, y, 1);
+    await this.mouse('mouseReleased', x, y, 1);
+    await wait(35);
+    await this.mouse('mousePressed', x, y, 2);
+    await this.mouse('mouseReleased', x, y, 2);
+  }
+
   /** A real left click at a point inside the matching node, given as 0..1. */
   async clickWithin(
     selector: string,

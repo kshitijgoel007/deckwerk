@@ -69,20 +69,23 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Runner images come and go: macos-13 was retired in December 2025
+          # and macos-14 is deprecated. Check the table at
+          # github.com/actions/runner-images before bumping these.
           - label: macOS arm64
-            os: macos-14
+            os: macos-15
             platform: mac
             arch: arm64
-          # Intel macOS needs its own runner purely for the importer freeze.
-          # If GitHub retires the macos-13 Intel image, the choice is to build
-          # this arch under Rosetta with an x86_64 Python or to drop it.
+          # Intel macOS needs its own runner purely for the importer freeze;
+          # the `-intel` images are the x64 hosts GitHub still offers.
           - label: macOS x64
-            os: macos-13
+            os: macos-15-intel
             platform: mac
             arch: x64
           # Oldest supported glibc wins: a .deb or AppImage linked against a
           # newer glibc simply refuses to start on older distributions, while
-          # the reverse is fine.
+          # the reverse is fine. ubuntu-22.04 enters deprecation on
+          # 2026-09-17 and is removed 2027-04-17; move to ubuntu-24.04 then.
           - label: Linux x64
             os: ubuntu-22.04
             platform: linux
@@ -215,14 +218,29 @@ jobs:
     if: needs.version.outputs.publish == 'true'
     runs-on: ubuntu-latest
     steps:
+      # Until the tap repository and its PAT exist, the release itself must
+      # still succeed: skip this job's work instead of failing the run.
+      - id: tap
+        env:
+          TAP_GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+        run: |
+          if [ -z "$TAP_GITHUB_TOKEN" ]; then
+            echo "::warning::TAP_GITHUB_TOKEN is unset — not updating the Homebrew tap (see docs/RELEASING.md §3)"
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/checkout@v4
+        if: steps.tap.outputs.enabled == 'true'
       - uses: actions/download-artifact@v4
+        if: steps.tap.outputs.enabled == 'true'
         with:
           path: artifacts
           pattern: installers-mac-*
           merge-multiple: true
 
       - name: Check out the tap
+        if: steps.tap.outputs.enabled == 'true'
         uses: actions/checkout@v4
         with:
           repository: vsitzmann/homebrew-tap
@@ -232,6 +250,7 @@ jobs:
           token: ${{ secrets.TAP_GITHUB_TOKEN }}
 
       - name: Render the cask
+        if: steps.tap.outputs.enabled == 'true'
         env:
           VERSION: ${{ needs.version.outputs.version }}
         run: |
@@ -243,6 +262,7 @@ jobs:
           cat tap/Casks/deckwerk.rb
 
       - name: Commit
+        if: steps.tap.outputs.enabled == 'true'
         working-directory: tap
         env:
           VERSION: ${{ needs.version.outputs.version }}
@@ -278,19 +298,30 @@ jobs:
             "artifacts/deckwerk-$VERSION-linux-x64.tar.gz"
           git --no-pager diff -- flatpak/
 
-      - name: Open a pull request against this repository
+      - name: Push the regenerated manifest
         # The manifest is mirrored to github.com/flathub/org.deckwerk.DeckWerk
         # by hand (or by a second workflow) once the initial submission is
         # accepted; until then this keeps the in-repo manifest honest and gives
-        # a reviewable diff to copy across.
-        uses: peter-evans/create-pull-request@v6
-        with:
-          branch: flatpak/${{ needs.version.outputs.version }}
-          title: 'flatpak: DeckWerk ${{ needs.version.outputs.version }}'
-          body: |
-            Regenerated Flathub manifest for `v${{ needs.version.outputs.version }}`.
-
-            Copy this diff into a PR against
-            `flathub/org.deckwerk.DeckWerk` to ship the Flatpak update.
-          commit-message: 'flatpak: DeckWerk ${{ needs.version.outputs.version }}'
-          add-paths: flatpak/
+        # a reviewable diff to copy across. The branch push needs only
+        # contents:write; opening the pull request additionally needs the
+        # repository setting "Allow GitHub Actions to create and approve pull
+        # requests", so that step is allowed to fail with a pointer instead.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          BRANCH="flatpak/$VERSION"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B "$BRANCH"
+          git add flatpak/
+          if git diff --cached --quiet; then
+            echo "manifest already points at v$VERSION"; exit 0
+          fi
+          git commit -m "flatpak: DeckWerk $VERSION"
+          git push --force origin "$BRANCH"
+          if ! gh pr create --base "${{ github.event.repository.default_branch }}" --head "$BRANCH" \
+               --title "flatpak: DeckWerk $VERSION" \
+               --body "Regenerated Flathub manifest for v$VERSION. Copy this diff into a PR against flathub/org.deckwerk.DeckWerk to ship the Flatpak update."; then
+            echo "::warning::Could not open the pull request (enable 'Allow GitHub Actions to create and approve pull requests' under Settings > Actions). Branch pushed: https://github.com/${GITHUB_REPOSITORY}/compare/$BRANCH"
+          fi

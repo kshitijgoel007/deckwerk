@@ -17,9 +17,17 @@ import type {
 import { type AlignMode, alignElements } from './align.js';
 import { sameDeckIgnoringNotes, type EditorStore } from './store.js';
 import { LAYOUT_LABELS, applySlideLayout, type SlideLayout } from './slideLayouts.js';
+import { elementFollowsLayout, layoutGeometryFor, realignElementToLayout } from '@shared/layoutMasters.js';
 import { MorphPanel } from './morphPanel.js';
 import { fontFamilyField, primaryFamily } from './fontPicker.js';
-import { deckTheme, deckThemes, themeById, type ThemeTextRole } from '@shared/themes.js';
+import {
+  deckTheme,
+  deckThemes,
+  followThemeOnText,
+  textOverrides,
+  themeById,
+  type ThemeTextRole,
+} from '@shared/themes.js';
 import { colorField, colorForInput } from './colorPicker.js';
 import { setCircularMask } from '@shared/mediaMask.js';
 import { mediaNaturalSize } from './mediaNatural.js';
@@ -181,6 +189,8 @@ export class Inspector {
   private morphPanel: MorphPanel;
   /** Enter the dedicated editor for the three fixed layout masters. */
   onEditLayouts?: (layout: SlideLayout) => void;
+  /** Show a dry-run slide on the canvas in place of the real one; `null` clears it. */
+  onPreviewSlide?: (slide: Slide | null, label: string) => void;
 
 
   constructor(host: HTMLElement, store: EditorStore) {
@@ -794,6 +804,49 @@ export class Inspector {
     arrange.append(arrangeLabel, order);
     bottom.appendChild(arrange);
     wrap.appendChild(bottom);
+
+    // A title or body box that has drifted off its layout slot has no way
+    // back but trial and error; give it one. Shown only for the slot's own box
+    // on a slide that has a layout, and idle while the box is already there.
+    const slide = this.store.slide;
+    if (!multi && slide && layoutGeometryFor(slide, first, this.store.get().deck.layoutMasters)) {
+      const aligned = elementFollowsLayout(slide, first, this.store.get().deck.layoutMasters);
+      const row = document.createElement('div');
+      row.className = 'layout-reset-row';
+      const reset = document.createElement('button');
+      reset.type = 'button';
+      reset.className = 'layout-reset-button';
+      reset.textContent = 'Reset to layout position';
+      reset.title = aligned
+        ? 'This box is already where its layout puts it'
+        : 'Move and size this box exactly as its slide layout places it';
+      reset.disabled = aligned;
+      // Hovering shows where the box would land, on the canvas, before the
+      // author commits to it: the whole point is knowing the right spot.
+      const previewReset = () => {
+        if (reset.disabled || !this.onPreviewSlide) return;
+        const current = this.store.slide;
+        if (!current) return;
+        const shown = structuredClone(current);
+        realignElementToLayout(shown, first.id, this.store.get().deck.layoutMasters);
+        this.onPreviewSlide(shown, 'Reset to layout position');
+      };
+      const clearPreview = () => this.onPreviewSlide?.(null, '');
+      reset.addEventListener('mouseenter', previewReset);
+      reset.addEventListener('focus', previewReset);
+      reset.addEventListener('mouseleave', clearPreview);
+      reset.addEventListener('blur', clearPreview);
+      reset.addEventListener('click', () => {
+        clearPreview();
+        const id = first.id;
+        this.store.commit((deck) => {
+          const target = deck.slides.find((candidate) => candidate.elements.some((el) => el.id === id));
+          if (target) realignElementToLayout(target, id, deck.layoutMasters);
+        }, { label: 'Reset to layout position' });
+      });
+      row.appendChild(reset);
+      wrap.appendChild(row);
+    }
     return geometry.section;
   }
 
@@ -1256,7 +1309,7 @@ export class Inspector {
       case 'text': {
         const wrap = typeSections();
         const typography = optionSection('Typography', 'text-typography-options');
-        const layout = optionSection('Layout', 'text-layout-options');
+        const layout = optionSection('Paragraph', 'text-layout-options');
 
         if (el.table) {
           layout.caption.textContent = 'rows fit their contents';
@@ -1326,7 +1379,7 @@ export class Inspector {
         const displayedWeight = authoredWeight
           ?? (computedTypography?.fontWeightExplicit ? computedTypography.fontWeight : null);
         const fontMetrics = document.createElement('div');
-        fontMetrics.className = 'compact-field-row';
+        fontMetrics.className = 'compact-field-row font-metrics-row';
         const fontSizeField = optionalNumberField(
           'Font size',
           displayedSize,
@@ -1449,23 +1502,35 @@ export class Inspector {
         // Semantic role, orthogonal to the free-form class field: the role is
         // what "Cast fonts" and theme.css target, so restyling the deck later
         // lands on the right elements.
+        const carried = el.class.find((name) => ROLE_CLASS.test(name)) ?? '';
+        const legacy = carried && !ROLE_ORDER.includes(carried.slice(5) as ThemeTypeRole)
+          ? [[carried, ROLE_LABELS[carried.slice(5) as ThemeTypeRole]] as [string, string]]
+          : [];
         const ROLES: Array<[string, string]> = [
           ...ROLE_ORDER.map((role): [string, string] => [`role-${role}`, ROLE_LABELS[role]]),
+          ...legacy,
           ['', 'None'],
         ];
-        const current = ROLES.find(([cls]) => cls && el.class.includes(cls))?.[0] ?? '';
+        const current = carried;
         const roleSelect = document.createElement('label');
         roleSelect.className = 'field';
         const roleSpan = document.createElement('span');
         roleSpan.textContent = 'Role';
         const roleDrop = document.createElement('select');
+        // InDesign's convention: a "+" after the role says the author changed
+        // something on this box that the role no longer decides.
+        const overridden = textOverrides(el);
         for (const [value, label] of ROLES) {
           const opt = document.createElement('option');
           opt.value = value;
-          opt.textContent = label;
+          opt.textContent = value && value === current && overridden.length > 0 ? `${label}+` : label;
           roleDrop.appendChild(opt);
         }
         roleDrop.value = current;
+        if (overridden.length > 0) {
+          roleDrop.title = `Customised on this box: ${overridden.join(', ')}. `
+            + 'The theme changes everything else; Follow theme clears these too.';
+        }
         roleDrop.addEventListener('change', () => {
           const role = roleDrop.value ? roleDrop.value.slice(5) : null;
           const defaults = this.roleTypeDefaults(role);
@@ -1477,6 +1542,46 @@ export class Inspector {
         roleSelect.append(roleSpan, roleDrop);
         roleSelect.classList.add('text-role');
         typography.content.prepend(roleSelect);
+
+        // One click to drop every customisation (and any pinned copy with it),
+        // so the theme decides all of the box's type again: the "+" comes off.
+        // Always in the same place, idle while there is no "+", like Reset to
+        // layout position under Geometry.
+        {
+          const followRow = document.createElement('div');
+          followRow.className = 'follow-theme-row';
+          const follow = document.createElement('button');
+          follow.type = 'button';
+          follow.className = 'follow-theme-button';
+          follow.textContent = 'Reset to theme';
+          follow.disabled = overridden.length === 0;
+          follow.title = follow.disabled
+            ? 'This box has no customisations; the theme decides its type'
+            : 'Remove this box’s customisations so the theme decides its face, size, weight and colour';
+          const id = el.id;
+          const previewFollow = () => {
+            if (follow.disabled) return;
+            const slide = this.store.slide;
+            if (!slide || !this.onPreviewSlide) return;
+            const shown = structuredClone(slide);
+            const target = shown.elements.find((candidate) => candidate.id === id);
+            if (target?.type === 'text') followThemeOnText(target);
+            this.onPreviewSlide(shown, 'Reset to theme');
+          };
+          const clearPreview = () => this.onPreviewSlide?.(null, '');
+          follow.addEventListener('mouseenter', previewFollow);
+          follow.addEventListener('focus', previewFollow);
+          follow.addEventListener('mouseleave', clearPreview);
+          follow.addEventListener('blur', clearPreview);
+          follow.addEventListener('click', () => {
+            clearPreview();
+            this.store.updateSelected((target) => {
+              if (target.type === 'text') followThemeOnText(target);
+            }, { label: 'Reset to theme' });
+          });
+          followRow.appendChild(follow);
+          roleSelect.after(followRow);
+        }
 
         // One mutually-exclusive list style control. When a live selection is
         // inside a list, the canvas transforms that entire list in place.
@@ -2900,10 +3005,18 @@ function lockSizeToTheme(sizeField: HTMLElement): void {
 }
 
 type ThemeTypeRole = ThemeTextRole;
-const ROLE_ORDER: ThemeTypeRole[] = ['title', 'heading', 'body', 'caption', 'base'];
+/**
+ * The roles an author picks. Heading and base still exist in the data --
+ * imports and role detection tag them, and every theme carries their type --
+ * but they are not offered here: heading rides along with title in the theme
+ * panel, and base is the untagged default. A box that already carries one of
+ * them shows it, so the dropdown never misreports a legacy deck.
+ */
+const ROLE_ORDER: ThemeTypeRole[] = ['title', 'body', 'caption'];
 const ROLE_LABELS: Record<ThemeTypeRole, string> = {
   title: 'Title', heading: 'Heading', body: 'Body', caption: 'Caption', base: 'Base',
 };
+const ROLE_CLASS = /^role-(title|heading|body|caption|base)$/;
 
 function button(label: string, onClick: () => void, variant = ''): HTMLButtonElement {
   const b = document.createElement('button');

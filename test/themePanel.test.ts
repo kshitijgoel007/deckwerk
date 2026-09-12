@@ -33,10 +33,9 @@ describe('theme panel', () => {
       'insp-option-section theme-current-section',
       'insp-option-section theme-apply-section',
       'insp-option-section layouts-section',
-      'insp-option-section layout-apply-section',
     ]);
     expect([...panel.element.querySelectorAll('.insp-subtitle')].map((h) => h.textContent))
-      .toEqual(['Current theme', 'Apply theme', 'Layouts', 'Apply layout']);
+      .toEqual(['Current theme', 'Apply theme', 'Layouts']);
     expect(panel.element.querySelectorAll('.theme-active-host .theme-card')).toHaveLength(1);
     expect(panel.element.querySelector('.theme-chooser')?.hasAttribute('hidden')).toBe(true);
     expect(onThemePreview).not.toHaveBeenCalled();

@@ -1607,6 +1607,15 @@ input[type="range"] { accent-color: var(--accent); padding: 0; background: trans
 /* The row swallows its children's bottom margin, so it carries one itself —
    without it "Paragraph spacing" sat flush against the Align buttons. */
 .insp-type-sections .compact-field-row { margin-bottom: 6px; }
+/* Font size can carry a "Fitted to N px" caption below it; aligning the row's
+   cells at the end put Font weight's input level with that caption instead of
+   with Font size's input. Align at the start so the labels and inputs line up
+   and the caption hangs below on its own. */
+.font-metrics-row { align-items: start; }
+.layout-reset-row { margin-top: 8px; }
+.follow-theme-row { margin: -2px 0 8px; }
+.follow-theme-row .follow-theme-button { width: 100%; }
+.layout-reset-row .layout-reset-button { width: 100%; }
 .media-border-options .field-number {
   flex-direction: row;
   align-items: center;
@@ -3890,6 +3899,18 @@ select.panel-action-select {
 }
 
 /* Units read as the input's suffix: "12 px", "90 °", "300 ms". */
+/* A span directly under `.field` is otherwise styled as the field's label
+   (10px, uppercase, muted) and the input inside inherits that font, so a
+   number with a unit rendered shorter than its unitless neighbour. */
+.field > .field-unit-wrap {
+  position: relative;
+  display: block;
+  min-width: 0;
+  font: inherit;
+  color: inherit;
+  letter-spacing: normal;
+  text-transform: none;
+}
 .field-unit-wrap { position: relative; display: block; min-width: 0; }
 .field-unit-wrap > input { width: 100%; padding-right: 26px; }
 .field-unit-wrap > input::-webkit-inner-spin-button,

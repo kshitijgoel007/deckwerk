@@ -650,6 +650,16 @@ stills as WebP, both sized to how large the slide shows them. `thumbnail.jpg` is
 (pass `--no-thumbnail` to skip the Electron capture) and `export.json` records
 the title, slide count and quality, for pages that list decks.
 
+## Reporting bugs
+
+If a bug in the editor, presenter, CLI, importers or exporters comes up —
+because the user describes one or because you hit one while working — offer
+to write it up. The `bug-report` skill in `.claude/skills/bug-report/SKILL.md`
+is the procedure: pin the bug down, collect the environment, search
+`vsitzmann/deckwerk` for duplicates, show the user the exact title and body,
+and file with `gh` only after an explicit yes. Agents in other harnesses can
+read that file directly.
+
 ## Reliability rules (from the 2026-09 review — keep the bug classes extinct)
 
 The Sep 2026 reliability review confirmed 23 editing/selection/undo/collab

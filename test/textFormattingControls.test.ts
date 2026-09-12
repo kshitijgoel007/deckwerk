@@ -1551,7 +1551,7 @@ describe('text formatting from the inspector controls', () => {
     const { store, canvasHost, inspectorHost } = setup([textElement('text-1')]);
     const role = () => field(inspectorHost, 'Role').querySelector('select')!;
     expect([...role().options].map((option) => option.textContent))
-      .toEqual(['Title', 'Heading', 'Body', 'Caption', 'Base', 'None']);
+      .toEqual(['Title', 'Body', 'Caption', 'None']);
     expect(role().value).toBe('');
 
     pick(role(), 'role-title');

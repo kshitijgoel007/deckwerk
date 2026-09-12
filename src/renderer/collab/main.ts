@@ -258,6 +258,7 @@ document.addEventListener('keydown', (event) => {
   }
 }, true);
 inspector.onEditLayouts = (layout) => designWorkspace.openLayoutEditor(layout);
+inspector.onPreviewSlide = (slide, label) => designWorkspace.previewSlideOnCanvas(slide, label);
 el('themePanel').appendChild(themePanel.element);
 el('themePanel').classList.add('theme-panel');
 
