@@ -14,6 +14,7 @@ import {
 } from '../src/renderer/editor/canvas.js';
 import {
   bindEditorKeys,
+  createClipboardActions,
   type ClipboardActions,
   type ShellDeps,
 } from '../src/renderer/editor/shellWiring.js';
@@ -27,7 +28,7 @@ import {
 } from '../src/renderer/editor/elementCreation.js';
 import { Inspector } from '../src/renderer/editor/inspector.js';
 import { applySlideLayout } from '../src/renderer/editor/slideLayouts.js';
-import { EditorStore } from '../src/renderer/editor/store.js';
+import { EditorStore, copySelectionToClipboard } from '../src/renderer/editor/store.js';
 
 /**
  * Regression tests for editing on the canvas.
@@ -2625,6 +2626,35 @@ describe('object creation and manipulation', () => {
       expect(store.get().selection.size).toBe(0);
       input.remove();
     });
+  });
+
+  /**
+   * The Web UI has no pasteboard bridge, so Cmd+C only fills the in-memory
+   * clipboard and Cmd+V arrives as a native paste event. That event used to
+   * return early unless the OS clipboard held a table or an image, so nothing
+   * copied inside the editor could ever be pasted onto another slide.
+   */
+  it('pastes an in-app copy onto another slide from a native paste event', async () => {
+    const { store } = setup();
+    const deps = shellDeps(store);
+    bindEditorKeys(deps, createClipboardActions(deps));
+    store.commit((deck) => deck.slides.push({ ...deck.slides[0], id: 's2', elements: [] }));
+    store.select(['text-1']);
+    await copySelectionToClipboard(store);
+    store.selectSlide(1);
+
+    const paste = new Event('paste', { bubbles: true, cancelable: true }) as ClipboardEvent;
+    Object.defineProperty(paste, 'clipboardData', {
+      value: { getData: () => '', items: [] },
+    });
+    window.dispatchEvent(paste);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(paste.defaultPrevented).toBe(true);
+    const pasted = store.get().deck.slides[1].elements;
+    expect(pasted).toHaveLength(1);
+    expect(pasted[0].type).toBe('text');
+    expect(pasted[0].id).not.toBe('text-1');
   });
 
   it('applies formatting shortcuts to every character of an object-selected text box', () => {

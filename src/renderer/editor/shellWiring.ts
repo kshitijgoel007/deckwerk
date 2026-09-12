@@ -11,6 +11,7 @@ import {
   cutSelectionToClipboard,
   pasteImageFilesFromClipboard,
   pasteFromClipboard,
+  pasteInAppClipboard,
 } from './store.js';
 import {
   setWholeTextFormat,
@@ -142,6 +143,8 @@ export interface ClipboardActions {
   pasteClipboard: () => Promise<void>;
   pasteClipboardData?: (html: string, text: string) => Promise<void>;
   pasteClipboardFiles?: (files: File[]) => Promise<void>;
+  /** Paste the in-window copy when the native paste event holds nothing of ours. */
+  pasteInAppClipboard?: () => Promise<void>;
 }
 
 /**
@@ -178,6 +181,7 @@ export function createClipboardActions(deps: ShellDeps): ClipboardActions {
     }
   };
   const pasteClipboard = () => pasteAndReport(() => pasteFromClipboard(store));
+  const pasteInApp = () => pasteAndReport(() => pasteInAppClipboard(store));
   const pasteClipboardData = (html: string, text: string) =>
     pasteAndReport(() => pasteFromClipboard(store, { kind: 'external-html', html, text }));
 
@@ -195,6 +199,7 @@ export function createClipboardActions(deps: ShellDeps): ClipboardActions {
     pasteClipboard,
     pasteClipboardData,
     pasteClipboardFiles,
+    pasteInAppClipboard: pasteInApp,
   };
 }
 
@@ -242,9 +247,16 @@ export function bindEditorKeys(deps: ShellDeps, clipboard: ClipboardActions): vo
       .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
       .map((item) => item.getAsFile())
       .filter((file): file is File => file !== null);
-    if (files.length === 0) return;
+    if (files.length > 0) {
+      event.preventDefault();
+      void clipboard.pasteClipboardFiles?.(files);
+      return;
+    }
+    // Nothing foreign we can use: this is Cmd+V after an in-app Cmd+C, whose
+    // payload never reached the OS clipboard (no pasteboard bridge here).
+    if (!clipboard.pasteInAppClipboard) return;
     event.preventDefault();
-    void clipboard.pasteClipboardFiles?.(files);
+    void clipboard.pasteInAppClipboard();
   });
   window.addEventListener('keydown', (e) => {
     // `window` and `document` are event targets too, and neither answers the

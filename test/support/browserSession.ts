@@ -196,6 +196,17 @@ export class Cdp {
     });
   }
 
+  /** A real right click at an absolute viewport coordinate, opening a menu there. */
+  async rightClickAt(x: number, y: number): Promise<void> {
+    await this.mouse('mouseMoved', x, y, 0);
+    await this.call('Input.dispatchMouseEvent', {
+      type: 'mousePressed', x, y, button: 'right', buttons: 2, clickCount: 1,
+    });
+    await this.call('Input.dispatchMouseEvent', {
+      type: 'mouseReleased', x, y, button: 'right', buttons: 0, clickCount: 1,
+    });
+  }
+
   /** A real left click at an absolute viewport coordinate. */
   async clickAt(x: number, y: number): Promise<void> {
     await this.mouse('mouseMoved', x, y, 0);
