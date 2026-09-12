@@ -23,15 +23,16 @@ import { collabClientDir, sharedBuild } from './collabClient.js';
  */
 
 /**
+ * Whether a suite that needs genuine input focus should show its windows.
  * Under CI's Xvfb there is no developer's desk to protect, and hiding is
- * actively harmful there: X11 without a window manager never gives a window
- * that was never mapped the input focus, so `navigator.clipboard.write`
- * throws "Document is not focused" and keyboard chords land nowhere. The
- * desktop suites passed on Linux CI while windows were shown and began
- * failing the day they were hidden. Show them there; keep them hidden on a
- * developer's machine.
+ * actively harmful for such suites: X11 without a window manager never gives
+ * a window that was never mapped the input focus, so
+ * `navigator.clipboard.write` throws "Document is not focused" and keyboard
+ * chords land nowhere. Suites that only observe the DOM stay hidden
+ * everywhere — showing every window on Linux CI made the X input method join
+ * the IME driver test and broke the audience-window handoff.
  */
-const SHOW_WINDOWS_ON_CI = Boolean(process.env.CI) && process.platform === 'linux';
+export const NEEDS_VISIBLE_WINDOW_ON_CI = Boolean(process.env.CI) && process.platform === 'linux';
 
 let pending: Promise<string> | null = null;
 
@@ -110,7 +111,7 @@ export function launchDesktopApp(appDir: string, args: string[], options: {
       env: {
         ...process.env,
         ELECTRON_DISABLE_SECURITY_WARNINGS: '1',
-        ...(options.visible || SHOW_WINDOWS_ON_CI ? {} : { DECKWERK_HEADLESS_TEST: '1' }),
+        ...(options.visible ? {} : { DECKWERK_HEADLESS_TEST: '1' }),
         ...options.env,
       },
     });
