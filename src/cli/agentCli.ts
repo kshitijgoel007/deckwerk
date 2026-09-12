@@ -1258,12 +1258,13 @@ async function themeChooseCommand(argv: string[], io: CliIo): Promise<number> {
   const deck = await loadDeck(deckDir);
   const theme = resolveTheme(deck, id);
   const next = structuredClone(deck);
-  chooseDeckTheme(next, theme);
   // Choosing installs the theme's defaults into the stylesheet new slides
-  // load; existing slides are pinned where they are. Written only once the
-  // transaction has landed, as in `theme apply`.
+  // load; existing slides are pinned where they are -- read off the deck's
+  // real stylesheet, not guessed. Written only once the transaction has
+  // landed, as in `theme apply`.
   const cssPath = join(deckDir, next.theme);
   const current = existsSync(cssPath) ? await readFile(cssPath, 'utf8') : '';
+  chooseDeckTheme(next, theme, current);
   const css = withThemeBlock(current, themeStyleCss(next.themeStyle!, theme.name));
   const code = await applyTransaction(deckDir, {
     version: AGENT_PROTOCOL_VERSION,
@@ -1332,6 +1333,9 @@ async function themeApplyCommand(argv: string[], io: CliIo): Promise<number> {
   }
 
   const next = structuredClone(deck);
+  // Pinning reads the slides' current look off the deck's real stylesheet.
+  const stylesheetPath = join(deckDir, next.theme);
+  const stylesheetBefore = existsSync(stylesheetPath) ? await readFile(stylesheetPath, 'utf8') : '';
   adoptThemeStyles(next, theme, {
     scope,
     roles,
@@ -1341,7 +1345,7 @@ async function themeApplyCommand(argv: string[], io: CliIo): Promise<number> {
     // way, or the stylesheet this apply installs is overridden on every box.
     replaceOverrides: !flags.has('keep-overrides'),
     detectRoles: flags.has('detect-roles'),
-  } as ThemeAdoption, 0, new Set(), new Set(targets.map((slide) => slide.id)));
+  } as ThemeAdoption, 0, new Set(), new Set(targets.map((slide) => slide.id)), stylesheetBefore);
 
   const operations = diffDecks(deck, next);
   if (operations.length === 0) {

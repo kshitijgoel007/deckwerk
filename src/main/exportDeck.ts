@@ -1,8 +1,10 @@
 import { existsSync } from 'node:fs';
-import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
-import { dirname, join, relative, resolve } from 'node:path';
-import type { Deck } from '@shared/deck.js';
+import { copyFile, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { dirname, extname, join, relative, resolve } from 'node:path';
+import type { Deck, Slide } from '@shared/deck.js';
+import type { WebExportQuality } from '@shared/ipc.js';
 import { loadTheme, resolveAsset } from './deckStore.js';
+import { encodeImageWebp, probeImage, probeMedia, transcodeVideoForWeb } from './ffmpeg.js';
 
 /**
  * Export a deck as a self-contained folder that opens in any browser.
@@ -11,6 +13,11 @@ import { loadTheme, resolveAsset } from './deckStore.js';
  * identically whether or not the editor is installed. That matters for the
  * usual conference situation: someone else's laptop, no install rights, five
  * minutes before the talk.
+ *
+ * Only media the slides actually show is copied, and a quality below
+ * `original` re-encodes it on the way out: a talk's worth of screen
+ * recordings is routinely a gigabyte in the deck folder and a tenth of that on
+ * a web host without anyone in the audience noticing.
  */
 
 /** Where the export player bundle lives, in dev and when packaged. */
@@ -38,100 +45,416 @@ export function webExportUnavailableReason(): string | null {
     : `Export player bundle not found at ${playerJs}. Run: npm run build:export`;
 }
 
+export interface WebExportOptions {
+  quality?: WebExportQuality;
+  /**
+   * Leave skipped slides out of the export altogether, media included. The
+   * player already walks past them; a web export has no reason to ship them.
+   * Off by default because the agent's slide captures address slides by their
+   * rail number, which counts skipped ones.
+   */
+  dropSkipped?: boolean;
+  /** Re-encodes running at once. Two keeps libx264 busy without thrashing. */
+  concurrency?: number;
+}
+
+/** What the export wrote, for callers that describe the result or index it. */
+export interface WebExportResult {
+  /** Deck-relative asset paths that were copied or re-encoded. */
+  assets: number;
+  /** Bytes the referenced originals occupy in the deck folder. */
+  sourceBytes: number;
+  /** Bytes the exported media occupies. */
+  exportedBytes: number;
+  quality: WebExportQuality;
+}
+
+interface VideoProfile {
+  codec: 'h264' | 'vp9';
+  crf: number;
+  speed: string;
+  audioBitrate: string;
+  /** Hard ceiling on the long edge, whatever the slide shows. */
+  maxLongEdge: number;
+  /** Multiple of the on-slide size (at 1920×1080) that is kept for sharpness. */
+  renderedScale: number;
+}
+
+interface ImageProfile {
+  quality: number;
+  maxLongEdge: number;
+  renderedScale: number;
+  /** Files smaller than this are copied as they are; re-encoding buys nothing. */
+  minBytes: number;
+}
+
+interface QualityProfile {
+  video: VideoProfile | null;
+  image: ImageProfile | null;
+}
+
+const PROFILES: Record<WebExportQuality, QualityProfile> = {
+  original: { video: null, image: null },
+  balanced: {
+    video: { codec: 'vp9', crf: 36, speed: '2', audioBitrate: '96k', maxLongEdge: 1920, renderedScale: 1.5 },
+    image: { quality: 88, maxLongEdge: 2560, renderedScale: 2, minBytes: 120_000 },
+  },
+  compact: {
+    video: { codec: 'vp9', crf: 42, speed: '2', audioBitrate: '64k', maxLongEdge: 1280, renderedScale: 1 },
+    image: { quality: 75, maxLongEdge: 1600, renderedScale: 1.25, minBytes: 40_000 },
+  },
+};
+
+const VIDEO_EXTENSIONS = new Set(['.mp4', '.m4v', '.mov', '.webm', '.mkv', '.avi', '.mpg', '.mpeg', '.wmv', '.ogv']);
+/** Stills worth re-encoding. GIF and SVG stay as they are: one animates, one has no pixels. */
+const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.bmp', '.tif', '.tiff', '.heic', '.heif', '.avif']);
+
 export async function exportDeck(
   deckDir: string,
   deck: Deck,
   outDir: string,
   onProgress?: (message: string, ratio: number | null) => void,
-): Promise<void> {
+  options: WebExportOptions = {},
+): Promise<WebExportResult> {
   const unavailable = webExportUnavailableReason();
   if (unavailable) throw new Error(unavailable);
   const bundleDir = playerBundleDir();
   const playerJs = join(bundleDir, 'player.js');
+  const quality = options.quality ?? 'original';
+  const profile = PROFILES[quality];
 
-  const wanted = referencedAssets(deck);
-  const total = 5 + wanted.size;
-  let completed = 0;
-  const progress = (message: string): void => {
-    onProgress?.(message, completed / total);
+  const exported: Deck = options.dropSkipped
+    ? { ...deck, slides: deck.slides.filter((slide) => !slide.skipped) }
+    : deck;
+  const wanted = referencedAssets(exported);
+
+  // Progress is weighted by bytes: a 120 MB screen recording is most of the
+  // wait, and a bar that ticked once per file would sit still for minutes on
+  // it and then race through fifty small figures.
+  const sources = await measureSources(deckDir, wanted);
+  const mediaBytes = [...sources.values()].reduce((sum, s) => sum + s.bytes, 0);
+  // Five fixed steps share a nominal weight so an asset-free deck still moves.
+  const fixedWeight = Math.max(1, mediaBytes / 20);
+  const totalWeight = mediaBytes + fixedWeight * 5;
+  let doneWeight = 0;
+  const report = (message: string, extra = 0): void => {
+    onProgress?.(message, Math.min(1, (doneWeight + extra) / totalWeight));
   };
 
-  progress(`Creating ${outDir}`);
+  report(`Creating ${outDir}`);
   await mkdir(outDir, { recursive: true });
-  completed++;
+  doneWeight += fixedWeight;
 
-  progress('Copying player.js');
+  report('Copying player.js');
   await copyFile(playerJs, join(outDir, 'player.js'));
-  completed++;
+  doneWeight += fixedWeight;
 
   // The player's structural CSS, then the deck's theme, in that order — the
   // theme must win, exactly as it does in the app.
   const playerCss = join(bundleDir, 'player.css');
-  progress('Writing player.css');
+  report('Writing player.css');
   const structural = existsSync(playerCss) ? await readFile(playerCss, 'utf8') : '';
   await writeFile(join(outDir, 'player.css'), structural, 'utf8');
-  completed++;
+  doneWeight += fixedWeight;
 
-  progress(`Writing ${deck.theme}`);
+  report(`Writing ${deck.theme}`);
   const theme = await loadTheme(deckDir, deck.theme);
   await writeFile(join(outDir, 'theme.css'), theme, 'utf8');
-  completed++;
+  doneWeight += fixedWeight;
 
-  await copyAssets(deckDir, outDir, wanted, (name) => {
-    progress(`Copying assets/${name}`);
-  }, () => completed++);
-  progress('Writing index.html');
-  await writeFile(join(outDir, 'index.html'), indexHtml(deck), 'utf8');
-  completed++;
-  onProgress?.('Web export complete', completed / total);
+  // The folder exists even when every reference turned out to be unusable, so
+  // a reader of the export sees "no assets" rather than "no assets folder".
+  if (wanted.size > 0) await mkdir(join(outDir, 'assets'), { recursive: true });
+  const renamed = new Map<string, string>();
+  const trimmed = new Map<string, number>();
+  let exportedBytes = 0;
+  const jobs = [...wanted].map((rel, index) => async () => {
+    const source = sources.get(rel);
+    const name = rel.split('/').pop() ?? rel;
+    if (!source) {
+      // Outside the deck folder, or simply not there: the deck's problem to
+      // show, not a reason to abandon the export.
+      return;
+    }
+    const label = `${index + 1} of ${wanted.size}`;
+    const range = playedRange(exported, rel);
+    const outcome = await exportAsset(
+      source,
+      rel,
+      outDir,
+      profile,
+      renderedLongEdge(exported, rel),
+      range,
+      (verb, fraction) => report(`${verb} assets/${name} (${label})`, source.bytes * fraction),
+    );
+    doneWeight += source.bytes;
+    exportedBytes += outcome.bytes;
+    if (outcome.rel !== rel) renamed.set(rel, outcome.rel);
+    if (outcome.trimmedFrom !== undefined) trimmed.set(rel, outcome.trimmedFrom);
+  });
+  await runPool(jobs, Math.max(1, options.concurrency ?? 2));
+
+  report('Writing index.html');
+  const rewritten = renamed.size > 0 || trimmed.size > 0
+    ? rewriteAssetReferences(exported, renamed, trimmed)
+    : exported;
+  await writeFile(join(outDir, 'index.html'), indexHtml(rewritten), 'utf8');
+  await writeFile(
+    join(outDir, 'export.json'),
+    JSON.stringify({
+      title: deck.title,
+      slides: rewritten.slides.length,
+      canvas: deck.canvas,
+      quality,
+      exportedAt: new Date().toISOString(),
+    }, null, 2) + '\n',
+    'utf8',
+  );
+  doneWeight += fixedWeight;
+  onProgress?.('Web export complete', 1);
+  return { assets: sources.size, sourceBytes: mediaBytes, exportedBytes, quality };
 }
 
-/** Copy only the assets this deck actually references, plus nothing else. */
-async function copyAssets(
-  deckDir: string,
-  outDir: string,
-  wanted: Set<string>,
-  beforeCopy?: (name: string) => void,
-  afterCopy?: () => void,
-): Promise<void> {
-  if (wanted.size === 0) return;
+interface SourceAsset {
+  /** Absolute path inside the deck folder. */
+  path: string;
+  /** Path relative to the deck folder, as the deck refers to it. */
+  within: string;
+  bytes: number;
+}
 
-  await mkdir(join(outDir, 'assets'), { recursive: true });
-
+/**
+ * Resolve every wanted reference to a file inside the deck folder. Never
+ * follow a reference out of the deck — lexically or through a symlink planted
+ * in `assets/`, which `resolveAsset` also refuses.
+ */
+async function measureSources(deckDir: string, wanted: Set<string>): Promise<Map<string, SourceAsset>> {
+  const sources = new Map<string, SourceAsset>();
   for (const rel of wanted) {
-    beforeCopy?.(rel.split('/').pop() ?? rel);
-    // Copy to the same relative path the deck refers to. Flattening to the
-    // basename and looking it up in a non-recursive listing of `assets/` meant
-    // anything in a subfolder -- `assets/figures/plot.png`, which every other
-    // path in the app loads happily -- was skipped without a word, and would
-    // have landed under a name the exported deck does not reference anyway.
-    // Never follow a reference out of the deck folder -- lexically or through
-    // a symlink planted in `assets/`, which `resolveAsset` also refuses.
-    let from: string;
+    let path: string;
     try {
-      from = resolveAsset(deckDir, rel);
+      path = resolveAsset(deckDir, rel);
     } catch {
-      afterCopy?.();
       continue;
     }
-    const within = relative(resolve(deckDir), from);
-    if (within === '') {
-      afterCopy?.();
-      continue;
-    }
-    const to = join(outDir, within);
+    const within = relative(resolve(deckDir), path);
+    if (within === '') continue;
     try {
-      await mkdir(dirname(to), { recursive: true });
-      await copyFile(from, to);
+      const info = await stat(path);
+      if (!info.isFile()) continue;
+      sources.set(rel, { path, within, bytes: info.size });
     } catch {
-      // A reference to a file that is not there is the deck's problem to show,
-      // not a reason to abandon the export.
+      // Missing file: skipped, the player shows the gap.
     }
-    afterCopy?.();
   }
+  return sources;
 }
 
-function referencedAssets(deck: Deck): Set<string> {
+async function runPool(jobs: Array<() => Promise<void>>, width: number): Promise<void> {
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (next < jobs.length) {
+      const job = jobs[next++];
+      await job();
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(width, jobs.length) }, worker));
+}
+
+/**
+ * Copy or re-encode one asset into the export. Returns the deck-relative path
+ * it landed under, which differs from the source only when the container
+ * changed (a `.mov` becomes `.mp4`, a `.png` becomes `.webp`).
+ */
+async function exportAsset(
+  source: SourceAsset,
+  rel: string,
+  outDir: string,
+  profile: QualityProfile,
+  renderedEdge: number,
+  range: PlayedRange | null,
+  progress: (verb: string, fraction: number) => void,
+): Promise<{ rel: string; bytes: number; trimmedFrom?: number }> {
+  const ext = extname(source.within).toLowerCase();
+  const copy = async (): Promise<{ rel: string; bytes: number }> => {
+    progress('Copying', 0);
+    const to = join(outDir, source.within);
+    await mkdir(dirname(to), { recursive: true });
+    await copyFile(source.path, to);
+    return { rel, bytes: source.bytes };
+  };
+
+  if (profile.video && VIDEO_EXTENSIONS.has(ext)) {
+    const container = profile.video.codec === 'vp9' ? '.webm' : '.mp4';
+    const target = withExtension(source.within, container);
+    const encoded = await encodeVideo(source, join(outDir, target), profile.video, renderedEdge, range, progress);
+    if (encoded !== null) {
+      return { rel: withExtension(rel, container), bytes: encoded, trimmedFrom: range?.start };
+    }
+    return copy();
+  }
+  if (profile.image && IMAGE_EXTENSIONS.has(ext) && source.bytes >= profile.image.minBytes) {
+    const target = withExtension(source.within, '.webp');
+    const encoded = await encodeImage(source, join(outDir, target), profile.image, renderedEdge, progress);
+    if (encoded !== null) return { rel: withExtension(rel, '.webp'), bytes: encoded };
+    return copy();
+  }
+  return copy();
+}
+
+/** Re-encode, then keep the result only if it is actually smaller. */
+async function encodeVideo(
+  source: SourceAsset,
+  output: string,
+  profile: VideoProfile,
+  renderedEdge: number,
+  range: PlayedRange | null,
+  progress: (verb: string, fraction: number) => void,
+): Promise<number | null> {
+  progress('Compressing', 0);
+  const info = await probeMedia(source.path);
+  const size = fitLongEdge(info.width, info.height, targetLongEdge(profile, renderedEdge));
+  await mkdir(dirname(output), { recursive: true });
+  // A clip cut to what the slides play is smaller for free, so a trim is
+  // worth keeping even when the re-encode itself is not.
+  const trim = range && (range.start > 0 || info.duration === null || range.end < info.duration - 0.05)
+    ? { start: range.start, duration: Math.max(0.1, range.end - range.start + TRIM_TAIL_SECONDS) }
+    : undefined;
+  try {
+    await transcodeVideoForWeb(
+      source.path,
+      output,
+      {
+        codec: profile.codec, crf: profile.crf, speed: profile.speed, audioBitrate: profile.audioBitrate,
+        ...size, trim,
+      },
+      (ratio) => progress('Compressing', ratio ?? 0),
+    );
+  } catch {
+    await rm(output, { force: true });
+    return null;
+  }
+  if (trim) return (await stat(output)).size;
+  return keepIfSmaller(output, source.bytes);
+}
+
+/**
+ * A breath of footage past the last frame a slide plays, so the player's own
+ * end-of-range stop lands inside the file rather than on its final frame.
+ */
+const TRIM_TAIL_SECONDS = 0.1;
+
+export interface PlayedRange {
+  start: number;
+  end: number;
+}
+
+/**
+ * The stretch of a clip the slides play, when every showing of it is a video
+ * element with an explicit end. A clip that some slide plays to its natural
+ * end, or that an HTML region embeds, is kept whole: nothing says where it
+ * could safely be cut.
+ */
+export function playedRange(deck: Deck, rel: string): PlayedRange | null {
+  let start = Number.POSITIVE_INFINITY;
+  let end = 0;
+  let shown = false;
+  for (const slide of deck.slides) {
+    for (const el of slide.elements) {
+      if (el.type === 'html' && (el.html.includes(rel) || (el.css ?? '').includes(rel))) return null;
+      if (el.type !== 'video' || el.src !== rel) continue;
+      if (el.end === null || el.end === undefined || el.end <= (el.start ?? 0)) return null;
+      shown = true;
+      start = Math.min(start, Math.max(0, el.start ?? 0));
+      end = Math.max(end, el.end);
+    }
+  }
+  return shown ? { start, end } : null;
+}
+
+async function encodeImage(
+  source: SourceAsset,
+  output: string,
+  profile: ImageProfile,
+  renderedEdge: number,
+  progress: (verb: string, fraction: number) => void,
+): Promise<number | null> {
+  progress('Compressing', 0);
+  const info = await probeImage(source.path);
+  // An animated WebP or APNG is a clip in a still's clothing; a single frame
+  // of it would freeze the slide. Leave it alone.
+  if (info.frames !== null && info.frames > 1) return null;
+  const size = fitLongEdge(info.width, info.height, targetLongEdge(profile, renderedEdge));
+  await mkdir(dirname(output), { recursive: true });
+  try {
+    await encodeImageWebp(source.path, output, { quality: profile.quality, ...size });
+  } catch {
+    await rm(output, { force: true });
+    return null;
+  }
+  return keepIfSmaller(output, source.bytes);
+}
+
+async function keepIfSmaller(output: string, originalBytes: number): Promise<number | null> {
+  const bytes = (await stat(output)).size;
+  if (bytes > 0 && bytes < originalBytes) return bytes;
+  // Already well compressed: the original is the better file. Remove the
+  // attempt so the export folder holds exactly one copy under one name.
+  await rm(output, { force: true });
+  return null;
+}
+
+function targetLongEdge(profile: { maxLongEdge: number; renderedScale: number }, renderedEdge: number): number {
+  return Math.round(Math.min(profile.maxLongEdge, Math.max(64, renderedEdge * profile.renderedScale)));
+}
+
+/** Output size when the long edge exceeds `longEdge`; empty to keep the source size. */
+function fitLongEdge(
+  width: number | null,
+  height: number | null,
+  longEdge: number,
+): { width?: number; height?: number } {
+  if (!width || !height) return {};
+  const current = Math.max(width, height);
+  if (current <= longEdge) return {};
+  const scale = longEdge / current;
+  return { width: Math.round(width * scale), height: Math.round(height * scale) };
+}
+
+function withExtension(path: string, ext: string): string {
+  const current = extname(path);
+  return current ? path.slice(0, -current.length) + ext : path + ext;
+}
+
+/**
+ * The largest edge, in canvas pixels, at which any slide shows this asset. A
+ * figure in a 400×300 box needs nowhere near its 4000-pixel original; a
+ * full-bleed background needs the whole canvas.
+ */
+export function renderedLongEdge(deck: Deck, rel: string): number {
+  const canvasEdge = Math.max(deck.canvas.w, deck.canvas.h);
+  let edge = 0;
+  for (const slide of deck.slides) {
+    if (slide.background.image === rel) edge = Math.max(edge, canvasEdge);
+    for (const el of slide.elements) {
+      if (el.type === 'image' || el.type === 'video') {
+        if (el.src !== rel && !(el.type === 'video' && el.poster === rel)) continue;
+        // A crop shows a window onto the whole picture: the picture itself is
+        // laid out at the source box's size, which can exceed the element.
+        const box = el.sourceBox ?? el;
+        edge = Math.max(edge, box.w, box.h);
+      } else if (el.type === 'html' && (el.html.includes(rel) || (el.css ?? '').includes(rel))) {
+        // Nothing measures inside an HTML region; assume it could be anything
+        // up to the region's own box.
+        edge = Math.max(edge, el.w, el.h);
+      }
+    }
+  }
+  return edge > 0 ? edge : canvasEdge;
+}
+
+/** Every deck-relative asset path the slides show, deduplicated. */
+export function referencedAssets(deck: Deck): Set<string> {
   const wanted = new Set<string>();
   for (const slide of deck.slides) {
     if (slide.background.image) wanted.add(slide.background.image);
@@ -149,13 +472,72 @@ function referencedAssets(deck: Deck): Set<string> {
 
 /** Assets referenced only by an isolated HTML region still belong in exports. */
 function collectFallbackAssets(source: string, wanted: Set<string>): void {
-  const patterns = [
-    /\b(?:src|poster)\s*=\s*["'](assets\/[^"'#?]+)(?:[?#][^"']*)?["']/gi,
-    /url\(\s*["']?(assets\/[^"')#?]+)(?:[?#][^"')]*)?["']?\s*\)/gi,
-  ];
-  for (const pattern of patterns) {
+  for (const pattern of HTML_ASSET_PATTERNS) {
     for (const match of source.matchAll(pattern)) wanted.add(match[1]);
   }
+}
+
+const HTML_ASSET_PATTERNS = [
+  /\b(?:src|poster)\s*=\s*["'](assets\/[^"'#?]+)(?:[?#][^"']*)?["']/gi,
+  /url\(\s*["']?(assets\/[^"')#?]+)(?:[?#][^"')]*)?["']?\s*\)/gi,
+];
+
+/**
+ * The deck as the export refers to it: every reference to a re-encoded asset
+ * points at the new file. The deck on disk is never touched.
+ */
+export function rewriteAssetReferences(
+  deck: Deck,
+  renamed: Map<string, string>,
+  trimmed: Map<string, number> = new Map(),
+): Deck {
+  const swap = (path: string | null): string | null =>
+    path !== null && renamed.has(path) ? (renamed.get(path) as string) : path;
+  // A cut clip starts where the slides used to seek to, so their in and out
+  // points shift back by the same amount.
+  const shift = (src: string, seconds: number | null | undefined): number | null | undefined => {
+    const offset = trimmed.get(src);
+    if (offset === undefined || seconds === null || seconds === undefined) return seconds;
+    return Math.max(0, seconds - offset);
+  };
+  const swapInSource = (source: string): string => {
+    let out = source;
+    for (const pattern of HTML_ASSET_PATTERNS) {
+      out = out.replace(pattern, (whole, path: string) =>
+        renamed.has(path) ? whole.replace(path, renamed.get(path) as string) : whole,
+      );
+    }
+    return out;
+  };
+  const rewriteSlide = <T extends Pick<Slide, 'background' | 'elements'>>(slide: T): T => ({
+    ...slide,
+    background: { ...slide.background, image: swap(slide.background.image) },
+    elements: slide.elements.map((el) => {
+      if (el.type === 'image') return { ...el, src: swap(el.src) as string };
+      if (el.type === 'video') {
+        return {
+          ...el,
+          src: swap(el.src) as string,
+          poster: swap(el.poster),
+          start: shift(el.src, el.start) ?? el.start,
+          end: shift(el.src, el.end) ?? el.end,
+        };
+      }
+      if (el.type === 'html') {
+        return { ...el, html: swapInSource(el.html), css: el.css === undefined ? el.css : swapInSource(el.css) };
+      }
+      return el;
+    }),
+  });
+  return {
+    ...deck,
+    slides: deck.slides.map(rewriteSlide),
+    layoutMasters: deck.layoutMasters === null
+      ? deck.layoutMasters
+      : Object.fromEntries(
+        Object.entries(deck.layoutMasters).map(([name, master]) => [name, rewriteSlide(master)]),
+      ) as Deck['layoutMasters'],
+  };
 }
 
 /**

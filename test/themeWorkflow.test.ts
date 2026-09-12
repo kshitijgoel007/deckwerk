@@ -44,7 +44,7 @@ describe('role-based theme workflow', () => {
     const roleOptions = [...host.querySelectorAll<HTMLSelectElement>('select')]
       .find((candidate) => [...candidate.options].some((option) => option.value === 'role-title'))!;
     expect([...roleOptions.options].map((option) => option.value))
-      .toEqual(['role-title', 'role-heading', 'role-body', 'role-caption', 'role-base', '']);
+      .toEqual(['role-title', 'role-body', 'role-caption', '']);
     chooseRole(store, host, 'title', 'role-title');
     chooseRole(store, host, 'body', 'role-body');
     expect(store.slide!.elements.find((el) => el.id === 'title')!.class).toContain('role-title');

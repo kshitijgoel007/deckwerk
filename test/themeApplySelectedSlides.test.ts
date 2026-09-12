@@ -145,11 +145,12 @@ describe('adoptThemeStyles at slides scope', () => {
     // Untagged text is `base`, outside the role list: left exactly as it was.
     expect(s2.elements.find((el) => el.id === 's2-plain')!.style)
       .toEqual({ 'font-size': '40px', color: '#ff0000' });
+    // Shape colours that are nobody's swatch are the author's own and stay.
     const box = s2.elements.find((el) => el.id === 's2-box')!;
     expect(box.type).toBe('shape');
     if (box.type === 'shape') {
-      expect(theme.palette).toContain(box.fill);
-      expect(theme.palette).toContain(box.stroke);
+      expect(box.fill).toBe('#e83a30');
+      expect(box.stroke).toBe('#00ff00');
     }
   });
 
@@ -312,7 +313,7 @@ describe('the theme panel apply button', () => {
 
   function setOption(panel: HTMLElement, label: string, checked: boolean): void {
     const box = [...panel.querySelectorAll<HTMLLabelElement>('label.field-check')]
-      .find((candidate) => candidate.querySelector('span')?.textContent === label)!;
+      .find((candidate) => candidate.querySelector('span')?.textContent?.trim().startsWith(label))!;
     const input = box.querySelector<HTMLInputElement>('input')!;
     if (input.checked !== checked) input.click();
   }
@@ -325,9 +326,8 @@ describe('the theme panel apply button', () => {
     panel.syncScope(store.get().slideSelection.size);
     expect(panel.applyButtonLabel()).toBe('Apply theme to 3 selected slides');
 
-    setOption(panel.element, 'Size + spacing', true);
-    setOption(panel.element, 'Text colour', true);
-    setOption(panel.element, 'Slide background', true);
+    setOption(panel.element, 'Type scale', true);
+    setOption(panel.element, 'Colour', true);
     panel.element.querySelector<HTMLButtonElement>('.theme-apply-action button')!.click();
 
     const theme = panel.currentTheme()!;
@@ -355,7 +355,7 @@ describe('the theme panel apply button', () => {
     panel.syncScope(store.get().slideSelection.size);
     expect(panel.applyButtonLabel()).toBe('Apply theme to 1 selected slide');
 
-    setOption(panel.element, 'Slide background', true);
+    setOption(panel.element, 'Colour', true);
     panel.element.querySelector<HTMLButtonElement>('.theme-apply-action button')!.click();
 
     const theme = panel.currentTheme()!;
@@ -382,7 +382,7 @@ describe('the theme panel apply button', () => {
     store.selectSlide(1); // collapse back to one slide
     panel.syncScope(1);
 
-    setOption(panel.element, 'Slide background', true);
+    setOption(panel.element, 'Colour', true);
     panel.element.querySelector<HTMLButtonElement>('.theme-apply-action button')!.click();
     const theme = panel.currentTheme()!;
     const { deck } = store.get();

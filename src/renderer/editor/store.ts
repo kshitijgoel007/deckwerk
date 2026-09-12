@@ -1120,6 +1120,20 @@ export async function pasteFromClipboard(
   return { kind: 'elements', count: elements.length };
 }
 
+/**
+ * Paste what was last copied inside this window, bypassing the system
+ * clipboard. The Web UI has no pasteboard bridge: Cmd+C parks the selection
+ * in the module-level fallback, and Cmd+V arrives as a native paste event
+ * whose clipboardData holds nothing of ours. When that event carries neither
+ * a table nor an image, this is what "paste" means.
+ */
+export async function pasteInAppClipboard(
+  store: EditorStore,
+): Promise<{ kind: 'elements' | 'slides'; count: number } | null> {
+  if (!fallbackClipboard) return null;
+  return pasteFromClipboard(store, fallbackClipboard);
+}
+
 /** Native browser paste events expose image bytes even on plain HTTP origins,
  * where `navigator.clipboard.read()` is unavailable. Upload those bytes using
  * the same collaboration asset bridge as drag-and-drop. */

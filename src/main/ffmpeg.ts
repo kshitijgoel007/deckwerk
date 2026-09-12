@@ -292,7 +292,7 @@ export async function runTrim(
   });
 }
 
-function run(
+export function run(
   bin: string,
   args: string[],
 ): Promise<{ stdout: string; stderr: string }> {
@@ -309,4 +309,132 @@ function run(
         : reject(new Error(`${bin} exited ${code}: ${stderr.slice(-2000)}`)),
     );
   });
+}
+
+/** Pixel dimensions and pixel format of a still image, or nulls if unknown. */
+export async function probeImage(
+  absolutePath: string,
+): Promise<{ width: number | null; height: number | null; pixFmt: string | null; frames: number | null }> {
+  try {
+    const out = await run(getFfprobePath(), [
+      '-v', 'error', '-select_streams', 'v:0',
+      '-count_frames', '-show_entries', 'stream=width,height,pix_fmt,nb_read_frames',
+      '-of', 'json', absolutePath,
+    ]);
+    const parsed = JSON.parse(out.stdout) as {
+      streams?: Array<{ width?: number; height?: number; pix_fmt?: string; nb_read_frames?: string }>;
+    };
+    const stream = parsed.streams?.[0];
+    const frames = Number(stream?.nb_read_frames);
+    return {
+      width: stream?.width ?? null,
+      height: stream?.height ?? null,
+      pixFmt: stream?.pix_fmt ?? null,
+      frames: Number.isFinite(frames) ? frames : null,
+    };
+  } catch {
+    return { width: null, height: null, pixFmt: null, frames: null };
+  }
+}
+
+export interface WebVideoEncode {
+  /** VP9 in WebM is a third smaller than H.264 at equal quality and plays in every current browser. */
+  codec: 'h264' | 'vp9';
+  /** Constant rate factor for the codec; higher is smaller. */
+  crf: number;
+  /** libx264 preset or libvpx `-cpu-used` speed (0 slowest, 5 fastest). */
+  speed: string;
+  audioBitrate: string;
+  /** Output size when the source has to shrink; omit to keep the source size. */
+  width?: number;
+  height?: number;
+  /** Keep only this stretch of the clip, in seconds from the source's start. */
+  trim?: { start: number; duration: number };
+}
+
+/**
+ * Re-encode a clip for the web, optionally cut down and downscaled.
+ * `onProgress` receives the fraction of the output written so far, or null
+ * when the duration is unknown.
+ */
+export async function transcodeVideoForWeb(
+  input: string,
+  output: string,
+  encode: WebVideoEncode,
+  onProgress?: (ratio: number | null) => void,
+): Promise<void> {
+  const duration = encode.trim
+    ? encode.trim.duration
+    : onProgress ? (await probeMedia(input)).duration : null;
+  // yuv420p cannot hold odd dimensions and libx264 refuses them outright, so
+  // the scale filter always lands on even numbers, resized or not.
+  const scale = encode.width && encode.height
+    ? `scale=${Math.max(2, Math.floor(encode.width / 2) * 2)}:${Math.max(2, Math.floor(encode.height / 2) * 2)}`
+    : 'scale=trunc(iw/2)*2:trunc(ih/2)*2';
+  const args = ['-hide_banner', '-loglevel', 'error', '-progress', 'pipe:1', '-nostats', '-y'];
+  // `-ss` before `-i` seeks by index and, because the stream is re-encoded,
+  // ffmpeg decodes and discards up to the exact frame: fast and accurate.
+  if (encode.trim && encode.trim.start > 0) args.push('-ss', encode.trim.start.toFixed(3));
+  args.push('-i', input);
+  if (encode.trim) args.push('-t', encode.trim.duration.toFixed(3));
+  args.push('-map', '0:v:0', '-map', '0:a?', '-vf', `${scale},format=yuv420p`);
+  if (encode.codec === 'vp9') {
+    args.push(
+      '-c:v', 'libvpx-vp9', '-crf', String(encode.crf), '-b:v', '0',
+      '-deadline', 'good', '-cpu-used', encode.speed, '-row-mt', '1',
+      '-c:a', 'libopus', '-b:a', encode.audioBitrate, '-f', 'webm', output,
+    );
+  } else {
+    args.push(
+      '-c:v', 'libx264', '-crf', String(encode.crf), '-preset', encode.speed,
+      '-c:a', 'aac', '-b:a', encode.audioBitrate,
+      '-movflags', '+faststart', '-f', 'mp4', output,
+    );
+  }
+  await new Promise<void>((resolvePromise, reject) => {
+    const child = spawn(getFfmpegPath(), args);
+    let stderr = '';
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', (chunk: string) => {
+      if (!onProgress) return;
+      for (const line of chunk.split('\n')) {
+        const m = /^out_time_us=(\d+)/.exec(line.trim());
+        if (!m) continue;
+        onProgress(duration && duration > 0 ? Math.min(1, Number(m[1]) / 1_000_000 / duration) : null);
+      }
+    });
+    child.stderr.on('data', (d) => (stderr = (stderr + d).slice(-2000)));
+    child.on('error', reject);
+    child.on('close', (code) =>
+      code === 0 ? resolvePromise() : reject(new Error(`web transcode failed: ${stderr}`)),
+    );
+  });
+}
+
+export interface WebImageEncode {
+  /** libwebp quality, 0–100. */
+  quality: number;
+  width?: number;
+  height?: number;
+}
+
+/**
+ * Re-encode a still image as lossy WebP, keeping any alpha channel, optionally
+ * downscaled. WebP is the one format that is both smaller than JPEG for photos
+ * and able to carry transparency, so a deck's figures need no per-file choice.
+ */
+export async function encodeImageWebp(
+  input: string,
+  output: string,
+  encode: WebImageEncode,
+): Promise<void> {
+  const args = ['-hide_banner', '-loglevel', 'error', '-y', '-i', input, '-frames:v', '1', '-update', '1'];
+  if (encode.width && encode.height) {
+    args.push('-vf', `scale=${Math.max(1, Math.round(encode.width))}:${Math.max(1, Math.round(encode.height))}`);
+  }
+  args.push(
+    '-c:v', 'libwebp', '-quality', String(encode.quality), '-compression_level', '6',
+    '-f', 'webp', output,
+  );
+  await run(getFfmpegPath(), args);
 }

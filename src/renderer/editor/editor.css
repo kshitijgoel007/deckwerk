@@ -51,6 +51,24 @@ html, body {
   -webkit-app-region: drag;
 }
 
+.bar-divider {
+  width: 1px;
+  height: 16px;
+  margin: 0 2px;
+  background: var(--line);
+  align-self: center;
+}
+.bar-deck-name {
+  align-self: center;
+  max-width: 220px;
+  overflow: hidden;
+  color: var(--text);
+  font: inherit;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bar-deck-name[hidden] { display: none; }
 .bar-group {
   display: flex;
   gap: 6px;
@@ -1589,6 +1607,15 @@ input[type="range"] { accent-color: var(--accent); padding: 0; background: trans
 /* The row swallows its children's bottom margin, so it carries one itself —
    without it "Paragraph spacing" sat flush against the Align buttons. */
 .insp-type-sections .compact-field-row { margin-bottom: 6px; }
+/* Font size can carry a "Fitted to N px" caption below it; aligning the row's
+   cells at the end put Font weight's input level with that caption instead of
+   with Font size's input. Align at the start so the labels and inputs line up
+   and the caption hangs below on its own. */
+.font-metrics-row { align-items: start; }
+.layout-reset-row { margin-top: 8px; }
+.follow-theme-row { margin: -2px 0 8px; }
+.follow-theme-row .follow-theme-button { width: 100%; }
+.layout-reset-row .layout-reset-button { width: 100%; }
 .media-border-options .field-number {
   flex-direction: row;
   align-items: center;
@@ -3209,6 +3236,9 @@ button.morph-object-hit.selected-source:hover:not(:disabled) {
 }
 
 .pdf-export-dialog { width: min(440px, calc(100vw - 56px)); }
+.web-export-dialog { width: min(480px, calc(100vw - 56px)); }
+.web-export-quality { padding-top: 4px; }
+.web-export-detail { margin: 0; min-height: 3.6em; color: var(--muted); font-size: 12px; line-height: 1.5; }
 .pdf-export-builds { padding: 8px 0 4px; }
 
 /* Object names in the build and Morph lists carry colour swatches so two
@@ -3869,6 +3899,18 @@ select.panel-action-select {
 }
 
 /* Units read as the input's suffix: "12 px", "90 °", "300 ms". */
+/* A span directly under `.field` is otherwise styled as the field's label
+   (10px, uppercase, muted) and the input inside inherits that font, so a
+   number with a unit rendered shorter than its unitless neighbour. */
+.field > .field-unit-wrap {
+  position: relative;
+  display: block;
+  min-width: 0;
+  font: inherit;
+  color: inherit;
+  letter-spacing: normal;
+  text-transform: none;
+}
 .field-unit-wrap { position: relative; display: block; min-width: 0; }
 .field-unit-wrap > input { width: 100%; padding-right: 26px; }
 .field-unit-wrap > input::-webkit-inner-spin-button,
@@ -4083,3 +4125,106 @@ button.ghost:hover:not(:disabled) { color: var(--text); background: transparent;
 .timeline-row select.build-action { padding: 2px 20px 2px 6px; height: 24px; font: 10.5px var(--mono); }
 .timeline-row select.build-trigger { flex: none; }
 .build-num { min-width: 16px; height: 16px; font: 700 9.5px/1 var(--mono); color: #000; }
+
+/* --- Design: canvas previews, the Props layout picker, rail design captions --- */
+.design-slide-preview {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  pointer-events: none;
+}
+.design-slide-preview > .slide { position: absolute; inset: 0; }
+.design-slide-preview .text-body,
+.design-slide-preview .text-content { visibility: visible; }
+.canvas-host.design-slide-previewing > .stage > .overlay-layer { visibility: hidden; }
+.design-slide-preview-banner {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  z-index: 6;
+  max-width: calc(100% - 40px);
+  padding: 4px 9px;
+  border-radius: 3px;
+  background: var(--accent);
+  color: #fff;
+  font: 700 9px/1.3 var(--mono);
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+.layout-popover-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+.layout-popover-item {
+  min-width: 0;
+  padding: 0;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--text);
+  text-align: center;
+}
+.layout-popover-item:hover { border-color: var(--muted); }
+.layout-popover-item.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.layout-popover-item em { display: block; padding: 3px 0 2px; font-style: normal; font-size: 9px; color: var(--muted); }
+.design-readout {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.45;
+}
+.design-readout em { font-style: normal; color: var(--text); }
+.design-readout .design-readout-action {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+}
+/* The row's grid names only "num thumb"; the caption takes a full implicit
+   row beneath, so it never competes with the thumbnail for a column. */
+.rail-design-label {
+  display: none;
+  grid-column: 1 / -1;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.3;
+}
+.rail-design-labels .rail-design-label { display: block; }
+
+/* --- Design tab --- */
+.theme-default-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+.theme-default-label { color: var(--muted); font-size: 10px; min-width: 44px; }
+.theme-default-mode { flex: 1; }
+.theme-edit-button { margin-left: auto; }
+.design-masters { margin-top: 12px; }
+.design-masters-row { justify-content: space-between; margin-top: 8px; }
+.field-check-sub { color: var(--muted); font-weight: 400; }
+.theme-editor-actions { display: flex; gap: 6px; margin-top: 8px; }
+.theme-editor-actions > button { flex: 1; }
+.theme-inline-editor .design-readout { margin: 4px 0 8px; }
+.canvas-host.design-theme-previewing::after {
+  content: 'Previewing theme draft';
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  z-index: 6;
+  padding: 4px 9px;
+  border-radius: 3px;
+  background: var(--accent);
+  color: #fff;
+  font: 700 9px/1.3 var(--mono);
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  transform: translateX(-50%);
+  pointer-events: none;
+}

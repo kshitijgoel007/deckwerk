@@ -31,6 +31,7 @@ import { authoredHtmlSync, fileName } from './htmlCompile.js';
 import { createShapeInsertPicker, createTableInsertPicker, insertText } from './elementCreation.js';
 import { createToolbarPicker, createToolbarSplitButton } from './exportPicker.js';
 import { showPdfExportDialog } from './pdfExportDialog.js';
+import { showWebExportDialog } from './webExportDialog.js';
 import { makePanelResizable } from './panelResize.js';
 import { DelayedOperationProgress, type OperationHandle } from './operationProgress.js';
 import { DesignWorkspace } from './designWorkspace.js';
@@ -342,14 +343,38 @@ function applyHtmlEdit(file: AuthoredHtmlFile): Promise<void> {
 
 /* --- toolbar --- */
 
+let deckNameLabel: HTMLElement | null = null;
+
+function barDivider(): HTMLElement {
+  const divider = document.createElement('span');
+  divider.className = 'bar-divider';
+  divider.setAttribute('aria-hidden', 'true');
+  return divider;
+}
+
+/** The open deck's name beside the logo: its folder name, or its title. */
+function syncDeckNameLabel(): void {
+  if (!deckNameLabel) return;
+  const { deck, dir } = store.get();
+  const folder = dir ? dir.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? '' : '';
+  const name = folder || deck.title || '';
+  deckNameLabel.textContent = name;
+  deckNameLabel.hidden = name === '';
+  deckNameLabel.title = dir ?? '';
+}
+
 function buildToolbar(): void {
   const bar = el('toolbar');
   bar.replaceChildren();
 
   const left = document.createElement('div');
   left.className = 'bar-group';
+  deckNameLabel = document.createElement('span');
+  deckNameLabel.className = 'bar-deck-name';
   left.append(
     createDeckWerkButton(),
+    deckNameLabel,
+    barDivider(),
     barButton('New', newPresentation),
     barButton('Open', openPresentation),
     createToolbarPicker('Import…', [
@@ -392,6 +417,7 @@ function buildToolbar(): void {
   );
 
   bar.append(left, mid, right);
+  syncDeckNameLabel();
 }
 
 async function startPresentation(speakerView = false): Promise<void> {
@@ -428,13 +454,15 @@ async function startPresentation(speakerView = false): Promise<void> {
 }
 
 async function exportWeb(): Promise<void> {
+  const choice = await showWebExportDialog();
+  if (!choice) return;
   try {
     const dir = await runOperation('Preparing web export…', async (operation) => {
       operation.update('Saving deck.json and theme.css');
       await cssEditor.flush();
       await save();
       operation.update('Waiting for an export folder');
-      return window.api.exportBundle(operation.id);
+      return window.api.exportBundle({ quality: choice.quality }, operation.id);
     });
     if (dir) setStatusMessage(`Exported to ${dir}`);
   } catch (err) {
@@ -786,10 +814,9 @@ const themePanel = createThemePanel({
   setStatusMessage,
   saveThemeCss: (css) => void persistThemeCss(css),
   onThemePreview: (theme) => (theme ? designWorkspace.show(theme) : designWorkspace.hide()),
-  onEditLayouts: () => designWorkspace.openLayoutEditor(
-    (store.slide?.layout ?? 'freeform'),
-  ),
-  createLayoutPreview: (theme, onActivate) => designWorkspace.createLayoutSummary(theme, onActivate),
+  onEditLayouts: (layout) => designWorkspace.openLayoutEditor(layout),
+  onPreviewSlide: (slide, label) => designWorkspace.previewSlideOnCanvas(slide, label),
+  onPreviewThemeDraft: (theme) => designWorkspace.previewThemeDraft(theme),
 });
 rail.onSlideActivate = () => {
   themePanel.dismiss();
@@ -807,11 +834,12 @@ document.addEventListener('keydown', (event) => {
   }
 }, true);
 inspector.onEditLayouts = (layout) => designWorkspace.openLayoutEditor(layout);
+inspector.onPreviewSlide = (slide, label) => designWorkspace.previewSlideOnCanvas(slide, label);
 /* --- side panel tabs --- */
 
 const PANELS = [
   { id: 'inspector', label: 'Props' },
-  { id: 'themePanel', label: 'Theme' },
+  { id: 'themePanel', label: 'Design' },
   { id: 'timeline', label: 'Build' },
   { id: 'history', label: 'History' },
 ] as const;
@@ -843,6 +871,7 @@ function showPanel(id: string): void {
   if (id === 'inspector') inspector.render();
   if (id === 'themePanel') el('themePanel').scrollTop = 0;
   if (id !== 'themePanel') designWorkspace.hide();
+  rail.setDesignLabels(id === 'themePanel');
   canvas.setBuildBadgesVisible(id === 'timeline');
 }
 
@@ -1052,6 +1081,7 @@ canvas.onTextEditModeChange = (elementId) => {
 };
 store.subscribe(() => {
   syncSlideSelectionContext();
+  syncDeckNameLabel();
   renderStatus();
   scheduleSave();
   publishAgentPresence();

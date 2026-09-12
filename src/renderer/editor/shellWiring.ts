@@ -1,4 +1,5 @@
 import type { SlideElement } from '@shared/deck.js';
+import { elementFollowsLayout, layoutGeometryFor, realignElementToLayout } from '@shared/layoutMasters.js';
 import { EditorCanvas } from './canvas.js';
 import { setCircularMask } from '@shared/mediaMask.js';
 import { mediaNaturalSize } from './mediaNatural.js';
@@ -11,6 +12,7 @@ import {
   cutSelectionToClipboard,
   pasteImageFilesFromClipboard,
   pasteFromClipboard,
+  pasteInAppClipboard,
 } from './store.js';
 import {
   setWholeTextFormat,
@@ -142,6 +144,8 @@ export interface ClipboardActions {
   pasteClipboard: () => Promise<void>;
   pasteClipboardData?: (html: string, text: string) => Promise<void>;
   pasteClipboardFiles?: (files: File[]) => Promise<void>;
+  /** Paste the in-window copy when the native paste event holds nothing of ours. */
+  pasteInAppClipboard?: () => Promise<void>;
 }
 
 /**
@@ -178,6 +182,7 @@ export function createClipboardActions(deps: ShellDeps): ClipboardActions {
     }
   };
   const pasteClipboard = () => pasteAndReport(() => pasteFromClipboard(store));
+  const pasteInApp = () => pasteAndReport(() => pasteInAppClipboard(store));
   const pasteClipboardData = (html: string, text: string) =>
     pasteAndReport(() => pasteFromClipboard(store, { kind: 'external-html', html, text }));
 
@@ -195,6 +200,7 @@ export function createClipboardActions(deps: ShellDeps): ClipboardActions {
     pasteClipboard,
     pasteClipboardData,
     pasteClipboardFiles,
+    pasteInAppClipboard: pasteInApp,
   };
 }
 
@@ -242,9 +248,16 @@ export function bindEditorKeys(deps: ShellDeps, clipboard: ClipboardActions): vo
       .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
       .map((item) => item.getAsFile())
       .filter((file): file is File => file !== null);
-    if (files.length === 0) return;
+    if (files.length > 0) {
+      event.preventDefault();
+      void clipboard.pasteClipboardFiles?.(files);
+      return;
+    }
+    // Nothing foreign we can use: this is Cmd+V after an in-app Cmd+C, whose
+    // payload never reached the OS clipboard (no pasteboard bridge here).
+    if (!clipboard.pasteInAppClipboard) return;
     event.preventDefault();
-    void clipboard.pasteClipboardFiles?.(files);
+    void clipboard.pasteInAppClipboard();
   });
   window.addEventListener('keydown', (e) => {
     // `window` and `document` are event targets too, and neither answers the
@@ -415,6 +428,17 @@ export function makeContextActions(
         { label: 'Bring to front', action: () => store.updateSelected((e) => (e.z += 1000)) },
         { label: 'Send to back', action: () => store.updateSelected((e) => (e.z -= 1000)) },
       );
+      if (el.type === 'text' && store.slide
+        && layoutGeometryFor(store.slide, el, store.get().deck.layoutMasters)
+        && !elementFollowsLayout(store.slide, el, store.get().deck.layoutMasters)) {
+        items.push('separator', {
+          label: 'Reset to layout position',
+          action: () => store.commit((deck) => {
+            const slide = deck.slides.find((candidate) => candidate.elements.some((e) => e.id === el.id));
+            if (slide) realignElementToLayout(slide, el.id, deck.layoutMasters);
+          }, { label: 'Reset to layout position' }),
+        });
+      }
       if (el.type === 'image' || el.type === 'video') {
         items.push('separator', {
           label: canvas.maskingElement() === el.id ? 'Done editing mask' : 'Edit mask (crop)',

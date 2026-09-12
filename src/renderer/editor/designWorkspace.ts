@@ -1,19 +1,19 @@
-import { emptyDeck, type Deck, type LayoutMaster, type Slide, type SlideElement } from '@shared/deck.js';
+import { emptyDeck, type Deck, type Slide, type SlideElement } from '@shared/deck.js';
 import { defaultLayoutMasters, syncDeckWithLayoutMasters, type FixedLayout } from '@shared/layoutMasters.js';
 import { ROLE_TYPE_SCALE_PROPERTIES, deckTheme, themeCss, type ThemePreset } from '@shared/themes.js';
 import { renderSlide } from '../player/render.js';
+import {
+  FIXED_LAYOUTS as LAYOUTS,
+  LAYOUT_LABELS_BY_ID as LABELS,
+  applyThemeInline,
+  previewSlide,
+  revealPlaceholders,
+} from './layoutPreview.js';
 import { EditorCanvas } from './canvas.js';
 import { createShapeInsertPicker, insertText } from './elementCreation.js';
 import { Inspector } from './inspector.js';
 import { barButton, wireCanvasInspector } from './shellWiring.js';
 import { EditorStore } from './store.js';
-
-const LAYOUTS: FixedLayout[] = ['freeform', 'standard', 'title'];
-const LABELS: Record<FixedLayout, string> = {
-  freeform: 'Freeform',
-  standard: 'Title + Body',
-  title: 'Title',
-};
 
 export interface DesignWorkspaceDeps {
   canvasHost: HTMLElement;
@@ -177,6 +177,46 @@ export class DesignWorkspace {
     }
   }
 
+  /**
+   * Show `slide` on the canvas in place of the real one, or clear the preview.
+   *
+   * Hover previews from the Props layout picker and the Design tab's Apply
+   * render a dry-run clone inside the scaled stage, over the live slide and
+   * under the selection overlay, so the author sees the result at the real
+   * size without anything being committed. A banner names what is shown.
+   */
+  previewSlideOnCanvas(slide: Slide | null, label = ''): void {
+    const stage = this.deps.canvasHost.querySelector<HTMLElement>(':scope > .stage');
+    const existing = this.deps.canvasHost.querySelector<HTMLElement>('.design-slide-preview');
+    const banner = this.deps.canvasHost.querySelector<HTMLElement>('.design-slide-preview-banner');
+    existing?.remove();
+    banner?.remove();
+    this.deps.canvasHost.classList.toggle('design-slide-previewing', Boolean(slide));
+    if (!slide || !stage) return;
+    const layer = document.createElement('div');
+    layer.className = 'design-slide-preview';
+    const clone = structuredClone(slide);
+    layer.appendChild(renderSlide(clone, {
+      resolveSrc: (src) => window.api.assetUrl(src),
+      mediaPreload: 'metadata',
+    }));
+    stage.appendChild(layer);
+    const note = document.createElement('div');
+    note.className = 'design-slide-preview-banner';
+    note.textContent = label ? `Preview · ${label}` : 'Preview';
+    this.deps.canvasHost.appendChild(note);
+  }
+
+  /**
+   * Preview a theme draft: theme.css for `theme` is laid over the editor so
+   * every box that follows the stylesheet shows the draft. Boxes carrying
+   * their own values stay put, which is exactly what Done would do to them.
+   */
+  previewThemeDraft(theme: ThemePreset | null): void {
+    this.previewStyle.textContent = theme ? themeCss(theme) : '';
+    this.deps.canvasHost.classList.toggle('design-theme-previewing', Boolean(theme));
+  }
+
   openLayoutEditor(initialLayout: FixedLayout): void {
     if (this.editingOverlay) return;
     const sourceDeck = this.deps.store.get().deck;
@@ -281,90 +321,6 @@ export class DesignWorkspace {
     };
     this.closeLayoutEditor = close;
   }
-}
-
-function previewSlide(layout: FixedLayout, master: LayoutMaster): Slide {
-  const elements = revealPlaceholders(structuredClone(master.elements));
-  for (const element of elements) {
-    if (element.type !== 'text') continue;
-    if (element.layoutPlaceholder === 'title') element.html = 'The big idea';
-    else if (element.layoutPlaceholder === 'body') {
-      element.html = 'Readable body copy for the story.';
-    }
-  }
-  if (layout === 'freeform') {
-    elements.push({
-      id: 'preview-freeform-title', type: 'text', x: 160, y: 150, w: 1600, h: 180,
-      rot: 0, z: 50, opacity: 1, class: ['role-title'], style: {},
-      html: 'The big idea', align: 'left', valign: 'middle', autoFit: true,
-    }, {
-      id: 'preview-freeform-body', type: 'text', x: 160, y: 390, w: 1200, h: 260,
-      rot: 0, z: 51, opacity: 1, class: ['role-body'], style: {},
-      html: 'Readable body copy for the story.',
-      align: 'left', valign: 'top', autoFit: true,
-    }, {
-      id: 'preview-freeform-caption', type: 'text', x: 160, y: 880, w: 1200, h: 70,
-      rot: 0, z: 52, opacity: 1, class: ['role-caption'], style: {},
-      html: 'Supporting detail', align: 'left', valign: 'middle', autoFit: true,
-    });
-  } else if (layout === 'standard') {
-    elements.push({
-      id: 'preview-standard-caption', type: 'text', x: 120, y: 970, w: 1680, h: 50,
-      rot: 0, z: 52, opacity: 1, class: ['role-caption'], style: {},
-      html: 'Supporting detail', align: 'left', valign: 'middle', autoFit: true,
-    });
-  }
-  return {
-    id: `preview-${layout}`,
-    name: LABELS[layout],
-    background: structuredClone(master.background),
-    notes: '',
-    layout: 'freeform',
-    elements,
-    timeline: [],
-  };
-}
-
-const PREVIEW_ROLES = ['title', 'heading', 'body', 'caption'] as const;
-
-function applyThemeInline(slide: Slide, theme: ThemePreset): void {
-  // Preview clones render outside the preview stylesheet, so the theme's ground
-  // has to be painted on: a master shown on white would misrepresent the deck.
-  if (!slide.background.color && !slide.background.image) {
-    slide.background = { color: theme.colors.background, image: null };
-  }
-  for (const element of slide.elements) {
-    if (element.type !== 'text') continue;
-    const role = PREVIEW_ROLES.find((name) => element.class.includes(`role-${name}`)) ?? 'base';
-    const font = theme.fonts[role];
-    // Element styles are CSS declarations: the renderer hands each key straight
-    // to `setProperty`, which drops camelCase outright. Written that way, the
-    // whole preview silently kept wearing the deck's stylesheet instead of the
-    // theme the author had just picked. The size belongs here too -- a type
-    // scale is most of what distinguishes one theme from the next.
-    element.style = {
-      ...element.style,
-      'font-family': font.family,
-      'font-size': `${font.size}px`,
-      'font-weight': String(font.weight),
-      'letter-spacing': font.letterSpacing,
-      'line-height': String(font.lineHeight),
-      color: font.color ?? (role === 'caption' ? theme.colors.muted : theme.colors.text),
-    };
-  }
-}
-
-/**
- * Placeholder copy is prompt text: `type.css` hides it everywhere outside an
- * editing surface, so a design surface that renders masters through the player
- * has to opt out of that. Without this the whole layout gallery — preview
- * grid, sidebar summary, and the layout editor's own rail — drew empty slides.
- */
-function revealPlaceholders<T extends SlideElement>(elements: T[]): T[] {
-  for (const element of elements) {
-    element.class = element.class.filter((name) => name !== 'placeholder');
-  }
-  return elements;
 }
 
 function masterEditingDeck(source: Deck, masters: NonNullable<Deck['layoutMasters']>): Deck {

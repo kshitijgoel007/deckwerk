@@ -42,6 +42,7 @@ import type {
   WorkflowStartResult,
   VideoPosterRequest,
   VideoPosterResult,
+  WebExportRequest,
 } from '@shared/ipc.js';
 
 /**
@@ -149,8 +150,8 @@ const api = {
     ipcRenderer.invoke(IPC.keynoteImport, operationId),
   importPowerPoint: (operationId?: string): Promise<PresentationImportResult | null> =>
     ipcRenderer.invoke(IPC.pptxImport, operationId),
-  exportBundle: (operationId?: string): Promise<string | null> =>
-    ipcRenderer.invoke(IPC.exportBundle, operationId),
+  exportBundle: (request: WebExportRequest = {}, operationId?: string): Promise<string | null> =>
+    ipcRenderer.invoke(IPC.exportBundle, request, operationId),
   exportPdf: (request: PdfExportRequest = {}, operationId?: string): Promise<string | null> =>
     ipcRenderer.invoke(IPC.exportPdf, request, operationId),
   onOperationProgress: (fn: (p: OperationProgress) => void): (() => void) =>

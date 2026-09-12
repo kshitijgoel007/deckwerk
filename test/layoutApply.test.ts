@@ -1,16 +1,21 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { CssEditor } from '../src/renderer/editor/cssEditor.js';
-import { createThemePanel } from '../src/renderer/editor/themePanel.js';
 import { applySlideLayout } from '../src/renderer/editor/slideLayouts.js';
 import { EditorStore } from '../src/renderer/editor/store.js';
 import { emptyDeck, type Deck, type TextEl } from '../src/shared/deck.js';
-import { defaultLayoutMasters, realignSlideToLayout } from '../src/shared/layoutMasters.js';
+import {
+  defaultLayoutMasters,
+  elementFollowsLayout,
+  layoutGeometryFor,
+  realignElementToLayout,
+  realignSlideToLayout,
+} from '../src/shared/layoutMasters.js';
+import { Inspector } from '../src/renderer/editor/inspector.js';
 
 /**
- * "Apply layout" is Apply theme's geometric twin: it puts the in-scope slides'
- * text boxes back where their own layout master places them and changes
- * nothing else -- not styling, not content, not which layout a slide is on.
+ * Putting text boxes back where their layout places them changes nothing else
+ * -- not styling, not content, not which layout a slide is on. The per-slide
+ * form backs the agent surface; the per-box form is the Props button.
  */
 
 function slot(deck: Deck, index: number, name: 'title' | 'body'): TextEl {
@@ -66,75 +71,124 @@ describe('realignSlideToLayout', () => {
   });
 });
 
-describe('Apply layout button', () => {
+describe('realignElementToLayout', () => {
+  it('moves one role box to its slot and leaves the other slot box where it was', () => {
+    const deck = nudgedDeck();
+    const title = slot(deck, 0, 'title');
+    const body = slot(deck, 0, 'body');
+    body.x = 900; body.y = 900;
+    expect(elementFollowsLayout(deck.slides[0], title, deck.layoutMasters)).toBe(false);
+
+    expect(realignElementToLayout(deck.slides[0], title.id, deck.layoutMasters)).toBe(true);
+    expect({ x: title.x, y: title.y, w: title.w, h: title.h, align: title.align })
+      .toEqual({ x: 120, y: 58, w: 1680, h: 142, align: 'left' });
+    expect(title.style).toEqual({ color: '#ff0000', 'font-size': '200px' });
+    expect(title.html).toBe('Moved title');
+    // Per box, never per slide: the body is exactly where the author left it.
+    expect({ x: body.x, y: body.y }).toEqual({ x: 900, y: 900 });
+    expect(elementFollowsLayout(deck.slides[0], title, deck.layoutMasters)).toBe(true);
+    expect(realignElementToLayout(deck.slides[0], title.id, deck.layoutMasters)).toBe(false);
+  });
+
+  it('is a function of the role: any title-class box snaps to the title slot', () => {
+    const deck = nudgedDeck();
+    const extra: TextEl = {
+      id: 'second-title', type: 'text', x: 10, y: 10, w: 50, h: 20, rot: 0, z: 9, opacity: 1,
+      class: ['role-title'], style: {}, html: 'Another title', align: 'center', valign: 'middle',
+    };
+    deck.slides[0].elements.push(extra);
+    expect(layoutGeometryFor(deck.slides[0], extra, deck.layoutMasters)).toMatchObject({ x: 120, y: 58 });
+    expect(realignElementToLayout(deck.slides[0], extra.id, deck.layoutMasters)).toBe(true);
+    expect({ x: extra.x, y: extra.y, w: extra.w }).toEqual({ x: 120, y: 58, w: 1680 });
+  });
+
+  it('falls back to the standard layout on a freeform slide and refuses boxes with no role', () => {
+    const deck = nudgedDeck();
+    const freeform = deck.slides[2];
+    const body: TextEl = {
+      id: 'free-body', type: 'text', x: 5, y: 5, w: 50, h: 20, rot: 0, z: 1, opacity: 1,
+      class: ['role-body'], style: {}, html: 'Body', align: 'left', valign: 'top',
+    };
+    const plain: TextEl = { ...body, id: 'plain', class: [] };
+    freeform.elements.push(body, plain);
+    const standardBody = deck.layoutMasters!.standard.elements
+      .find((el): el is TextEl => el.type === 'text' && el.layoutPlaceholder === 'body')!;
+    expect(realignElementToLayout(freeform, body.id, deck.layoutMasters)).toBe(true);
+    expect({ x: body.x, y: body.y, w: body.w, h: body.h })
+      .toEqual({ x: standardBody.x, y: standardBody.y, w: standardBody.w, h: standardBody.h });
+    expect(layoutGeometryFor(freeform, plain, deck.layoutMasters)).toBeNull();
+    expect(realignElementToLayout(freeform, plain.id, deck.layoutMasters)).toBe(false);
+    expect(freeform.layout).toBe('freeform');
+  });
+});
+
+describe('Reset to layout position button', () => {
   beforeEach(() => document.body.replaceChildren());
 
-  function panelFor(deck: Deck) {
-    const store = new EditorStore(deck, '/tmp/apply-layout');
-    const setStatusMessage = vi.fn();
-    const save = vi.fn();
-    const panel = createThemePanel({
-      store,
-      cssEditor: { getValue: () => '', setValue: vi.fn() } as unknown as CssEditor,
-      save,
-      setStatusMessage,
-      saveThemeCss: vi.fn(),
-    });
-    document.body.appendChild(panel.element);
-    const button = panel.element.querySelector<HTMLButtonElement>('.layout-apply-section button')!;
-    return { store, panel, button, setStatusMessage, save };
-  }
-
-  it('is a heading and one button whose label follows the theme scope', () => {
-    const { panel, button, store } = panelFor(nudgedDeck());
-    const section = panel.element.querySelector('.layout-apply-section')!;
-    expect(section.querySelector('.insp-subtitle')!.textContent).toBe('Apply layout');
-    expect(section.querySelectorAll('input, select')).toHaveLength(0);
-    expect(section.querySelectorAll('button')).toHaveLength(1);
-
-    store.selectSlide(1);
-    store.selectSlide(2, true);
-    panel.syncScope(2);
-    expect(button.textContent).toBe('Apply layout to 2 selected slides');
-    expect(panel.layoutApplyButtonLabel()).toBe('Apply layout to 2 selected slides');
-
-    const scope = panel.element.querySelector<HTMLSelectElement>('.theme-adoption-controls select')!;
-    scope.value = 'deck';
-    scope.dispatchEvent(new Event('change'));
-    expect(button.textContent).toBe('Apply layout to deck');
-    scope.value = 'selection';
-    scope.dispatchEvent(new Event('change'));
-    expect(button.textContent).toBe('Apply layout to current slide');
-  });
-
-  it('re-aligns only the selected slides, saves, undoes as one step, and reports', () => {
+  it('appears for a drifted role box, moves only that box as one undo step, then goes idle', () => {
     const deck = nudgedDeck();
-    const { store, panel, button, setStatusMessage, save } = panelFor(deck);
-    store.selectSlide(1);
-    panel.syncScope(1);
-    button.click();
+    const store = new EditorStore(deck, '/tmp/reset-layout');
+    const host = document.createElement('aside');
+    document.body.appendChild(host);
+    new Inspector(host, store);
+    const title = slot(store.get().deck, 0, 'title');
+    const body = slot(store.get().deck, 0, 'body');
+    store.select([title.id]);
 
-    const after = store.get().deck;
-    expect(slot(after, 1, 'title').x).toBe(120);
-    expect(slot(after, 0, 'title').x).toBe(400);
-    expect(slot(after, 1, 'title').style).toEqual({ color: '#ff0000', 'font-size': '200px' });
-    expect(save).toHaveBeenCalled();
-    expect(setStatusMessage).toHaveBeenLastCalledWith(
-      'Re-aligned 2 text boxes to the layout on the current slide.',
-    );
+    const button = host.querySelector<HTMLButtonElement>('.layout-reset-button');
+    expect(button, 'a drifted title offers the reset').not.toBeNull();
+    expect(button!.disabled).toBe(false);
+    button!.click();
+
+    const moved = slot(store.get().deck, 0, 'title');
+    expect({ x: moved.x, y: moved.y, w: moved.w, h: moved.h }).toEqual({ x: 120, y: 58, w: 1680, h: 142 });
+    expect(moved.style).toEqual({ color: '#ff0000', 'font-size': '200px' });
+    const bodyAfter = slot(store.get().deck, 0, 'body');
+    expect({ x: bodyAfter.x, y: bodyAfter.y }).toEqual({ x: body.x, y: body.y });
+    expect(host.querySelector<HTMLButtonElement>('.layout-reset-button')?.disabled).toBe(true);
 
     store.undo();
-    expect(slot(store.get().deck, 1, 'title').x).toBe(400);
+    const back = slot(store.get().deck, 0, 'title');
+    expect({ x: back.x, y: back.y }).toEqual({ x: 400, y: 500 });
   });
 
-  it('says so when the scope has nothing to align', () => {
+  it('previews the box at its layout position on the canvas while hovered, and clears on leave', () => {
     const deck = nudgedDeck();
-    const { store, panel, button, setStatusMessage } = panelFor(deck);
-    store.selectSlide(2);
-    panel.syncScope(1);
-    button.click();
-    expect(setStatusMessage).toHaveBeenLastCalledWith(
-      'Nothing to align: the current slide uses the freeform layout.',
-    );
+    const store = new EditorStore(deck, '/tmp/reset-layout');
+    const host = document.createElement('aside');
+    document.body.appendChild(host);
+    const inspector = new Inspector(host, store);
+    const onPreviewSlide = vi.fn();
+    inspector.onPreviewSlide = onPreviewSlide;
+    const title = slot(store.get().deck, 0, 'title');
+    store.select([title.id]);
+
+    const button = host.querySelector<HTMLButtonElement>('.layout-reset-button')!;
+    button.dispatchEvent(new Event('mouseenter'));
+    expect(onPreviewSlide).toHaveBeenCalledTimes(1);
+    const [shown, label] = onPreviewSlide.mock.calls[0] as [Deck['slides'][number], string];
+    expect(label).toBe('Reset to layout position');
+    const previewed = shown.elements.find((el) => el.id === title.id)!;
+    expect({ x: previewed.x, y: previewed.y }).toEqual({ x: 120, y: 58 });
+    // A preview, not an edit: the deck is untouched.
+    expect(slot(store.get().deck, 0, 'title').x).toBe(400);
+
+    button.dispatchEvent(new Event('mouseleave'));
+    expect(onPreviewSlide).toHaveBeenLastCalledWith(null, '');
+  });
+
+  it('is not offered for a box with no role', () => {
+    const deck = nudgedDeck();
+    const plain: TextEl = {
+      id: 'plain', type: 'text', x: 5, y: 5, w: 50, h: 20, rot: 0, z: 1, opacity: 1,
+      class: [], style: {}, html: 'Plain', align: 'left', valign: 'top',
+    };
+    deck.slides[0].elements.push(plain);
+    const store = new EditorStore(deck, '/tmp/reset-layout');
+    const host = document.createElement('aside');
+    document.body.appendChild(host);
+    new Inspector(host, store);
+    store.select(['plain']);
+    expect(host.querySelector('.layout-reset-button')).toBeNull();
   });
 });

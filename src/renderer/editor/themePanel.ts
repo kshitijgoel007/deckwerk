@@ -1,25 +1,31 @@
-import type { Deck, ThemeStyle } from '@shared/deck.js';
-import { realignSlideToLayout } from '@shared/layoutMasters.js';
+import type { Deck, Slide, ThemeStyle } from '@shared/deck.js';
+import type { FixedLayout } from '@shared/layoutMasters.js';
 import {
   THEMES,
-  deckThemes,
-  type ThemeAdoption,
-  type ThemePreset,
   adoptThemeStyles,
   baseThemeId,
+  chooseDeckTheme,
   deckTheme,
+  deckThemes,
+  installThemeStyle,
   presetFromStyle,
   previousThemeUsed,
   themeById,
-  themeStyleOf,
+  themeMode,
   themeStyleCss,
   themeStyleLabel,
+  themeStyleOf,
   withThemeBlock,
-  chooseDeckTheme,
-  installThemeStyle,
+  type ThemeAdoption,
+  type ThemeMode,
+  type ThemePreset,
   type ThemeTextRole,
 } from '@shared/themes.js';
+import { colorField } from './colorPicker.js';
 import type { CssEditor } from './cssEditor.js';
+import { fontFamilyField } from './fontPicker.js';
+import { numberField } from './inspector.js';
+import { FIXED_LAYOUTS, LAYOUT_LABELS_BY_ID, masterTile } from './layoutPreview.js';
 import { barButton } from './shellWiring.js';
 import type { EditorStore } from './store.js';
 import {
@@ -27,8 +33,6 @@ import {
   createThemePreviewCard,
   type ThemeGallery,
 } from './themeGallery.js';
-import { fontFamilyField } from './fontPicker.js';
-import { numberField } from './inspector.js';
 
 /**
  * Whether one of the stack's characterful leading families is installed.
@@ -65,8 +69,7 @@ function chosenPresetId(deck: Deck): string | null {
  *
  * The deck's own presets are offered alongside the built-ins and filtered by
  * the same test: a deck theme naming a typeface this laptop lacks is as
- * unusable here as a shipped one, and hiding it beats showing a card that
- * previews as a fallback face.
+ * unusable here as a shipped one.
  */
 function availableThemes(deck: Deck, currentPresetId: string | null): ThemePreset[] {
   const pool = deckThemes(deck);
@@ -75,14 +78,15 @@ function availableThemes(deck: Deck, currentPresetId: string | null): ThemePrese
     theme.id === currentBase
     || (stackAvailable(theme.fonts.title.family) && stackAvailable(theme.fonts.body.family)));
 }
-import { colorField } from './colorPicker.js';
 
 /**
- * The Theme sidebar tab: preset gallery plus the adoption controls. Extracted
- * from the Electron shell so the browser collab shell shows the identical
- * panel. Theme presets are immutable style sources — one explicit operation
- * chooses scope, semantic roles and independent properties; selecting a card
- * alone is always side-effect-free.
+ * The Design sidebar tab: theme presets and the fixed layouts, each with its
+ * own Apply. Extracted from the Electron shell so the browser collab shell
+ * shows the identical panel.
+ *
+ * Choosing a theme, editing it, its Light/Dark default and editing the
+ * layouts are deck defaults; the two Apply buttons put them onto existing
+ * slides, and hovering either one previews the current slide on the canvas.
  */
 
 export interface ThemePanelDeps {
@@ -98,9 +102,11 @@ export interface ThemePanelDeps {
    */
   onThemePreview?: (theme: ThemePreset | null) => void;
   /** Enter the explicit editor for the fixed layout masters. */
-  onEditLayouts?: () => void;
-  /** Render the compact Title + Body master entry for the Layouts section. */
-  createLayoutPreview?: (theme: ThemePreset | null, onActivate: () => void) => HTMLElement;
+  onEditLayouts?: (layout: FixedLayout) => void;
+  /** Show a dry-run slide on the canvas in place of the real one; `null` clears it. */
+  onPreviewSlide?: (slide: Slide | null, label: string) => void;
+  /** Lay a theme draft's stylesheet over the editor; `null` removes it. */
+  onPreviewThemeDraft?: (theme: ThemePreset | null) => void;
 }
 
 export interface ThemePanel {
@@ -112,8 +118,6 @@ export interface ThemePanel {
   /** Keep scope controls consistent with the rail selection. */
   syncScope(slideSelectionCount: number): void;
   applyButtonLabel(): string;
-  /** Label of the Apply layout button; follows the same scope as Apply theme. */
-  layoutApplyButtonLabel(): string;
   /** Close the theme chooser/editor and end its central preview session. */
   dismiss(): boolean;
 }
@@ -124,13 +128,11 @@ export function createThemePanel(deps: ThemePanelDeps): ThemePanel {
   const themeAdoption: ThemeAdoption = {
     scope: 'slides',
     roles: ['title', 'heading', 'body', 'caption'],
+    // A family and the weight it is set in are one decision: "Typography".
     fontFamily: true,
-    // A family and the weight it is set in are one decision. With this off by
-    // default, switching a deck from a bold grotesk to Colloquium's condensed
-    // medium left every title at 700: the new face, the old weight, and a
-    // theme card that no longer described the slides it had just restyled.
     fontWeight: true,
     typeScale: false,
+    // Text colour, the slide ground and shape colours are one decision: "Colour".
     textColor: false,
     background: false,
     objectColors: false,
@@ -143,16 +145,21 @@ export function createThemePanel(deps: ThemePanelDeps): ThemePanel {
   let themeGallery: ThemeGallery | null = null;
   let themeScopeSelect: HTMLSelectElement | null = null;
   let themeApplyButton: HTMLButtonElement | null = null;
-  let layoutApplyButton: HTMLButtonElement | null = null;
+  let themeReadout: HTMLElement | null = null;
+  let mastersHost: HTMLElement | null = null;
+  let mastersKey = '';
+  let modeButtons = new Map<ThemeMode, HTMLButtonElement>();
   let activeThemeHost: HTMLElement | null = null;
   let chooser: HTMLElement | null = null;
   let themeEditor: HTMLElement | null = null;
-  let layoutPreviewHost: HTMLElement | null = null;
   let themePreviewOpen = false;
   let hadMultipleSlidesSelected = false;
+  /** A theme edit in progress; nothing lands on the deck until Done. */
+  let draft: { style: ThemeStyle; base: ThemePreset } | null = null;
 
   function currentTheme(): ThemePreset | null {
     const deck = store.get().deck;
+    if (draft) return presetFromStyle(draft.style, draft.base);
     const preset = themeById(selectedThemeId, deckThemes(deck));
     if (!preset) return deckTheme(deck);
     if (preset.id === deck.themePreset && deck.themeStyle) {
@@ -167,6 +174,7 @@ export function createThemePanel(deps: ThemePanelDeps): ThemePanel {
     activeThemeHost.replaceChildren();
     if (!theme) return;
     const card = createThemePreviewCard(theme, () => {
+      if (draft) return;
       if (chooser && !chooser.hidden) {
         endPreview();
         return;
@@ -177,19 +185,22 @@ export function createThemePanel(deps: ThemePanelDeps): ThemePanel {
       refreshPreviousBadge();
       renderActiveTheme();
     });
-    card.badge.hidden = selectedThemeId !== store.get().deck.themePreset;
-    card.badge.textContent = selectedThemeId === store.get().deck.themePreset ? 'Current' : 'Preview';
+    const installed = selectedThemeId === store.get().deck.themePreset;
+    card.badge.hidden = !installed && !draft;
+    card.badge.textContent = draft ? 'Draft' : installed ? 'Current' : 'Preview';
     card.element.classList.add('selected', 'theme-active-card');
     card.element.setAttribute('aria-expanded', String(chooser ? !chooser.hidden : false));
     activeThemeHost.appendChild(card.element);
+    for (const [mode, button] of modeButtons) {
+      const on = themeMode(theme) === mode;
+      button.classList.toggle('selected', on);
+      button.setAttribute('aria-pressed', String(on));
+    }
   }
 
   /**
-   * Leave the chooser and its preview.
-   *
-   * Closing the picker is the author saying "show me the deck again": the
-   * central Theme × Layout preview is scaffolding for choosing, and leaving it
-   * up meant the canvas kept showing sample slides after the choice was made.
+   * Leave the chooser and its preview: the central Theme × Layout preview is
+   * scaffolding for choosing, and closing the picker means "show me the deck".
    */
   function endPreview(): void {
     if (chooser) chooser.hidden = true;
@@ -208,15 +219,9 @@ export function createThemePanel(deps: ThemePanelDeps): ThemePanel {
     const theme = currentTheme();
     renderActiveTheme();
     refreshSwatches();
-    renderLayoutPreview();
+    renderMasters(true);
+    renderReadouts();
     if (themePreviewOpen) deps.onThemePreview?.(theme);
-  }
-
-  function renderLayoutPreview(): void {
-    if (!layoutPreviewHost) return;
-    layoutPreviewHost.replaceChildren();
-    const preview = deps.createLayoutPreview?.(currentTheme(), () => deps.onEditLayouts?.());
-    if (preview) layoutPreviewHost.appendChild(preview);
   }
 
   function refreshThemeCss(): void {
@@ -229,22 +234,22 @@ export function createThemePanel(deps: ThemePanelDeps): ThemePanel {
   }
 
   /**
-   * Record the chosen theme as the deck's current one.
-   *
-   * Existing slides are left exactly as they are — restyling them is what the
-   * Apply control above is for — but slides created from here on are born
-   * wearing this theme, so the choice has to outlive the panel and the session.
+   * Record the chosen theme as the deck's current one. Existing slides are
+   * left exactly as they are — restyling them is what Apply is for — but
+   * slides created from here on are born wearing this theme.
    */
   function chooseTheme(theme: ThemePreset): void {
     const deck = store.get().deck;
     if (deck.themeSelection?.preset === theme.id && deck.themePreset === theme.id) return;
-    store.commit((target) => chooseDeckTheme(target, theme), { label: `Choose ${theme.name}` });
+    // The stylesheet the slides really load: pinning reads their current look from it.
+    const currentCss = cssEditor.getValue();
+    store.commit((target) => chooseDeckTheme(target, theme, currentCss), { label: `Choose ${theme.name}` });
     refreshThemeCss();
     themeGallery?.setInstalled(theme.id);
     void save();
     setStatusMessage(
       `New slides will use “${theme.name}”. Existing slides keep their current `
-      + 'styling — use “Apply theme…” above to restyle them.',
+      + 'styling — use “Apply theme” to restyle them.',
     );
   }
 
@@ -266,7 +271,11 @@ export function createThemePanel(deps: ThemePanelDeps): ThemePanel {
     );
   }
 
-  function optionBox(text: string, checked: boolean): { label: HTMLElement; input: HTMLInputElement } {
+  function optionBox(
+    text: string,
+    checked: boolean,
+    sub = '',
+  ): { label: HTMLElement; input: HTMLInputElement } {
     const label = document.createElement('label');
     label.className = 'field field-check';
     const input = document.createElement('input');
@@ -274,8 +283,24 @@ export function createThemePanel(deps: ThemePanelDeps): ThemePanel {
     input.checked = checked;
     const span = document.createElement('span');
     span.textContent = text;
+    if (sub) {
+      const small = document.createElement('small');
+      small.className = 'field-check-sub';
+      small.textContent = ` · ${sub}`;
+      span.appendChild(small);
+    }
     label.append(input, span);
     return { label, input };
+  }
+
+  /* --- scope --- */
+
+  function scopeSlideIds(): Set<string> {
+    const { deck, slideIndex, slideSelection } = store.get();
+    if (themeAdoption.scope === 'deck') return new Set(deck.slides.map((slide) => slide.id));
+    if (themeAdoption.scope === 'slides' && slideSelection.size > 0) return new Set(slideSelection);
+    const current = deck.slides[slideIndex];
+    return new Set(current ? [current.id] : []);
   }
 
   function applyButtonLabel(): string {
@@ -289,50 +314,145 @@ export function createThemePanel(deps: ThemePanelDeps): ThemePanel {
           : 'Apply theme to current slide';
   }
 
-  /**
-   * Apply layout shares Apply theme's scope: it is the same question, asked of
-   * geometry instead of styling. Objects are not a layout scope, so "selected
-   * objects" means the slide those objects sit on.
-   */
-  function layoutApplyButtonLabel(): string {
-    const count = store.get().slideSelection.size;
-    return themeAdoption.scope === 'deck'
-      ? 'Apply layout to deck'
-      : themeAdoption.scope === 'slides'
-        ? `Apply layout to ${count} selected slide${count === 1 ? '' : 's'}`
-        : 'Apply layout to current slide';
+  /* --- dry runs and previews --- */
+
+  function adoptOnClone(): { deck: Deck; ids: Set<string> } | null {
+    const theme = currentTheme();
+    if (!theme) return null;
+    const { deck, slideIndex, slideSelection, selection } = store.get();
+    const clone = structuredClone(deck);
+    adoptThemeStyles(
+      clone,
+      theme,
+      { ...themeAdoption, roles: [...themeAdoption.roles] },
+      slideIndex,
+      new Set(selection),
+      new Set(slideSelection),
+      cssEditor.getValue(),
+    );
+    return { deck: clone, ids: scopeSlideIds() };
   }
 
-  /**
-   * Re-align every in-scope slide's text boxes to its own layout master.
-   * Nothing about the slide's look changes: this is for boxes that were
-   * nudged, resized or imported off-grid and should sit where the layout says.
-   */
-  function applyLayout(): void {
-    const { deck, slideIndex, slideSelection } = store.get();
-    const ids = new Set<string>(themeAdoption.scope === 'deck'
-      ? deck.slides.map((slide) => slide.id)
-      : themeAdoption.scope === 'slides' && slideSelection.size > 0
-        ? slideSelection
-        : [deck.slides[slideIndex]?.id].filter((id): id is string => Boolean(id)));
-    let moved = 0;
-    let freeform = 0;
-    store.commit((target) => {
-      for (const slide of target.slides) {
-        if (!ids.has(slide.id)) continue;
-        if ((slide.layout ?? 'freeform') === 'freeform') { freeform += 1; continue; }
-        moved += realignSlideToLayout(slide, target.layoutMasters);
+  /** What Apply theme would change, counted off a dry run. */
+  function themeChanges(): { boxes: number; backgrounds: number } | null {
+    const run = adoptOnClone();
+    if (!run) return null;
+    const before = store.get().deck;
+    let boxes = 0;
+    let backgrounds = 0;
+    for (const slide of before.slides) {
+      if (!run.ids.has(slide.id) && themeAdoption.scope !== 'selection') continue;
+      const after = run.deck.slides.find((candidate) => candidate.id === slide.id);
+      if (!after) continue;
+      if (JSON.stringify(slide.background) !== JSON.stringify(after.background)) backgrounds += 1;
+      for (const el of slide.elements) {
+        const next = after.elements.find((candidate) => candidate.id === el.id);
+        if (!next) continue;
+        // Geometry is the layout's business; everything else counts as a restyle.
+        const strip = ({ x, y, w, h, rot, z, ...rest }: typeof el): unknown => rest;
+        if (JSON.stringify(strip(el)) !== JSON.stringify(strip(next))) boxes += 1;
       }
-    }, { label: 'Apply layout' });
+    }
+    return { boxes, backgrounds };
+  }
+
+  function plural(count: number, noun: string): string {
+    return `${count} ${noun}${count === 1 ? '' : noun.endsWith('x') ? 'es' : 's'}`;
+  }
+
+  function renderReadouts(): void {
+    const { slideSelection } = store.get();
+    if (themeReadout && themeApplyButton) {
+      const changes = themeChanges();
+      themeApplyButton.textContent = applyButtonLabel();
+      // The readout is advice, not a gate: an apply with nothing visible to
+      // restyle still installs the theme as the deck's defaults.
+      themeApplyButton.disabled = !changes;
+      if (!changes) {
+        themeReadout.textContent = 'No theme chosen.';
+      } else if (themeAdoption.scope === 'selection') {
+        themeReadout.textContent = plural(changes.boxes, 'object') + ' restyled';
+      } else {
+        const parts = [plural(changes.boxes, 'box') + ' restyled'];
+        if (themeAdoption.background) parts.push(plural(changes.backgrounds, 'background'));
+        themeReadout.textContent = changes.boxes + changes.backgrounds === 0
+          ? 'Installs the theme; nothing on these slides changes.'
+          : parts.join(', ');
+      }
+    }
+    void slideSelection;
+  }
+
+  function previewSlideFrom(deck: Deck, label: string): void {
+    if (!deps.onPreviewSlide) return;
+    const { slideIndex } = store.get();
+    const current = store.get().deck.slides[slideIndex];
+    const ids = scopeSlideIds();
+    if (!current || (themeAdoption.scope !== 'selection' && !ids.has(current.id))) return;
+    const shown = deck.slides.find((slide) => slide.id === current.id) ?? null;
+    deps.onPreviewSlide(shown, label);
+  }
+
+  function clearPreview(): void {
+    deps.onPreviewSlide?.(null, '');
+  }
+
+  /* --- apply --- */
+
+  function applyTheme(): void {
+    const theme = currentTheme();
+    if (!theme) return;
+    clearPreview();
+    const { slideIndex, slideSelection, selection } = store.get();
+    const currentCss = cssEditor.getValue();
+    store.commit((deck) => adoptThemeStyles(
+      deck,
+      theme,
+      { ...themeAdoption, roles: [...themeAdoption.roles] },
+      slideIndex,
+      new Set(selection),
+      new Set(slideSelection),
+      currentCss,
+    ));
+    // Every scope installs what it adopted (see adoptThemeStyles), so the
+    // stylesheet the slides load has to follow the deck's defaults each time.
+    if (store.get().deck.themeStyle) refreshThemeCss();
+    refreshSwatches();
+    themeGallery?.setInstalled(store.get().deck.themePreset);
+    selectedThemeId = store.get().deck.themePreset;
     void save();
+    refreshPreviousBadge();
+    notifyThemePreview();
     const scopeName = themeAdoption.scope === 'deck'
-      ? 'the deck'
-      : ids.size === 1 ? 'the current slide' : `${ids.size} selected slides`;
-    setStatusMessage(moved === 0
-      ? (freeform === ids.size
-        ? `Nothing to align: ${scopeName} uses the freeform layout.`
-        : `No text boxes to align on ${scopeName}.`)
-      : `Re-aligned ${moved} text box${moved === 1 ? '' : 'es'} to the layout on ${scopeName}.`);
+      ? 'deck defaults and existing slides'
+      : themeAdoption.scope === 'slides'
+        ? `${slideSelection.size} selected slide${slideSelection.size === 1 ? '' : 's'}`
+        : themeAdoption.scope === 'slide' ? 'current slide' : 'selection';
+    setStatusMessage(`Used selected “${theme.name}” styles for ${scopeName}.`);
+  }
+
+  /* --- layouts strip --- */
+
+  function renderMasters(force = false): void {
+    if (!mastersHost) return;
+    const deck = store.get().deck;
+    const theme = currentTheme();
+    const key = JSON.stringify([deck.layoutMasters, theme?.id, theme?.colors, theme?.fonts]);
+    if (!force && key === mastersKey) return;
+    mastersKey = key;
+    mastersHost.replaceChildren();
+    for (const layout of FIXED_LAYOUTS) {
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = 'layout-popover-item design-master';
+      item.setAttribute('aria-label', `Edit ${LAYOUT_LABELS_BY_ID[layout]} layout`);
+      const { frame } = masterTile(layout, deck.layoutMasters, theme, { caption: false });
+      const caption = document.createElement('em');
+      caption.textContent = LAYOUT_LABELS_BY_ID[layout];
+      item.append(frame, caption);
+      item.addEventListener('click', () => deps.onEditLayouts?.(layout));
+      mastersHost.appendChild(item);
+    }
   }
 
   /**
@@ -358,18 +478,19 @@ export function createThemePanel(deps: ThemePanelDeps): ThemePanel {
     return label;
   }
 
+  function hintLine(text = '', extraClass = ''): HTMLElement {
+    const line = document.createElement('p');
+    line.className = `insp-hint design-readout ${extraClass}`.trim();
+    line.textContent = text;
+    return line;
+  }
+
   /** The ids the gallery currently offers, to tell when a deck needs a new one. */
   let offeredThemeIds = '';
 
   /**
-   * A gallery for this deck's menu of themes.
-   *
-   * The menu is per deck, not per session: a deck carries its own presets, and
-   * the panel is built once, before any deck is open, against the shell's
-   * empty placeholder. Building the gallery from that deck alone meant a deck
-   * theme created by `slide-agent theme create` was applied fine but never
-   * offered — the card simply was not there. `noteDeckOpened` rebuilds the
-   * gallery whenever the menu it would show differs from the one on screen.
+   * A gallery for this deck's menu of themes. The menu is per deck, not per
+   * session (see `noteDeckOpened`).
    */
   function buildGallery(deck: Deck): ThemeGallery {
     const preset = chosenPresetId(deck);
@@ -379,8 +500,7 @@ export function createThemePanel(deps: ThemePanelDeps): ThemePanel {
       selectedThemeId = theme.id;
       chooseTheme(theme);
       // Picking a card is a decision and closes the picker; flipping the
-      // Light/Dark switch is still browsing, so the gallery stays open and only
-      // the preview follows the theme to the other side of the room.
+      // Light/Dark switch is still browsing, so the gallery stays open.
       if (source === 'card') endPreview();
       else refreshPreviousBadge();
       notifyThemePreview();
@@ -398,9 +518,10 @@ export function createThemePanel(deps: ThemePanelDeps): ThemePanel {
     intro.className = 'theme-browser-intro';
     const title = document.createElement('h2');
     title.className = 'insp-title';
-    title.textContent = 'Theme';
+    title.textContent = 'Design';
     intro.append(title);
 
+    /* --- current theme --- */
     activeThemeHost = document.createElement('div');
     activeThemeHost.className = 'theme-active-host';
 
@@ -415,6 +536,40 @@ export function createThemePanel(deps: ThemePanelDeps): ThemePanel {
     chooserHeader.append(chooserTitle, chooserClose);
     chooser.append(chooserHeader, themeGallery.element);
 
+    const modeRow = document.createElement('div');
+    modeRow.className = 'theme-default-row';
+    const modeLabel = document.createElement('span');
+    modeLabel.className = 'theme-default-label';
+    modeLabel.textContent = 'Default';
+    const modeToggle = document.createElement('div');
+    modeToggle.className = 'theme-mode-toggle theme-default-mode';
+    modeToggle.setAttribute('role', 'group');
+    modeToggle.setAttribute('aria-label', 'Deck default appearance');
+    modeButtons = new Map();
+    for (const [value, label] of [['light', 'Light'], ['dark', 'Dark']] as const) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'theme-mode-option';
+      button.textContent = label;
+      button.addEventListener('click', () => {
+        if (draft) return;
+        themeGallery?.setMode(value);
+      });
+      modeButtons.set(value, button);
+      modeToggle.appendChild(button);
+    }
+    const editTheme = barButton('Edit…', () => (draft ? cancelDraft() : openDraft()));
+    editTheme.classList.add('theme-edit-button');
+    modeRow.append(modeLabel, modeToggle, editTheme);
+
+    themeEditor = document.createElement('section');
+    themeEditor.className = 'theme-inline-editor';
+    themeEditor.hidden = true;
+
+    const themeSection = panelSection('Current theme', 'theme-current-section');
+    themeSection.append(activeThemeHost, chooser, modeRow, themeEditor);
+
+    /* --- apply theme --- */
     const controls = document.createElement('div');
     controls.className = 'theme-adoption-controls';
 
@@ -447,164 +602,172 @@ export function createThemePanel(deps: ThemePanelDeps): ThemePanel {
     const roleBoxes = (['title', 'body', 'caption'] as const).map((role) => {
       const box = optionBox(role[0].toUpperCase() + role.slice(1), themeAdoption.roles.includes(role));
       box.input.addEventListener('change', () => {
-        const covered: ThemeAdoption['roles'] = role === 'title' ? ['title', 'heading'] : [role];
+        const covered: ThemeTextRole[] = role === 'title' ? ['title', 'heading'] : [role];
         themeAdoption.roles = box.input.checked
           ? [...new Set([...themeAdoption.roles, ...covered])]
           : themeAdoption.roles.filter((candidate) => !covered.includes(candidate));
+        renderReadouts();
       });
       return box.label;
     });
 
     const propertyTitle = groupLabel('Properties from theme');
-    const boxes: Array<[keyof ThemeAdoption, string]> = [
-      ['fontFamily', 'Font family'],
-      ['fontWeight', 'Font weight'],
-      ['typeScale', 'Size + spacing'],
-      ['textColor', 'Text colour'],
-      ['background', 'Slide background'],
-      ['objectColors', 'Shape colours'],
-      ['replaceOverrides', 'Replace matching overrides'],
-      ['detectRoles', 'Detect roles for untagged text'],
+    const propertyBoxes: Array<[string, string, string, () => boolean, (on: boolean) => void]> = [
+      ['typography', 'Typography', 'family, weight',
+        () => themeAdoption.fontFamily,
+        (on) => { themeAdoption.fontFamily = on; themeAdoption.fontWeight = on; }],
+      ['typeScale', 'Type scale', 'size, spacing',
+        () => themeAdoption.typeScale,
+        (on) => { themeAdoption.typeScale = on; }],
+      ['colour', 'Colour', 'text, background, shapes',
+        () => themeAdoption.textColor,
+        (on) => { themeAdoption.textColor = on; themeAdoption.background = on; themeAdoption.objectColors = on; }],
+      ['detectRoles', 'Detect roles for untagged text', '',
+        () => themeAdoption.detectRoles,
+        (on) => { themeAdoption.detectRoles = on; }],
     ];
-    const boxEls = boxes.map(([key, label]) => {
-      const o = optionBox(label, themeAdoption[key] as boolean);
-      o.input.addEventListener('change', () => {
-        (themeAdoption[key] as boolean) = o.input.checked;
+    const propertyEls = propertyBoxes.map(([key, label, sub, read, write]) => {
+      const box = optionBox(label, read(), sub);
+      box.input.dataset.group = key;
+      box.input.addEventListener('change', () => {
+        write(box.input.checked);
+        renderReadouts();
       });
-      return o.label;
+      return box.label;
     });
-    controls.append(scopeLabel, roleTitle, ...roleBoxes, propertyTitle, ...boxEls);
+    controls.append(scopeLabel, roleTitle, ...roleBoxes, propertyTitle, ...propertyEls);
 
+    themeReadout = hintLine('', 'theme-readout');
     const applyAction = document.createElement('div');
     applyAction.className = 'theme-apply-action';
-    themeApplyButton = barButton('Apply theme to selected slides', () => {
-      const theme = currentTheme();
-      if (!theme) return;
-      const { slideIndex, slideSelection, selection } = store.get();
-      store.commit((deck) => adoptThemeStyles(
-        deck,
-        theme,
-        { ...themeAdoption, roles: [...themeAdoption.roles] },
-        slideIndex,
-        new Set(selection),
-        new Set(slideSelection),
-      ));
-      // Every scope installs what it adopted (see adoptThemeStyles), so the
-      // stylesheet the slides load has to follow the deck's defaults each time.
-      if (store.get().deck.themeStyle) refreshThemeCss();
-      refreshSwatches();
-      themeGallery?.setInstalled(store.get().deck.themePreset);
-      selectedThemeId = store.get().deck.themePreset;
-      void save();
-      refreshPreviousBadge();
-      notifyThemePreview();
-      const scopeName = themeAdoption.scope === 'deck'
-        ? 'deck defaults and existing slides'
-        : themeAdoption.scope === 'slides'
-          ? `${slideSelection.size} selected slide${slideSelection.size === 1 ? '' : 's'}`
-          : themeAdoption.scope === 'slide' ? 'current slide' : 'selection';
-      setStatusMessage(`Used selected “${theme.name}” styles for ${scopeName}.`);
+    themeApplyButton = barButton(applyButtonLabel(), applyTheme, 'primary panel-action');
+    themeApplyButton.addEventListener('mouseenter', () => {
+      const run = adoptOnClone();
+      if (run && !themeApplyButton!.disabled) previewSlideFrom(run.deck, 'Apply theme');
     });
-    themeApplyButton.className = 'primary panel-action';
+    themeApplyButton.addEventListener('mouseleave', clearPreview);
     applyAction.append(themeApplyButton);
 
-    const editTheme = barButton('Edit theme…', () => toggleThemeEditor());
-    editTheme.classList.add('theme-section-action');
-    themeEditor = document.createElement('section');
-    themeEditor.className = 'theme-inline-editor';
-    themeEditor.hidden = true;
-    const themeSection = panelSection('Current theme', 'theme-current-section');
-    themeSection.append(activeThemeHost, chooser, themeEditor, editTheme);
-
     const applySection = panelSection('Apply theme', 'theme-apply-section');
-    applySection.append(controls, applyAction);
+    applySection.append(controls, themeReadout, applyAction);
 
-    layoutPreviewHost = document.createElement('div');
-    layoutPreviewHost.className = 'theme-layout-preview-host';
+    /* --- layouts --- */
+    mastersHost = document.createElement('div');
+    mastersHost.className = 'layout-popover-grid design-masters';
+    const mastersRow = document.createElement('div');
+    mastersRow.className = 'theme-default-row design-masters-row';
+    const editLayouts = barButton('Edit layouts…', () => deps.onEditLayouts?.(
+      (store.slide?.layout ?? 'standard') as FixedLayout,
+    ));
+    editLayouts.classList.add('theme-section-action');
+    mastersRow.append(editLayouts);
     const layoutsSection = panelSection('Layouts', 'layouts-section');
-    layoutsSection.append(layoutPreviewHost);
+    layoutsSection.append(mastersHost, mastersRow);
 
-    // Apply theme's geometric twin: a heading and one button, no options.
-    const layoutApplyAction = document.createElement('div');
-    layoutApplyAction.className = 'theme-apply-action';
-    layoutApplyButton = barButton(layoutApplyButtonLabel(), applyLayout, 'primary panel-action');
-    layoutApplyAction.append(layoutApplyButton);
-    const layoutApplySection = panelSection('Apply layout', 'layout-apply-section');
-    layoutApplySection.append(layoutApplyAction);
-
-    // Which theme the deck wears comes first; what to do with it second. The
-    // old order asked you to configure an adoption before showing you what you
-    // were adopting.
-    wrap.append(intro, themeSection, applySection, layoutsSection, layoutApplySection);
+    wrap.append(intro, themeSection, applySection, layoutsSection);
     refreshPreviousBadge();
     renderActiveTheme();
-    renderLayoutPreview();
+    renderMasters(true);
+    renderReadouts();
     return wrap;
   }
 
-  function toggleThemeEditor(): void {
-    if (!themeEditor) return;
-    if (!themeEditor.hidden) {
-      themeEditor.hidden = true;
-      return;
-    }
-    const theme = currentTheme();
-    if (!theme) return;
-    themeEditor.replaceChildren();
-    themeEditor.appendChild(groupLabel(`Edit ${theme.name.replace(' · Modified', '')}`));
+  /* --- staged theme editor --- */
 
-    const update = (mutate: (style: ThemeStyle) => void, label: string): void => {
-      store.commit((deck) => {
-        const pool = deckThemes(deck);
-        const base = themeById(selectedThemeId, pool) ?? themeById(deck.themePreset, pool) ?? THEMES[0];
-        const style = structuredClone(deck.themeStyle ?? themeStyleOf(base));
-        mutate(style);
+  function openDraft(): void {
+    if (!themeEditor) return;
+    const deck = store.get().deck;
+    const pool = deckThemes(deck);
+    const base = themeById(selectedThemeId, pool) ?? themeById(deck.themePreset, pool) ?? THEMES[0];
+    draft = {
+      style: structuredClone(deck.themeStyle ?? themeStyleOf(base)),
+      base,
+    };
+    endPreview();
+    renderDraftEditor();
+    themeEditor.hidden = false;
+    previewDraft();
+  }
+
+  function previewDraft(): void {
+    deps.onPreviewThemeDraft?.(draft ? presetFromStyle(draft.style, draft.base) : null);
+    renderActiveTheme();
+    renderMasters(true);
+  }
+
+  function cancelDraft(): void {
+    draft = null;
+    if (themeEditor) themeEditor.hidden = true;
+    deps.onPreviewThemeDraft?.(null);
+    notifyThemePreview();
+  }
+
+  function finishDraft(): void {
+    if (!draft) return;
+    const { style, base } = draft;
+    const deck = store.get().deck;
+    const changed = JSON.stringify(style) !== JSON.stringify(deck.themeStyle ?? themeStyleOf(base));
+    draft = null;
+    if (themeEditor) themeEditor.hidden = true;
+    deps.onPreviewThemeDraft?.(null);
+    const currentCss = cssEditor.getValue();
+    if (changed) {
+      store.commit((target) => {
         // A default changes for new slides and the next Apply; slides already
         // on the stylesheet are pinned where they are (installThemeStyle).
-        installThemeStyle(deck, style, base.id, { slides: new Set(), elements: new Set() });
+        installThemeStyle(target, style, base.id, { slides: new Set(), elements: new Set() }, currentCss);
         selectedThemeId = base.id;
-      }, { label });
+      }, { label: `Edit theme ${base.name}` });
       refreshThemeCss();
       themeGallery?.setSelected(store.get().deck.themePreset);
       themeGallery?.setInstalled(store.get().deck.themePreset);
       void save();
-      notifyThemePreview();
-    };
+      setStatusMessage(`Edited “${base.name}”. New slides use it; existing slides follow after Apply.`);
+    }
+    notifyThemePreview();
+  }
 
+  function renderDraftEditor(): void {
+    if (!themeEditor || !draft) return;
+    const { style, base } = draft;
+    const mutate = (change: (style: ThemeStyle) => void): void => {
+      if (!draft) return;
+      change(draft.style);
+      previewDraft();
+    };
+    themeEditor.replaceChildren();
+    themeEditor.appendChild(groupLabel(`Editing ${base.name.replace(' · Modified', '')}`));
+    themeEditor.appendChild(hintLine(
+      'Edits change deck defaults and new slides. Existing slides follow after Apply. The canvas previews the draft.',
+    ));
+
+    const ROLE_LABELS: Record<'title' | 'body' | 'caption', string> = {
+      title: 'Title', body: 'Body', caption: 'Caption',
+    };
+    themeEditor.appendChild(groupLabel('Typefaces'));
     for (const role of ['title', 'body', 'caption'] as const) {
       themeEditor.appendChild(fontFamilyField(
-        `${role[0].toUpperCase()}${role.slice(1)} typeface`,
-        theme.fonts[role].family,
+        `${ROLE_LABELS[role]} typeface`,
+        style.fonts[role].family,
         (family) => {
-          if (family) update((style) => { style.fonts[role].family = family; }, `Set theme ${role} typeface`);
+          if (family) mutate((target) => { target.fonts[role].family = family; });
         },
       ));
     }
-
-    // The deck's default size per role. Editing it changes what new slides
-    // are born with and what Apply installs; existing slides keep the size
-    // they have (setThemeRoleSize pins the ones that were following theme.css).
     themeEditor.appendChild(groupLabel('Type scale'));
-    const ROLE_LABELS: Record<Exclude<ThemeTextRole, 'base' | 'heading'>, string> = {
-      title: 'Title', body: 'Body', caption: 'Caption',
-    };
     for (const role of ['title', 'body', 'caption'] as const) {
       const sizeField = numberField(
         `${ROLE_LABELS[role]} size`,
-        theme.fonts[role].size,
+        style.fonts[role].size,
         (value) => {
           const size = Math.round(Math.max(6, Math.min(400, value)) * 10) / 10;
-          update((style) => { style.fonts[role].size = size; }, `Set theme ${role} size`);
+          mutate((target) => { target.fonts[role].size = size; });
         },
       );
       sizeField.classList.add('theme-role-size');
       sizeField.querySelector('input')!.title = 'Value in px';
       themeEditor.appendChild(sizeField);
     }
-    const scaleHint = document.createElement('p');
-    scaleHint.className = 'insp-hint theme-scale-hint';
-    scaleHint.textContent = 'Sizes for new slides. Existing slides keep theirs until you apply the theme to them.';
-    themeEditor.appendChild(scaleHint);
 
     themeEditor.appendChild(groupLabel('Semantic colours'));
     for (const [key, label] of [
@@ -613,22 +776,33 @@ export function createThemePanel(deps: ThemePanelDeps): ThemePanel {
       ['muted', 'Muted text'],
       ['accent', 'Accent'],
     ] as const) {
-      themeEditor.appendChild(colorField(label, theme.colors[key], (value) => {
-        if (value) update((style) => { style.colors[key] = value; }, `Set theme ${label.toLowerCase()}`);
+      themeEditor.appendChild(colorField(label, style.colors[key], (value) => {
+        if (value) mutate((target) => { target.colors[key] = value; });
       }));
     }
 
     themeEditor.appendChild(groupLabel('Palette swatches'));
-    theme.palette.forEach((color, index) => {
+    style.palette.forEach((color, index) => {
       themeEditor!.appendChild(colorField(`Swatch ${index + 1}`, color, (value) => {
-        if (value) update((style) => { style.palette[index] = value; }, `Edit theme swatch ${index + 1}`);
+        if (value) mutate((target) => { target.palette[index] = value; });
       }));
     });
-    const done = barButton('Done editing theme', () => {
-      if (themeEditor) themeEditor.hidden = true;
-    }, 'primary panel-action');
-    themeEditor.appendChild(done);
-    themeEditor.hidden = false;
+
+    const resetRow = document.createElement('div');
+    resetRow.className = 'theme-editor-actions';
+    resetRow.append(barButton(`Reset to ${base.name.replace(' · Modified', '')}`, () => {
+      if (!draft) return;
+      draft.style = themeStyleOf(base);
+      renderDraftEditor();
+      previewDraft();
+    }));
+    const actions = document.createElement('div');
+    actions.className = 'theme-editor-actions';
+    actions.append(
+      barButton('Cancel', cancelDraft),
+      barButton('Done', finishDraft, 'primary'),
+    );
+    themeEditor.append(resetRow, actions);
   }
 
   function syncScope(slideSelectionCount: number): void {
@@ -640,27 +814,32 @@ export function createThemePanel(deps: ThemePanelDeps): ThemePanel {
       if (themeScopeSelect) themeScopeSelect.value = 'slides';
     }
     hadMultipleSlidesSelected = multiple;
-    if (themeApplyButton) themeApplyButton.textContent = applyButtonLabel();
-    if (layoutApplyButton) layoutApplyButton.textContent = layoutApplyButtonLabel();
+    renderReadouts();
   }
 
   const element = build();
+  // The readouts are dry runs over live deck state, so they follow the deck.
+  store.subscribe(() => {
+    if (draft) return;
+    renderMasters();
+    renderReadouts();
+  });
   return {
     element,
     currentTheme,
     refreshSwatches,
     syncScope,
     applyButtonLabel,
-    layoutApplyButtonLabel,
     dismiss: () => {
       const wasOpen = themePreviewOpen
         || Boolean(chooser && !chooser.hidden)
-        || Boolean(themeEditor && !themeEditor.hidden);
-      if (themeEditor) themeEditor.hidden = true;
+        || Boolean(draft);
+      if (draft) cancelDraft();
       endPreview();
       return wasOpen;
     },
     noteDeckOpened: (deck) => {
+      if (draft) cancelDraft();
       // A deck with presets of its own (or a different current theme, which
       // can unhide a card) gets a gallery listing them.
       const offered = availableThemes(deck, chosenPresetId(deck)).map((theme) => theme.id).join('\n');
@@ -677,7 +856,8 @@ export function createThemePanel(deps: ThemePanelDeps): ThemePanel {
       selectedThemeId = chosenPresetId(deck) ?? themeGallery?.selectedId() ?? null;
       refreshSwatches();
       renderActiveTheme();
-      renderLayoutPreview();
+      renderMasters(true);
+      renderReadouts();
     },
   };
 }

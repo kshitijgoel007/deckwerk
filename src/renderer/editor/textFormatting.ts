@@ -109,6 +109,19 @@ function setHtmlTextProperty(
   return changed ? serialized(template.content) : html;
 }
 
+/**
+ * Note that the author set (or cleared) `property` on the whole box. Pinned
+ * copies the app writes never come through here, so the record separates
+ * "customised" from "held still" -- the difference between "Body+" and "Body".
+ */
+export function recordTextOverride(element: TextElement, property: string, set: boolean): void {
+  const current = new Set(element.overrides ?? []);
+  if (set) current.add(property);
+  else current.delete(property);
+  if (current.size > 0) element.overrides = [...current];
+  else delete element.overrides;
+}
+
 export function setWholeTextStyle(
   element: TextElement,
   property: 'font-family' | 'font-size' | 'font-weight' | 'font-style' | 'text-decoration',
@@ -118,6 +131,7 @@ export function setWholeTextStyle(
   if (value === null) delete style[property];
   else style[property] = value;
   element.style = style;
+  recordTextOverride(element, property, value !== null);
   const aliases = property === 'text-decoration' ? ['text-decoration-line'] : [];
   // Auto-fit owns the font-size on `.text-content`. Descendant sizes would
   // defeat that fitted value, so an authored box size is only the ceiling and
@@ -144,6 +158,7 @@ export function setWholeTextColor(element: TextElement, value: string | null): v
   }
   if (value) style.color = value;
   element.style = style;
+  recordTextOverride(element, 'color', Boolean(value));
   if (Object.keys(contentStyle).length > 0) element.contentStyle = contentStyle;
   else delete element.contentStyle;
   element.html = setHtmlTextProperty(
@@ -321,6 +336,10 @@ export function applyTextRole(
 ): void {
   element.class = element.class.filter((name) => !name.startsWith('role-'));
   if (role) element.class.push(role.startsWith('role-') ? role : `role-${role}`);
+  // Choosing a role is asking for that role's type: its properties are the
+  // role's again, not the author's. Bold, italic and colour are not role
+  // type and survive, as do the runs inside the markup.
+  for (const property of ROLE_PROPERTIES) recordTextOverride(element, property, false);
 
   const style = { ...element.style };
   const contentStyle = { ...element.contentStyle };
@@ -339,8 +358,7 @@ export function applyTextRole(
   element.style = style;
   if (Object.keys(contentStyle).length > 0) element.contentStyle = contentStyle;
   else delete element.contentStyle;
-
-  for (const property of ROLE_PROPERTIES) {
-    element.html = setHtmlTextProperty(element.html, property, null);
-  }
+  // Runs inside the markup are content formatting, not role formatting: a
+  // bold word or a small unit after a figure survives a change of role. Only
+  // the box's own copies of the type properties are the role's to replace.
 }

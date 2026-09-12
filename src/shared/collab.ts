@@ -22,6 +22,9 @@ export const CursorPositionSchema = z.object({
   y: z.number(),
 });
 
+/** Browser participant ids, as the shared-agent routes already spell them. */
+export const PARTICIPANT_ID_PATTERN = /^[a-zA-Z0-9_-]{8,80}$/;
+
 export const PresenceStateSchema = z.object({
   clientId: z.string(),
   name: z.string(),
@@ -31,6 +34,14 @@ export const PresenceStateSchema = z.object({
   selectedElementIds: z.array(z.string()),
   editingElementId: z.string().nullable(),
   cursor: CursorPositionSchema.nullable(),
+  /**
+   * The browser's agent-participant id, when it announced one. A local agent
+   * bridge paired with that participant reads this person's selection from
+   * it, so `slide-agent inspect --selected` means what it means on the desktop.
+   */
+  participant: z.string().optional(),
+  /** True for a peer that is somebody's local agent rather than a person. */
+  agent: z.boolean().optional(),
 });
 
 export type CursorPosition = z.infer<typeof CursorPositionSchema>;
@@ -42,6 +53,10 @@ export const ClientHelloSchema = z.object({
   kind: z.literal('hello'),
   version: z.literal(COLLAB_PROTOCOL_VERSION),
   name: z.string().min(1).max(80).optional(),
+  /** A browser's agent-participant id; lets a local agent bridge pair with it. */
+  participant: z.string().regex(PARTICIPANT_ID_PATTERN).optional(),
+  /** Sent by a local agent bridge: the participant whose agent this peer is. */
+  agentFor: z.string().regex(PARTICIPANT_ID_PATTERN).optional(),
 });
 
 export const ClientTxnSchema = z.object({
@@ -71,12 +86,26 @@ export const ClientThemeSchema = z.object({
   css: z.string(),
 });
 
+/**
+ * A line of activity from a local agent bridge — "saved edit/work.html: 1
+ * replaced" — shown in its participant's Agent panel. Ignored from peers that
+ * did not introduce themselves with `agentFor`.
+ */
+export const ClientAgentEventSchema = z.object({
+  kind: z.literal('agentEvent'),
+  text: z.string().min(1).max(2000),
+  /** Whether the bridge is in the middle of something (a compile, an upload). */
+  busy: z.boolean().optional(),
+  error: z.boolean().optional(),
+});
+
 export const ClientMessageSchema = z.discriminatedUnion('kind', [
   ClientHelloSchema,
   ClientTxnSchema,
   ClientPresenceSchema,
   ClientCursorSchema,
   ClientThemeSchema,
+  ClientAgentEventSchema,
 ]);
 
 export type ClientMessage = z.infer<typeof ClientMessageSchema>;

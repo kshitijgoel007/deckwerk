@@ -1551,7 +1551,7 @@ describe('text formatting from the inspector controls', () => {
     const { store, canvasHost, inspectorHost } = setup([textElement('text-1')]);
     const role = () => field(inspectorHost, 'Role').querySelector('select')!;
     expect([...role().options].map((option) => option.textContent))
-      .toEqual(['Title', 'Heading', 'Body', 'Caption', 'Base', 'None']);
+      .toEqual(['Title', 'Body', 'Caption', 'None']);
     expect(role().value).toBe('');
 
     pick(role(), 'role-title');
@@ -1849,10 +1849,10 @@ describe('the semantic role as formatting', () => {
     expect(text.style['font-weight']).toBe(String(title.weight));
     expect(text.style['line-height']).toBe(String(title.lineHeight));
     expect(text.style['letter-spacing']).toBe(title.letterSpacing);
-    // Every stale declaration is gone from every level, or the ones on
-    // `.text-content` and on the runs would outrank what was just written.
+    // The box's own copies at both levels are gone, so what was just written
+    // wins. Formatting inside the markup is content, not role, and stays.
     expect(text.contentStyle).toBeUndefined();
-    expect(text.html).not.toMatch(/font-size/);
+    expect(text.html).toContain('font-size: 18px');
   });
 
   /**
@@ -1978,7 +1978,7 @@ describe('the semantic role as formatting', () => {
     expect(text.style['-webkit-text-fill-color']).toBe('rgb(255, 255, 255)');
     expect(text.style['font-size']).toBeUndefined();
     expect(text.html).toContain('color: rgb(255, 255, 255)');
-    expect(text.html).not.toMatch(/font-size/);
+    expect(text.html).toContain('font-size: 61px');
     expect(text.html).toContain('Over a photograph');
   });
 
@@ -1995,7 +1995,7 @@ describe('the semantic role as formatting', () => {
     const text = textOf(store, 'text-1');
     expect(text.class).toEqual(['role-caption']);
     expect(text.style).toEqual({ color: '#ff0000' });
-    expect(text.html).not.toMatch(/font-size/);
+    expect(text.html).toContain('font-size: 18px');
   });
 
   it('clears the role and its type together', () => {
@@ -2341,14 +2341,15 @@ describe('theming through the panel, the rail and the inspector', () => {
     const before = themeById('editorial')!.fonts.title.size;
     expect(computed(canvasHost, 'title').fontSize).toBe(`${before}px`);
 
-    // Edit the deck's title size in the Theme tab.
-    panelButton(panel.element, 'Edit theme…').click();
+    // Edit the deck's title size in the Design tab: a draft until Done.
+    panelButton(panel.element, 'Edit…').click();
     const titleSize = [...panel.element.querySelectorAll<HTMLElement>('.theme-role-size')]
       .find((node) => node.querySelector('span')?.textContent === 'Title size')!
       .querySelector<HTMLInputElement>('input')!;
     type(titleSize, '60');
+    expect(store.get().deck.themeStyle?.fonts.title.size).toBe(before);
+    panelButton(panel.element, 'Done').click();
     expect(store.get().deck.themeStyle?.fonts.title.size).toBe(60);
-    expect(panel.element.querySelector('.theme-scale-hint')?.textContent).toContain('Existing slides keep theirs');
 
     // The applied slide did not move: it now carries the size it had, and the
     // inspector shows that as the box's own value.
