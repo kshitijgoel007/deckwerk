@@ -98,6 +98,11 @@ describe.skipIf(!runnable)('clipboard screenshot paste in Electron Chromium', ()
       appLog,
     );
     editor = await Cdp.connect(target.webSocketDebuggerUrl!);
+    // The async clipboard API refuses to write unless the document is
+    // focused, and under CI's Xvfb (no window manager) X never grants a
+    // window the input focus, hidden or shown. Focus emulation is DevTools'
+    // answer for exactly this; it changes nothing about what is pasted.
+    await editor.call('Emulation.setFocusEmulationEnabled', { enabled: true });
     await eventually(async () => editor!.evaluate<boolean>(`window.api.getDeck().then(
       (session) => session?.dir === ${JSON.stringify(deckDir)}
         && Boolean(document.querySelector('#canvas .slide'))
