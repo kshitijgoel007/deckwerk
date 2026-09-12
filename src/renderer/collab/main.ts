@@ -100,6 +100,8 @@ interface ServerConfig {
     name: string;
     canManageAccount: boolean;
     personal?: boolean;
+    /** Participants connect their own local agents (headless server default). */
+    mode?: 'local';
   };
   /** Present when the server runs with --access: who the server says we are. */
   access?: null | { user: string; name: string; admin: boolean };
@@ -467,6 +469,18 @@ canvas.onTextEditModeChange = (elementId) => {
  * navigator.clipboard only exists in secure contexts; joiners load this page
  * over plain http on the LAN, so fall back to the legacy execCommand path.
  */
+/**
+ * The one line a person runs to bring their own agent into this deck. The
+ * page's own origin is the address that reaches the server from their
+ * machine — the tailnet name they opened, not a loopback the server prints.
+ */
+function localAgentConnectCommand(deck: string, participantId: string): string {
+  const session = new URL(location.origin);
+  session.searchParams.set('deck', deck);
+  session.searchParams.set('agent', participantId);
+  return `slide-agent connect '${session.href}'`;
+}
+
 async function copyText(text: string): Promise<void> {
   if (navigator.clipboard) {
     await navigator.clipboard.writeText(text);
@@ -574,7 +588,7 @@ function buildToolbar(): void {
   const deckName = document.createElement('span');
   deckName.className = 'bar-deck-name';
   deckName.textContent = deckId;
-  left.append(createDeckWerkButton(), divider(), deckName, divider());
+  left.append(createDeckWerkButton(), deckName, divider());
   // In a hosted session the server pins one deck; switching, creating or
   // importing presentations is the host's business, not a joiner's.
   if (!serverConfig.hosted) {
@@ -636,7 +650,9 @@ function buildToolbar(): void {
   }
   if (serverConfig.sharedAgent?.enabled) {
     const agent = barButton(
-      serverConfig.sharedAgent.personal ? 'Agent…' : 'Shared Agent',
+      serverConfig.sharedAgent.personal || serverConfig.sharedAgent.mode === 'local'
+        ? 'Agent…'
+        : 'Shared Agent',
       () => sharedAgentPanel?.toggle(),
     );
     agent.id = 'agent-chat-trigger';
@@ -753,7 +769,7 @@ function renderStatus(): void {
     const invite = serverConfig.urls.find((u) => !u.includes('127.0.0.1')) ?? serverConfig.urls[0];
     if (invite) bits.push(`invite: ${invite}`);
   }
-  if (serverConfig.sharedAgent?.enabled) {
+  if (serverConfig.sharedAgent?.enabled && serverConfig.sharedAgent.mode !== 'local') {
     bits.push(serverConfig.sharedAgent.personal
       ? `${serverConfig.sharedAgent.name}: host agent`
       : `${serverConfig.sharedAgent.name}: shared test mode`);
@@ -772,15 +788,24 @@ void fetchServerConfig().then((config) => {
   serverConfig = config;
   if (config.sharedAgent?.enabled && !sharedAgentPanel) {
     sharedAgentBrowserApi = createSharedAgentApi(deckId!, () => participantName || 'Guest');
+    const local = config.sharedAgent.mode === 'local';
     sharedAgentPanel = new AgentChatPanel({
       api: sharedAgentBrowserApi.api,
       currentDeckPath: () => deckId,
-      title: config.sharedAgent.personal
+      title: config.sharedAgent.personal || local
         ? config.sharedAgent.name
         : `${config.sharedAgent.name} · test mode`,
-      userRoleLabel: config.sharedAgent.personal ? 'You' : 'Participant',
+      userRoleLabel: config.sharedAgent.personal || local ? 'You' : 'Participant',
       canManageAccount: config.sharedAgent.canManageAccount,
+      ...(local ? {
+        localAgent: {
+          connectCommand: localAgentConnectCommand(deckId!, sharedAgentBrowserApi.participantId),
+        },
+      } : {}),
     });
+    // The bridge a person starts from that panel pairs with this browser's
+    // selection through the participant id announced in the hello.
+    if (local) bridge.setParticipant(sharedAgentBrowserApi.participantId);
   }
   buildToolbar();
   renderStatus();
