@@ -25,8 +25,12 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-/** Both transports deliver asynchronously; let the queue drain. */
-const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+/**
+ * Both transports deliver asynchronously; let the queue drain. One zero-delay
+ * timer is usually enough, but on a loaded CI runner the BroadcastChannel
+ * message port has been seen to deliver a turn later, so wait a few turns.
+ */
+const settle = () => new Promise((resolve) => setTimeout(resolve, 25));
 
 describe('presentation bus', () => {
   it('carries commands and state between two surfaces of the same deck', async () => {

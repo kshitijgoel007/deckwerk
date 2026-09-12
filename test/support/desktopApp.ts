@@ -22,6 +22,18 @@ import { collabClientDir, sharedBuild } from './collabClient.js';
  * off in that mode, so hidden does not mean slow.
  */
 
+/**
+ * Whether a suite that needs genuine input focus should show its windows.
+ * Under CI's Xvfb there is no developer's desk to protect, and hiding is
+ * actively harmful for such suites: X11 without a window manager never gives
+ * a window that was never mapped the input focus, so
+ * `navigator.clipboard.write` throws "Document is not focused" and keyboard
+ * chords land nowhere. Suites that only observe the DOM stay hidden
+ * everywhere — showing every window on Linux CI made the X input method join
+ * the IME driver test and broke the audience-window handoff.
+ */
+export const NEEDS_VISIBLE_WINDOW_ON_CI = Boolean(process.env.CI) && process.platform === 'linux';
+
 let pending: Promise<string> | null = null;
 
 /** The directory holding a fresh `out/` of the desktop app. */

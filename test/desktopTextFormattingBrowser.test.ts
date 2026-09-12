@@ -12,7 +12,12 @@ import {
   findTarget,
   stopBrowser,
 } from './support/browserSession.js';
-import { isEditorTarget, launchDesktopApp, materializeDesktopApp } from './support/desktopApp.js';
+import {
+  isEditorTarget,
+  launchDesktopApp,
+  materializeDesktopApp,
+  NEEDS_VISIBLE_WINDOW_ON_CI,
+} from './support/desktopApp.js';
 
 /**
  * Production-desktop coverage for the complete inline-formatting journey.
@@ -113,7 +118,8 @@ describe.skipIf(!electronBinary)('desktop inline-formatting matrix', () => {
       '',
     ].join('\n'), 'utf8');
 
-    const app = await launchDesktopApp(appDir, [deckDir], { profileDir });
+    // Real clipboard traffic and keyboard chords need the window focused.
+    const app = await launchDesktopApp(appDir, [deckDir], { profileDir, visible: NEEDS_VISIBLE_WINDOW_ON_CI });
     appProcess = app.process;
     const debugPort = app.debugPort;
     const appLog = app.log;
@@ -148,7 +154,13 @@ describe.skipIf(!electronBinary)('desktop inline-formatting matrix', () => {
         if (selectBoxFirst || attempt > 0) {
           await editor!.click(`#canvas [data-element-id="${TEXT_ID}"]`, `${label}: text box`);
         }
-        await editor!.evaluate('new Promise((resolve) => requestAnimationFrame(() => resolve(true)))');
+        // A hidden window under CI's bare Xvfb may never get a compositor
+        // frame, so a bare rAF await hangs (see settleFrames in
+        // support/exhaustiveTextFormatting.ts); the timer bounds the wait.
+        await editor!.evaluate(`new Promise((resolve) => {
+          const timer = setTimeout(() => resolve('timer'), 100);
+          requestAnimationFrame(() => { clearTimeout(timer); resolve('frame'); });
+        })`);
         if (doubleClickSelection) {
           await editor!.doubleClickTextAtOffset(CONTENT, range.start + 1, label);
         } else {
