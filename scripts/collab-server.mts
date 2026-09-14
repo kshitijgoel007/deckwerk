@@ -19,14 +19,17 @@ import { LocalAgentRegistry } from '../src/server/localAgents.js';
  * --access <adminLogin> turns on multi-user access control: identity comes
  * from tailscale serve's Tailscale-User-Login headers (trusted on loopback
  * only — pair the flag with --host 127.0.0.1), decks get public/private/
- * shared permissions in an access.json sidecar, and <adminLogin> (a tailnet
- * login, e.g. you@example.com) sees and manages everything. Without the flag
- * the server behaves exactly as before: no identity, every deck open to
- * anyone who can reach the port.
+ * shared permissions — each grant either edit or view-only — in an
+ * access.json sidecar, and <adminLogin> (a tailnet login, e.g.
+ * you@example.com) sees and manages everything. Folders are visible only to
+ * people who have something shared inside them. Without the flag the server
+ * behaves exactly as before: no identity, every deck open to anyone who can
+ * reach the port.
  *
  * Hosts one directory of deck folders for browser clients over HTTP +
- * WebSocket: every immediate subdirectory containing a deck.json is openable,
- * new decks are created inside it, and nothing outside it is ever served.
+ * WebSocket: every subdirectory containing a deck.json is openable — nested
+ * ones included, whose id is their path — new decks are created inside it,
+ * and nothing outside it is ever served.
  * Binds all interfaces by default so tailscale peers can reach it; pass
  * --host 127.0.0.1 to keep it local. Serves the built client from dist/collab
  * when present (npm run build:collab); during development, run the vite dev

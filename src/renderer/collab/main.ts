@@ -38,7 +38,7 @@ import { createThemePanel } from '../editor/themePanel.js';
 import { TimelinePanel } from '../editor/timelinePanel.js';
 import { CollabBridge } from './collabBridge.js';
 import { createConnectionNotice } from './connectionNotice.js';
-import { createDeckOnServer, importKeynoteToServer, importPowerPointToServer, showDeckPicker, showShareDialog } from './deckPicker.js';
+import { createDeckOnServer, folderOf, importKeynoteToServer, importPowerPointToServer, showDeckPicker, showShareDialog } from './deckPicker.js';
 import { installNetApi } from './netApi.js';
 import { PresenceOverlay } from './presenceOverlay.js';
 import { installAgentWorkspace } from './agentWorkspace.js';
@@ -626,8 +626,11 @@ function buildToolbar(): void {
   // In a hosted session the server pins one deck; switching, creating or
   // importing presentations is the host's business, not a joiner's.
   if (!serverConfig.hosted) {
+    // New and imported presentations land beside the open one, so working
+    // inside a folder keeps working inside it.
+    const here = folderOf(deckId ?? '');
     const createDeck = (): void => {
-      void createDeckOnServer().catch((error) =>
+      void createDeckOnServer(here).catch((error) =>
         setStatusMessage(`Create failed: ${error instanceof Error ? error.message : error}`));
     };
     const openDeck = (): void => showDeckPicker({
@@ -636,8 +639,8 @@ function buildToolbar(): void {
       access: serverConfig.access ?? null,
     });
     const importEntries = [
-      { label: 'Keynote…', action: () => importKeynoteToServer(setStatusMessage) },
-      { label: 'PowerPoint…', action: () => importPowerPointToServer(setStatusMessage) },
+      { label: 'Keynote…', action: () => importKeynoteToServer(setStatusMessage, here) },
+      { label: 'PowerPoint…', action: () => importPowerPointToServer(setStatusMessage, here) },
     ];
     fileActions.append(
       barButton('New', () => {

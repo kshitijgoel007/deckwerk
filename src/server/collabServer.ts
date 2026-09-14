@@ -37,14 +37,22 @@ import { planHtmlReplacement } from './htmlReplacement.js';
 import { htmlDraftWorkflow, type HtmlDraftWorkflow } from './htmlDraftWorkflow.js';
 import {
   canAccessDeck,
+  canEditDeck,
   canManageDeck,
+  deckRoleFor,
+  folderVisibleTo,
   normalizeLogin,
+  normalizeShares,
   readDeckAccess,
+  readFolderOwner,
   resolveIdentity,
   UserDirectory,
   writeDeckAccess,
+  writeFolderOwner,
+  FOLDER_FILE,
   type AccessControlConfig,
   type DeckAccess,
+  type DeckRole,
   type Identity,
 } from './accessControl.js';
 
@@ -84,6 +92,12 @@ interface Peer {
   greeted: boolean;
   /** Tailnet identity the socket was admitted under; null without --access. */
   identity: Identity | null;
+  /**
+   * Whether this peer may change the deck, decided when the socket was
+   * admitted. A view-only peer is a spectator: it still gets the live deck,
+   * presence and everyone else's edits, and nothing it sends is applied.
+   */
+  canEdit: boolean;
   /** Set when this peer is a local agent bridge: whose agent it is. */
   agentFor: string | null;
 }
@@ -256,6 +270,26 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
   }>();
   /** Known once listen() succeeds; /api/config reports the invite URLs. */
   let boundPort: number | null = null;
+
+  /**
+   * Drop every per-deck scrap keyed by a deck id that is about to stop
+   * meaning what it meant (a move). Drafts and idempotency records describe a
+   * deck at a path; carrying them to the new path, or leaving them behind for
+   * whatever takes the old one, are both wrong.
+   */
+  function forgetDeckState(deckId: string): void {
+    htmlDrafts.delete(deckId);
+    latestHtmlDrafts.delete(deckId);
+    nativeDrafts.delete(deckId);
+    for (const key of [...nativeIdempotency.keys()]) {
+      if (key.startsWith(`${deckId}:`)) nativeIdempotency.delete(key);
+    }
+    for (const stream of [...sharedAgentStreams]) {
+      if (stream.deckId !== deckId) continue;
+      stream.response.end();
+      sharedAgentStreams.delete(stream);
+    }
+  }
   const sharedAgentStreams = new Set<{
     deckId: string;
     participantId: string;
@@ -263,76 +297,209 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
     response: ServerResponse;
   }>();
 
-  /** Deck ids are immediate-child directory names; reject anything else. */
+  /**
+   * Deck ids are folder paths under the root — "talk", or "clients/acme/talk"
+   * once someone files it away. Every segment is validated and the resolved
+   * path has to land exactly where the segments say, so no id can climb out
+   * of the root; ids are otherwise opaque strings everywhere else.
+   */
   function deckDirOf(deckId: string): string {
-    if (!deckId || deckId.includes('/') || deckId.includes('\\') || deckId === '.' || deckId === '..') {
-      throw new Error(`invalid deck id: ${deckId}`);
-    }
+    const segments = splitDeckPath(deckId);
+    if (!segments) throw new Error(`invalid deck id: ${deckId}`);
     if (hostedDeckId && deckId !== hostedDeckId) {
       throw new Error(`this session only hosts "${hostedDeckId}"`);
     }
-    const dir = resolve(rootDir, deckId);
-    if (dir !== join(rootDir, deckId)) throw new Error(`invalid deck id: ${deckId}`);
+    const dir = resolve(rootDir, ...segments);
+    if (dir !== join(rootDir, ...segments)) throw new Error(`invalid deck id: ${deckId}`);
     return dir;
   }
+
+  /** The same path rules for a folder, which has no hosted-deck restriction. */
+  function folderDirOf(folderPath: string): string {
+    if (folderPath === '') return rootDir;
+    const segments = splitDeckPath(folderPath);
+    if (!segments) throw new Error(`invalid folder: ${folderPath}`);
+    const dir = resolve(rootDir, ...segments);
+    if (dir !== join(rootDir, ...segments)) throw new Error(`invalid folder: ${folderPath}`);
+    return dir;
+  }
+
+  const isDeckDir = (dir: string): boolean => existsSync(join(dir, 'deck.json'));
 
   interface DeckListEntry {
     id: string;
     title: string;
     slides: number;
+    /** Containing folder, "" at the root. Always present. */
+    folder: string;
     /** Present only with access control on. */
     owner?: string;
     visibility?: 'public' | 'private';
     canManage?: boolean;
     sharedWithMe?: boolean;
+    role?: DeckRole;
+  }
+
+  interface FolderListEntry {
+    path: string;
+    name: string;
+    parent: string;
+    /** Decks this person can open directly inside it. */
+    decks: number;
+    owner?: string;
+    canManage?: boolean;
+  }
+
+  /** Folders nest, but not without limit: a cycle-free tree still needs a floor. */
+  const MAX_FOLDER_DEPTH = 8;
+
+  async function deckListEntry(
+    id: string,
+    dir: string,
+    identity: Identity | null,
+  ): Promise<DeckListEntry | null> {
+    let listed: DeckListEntry;
+    try {
+      const raw = JSON.parse(await readFile(join(dir, 'deck.json'), 'utf8')) as {
+        title?: string; slides?: unknown[];
+      };
+      const name = id.slice(id.lastIndexOf('/') + 1);
+      listed = {
+        id,
+        title: raw.title ?? name,
+        slides: Array.isArray(raw.slides) ? raw.slides.length : 0,
+        folder: id.includes('/') ? id.slice(0, id.lastIndexOf('/')) : '',
+      };
+    } catch {
+      // Half-written or invalid deck.json; skip rather than fail the listing.
+      return null;
+    }
+    if (accessControl && identity) {
+      const access = await readDeckAccess(dir, accessControl);
+      const role = deckRoleFor(identity.login, access, accessControl);
+      if (!role) return null;
+      listed.owner = access.owner;
+      listed.visibility = access.visibility;
+      listed.canManage = canManageDeck(identity.login, access, accessControl);
+      listed.sharedWithMe = access.sharedWith.some((share) => share.login === identity.login);
+      listed.role = role;
+    }
+    return listed;
+  }
+
+  interface Listing {
+    decks: DeckListEntry[];
+    folders: FolderListEntry[];
+  }
+
+  /**
+   * Walk one folder, collecting everything below it this person may see.
+   *
+   * Folders are containers, so their visibility is derived rather than
+   * granted (see folderVisibleTo): a folder with nothing accessible inside is
+   * dropped along with its whole subtree, which by construction holds nothing
+   * this person could have seen anyway. The one structural exception is a
+   * folder that contains a folder they *can* see — usually their own — which
+   * has to stay so the visible one still has a path.
+   */
+  async function collectListing(
+    relative: string,
+    depth: number,
+    identity: Identity | null,
+  ): Promise<Listing & { accessibleDecks: number }> {
+    const out: Listing = { decks: [], folders: [] };
+    let accessibleDecks = 0;
+    let entries;
+    try {
+      entries = await readdir(relative ? join(rootDir, relative) : rootDir, { withFileTypes: true });
+    } catch {
+      return { ...out, accessibleDecks };
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const childId = relative ? `${relative}/${entry.name}` : entry.name;
+      const childDir = join(rootDir, childId);
+      if (isDeckDir(childDir)) {
+        if (hostedDeckId && childId !== hostedDeckId) continue;
+        const listed = await deckListEntry(childId, childDir, identity);
+        // A deck's own subdirectories (assets/, edit/) are part of the deck,
+        // never folders: stop here either way.
+        if (listed) {
+          out.decks.push(listed);
+          accessibleDecks += 1;
+        }
+        continue;
+      }
+      if (hostedDeckId) continue; // a single-deck session has no folder tree
+      if (depth + 1 > MAX_FOLDER_DEPTH) continue;
+      if (!splitDeckPath(childId)) continue;
+      const inside = await collectListing(childId, depth + 1, identity);
+      const owner = accessControl ? await readFolderOwner(childDir, accessControl) : '';
+      const visible = !accessControl || !identity
+        || folderVisibleTo(identity.login, { owner, accessibleDecks: inside.accessibleDecks }, accessControl)
+        || inside.folders.length > 0;
+      if (!visible) continue;
+      const folder: FolderListEntry = {
+        path: childId,
+        name: entry.name,
+        parent: relative,
+        decks: inside.decks.filter((deck) => deck.folder === childId).length,
+      };
+      if (accessControl && identity) {
+        folder.owner = owner;
+        folder.canManage = identity.login === accessControl.admin || owner === identity.login;
+      }
+      out.folders.push(folder, ...inside.folders);
+      out.decks.push(...inside.decks);
+      accessibleDecks += inside.accessibleDecks;
+    }
+    return { ...out, accessibleDecks };
   }
 
   async function listDecks(identity: Identity | null): Promise<DeckListEntry[]> {
-    const out: DeckListEntry[] = [];
-    for (const entry of await readdir(rootDir, { withFileTypes: true })) {
-      if (!entry.isDirectory()) continue;
-      if (hostedDeckId && entry.name !== hostedDeckId) continue;
-      const deckPath = join(rootDir, entry.name, 'deck.json');
-      if (!existsSync(deckPath)) continue;
-      let listed: DeckListEntry;
-      try {
-        const raw = JSON.parse(await readFile(deckPath, 'utf8')) as {
-          title?: string; slides?: unknown[];
-        };
-        listed = {
-          id: entry.name,
-          title: raw.title ?? entry.name,
-          slides: Array.isArray(raw.slides) ? raw.slides.length : 0,
-        };
-      } catch {
-        // Half-written or invalid deck.json; skip rather than fail the listing.
-        continue;
-      }
-      if (accessControl && identity) {
-        const access = await readDeckAccess(join(rootDir, entry.name), accessControl);
-        if (!canAccessDeck(identity.login, access, accessControl)) continue;
-        listed.owner = access.owner;
-        listed.visibility = access.visibility;
-        listed.canManage = canManageDeck(identity.login, access, accessControl);
-        listed.sharedWithMe = access.sharedWith.includes(identity.login);
-      }
-      out.push(listed);
-    }
-    return out.sort((a, b) => a.id.localeCompare(b.id));
+    const { decks } = await collectListing('', 0, identity);
+    return decks.sort((a, b) => a.id.localeCompare(b.id));
   }
 
-  /** Whether this identity may touch the deck at all; access control off = yes. */
-  async function deckAllowed(identity: Identity | null, deckId: string): Promise<boolean> {
-    if (!accessControl) return true;
-    if (!identity) return false;
+  async function listFolders(identity: Identity | null): Promise<FolderListEntry[]> {
+    const { folders } = await collectListing('', 0, identity);
+    return folders.sort((a, b) => a.path.localeCompare(b.path));
+  }
+
+  /** Whether `folderPath` exists and this person is allowed to see it. */
+  async function folderVisible(identity: Identity | null, folderPath: string): Promise<boolean> {
+    if (folderPath === '') return true;
+    if (!accessControl || !identity) return existsSync(folderDirOf(folderPath));
+    return (await listFolders(identity)).some((folder) => folder.path === folderPath);
+  }
+
+  /** This identity's role on the deck, or null when it may not open it. */
+  async function deckRoleOf(identity: Identity | null, deckId: string): Promise<DeckRole | null> {
+    if (!accessControl) return 'owner';
+    if (!identity) return null;
     let deckDir: string;
     try {
       deckDir = deckDirOf(deckId);
     } catch {
       // Invalid ids fall through to the route's own error handling.
-      return true;
+      return 'owner';
     }
-    return canAccessDeck(identity.login, await readDeckAccess(deckDir, accessControl), accessControl);
+    // Only a real deck folder is a deck. Without this, "private-deck/assets"
+    // would resolve to a directory with no sidecar of its own — which reads
+    // as public — and hand out the private deck's insides.
+    if (!isDeckDir(deckDir) && existsSync(deckDir)) return null;
+    return deckRoleFor(identity.login, await readDeckAccess(deckDir, accessControl), accessControl);
+  }
+
+  /** Whether this identity may touch the deck at all; access control off = yes. */
+  async function deckAllowed(identity: Identity | null, deckId: string): Promise<boolean> {
+    return (await deckRoleOf(identity, deckId)) !== null;
+  }
+
+  /** Whether this identity may change the deck. View-only participants cannot. */
+  async function deckWritable(identity: Identity | null, deckId: string): Promise<boolean> {
+    const role = await deckRoleOf(identity, deckId);
+    return role === 'owner' || role === 'edit';
   }
 
   async function getRoom(deckId: string): Promise<Room> {
@@ -627,8 +794,21 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
       });
     }
     if (identity && userDirectory) void userDirectory.note(identity);
+    // A malformed deck id is answered once, here, rather than becoming a 500
+    // in whichever route happened to open it.
+    if (deckParam && !splitDeckPath(deckParam)) {
+      return respondJson(response, 400, { error: 'invalid deck id' });
+    }
     if (deckParam && !(await deckAllowed(identity, deckParam))) {
       return respondJson(response, 403, { error: 'you do not have access to this deck' });
+    }
+    // View-only is enforced here, once, for every deck-scoped route: anything
+    // that is not a plain read of the deck needs edit rights. Routes that
+    // create a deck carry ?name= rather than ?deck= and are not covered —
+    // creating is not editing something that already exists.
+    if (deckParam && request.method !== 'GET' && request.method !== 'HEAD'
+      && !(await deckWritable(identity, deckParam))) {
+      return respondJson(response, 403, { error: 'you have view-only access to this presentation' });
     }
     // A participant's own agent working over plain HTTP (the copied brief,
     // no bridge) announces itself by the id on its requests; that is enough
@@ -651,16 +831,21 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
     if ((path === '/' || path === '/index.html')
       && url.searchParams.get('agent') === '1'
       && url.searchParams.get('debug') !== '1') {
-      const viewer = new URL('/present.html', 'http://localhost');
-      for (const [key, value] of url.searchParams) viewer.searchParams.set(key, value);
-      if (!viewer.searchParams.has('slide')) viewer.searchParams.set('slide', '1');
-      response.writeHead(302, { location: `${viewer.pathname}${viewer.search}` });
-      response.end();
-      return;
+      return redirectToViewer(response, url);
+    }
+
+    // A view-only participant never gets the editor shell. It would let them
+    // move things on screen that the server then refuses, so they get the
+    // presentation page instead — read-only by construction, and live.
+    if ((path === '/' || path === '/index.html') && deckParam
+      && (await deckRoleOf(identity, deckParam)) === 'view') {
+      return redirectToViewer(response, url);
     }
 
     // Deck-scoped asset streaming: /decks/<id>/assets/<relpath>
-    const assetMatch = /^\/decks\/([^/]+)\/(assets\/.+)$/.exec(path);
+    // The deck id is a path, so it may itself contain slashes; the assets/
+    // marker is what separates it from the file being served.
+    const assetMatch = /^\/decks\/(.+)\/(assets\/.+)$/.exec(path);
     if (assetMatch) {
       if (!(await deckAllowed(identity, assetMatch[1]))) {
         response.writeHead(403, { 'content-type': 'text/plain' });
@@ -718,6 +903,9 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
           user: identity.login,
           name: identity.name,
           admin: identity.login === accessControl.admin,
+          // Present only when the request names a deck: what this person may
+          // do with that one. The client uses it to label its chrome.
+          ...(deckParam ? { deckRole: await deckRoleOf(identity, deckParam) } : {}),
         } : null,
         sharedAgent: canUseSharedAgent(request) ? {
           enabled: true,
@@ -875,14 +1063,20 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
       const access = await readDeckAccess(deckDir, accessControl);
       const canManage = canManageDeck(identity.login, access, accessControl);
       if (request.method === 'GET') {
-        respondJson(response, 200, { ...access, canManage });
+        respondJson(response, 200, {
+          ...access,
+          canManage,
+          role: deckRoleFor(identity.login, access, accessControl),
+        });
         return;
       }
       if (request.method === 'PUT' || request.method === 'POST') {
         if (!canManage) {
           return respondJson(response, 403, { error: 'only the deck owner or the admin can change access' });
         }
-        let payload: { visibility?: unknown; sharedWith?: unknown; owner?: unknown };
+        let payload: {
+          visibility?: unknown; sharedWith?: unknown; owner?: unknown; publicRole?: unknown;
+        };
         try {
           payload = JSON.parse((await readBody(request)).toString('utf8') || '{}') as typeof payload;
         } catch {
@@ -898,15 +1092,27 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
           }
           next.visibility = payload.visibility;
         }
-        if (payload.sharedWith !== undefined) {
-          if (!Array.isArray(payload.sharedWith)
-            || payload.sharedWith.some((entry) => typeof entry !== 'string')
-            || payload.sharedWith.length > 500) {
-            return respondJson(response, 400, { error: 'sharedWith must be an array of logins' });
+        if (payload.publicRole !== undefined) {
+          if (payload.publicRole !== 'edit' && payload.publicRole !== 'view') {
+            return respondJson(response, 400, { error: 'publicRole must be "edit" or "view"' });
           }
-          next.sharedWith = [...new Set((payload.sharedWith as string[])
-            .map(normalizeLogin)
-            .filter((login) => login !== ''))];
+          next.publicRole = payload.publicRole;
+        }
+        if (payload.sharedWith !== undefined) {
+          // Entries are `{ login, role }`; a bare login still means edit, so
+          // an older client PUTting back what it read stays correct.
+          const rows = payload.sharedWith;
+          const wellFormed = Array.isArray(rows) && rows.length <= 500 && rows.every((entry) =>
+            typeof entry === 'string'
+            || (Boolean(entry) && typeof entry === 'object' && !Array.isArray(entry)
+              && typeof (entry as { login?: unknown }).login === 'string'
+              && ['edit', 'view', undefined].includes((entry as { role?: unknown }).role as string)));
+          if (!wellFormed) {
+            return respondJson(response, 400, {
+              error: 'sharedWith must be an array of logins or { login, role } entries',
+            });
+          }
+          next.sharedWith = normalizeShares(rows);
         }
         if (payload.owner !== undefined) {
           // Transferring ownership is an admin act: an owner "giving a deck
@@ -922,37 +1128,183 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
         await writeDeckAccess(deckDir, next);
         // A socket was admitted under the old sidecar; the new one has to
         // apply to it too, or un-sharing would only stop the *next* visit.
+        // Demotion to view-only counts: that peer is sitting in an editor
+        // whose every transaction the server would now refuse, so it is sent
+        // back to reload into the read-only page.
         for (const peer of rooms.get(deckParam)?.peers.values() ?? []) {
-          if (peer.identity && !canAccessDeck(peer.identity.login, next, accessControl)) {
+          if (!peer.identity) continue;
+          if (!canAccessDeck(peer.identity.login, next, accessControl)) {
             peer.socket.close(4003, 'your access to this deck was revoked');
+          } else if (peer.canEdit && !canEditDeck(peer.identity.login, next, accessControl)) {
+            peer.socket.close(4003, 'your access to this deck is now view-only — reload to keep watching');
           }
         }
         respondJson(response, 200, {
           ...next,
           canManage: canManageDeck(identity.login, next, accessControl),
+          role: deckRoleFor(identity.login, next, accessControl),
         });
         return;
       }
       return respondJson(response, 405, { error: 'method not allowed' });
     }
 
-    if (hostedDeckId && (path === '/api/decks' || path === '/api/import-keynote' || path === '/api/import-pptx') && request.method === 'POST') {
+    // The folder tree, already filtered: a folder nobody has shared anything
+    // with you inside is not listed, so you never learn it is there.
+    if (path === '/api/folders' && request.method === 'GET') {
+      respondJson(response, 200, await listFolders(identity));
+      return;
+    }
+
+    if (hostedDeckId && (path === '/api/decks' || path === '/api/folders'
+      || path === '/api/decks/move' || path === '/api/import-keynote' || path === '/api/import-pptx')
+      && request.method !== 'GET') {
       respondJson(response, 403, { error: 'this session hosts a single shared presentation' });
+      return;
+    }
+
+    if (path === '/api/folders' && request.method === 'POST') {
+      const target = sanitizeFolderPath(url.searchParams.get('path') ?? '');
+      if (!target) return respondJson(response, 400, { error: 'missing or invalid folder path' });
+      const segments = splitDeckPath(target);
+      if (!segments) return respondJson(response, 400, { error: 'missing or invalid folder path' });
+      if (existsSync(folderDirOf(target))) {
+        return respondJson(response, 409, { error: `"${target}" already exists` });
+      }
+      // Walk the ancestors: a deck is not a folder and cannot contain one,
+      // and a folder you cannot see is not one you may file work inside.
+      for (let depth = 1; depth < segments.length; depth++) {
+        const ancestor = segments.slice(0, depth).join('/');
+        const ancestorDir = folderDirOf(ancestor);
+        if (!existsSync(ancestorDir)) break;
+        if (isDeckDir(ancestorDir)) {
+          return respondJson(response, 400, { error: `"${ancestor}" is a presentation, not a folder` });
+        }
+        if (!(await folderVisible(identity, ancestor))) {
+          return respondJson(response, 403, { error: 'you do not have access to that folder' });
+        }
+      }
+      const created: string[] = [];
+      for (let depth = 1; depth <= segments.length; depth++) {
+        const step = segments.slice(0, depth).join('/');
+        if (!existsSync(folderDirOf(step))) created.push(step);
+      }
+      await mkdir(folderDirOf(target), { recursive: true });
+      // Every folder this call brought into being belongs to its creator —
+      // which is also what keeps a brand new, still-empty folder visible to
+      // them while they put the first presentation in it.
+      if (accessControl && identity) {
+        for (const step of created) await writeFolderOwner(folderDirOf(step), identity.login);
+      }
+      respondJson(response, 200, { path: target, created });
+      return;
+    }
+
+    if (path === '/api/folders' && request.method === 'DELETE') {
+      const target = sanitizeFolderPath(url.searchParams.get('path') ?? '');
+      if (!target) return respondJson(response, 400, { error: 'missing or invalid folder path' });
+      const dir = folderDirOf(target);
+      if (!existsSync(dir) || isDeckDir(dir) || !(await folderVisible(identity, target))) {
+        return respondJson(response, 404, { error: 'no such folder' });
+      }
+      if (accessControl && identity) {
+        const owner = await readFolderOwner(dir, accessControl);
+        if (identity.login !== accessControl.admin && owner !== identity.login) {
+          return respondJson(response, 403, { error: 'only the folder owner or the admin can delete it' });
+        }
+      }
+      // Only ever an empty folder: deleting presentations is not something a
+      // folder operation gets to do as a side effect.
+      const remaining = (await readdir(dir)).filter((entry) => entry !== FOLDER_FILE);
+      if (remaining.length > 0) {
+        return respondJson(response, 409, { error: 'the folder is not empty' });
+      }
+      await rm(dir, { recursive: true, force: true });
+      respondJson(response, 200, { path: target, deleted: true });
+      return;
+    }
+
+    if (path === '/api/decks/move' && request.method === 'POST') {
+      if (!deckParam) return respondJson(response, 400, { error: 'missing deck' });
+      const folder = sanitizeFolderPath(url.searchParams.get('folder') ?? '');
+      if (folder === null) return respondJson(response, 400, { error: 'invalid folder' });
+      let from: string;
+      try {
+        from = deckDirOf(deckParam);
+      } catch {
+        return respondJson(response, 400, { error: 'invalid deck id' });
+      }
+      if (!isDeckDir(from)) return respondJson(response, 404, { error: 'no such deck' });
+      if (accessControl && identity) {
+        const access = await readDeckAccess(from, accessControl);
+        if (!canManageDeck(identity.login, access, accessControl)) {
+          return respondJson(response, 403, { error: 'only the deck owner or the admin can move it' });
+        }
+      }
+      if (folder !== '' && (!existsSync(folderDirOf(folder)) || isDeckDir(folderDirOf(folder)))) {
+        return respondJson(response, 404, { error: 'no such folder' });
+      }
+      if (!(await folderVisible(identity, folder))) {
+        return respondJson(response, 403, { error: 'you do not have access to that folder' });
+      }
+      const name = deckParam.slice(deckParam.lastIndexOf('/') + 1);
+      const id = folder ? `${folder}/${name}` : name;
+      if (id === deckParam) return respondJson(response, 200, { id });
+      let to: string;
+      try {
+        to = deckDirOf(id);
+      } catch {
+        return respondJson(response, 400, { error: 'the deck would not fit that deep' });
+      }
+      if (existsSync(to)) {
+        return respondJson(response, 409, { error: `"${id}" already exists` });
+      }
+      // The deck id is the room key and the session's directory, so a move is
+      // only safe while nobody is in the room. Anyone connected keeps the old
+      // path open in their editor; ask for the room to be empty instead of
+      // renaming the ground out from under them.
+      const room = rooms.get(deckParam);
+      if (room && room.peers.size > 0) {
+        return respondJson(response, 409, {
+          error: 'somebody has this presentation open — close it everywhere before moving it',
+        });
+      }
+      if (room) {
+        await room.session.flush();
+        await room.session.close();
+        rooms.delete(deckParam);
+      }
+      forgetDeckState(deckParam);
+      await rename(from, to);
+      respondJson(response, 200, { id });
       return;
     }
 
     if (path === '/api/decks' && request.method === 'POST') {
       const name = sanitizeDeckId(url.searchParams.get('name') ?? '');
       if (!name) return respondJson(response, 400, { error: 'missing or invalid name' });
-      const dir = deckDirOf(name);
-      if (existsSync(dir)) return respondJson(response, 409, { error: `deck "${name}" already exists` });
+      const folder = sanitizeFolderPath(url.searchParams.get('folder') ?? '');
+      if (folder === null) return respondJson(response, 400, { error: 'invalid folder' });
+      if (folder !== '' && !(await folderVisible(identity, folder))) {
+        return respondJson(response, 404, { error: 'no such folder' });
+      }
+      const id = folder ? `${folder}/${name}` : name;
+      let dir: string;
+      try {
+        dir = deckDirOf(id);
+      } catch {
+        return respondJson(response, 400, { error: 'missing or invalid name' });
+      }
+      if (existsSync(dir)) return respondJson(response, 409, { error: `deck "${id}" already exists` });
       await createDeck(dir, name);
       // New decks start private to their creator: accidental exposure should
       // take an explicit act, not the absence of one.
       if (accessControl && identity) {
-        await writeDeckAccess(dir, { owner: identity.login, visibility: 'private', sharedWith: [] });
+        await writeDeckAccess(dir, {
+          owner: identity.login, visibility: 'private', sharedWith: [], publicRole: 'edit',
+        });
       }
-      respondJson(response, 200, { id: name });
+      respondJson(response, 200, { id });
       return;
     }
 
@@ -964,8 +1316,19 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
     if (importRoute && request.method === 'POST') {
       const name = sanitizeDeckId(url.searchParams.get('name') ?? '');
       if (!name) return respondJson(response, 400, { error: 'missing or invalid name' });
-      const dir = deckDirOf(name);
-      if (existsSync(dir)) return respondJson(response, 409, { error: `deck "${name}" already exists` });
+      const folder = sanitizeFolderPath(url.searchParams.get('folder') ?? '');
+      if (folder === null) return respondJson(response, 400, { error: 'invalid folder' });
+      if (folder !== '' && !(await folderVisible(identity, folder))) {
+        return respondJson(response, 404, { error: 'no such folder' });
+      }
+      const id = folder ? `${folder}/${name}` : name;
+      let dir: string;
+      try {
+        dir = deckDirOf(id);
+      } catch {
+        return respondJson(response, 400, { error: 'missing or invalid name' });
+      }
+      if (existsSync(dir)) return respondJson(response, 409, { error: `deck "${id}" already exists` });
       const body = await readBody(request);
       const tmp = await mkdtemp(join(tmpdir(), 'collab-import-'));
       try {
@@ -973,9 +1336,11 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
         await writeFile(sourceFile, body);
         const report = await importRoute.run(sourceFile, dir);
         if (accessControl && identity) {
-          await writeDeckAccess(dir, { owner: identity.login, visibility: 'private', sharedWith: [] });
+          await writeDeckAccess(dir, {
+            owner: identity.login, visibility: 'private', sharedWith: [], publicRole: 'edit',
+          });
         }
-        respondJson(response, 200, { id: name, report });
+        respondJson(response, 200, { id, report });
       } catch (error) {
         await rm(dir, { recursive: true, force: true });
         respondJson(response, 400, { error: String(error instanceof Error ? error.message : error) });
@@ -2041,15 +2406,18 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
       // The upgrade request carries the same loopback socket and tailscale
       // serve headers as any HTTP request, so the identity rules match.
       let identity: Identity | null = null;
+      let canEdit = true;
       if (accessControl) {
         identity = resolveIdentity(request, accessControl);
-        if (!identity || !(await deckAllowed(identity, deckId))) {
+        const role = identity ? await deckRoleOf(identity, deckId) : null;
+        if (!identity || !role) {
           // Resume first: the close handshake needs to read the client's
           // close frame, which a paused socket never would.
           socket.resume();
           socket.close(4003, 'you do not have access to this deck');
           return;
         }
+        canEdit = role !== 'view';
         if (userDirectory) void userDirectory.note(identity);
       }
       let room: Room;
@@ -2059,17 +2427,18 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
         socket.close(4004, String(error instanceof Error ? error.message : error).slice(0, 120));
         return;
       }
-      bindPeer(room, socket, identity);
+      bindPeer(room, socket, identity, canEdit);
       socket.resume();
     })();
   });
 
-  function bindPeer(room: Room, socket: WebSocket, identity: Identity | null): void {
+  function bindPeer(room: Room, socket: WebSocket, identity: Identity | null, canEdit: boolean): void {
     const clientId = randomUUID();
     const peer: Peer = {
       socket,
       greeted: false,
       identity,
+      canEdit,
       agentFor: null,
       state: {
         clientId,
@@ -2147,6 +2516,15 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
         return;
       }
       if (!peer.greeted) return;
+
+      // A view-only peer is served, not trusted: it sees everything and
+      // changes nothing. Answering a refused transaction with the current
+      // deck puts its client back on the authoritative state rather than
+      // leaving a phantom local edit on screen.
+      if (!peer.canEdit && (message.kind === 'txn' || message.kind === 'theme')) {
+        send(peer, { kind: 'deck', seq: room.session.seq, deck: room.session.deck, reason: 'resync' });
+        return;
+      }
 
       switch (message.kind) {
         case 'txn': {
@@ -2751,12 +3129,64 @@ export function scratchpadDocument(html: string, mode: 'slides' | 'contact'): st
 }
 
 /** A new deck's folder name: human-typed, so normalise instead of rejecting. */
+/** Send this request to the read-only presentation page, params intact. */
+function redirectToViewer(response: ServerResponse, url: URL): void {
+  const viewer = new URL('/present.html', 'http://localhost');
+  for (const [key, value] of url.searchParams) viewer.searchParams.set(key, value);
+  if (!viewer.searchParams.has('slide')) viewer.searchParams.set('slide', '1');
+  response.writeHead(302, { location: `${viewer.pathname}${viewer.search}` });
+  response.end();
+}
+
 function sanitizeDeckId(name: string): string {
   return basename(name)
     .replace(/\.(key|pptx)$/i, '')
     .replace(/[^a-zA-Z0-9._ -]+/g, '-')
     .replace(/^[.\s-]+|[\s-]+$/g, '')
     .slice(0, 80);
+}
+
+/** Deck ids and folder paths may nest, but only so far. */
+const MAX_PATH_SEGMENTS = 8;
+
+/**
+ * Split a deck id or folder path into its directory segments, or null if it
+ * is not one. This is the single gate every path-shaped parameter passes
+ * through: no empty, relative, whitespace-padded or backslash segments, and
+ * no unbounded nesting.
+ */
+function splitDeckPath(value: string): string[] | null {
+  if (!value || value.includes('\\') || value.includes('\0') || value.length > 400) return null;
+  const segments = value.split('/');
+  if (segments.length > MAX_PATH_SEGMENTS) return null;
+  for (const segment of segments) {
+    if (!segment || segment === '.' || segment === '..') return null;
+    if (segment !== segment.trim()) return null;
+  }
+  return segments;
+}
+
+/**
+ * Sanitize a typed folder path segment by segment; '' means the root.
+ *
+ * Characters a folder name cannot hold are cleaned up the way a deck name is,
+ * but a relative or empty segment is refused outright rather than tidied
+ * away: "a/../b" must not quietly become "a/b" and land somewhere the person
+ * who typed it did not mean.
+ */
+function sanitizeFolderPath(value: string): string | null {
+  const raw = value.trim().replace(/^\/+|\/+$/g, '');
+  if (raw === '') return '';
+  const segments: string[] = [];
+  for (const segment of raw.split('/')) {
+    const trimmed = segment.trim();
+    if (trimmed === '' || trimmed === '.' || trimmed === '..') return null;
+    const clean = sanitizeDeckId(trimmed);
+    if (!clean) return null;
+    segments.push(clean);
+  }
+  const path = segments.join('/');
+  return splitDeckPath(path) ? path : null;
 }
 
 /**

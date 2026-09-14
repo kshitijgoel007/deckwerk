@@ -3304,11 +3304,25 @@ button.morph-object-hit.selected-source:hover:not(:disabled) {
 .deck-picker-row-group .deck-picker-row { flex: 1; min-width: 0; }
 .deck-picker-row { text-align: left; }
 .deck-picker-share { flex: none; white-space: nowrap; }
+.deck-picker-trail { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.deck-picker-crumb { padding: 2px 6px; }
+.deck-picker-crumb:disabled { opacity: 1; font-weight: 600; }
+.deck-picker-crumb-sep { color: var(--muted, #8a93a6); }
+.deck-picker-folder::before { content: '📁  '; }
 .share-dialog-body { display: flex; flex-direction: column; gap: 10px; }
 .share-dialog-owner { margin: 0; color: var(--muted, #8a93a6); }
 .share-dialog-visibility, .share-dialog-shared { display: flex; flex-direction: column; gap: 5px; }
 .share-dialog-chips { display: flex; flex-wrap: wrap; gap: 5px; }
-.share-dialog-chip { padding: 3px 8px; border: 1px solid var(--line); border-radius: 999px; }
+.share-dialog-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 4px 3px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+}
+.share-dialog-chip select { padding: 2px 4px; }
+.share-dialog-chip-remove { padding: 0 6px; border: 0; background: none; }
 .share-dialog-empty { color: var(--muted, #8a93a6); }
 .share-dialog-add { display: flex; gap: 6px; }
 .share-dialog-add input {
