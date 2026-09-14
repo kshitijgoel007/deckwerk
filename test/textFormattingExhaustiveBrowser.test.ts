@@ -15,7 +15,12 @@ import {
   stopBrowser,
   type RunningBrowser,
 } from './support/browserSession.js';
-import { isEditorTarget, launchDesktopApp, materializeDesktopApp } from './support/desktopApp.js';
+import {
+  isEditorTarget,
+  launchDesktopApp,
+  materializeDesktopApp,
+  NEEDS_VISIBLE_WINDOW_ON_CI,
+} from './support/desktopApp.js';
 import { collabClientDir } from './support/collabClient.js';
 import {
   EXHAUSTIVE_CONTENT,
@@ -167,7 +172,10 @@ describe.skipIf(!RUN_EXHAUSTIVE || !electronBinary)('exhaustive formatting fuzz 
 
     await materializeDesktopApp(appDir, 'deckwerk-exhaustive-formatting-test');
 
-    const app = await launchDesktopApp(appDir, [deckDir], { profileDir });
+    // 2304 cases of DevTools input: in a hidden window under CI's bare Xvfb every
+    // event waits out a frame fallback (2.8 s/case against 145 ms/case shown; see
+    // NEEDS_VISIBLE_WINDOW_ON_CI), which projects far past the 30-minute budget.
+    const app = await launchDesktopApp(appDir, [deckDir], { profileDir, visible: NEEDS_VISIBLE_WINDOW_ON_CI });
     appProcess = app.process;
     const debugPort = app.debugPort;
     const appLog = app.log;
