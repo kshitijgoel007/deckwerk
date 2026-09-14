@@ -2,7 +2,7 @@ import '../player/player.css';
 import { parseDeck } from '@shared/deck.js';
 import { bindPresentKeys } from '../player/keys.js';
 import { Player } from '../player/player.js';
-import { slideLinkFromEvent } from '../player/links.js';
+import { eventOnInteractiveWeb, slideLinkFromEvent } from '../player/links.js';
 
 /**
  * Entry point for the exported standalone bundle.
@@ -53,7 +53,7 @@ function boot(): void {
   jumpToHash();
 
   window.addEventListener('mousedown', (e) => {
-    if (slideLinkFromEvent(e)) return;
+    if (slideLinkFromEvent(e) || eventOnInteractiveWeb(e)) return;
     if (e.button === 0) player.next();
     else if (e.button === 2) player.prev();
   });

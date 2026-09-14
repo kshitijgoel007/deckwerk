@@ -16,7 +16,7 @@ import { deckOutline, deckStyleDigest } from '@shared/deckDigest.js';
 import { slidesToHtml } from '@shared/htmlSlides.js';
 import { capabilities } from '@shared/capabilities.js';
 import { PLAYER_TYPE_CSS } from '@shared/playerTypeCss.js';
-import { CustomThemeSchema, type Comment, type Deck } from '@shared/deck.js';
+import { CustomThemeSchema, parseDeck, type Comment, type Deck } from '@shared/deck.js';
 import { diffDecks } from '@shared/deckDiff.js';
 import { renameRetiredFields } from '@shared/fieldAliases.js';
 import {
@@ -44,7 +44,8 @@ import {
   writeAgentRequest,
 } from '../main/agentRuntime.js';
 import { adoptAuthoredIds, htmlSyncSummary } from '@shared/htmlSlides.js';
-import { DECK_FILE, importAsset, loadDeck } from '../main/deckStore.js';
+import { DECK_FILE, importAsset, importWebPage, loadDeck } from '../main/deckStore.js';
+import { injectWebBridgeRuntime } from '@shared/webBridge.js';
 import { measureBuiltTextOverflows } from './compileHtml.js';
 import { serveBundle } from './previewServer.js';
 import { exportDeck } from '../main/exportDeck.js';
@@ -116,6 +117,11 @@ Everything else:
                                           schema, ids, references, assets, and
                                           canvas overflows (scoped to your slides)
   asset import <deck> <paths...>          copy media into assets/, probed
+  web import <deck> <page.html> [--after <slideId>] [--title <text>]
+                                          add one slide showing a complete HTML
+                                          page — scripts and all — live in a
+                                          sandboxed frame (a Claude artifact,
+                                          an interactive chart, a demo)
   inspect   [deck] [--dom]                computed scenes, for questions
   render    [deck] [--selected|--slide id|number|--all] --output <dir>
             [--annotate] [--built]
@@ -193,6 +199,8 @@ export async function runAgentCli(argv: string[], io: CliIo): Promise<number> {
         return await validateCommand(rest, io);
       case 'asset':
         return await assetCommand(rest, io);
+      case 'web':
+        return await webCommand(rest, io);
       case 'theme':
         return await themeCommand(rest, io);
       case 'comments':
@@ -604,6 +612,86 @@ async function assetCommand(argv: string[], io: CliIo): Promise<number> {
   }
   io.out(json({ assets, failures }));
   return failures.length > 0 && assets.length === 0 ? EXIT_ERROR : EXIT_OK;
+}
+
+/**
+ * `web import`: one complete HTML document becomes one slide, filling the
+ * canvas with a sandboxed `web` element. This is the path for content that
+ * needs JavaScript — a Claude artifact, an interactive chart — which the HTML
+ * authoring loop cannot carry, because the compile strips scripts on purpose
+ * and turns markup into static objects. The page is copied into assets/web/
+ * with the deck's bridge runtime written in; the reply names the src so a
+ * follow-up authoring page can place the same document in a smaller box.
+ */
+async function webCommand(argv: string[], io: CliIo): Promise<number> {
+  const [sub, ...rest] = argv;
+  if (sub !== 'import') {
+    io.err(`Unknown web command: ${sub ?? '(none)'}\n\n${USAGE}`);
+    return EXIT_USAGE;
+  }
+  const { flags, options, positional } = parseFlags(rest, ['after', 'title', 'name']);
+  ensureKnownFlags('web import', flags, ['no-interaction']);
+  ensurePositionals('web import', positional, 2);
+  if (positional.length < 2) {
+    io.err('web import needs a deck folder and one HTML file');
+    return EXIT_USAGE;
+  }
+  const deckDir = resolveDeckDir(positional[0], io);
+  const pagePath = resolve(io.cwd, positional[1]);
+  if (!existsSync(pagePath)) {
+    io.err(`No such file: ${pagePath}`);
+    return EXIT_ERROR;
+  }
+  const deck = await loadDeck(deckDir);
+  const source = await readFile(pagePath, 'utf8');
+  const title = options.get('title') ?? titleFromHtml(source) ?? positional[1].replace(/^.*[\\/]/, '').replace(/\.[^.]+$/, '');
+  const page = await importWebPage(deckDir, pagePath, injectWebBridgeRuntime);
+
+  const afterRef = options.get('after');
+  const afterSlideId = afterRef === undefined
+    ? (deck.slides.at(-1)?.id ?? null)
+    : slideIdForRef(deck, afterRef);
+  if (afterRef !== undefined && afterSlideId === null) {
+    io.err(`No such slide: ${afterRef}`);
+    return EXIT_ERROR;
+  }
+
+  const used = new Set(deck.slides.map((slide) => slide.id));
+  let slideId = `slide-${used.size + 1}`;
+  for (let n = 1; used.has(slideId); n++) slideId = `slide-${used.size + 1}-${n}`;
+  // Through the schema so defaults (background, notes, timeline) are the
+  // deck's own rather than a second copy of them here.
+  const slide = parseDeck({ version: 1, slides: [{
+    id: slideId,
+    name: options.get('name') ?? title,
+    elements: [{
+      id: `${slideId}-web`,
+      type: 'web' as const,
+      x: 0, y: 0, w: deck.canvas.w, h: deck.canvas.h, rot: 0, z: 1, opacity: 1,
+      class: [], style: {},
+      src: page.src,
+      poster: null,
+      interactive: !flags.has('no-interaction'),
+      title,
+    }],
+  }] }).slides[0];
+  return applyTransaction(deckDir, {
+    version: AGENT_PROTOCOL_VERSION,
+    label: `Import web page ${title}`,
+    operations: [{ op: 'insertSlides', afterSlideId, slides: [slide] }],
+  }, io, {
+    slideId,
+    src: page.src,
+    bytes: page.bytes,
+    title,
+    hint: 'The page fills the canvas. To place it in a smaller box, export the slide with `inspect --html` and resize the data-element="web" div like any other element.',
+  });
+}
+
+function titleFromHtml(html: string): string | null {
+  const match = /<title[^>]*>([^<]*)<\/title>/i.exec(html);
+  const title = match?.[1].replace(/\s+/g, ' ').trim();
+  return title ? title : null;
 }
 
 /**

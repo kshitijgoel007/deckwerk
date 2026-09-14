@@ -186,6 +186,16 @@ the original where it is and the new section inserts right after it.
 
   It lays out like any flex item. A bare SVG `<line>` with `marker-end` and no
   wrapper attributes currently arrives as a hairline without its head.
+- **Interactive pages (JavaScript):** the compile strips scripts, so a page
+  that needs them — a Claude artifact, an interactive chart, a demo — becomes
+  a sandboxed **web element** instead: `slide-agent web import . page.html`
+  adds it as one full-canvas slide (the reply names its `src`), or place it
+  in a box with `<div data-element="web" data-src="assets/web/….html"
+  style="width:…;height:…"></div>`. It runs with scripts only — no network
+  while presenting, no access to the deck — so inline its data and images and
+  design it for its box with no scrolling. `window.deckwerk` (injected) offers
+  `onActive`, `onStep`, `next`, `prev`. Nothing inside is a slide object, so
+  use it for what genuinely needs code.
 - Wrapper `<div>`s are layout: they dissolve on compile and their children
   become the slide objects. Do not hand-copy `class="element …"` wrappers
   from exports around your own markup; plain semantic HTML is the input.

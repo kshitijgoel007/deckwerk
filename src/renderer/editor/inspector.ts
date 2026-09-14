@@ -1803,6 +1803,41 @@ export class Inspector {
         return wrap;
       }
 
+      case 'web': {
+        const wrap = typeSections();
+        const page = optionSection('Web page', 'web-page-options');
+        page.content.appendChild(
+          textAreaField('Document (deck-relative .html)', el.src, (v) =>
+            this.store.updateSelected((e) => {
+              if (e.type === 'web') e.src = v.trim();
+            }),
+          ),
+        );
+        page.content.appendChild(
+          textAreaField('Title', el.title, (v) =>
+            this.store.updateSelected((e) => {
+              if (e.type === 'web') e.title = v.trim();
+            }),
+          ),
+        );
+        page.content.appendChild(
+          textAreaField('Poster (deck-relative image, optional)', el.poster ?? '', (v) =>
+            this.store.updateSelected((e) => {
+              if (e.type === 'web') e.poster = v.trim() || null;
+            }),
+          ),
+        );
+        page.content.appendChild(
+          checkboxField('Page receives clicks while presenting', el.interactive, (v) =>
+            this.store.updateSelected((e) => {
+              if (e.type === 'web') e.interactive = v;
+            }),
+          ),
+        );
+        wrap.appendChild(page.section);
+        return wrap;
+      }
+
       case 'html': {
         const wrap = typeSections();
         const markup = optionSection('Markup', 'html-markup-options');

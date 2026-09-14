@@ -743,6 +743,21 @@ export function elementFromNode(
     };
   }
 
+  // A sandboxed web page. Its box is what the browser measured; everything
+  // else rides on data attributes, because the page itself never enters the
+  // measuring frame (the sanitizer strips frames, and nothing inside one is a
+  // slide object anyway).
+  if (node.dataset.element === 'web') {
+    return {
+      ...base,
+      type: 'web',
+      src: node.dataset.src ?? '',
+      poster: node.dataset.poster || null,
+      interactive: node.dataset.interactive !== 'false',
+      title: node.dataset.title ?? '',
+    };
+  }
+
   if (node.dataset.element === 'unsupported') {
     // Still a gap, still conspicuous. It only stops being one when the author
     // replaces this element with markup that means something.
@@ -1020,6 +1035,22 @@ function elementToHtml(element: SlideElement, build?: TimelineEntry): string {
         // the shape and reads the parameters off the data attributes above,
         // rather than descending into the SVG and calling it an html element.
         + `${notAnObject(shapeSvg(element))}</div>`;
+    case 'web':
+      // The page cannot run in an authoring file (frames are stripped before
+      // measuring), so the export stands in for it: the poster when there is
+      // one, otherwise a labelled box the same size. Edit the data attributes
+      // to repoint it; the box's CSS is its geometry as for any element.
+      return `  <div ${attrs} data-element="web" data-src="${escape(element.src)}"`
+        + attr('data-poster', element.poster)
+        + ` data-interactive="${element.interactive}"`
+        + ` data-title="${escape(element.title)}"`
+        + ` ${styleAttr(position, inline, 'overflow:hidden;')}>`
+        + notAnObject(element.poster
+          ? `<img src="${escape(element.poster)}" alt="${escape(element.title)}" style="display:block;width:100%;height:100%;object-fit:cover;">`
+          : `<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;`
+            + `font:24px system-ui,sans-serif;color:#667;background:#eef0f3;border:2px dashed #99a;box-sizing:border-box;">`
+            + `web page: ${escape(element.title || element.src)}</div>`)
+        + '</div>';
     case 'unsupported':
       // An import gap, described well enough to be fixed: replace this element
       // with real markup and it becomes a real object on the way back.

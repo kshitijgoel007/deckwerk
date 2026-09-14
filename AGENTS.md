@@ -233,6 +233,52 @@ resizable, editable only by rewriting the markup (`validate` lists them as
 - **A container that mixes loose prose with block children** — usually a block
   element inside a `<p>`, which the HTML parser closes early. Wrap the prose.
 
+### Interactive pages: the `web` element
+
+Everything above is static by design — the compile strips `<script>`, `<iframe>`
+and event handlers before it measures a page, and what it produces are inert
+objects. Content that needs JavaScript (an interactive chart, a slider-driven
+demo, a page somebody already built such as a Claude artifact) is a different
+kind of object: a **web element**, a complete HTML document shown live inside
+its box in a sandboxed frame.
+
+```bash
+slide-agent web import . page.html                   # one new full-canvas slide
+slide-agent web import . page.html --after 12 --title "Papers per year"
+```
+
+The page is copied to `assets/web/<name>.<hash>.html` (the JSON reply names
+the `src`) and a small runtime is written into it. To place the same document
+in a smaller box, or several on one slide, use the authoring page as usual:
+
+```html
+<div data-element="web" data-src="assets/web/page.a1b2c3d4.html"
+     data-title="Papers per year" style="width: 1200px; height: 700px;"></div>
+```
+
+Its CSS box is its geometry like any element; `data-poster="assets/…png"`
+gives PDF export and thumbnails a still, `data-interactive="false"` makes
+clicks on the page advance the deck instead of reaching the page.
+
+What the page can and cannot do:
+
+- It runs with `sandbox="allow-scripts"` and nothing else: scripts, yes; no
+  access to the deck, the app, other slides, popups, or navigation. Remote
+  URLs as `src` are refused. Assume **no network while presenting** — inline
+  data, images (data: URIs) and fonts, or accept the fallback font.
+- Design it for its box, normally the 1920×1080 canvas, with no scrolling. A
+  page authored for a browser window usually needs one fixed-size stage that
+  it scales to the viewport.
+- `window.deckwerk` (from the injected runtime) gives it `onActive(fn)`,
+  `onInactive(fn)`, `onStep(fn)` — `fn({ step, steps })` — and `next()` /
+  `prev()`, so a page can start an animation when its slide appears or drive
+  the deck's builds. Navigation keys the page leaves unhandled are forwarded to
+  the deck, so a focused page never traps the presenter; a page that wants the
+  arrows calls `preventDefault`.
+- Nothing inside is a slide object: no inspector restyling, Morph, auto-fit or
+  overflow checks. When the *content* could be ordinary slides, make ordinary
+  slides — they stay editable and the design stays consistent.
+
 And two that are silently *lost*, so the compile reports them as warnings
 instead: `transform: scale()`/`skew()` (only rotation survives — size the
 element directly) and `backdrop-filter` (use a translucent fill). CSS columns
