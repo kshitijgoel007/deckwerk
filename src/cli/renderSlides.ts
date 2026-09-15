@@ -173,13 +173,7 @@ export interface WebPageCheck {
 
 function runElectron(script: string, jobPath: string): Promise<string> {
   return new Promise((resolvePromise, reject) => {
-    // Electron's npm binary cannot use its setuid sandbox in unprivileged
-    // Linux CI containers (the helper is not root-owned there). Keep the
-    // normal sandbox everywhere else; CI already isolates the whole job.
-    const args = process.platform === 'linux' && process.env.CI
-      ? ['--no-sandbox', script, jobPath]
-      : [script, jobPath];
-    const child = spawn(electronBinary(), args, {
+    const child = spawn(electronBinary(), [script, jobPath], {
       stdio: ['ignore', 'pipe', 'pipe'],
       env: { ...process.env, ELECTRON_DISABLE_SECURITY_WARNINGS: '1' },
     });
@@ -190,12 +184,17 @@ function runElectron(script: string, jobPath: string): Promise<string> {
     // unbounded Chromium await. Healthy checks finish in ~1–2 seconds; keep a
     // generous ceiling and fail with an actionable message instead of making
     // the whole authoring turn appear hung.
+    // Browser startup can be heavily contended in the full CI tiers even
+    // though an isolated agent check normally finishes in ~1–2 seconds.
+    // Preserve the fast local failure bound without turning runner load into
+    // a false failure in browser and bridge integration tests.
+    const timeoutMs = process.env.CI ? 60_000 : 20_000;
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
       child.kill('SIGKILL');
-      reject(new Error('Interactive page check exceeded 20 seconds; simplify the page and retry.'));
-    }, 20_000);
+      reject(new Error(`Interactive page check exceeded ${timeoutMs / 1000} seconds; simplify the page and retry.`));
+    }, timeoutMs);
     child.stdout.on('data', (chunk) => (out += chunk));
     child.stderr.on('data', (chunk) => {
       err += chunk;
