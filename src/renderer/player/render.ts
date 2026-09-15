@@ -9,6 +9,7 @@ import { prepareSlideLinks } from './links.js';
 import { quadraticPath, shapeSvg } from '@shared/shapeSvg.js';
 import { isMediaBorderPaint, typedPropertyOwnsCss } from '@shared/nativeCss.js';
 import { applyTableColumnWidths } from '@shared/paragraphs.js';
+import { isEmbeddableWebSrc } from '@shared/webBridge.js';
 import renderMathInElement from 'katex/contrib/auto-render';
 import 'katex/dist/katex.min.css';
 
@@ -772,6 +773,9 @@ function renderBody(el: SlideElement, opts: RenderOptions): HTMLElement | SVGEle
       return div;
     }
 
+    case 'web':
+      return renderWeb(el, opts);
+
     case 'unsupported': {
       // Visible on purpose: an import gap you can see and fix beats content
       // that vanished silently.
@@ -781,6 +785,71 @@ function renderBody(el: SlideElement, opts: RenderOptions): HTMLElement | SVGEle
       return div;
     }
   }
+}
+
+/**
+ * A web element is a sandboxed frame around a deck-relative HTML document.
+ *
+ * `sandbox="allow-scripts"` and nothing else: the page runs with an opaque
+ * origin, so it can neither read the deck folder it is served from nor reach
+ * the host page, open windows, navigate the presentation, or submit forms.
+ * Only deck-relative documents are shown — a remote URL would make the talk
+ * depend on the network and let a shared deck load an arbitrary site.
+ *
+ * Preview surfaces (`mediaPreload: 'metadata'`: the editor canvas, the rail,
+ * Morph and layout previews) show the poster when there is one and otherwise
+ * an inert frame — inert so the editor's own pointer handling keeps working
+ * over it. The live frame only exists where the deck is being presented.
+ */
+function renderWeb(
+  el: Extract<SlideElement, { type: 'web' }>,
+  opts: RenderOptions,
+): HTMLElement {
+  const box = document.createElement('div');
+  box.className = 'web-body';
+  box.style.width = '100%';
+  box.style.height = '100%';
+  box.style.overflow = 'hidden';
+  const preview = opts.mediaPreload === 'metadata';
+
+  if (preview && el.poster) {
+    const poster = document.createElement('img');
+    poster.src = opts.resolveSrc(el.poster);
+    poster.alt = el.title;
+    poster.style.width = '100%';
+    poster.style.height = '100%';
+    poster.style.objectFit = 'cover';
+    poster.style.display = 'block';
+    box.appendChild(poster);
+    return box;
+  }
+
+  if (!isEmbeddableWebSrc(el.src)) {
+    box.className = 'web-body unsupported-body';
+    box.textContent = el.src
+      ? `Web page must be a deck-relative .html file: ${el.src}`
+      : 'Web page: no document set';
+    return box;
+  }
+
+  const frame = document.createElement('iframe');
+  frame.className = 'web-frame';
+  frame.setAttribute('sandbox', 'allow-scripts');
+  frame.setAttribute('referrerpolicy', 'no-referrer');
+  frame.setAttribute('allow', '');
+  frame.setAttribute('loading', preview ? 'lazy' : 'eager');
+  frame.title = el.title || 'Embedded web page';
+  frame.src = opts.resolveSrc(el.src);
+  frame.style.width = '100%';
+  frame.style.height = '100%';
+  frame.style.border = '0';
+  frame.style.display = 'block';
+  frame.style.background = 'transparent';
+  // Inert in previews (the editor selects and drags through it) and when the
+  // author wants clicks on the page to advance the deck instead.
+  frame.style.pointerEvents = preview || !el.interactive ? 'none' : 'auto';
+  box.appendChild(frame);
+  return box;
 }
 
 /**

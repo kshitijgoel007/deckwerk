@@ -86,3 +86,35 @@ export async function htmlEditTransaction(
 function safeName(id: string): string {
   return id.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'slides';
 }
+
+/**
+ * Read an authoring file that may still be being written.
+ *
+ * A directory watch reports a file being opened for writing, not its last
+ * byte landing, and there is no later event to wait for once the write is
+ * done. Reading during a large in-place write hands back a truncated
+ * document — which, compiled, is an empty slide, or (when the reader gave up
+ * instead) a save that never took effect at all. So: read until two reads a
+ * pause apart agree, and give a stalled writer a bounded number of chances.
+ */
+export async function readSettledFile(
+  path: string,
+  options: { delayMs?: number; attempts?: number } = {},
+  read: (path: string) => Promise<string> = (p) => readFile(p, 'utf8'),
+): Promise<string> {
+  const delayMs = options.delayMs ?? 150;
+  const attempts = options.attempts ?? 20;
+  let contents = await read(path);
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    await new Promise((settle) => setTimeout(settle, delayMs));
+    const again = await read(path);
+    if (again === contents) return contents;
+    contents = again;
+  }
+  return contents;
+}
+
+/** Editors save through hidden temporaries (`.!1234!work.html`, `.work.html.swp`); they are not documents. */
+export function isAuthoringFileName(name: string): boolean {
+  return name.endsWith('.html') && !name.startsWith('.');
+}

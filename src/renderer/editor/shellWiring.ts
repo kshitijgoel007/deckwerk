@@ -64,6 +64,9 @@ export function wireCanvasInspector(
   }
   if (openRaster) inspector.onRasterRequest = openRaster;
   inspector.onTogglePlay = (id) => canvas.toggleVideo(id);
+  inspector.onToggleWebLive = (id) => canvas.toggleWebLive(id);
+  inspector.isWebLive = (id) => canvas.isWebLive(id);
+  canvas.onWebLiveChange = () => inspector.render();
   inspector.onEditText = (id) => canvas.beginTextEdit(id);
   inspector.editingText = () => canvas.isEditing();
   const targetsTableCells = () => Boolean(canvas.tableSelectionInfo())
@@ -467,6 +470,12 @@ export function makeContextActions(
         if (openTrim) {
           items.push({ label: 'Edit w/ ffmpeg…', action: () => openTrim(el) });
         }
+      }
+      if (el.type === 'web') {
+        items.push({
+          label: canvas.isWebLive(el.id) ? 'Back to editing' : 'Interact with page',
+          action: () => void canvas.toggleWebLive(el.id),
+        });
       }
       if (el.type === 'image' && openRaster && !/\.pdf(?:$|[?#])/i.test(el.src)) {
         items.push({ label: 'Rasterize & paint…', action: () => openRaster(el) });

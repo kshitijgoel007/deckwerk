@@ -27,6 +27,21 @@ export function slideLinkFromEvent(event: Event): HTMLAnchorElement | null {
     : null;
 }
 
+/**
+ * Whether a pointer event is over a web element that takes its own input.
+ * Clicks that land on such a page are the page's — they must never advance
+ * the deck — and a sandboxed frame can surface them to the host with the
+ * frame itself as the target, so the check is on the frame, not on what is
+ * inside it. An inert page (pointer-events: none) is skipped by hit-testing
+ * and never reaches here.
+ */
+export function eventOnInteractiveWeb(event: Event): boolean {
+  for (const target of event.composedPath()) {
+    if (target instanceof HTMLIFrameElement && target.classList.contains('web-frame')) return true;
+  }
+  return event.target instanceof Element && event.target.closest('iframe.web-frame') !== null;
+}
+
 /** Activate a slide link explicitly when a host (the editor) owns pointer input. */
 export function openSlideLinkInNewTab(
   event: Event,

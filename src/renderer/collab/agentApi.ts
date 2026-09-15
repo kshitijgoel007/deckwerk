@@ -54,7 +54,7 @@ export interface NativeEdit {
   target: 'deck' | 'slide' | 'element';
   slideId?: string;
   elementId?: string;
-  expectedType?: 'text' | 'image' | 'video' | 'shape' | 'html' | 'unsupported';
+  expectedType?: 'text' | 'image' | 'video' | 'shape' | 'html' | 'web' | 'unsupported';
   set?: Record<string, unknown>;
   unset?: string[];
 }

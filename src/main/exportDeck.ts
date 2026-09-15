@@ -461,6 +461,10 @@ export function referencedAssets(deck: Deck): Set<string> {
     for (const el of slide.elements) {
       if (el.type === 'image' || el.type === 'video') wanted.add(el.src);
       if (el.type === 'video' && el.poster) wanted.add(el.poster);
+      if (el.type === 'web') {
+        wanted.add(el.src);
+        if (el.poster) wanted.add(el.poster);
+      }
       if (el.type === 'html') {
         collectFallbackAssets(el.html, wanted);
         collectFallbackAssets(el.css ?? '', wanted);

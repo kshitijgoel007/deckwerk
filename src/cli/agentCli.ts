@@ -16,7 +16,7 @@ import { deckOutline, deckStyleDigest } from '@shared/deckDigest.js';
 import { slidesToHtml } from '@shared/htmlSlides.js';
 import { capabilities } from '@shared/capabilities.js';
 import { PLAYER_TYPE_CSS } from '@shared/playerTypeCss.js';
-import { CustomThemeSchema, type Comment, type Deck } from '@shared/deck.js';
+import { CustomThemeSchema, parseDeck, type Comment, type Deck } from '@shared/deck.js';
 import { diffDecks } from '@shared/deckDiff.js';
 import { renameRetiredFields } from '@shared/fieldAliases.js';
 import {
@@ -44,13 +44,14 @@ import {
   writeAgentRequest,
 } from '../main/agentRuntime.js';
 import { adoptAuthoredIds, htmlSyncSummary } from '@shared/htmlSlides.js';
-import { DECK_FILE, importAsset, loadDeck } from '../main/deckStore.js';
+import { DECK_FILE, importAsset, importWebPage, loadDeck } from '../main/deckStore.js';
+import { injectWebBridgeRuntime } from '@shared/webBridge.js';
 import { measureBuiltTextOverflows } from './compileHtml.js';
 import { serveBundle } from './previewServer.js';
 import { exportDeck } from '../main/exportDeck.js';
 import { spawn } from 'node:child_process';
 import { htmlEditTransaction } from '../main/htmlAuthoring.js';
-import { renderSlidesToPng } from './renderSlides.js';
+import { checkWebPage, renderSlidesToPng } from './renderSlides.js';
 import { runConnectCommand } from './agentConnect.js';
 
 /**
@@ -116,6 +117,26 @@ Everything else:
                                           schema, ids, references, assets, and
                                           canvas overflows (scoped to your slides)
   asset import <deck> <paths...>          copy media into assets/, probed
+  web import <deck> <page.html> [--after <slideId>] [--title <text>] [--no-poster]
+                                          add one slide showing a complete HTML
+                                          page — scripts and all — live in a
+                                          sandboxed frame (a Claude artifact,
+                                          an interactive chart, a demo)
+  web add <deck> <page.html> [--size <WxH>] [--title <text>]
+                                          stage a page as an asset — no slide —
+                                          checked and with a poster at the box
+                                          size, for a data-element="web" box in
+                                          your own authoring page beside a real
+                                          title and caption (the usual choice)
+  web replace <deck> <slide> <page.html> [--title <text>]
+                                          swap the page behind an existing web
+                                          slide (or the first web box on it)
+                                          for a new version: new asset, new
+                                          poster, old files removed
+  web check <page.html> [--screenshot <file.png>] [--size 1920x1080]
+                                          run the page headlessly the way the
+                                          frame will: script errors, overflow,
+                                          network it would need, bridge use
   inspect   [deck] [--dom]                computed scenes, for questions
   render    [deck] [--selected|--slide id|number|--all] --output <dir>
             [--annotate] [--built]
@@ -193,6 +214,8 @@ export async function runAgentCli(argv: string[], io: CliIo): Promise<number> {
         return await validateCommand(rest, io);
       case 'asset':
         return await assetCommand(rest, io);
+      case 'web':
+        return await webCommand(rest, io);
       case 'theme':
         return await themeCommand(rest, io);
       case 'comments':
@@ -283,6 +306,41 @@ async function applyCommand(argv: string[], io: CliIo): Promise<number> {
   const deck = await loadDeck(deckDir);
   const filePath = resolve(io.cwd, htmlPath);
   const authoredBefore = await readFile(filePath, 'utf8');
+
+  // With the editor open, the editor is the one compiler. It already watches
+  // edit/, so a file there is compiling (or compiled) the moment it was saved;
+  // asking it explicitly returns what that did, and it answers a request for
+  // the same document once — the CLI compiling alongside it used to insert
+  // every new section twice. The editor stamps the ids itself.
+  const live = await readLiveAgentContext(deckDir);
+  if (live) {
+    const response = await request(deckDir, {
+      version: AGENT_PROTOCOL_VERSION,
+      id: requestId(),
+      kind: 'htmlSync',
+      path: filePath,
+      contents: authoredBefore,
+      after: options.get('after') ?? null,
+      ...(options.get('label') ? { label: options.get('label') } : {}),
+    }, 180_000);
+    const outcome = (response.payload ?? {}) as Partial<{
+      changes: unknown; slides: unknown; warnings: string[]; message: string;
+    }>;
+    io.out(json({
+      status: response.status,
+      revision: response.revision,
+      applied: response.status === 'applied',
+      live: true,
+      ...(response.message ? { message: response.message } : {}),
+      ...(outcome.changes ? { changes: outcome.changes } : {}),
+      ...(outcome.slides ? { slides: outcome.slides } : {}),
+      ...(outcome.warnings && outcome.warnings.length > 0 ? { warnings: outcome.warnings } : {}),
+      ...(outcome.message ? { note: outcome.message } : {}),
+    }));
+    if (response.status === 'conflict') return EXIT_CONFLICT;
+    return response.status === 'error' ? EXIT_ERROR : EXIT_OK;
+  }
+
   // The same compile the editor performs on a watched save, in a headless
   // window because this path is the one taken with the editor closed.
   const { transaction, slides, warnings } = await htmlEditTransaction(
@@ -607,6 +665,300 @@ async function assetCommand(argv: string[], io: CliIo): Promise<number> {
 }
 
 /**
+ * `web import`: one complete HTML document becomes one slide, filling the
+ * canvas with a sandboxed `web` element. This is the path for content that
+ * needs JavaScript — a Claude artifact, an interactive chart — which the HTML
+ * authoring loop cannot carry, because the compile strips scripts on purpose
+ * and turns markup into static objects. The page is copied into assets/web/
+ * with the deck's bridge runtime written in; the reply names the src so a
+ * follow-up authoring page can place the same document in a smaller box.
+ */
+async function webCommand(argv: string[], io: CliIo): Promise<number> {
+  const [sub, ...rest] = argv;
+  if (sub === 'check') return webCheckCommand(rest, io);
+  if (sub === 'add') return webAddCommand(rest, io);
+  if (sub === 'replace') return webReplaceCommand(rest, io);
+  if (sub !== 'import') {
+    io.err(`Unknown web command: ${sub ?? '(none)'}\n\n${USAGE}`);
+    return EXIT_USAGE;
+  }
+  const { flags, options, positional } = parseFlags(rest, ['after', 'title', 'name']);
+  ensureKnownFlags('web import', flags, ['no-interaction', 'no-poster']);
+  ensurePositionals('web import', positional, 2);
+  if (positional.length < 2) {
+    io.err('web import needs a deck folder and one HTML file');
+    return EXIT_USAGE;
+  }
+  const deckDir = resolveDeckDir(positional[0], io);
+  const pagePath = resolve(io.cwd, positional[1]);
+  if (!existsSync(pagePath)) {
+    io.err(`No such file: ${pagePath}`);
+    return EXIT_ERROR;
+  }
+  const deck = await loadDeck(deckDir);
+  const source = await readFile(pagePath, 'utf8');
+  const title = options.get('title') ?? titleFromHtml(source) ?? positional[1].replace(/^.*[\\/]/, '').replace(/\.[^.]+$/, '');
+  const page = await importWebPage(deckDir, pagePath, injectWebBridgeRuntime);
+
+  const afterRef = options.get('after');
+  const afterSlideId = afterRef === undefined
+    ? (deck.slides.at(-1)?.id ?? null)
+    : slideIdForRef(deck, afterRef);
+  if (afterRef !== undefined && afterSlideId === null) {
+    io.err(`No such slide: ${afterRef}`);
+    return EXIT_ERROR;
+  }
+
+  const used = new Set(deck.slides.map((slide) => slide.id));
+  let slideId = `slide-${used.size + 1}`;
+  for (let n = 1; used.has(slideId); n++) slideId = `slide-${used.size + 1}-${n}`;
+  // Through the schema so defaults (background, notes, timeline) are the
+  // deck's own rather than a second copy of them here.
+  const slide = parseDeck({ version: 1, slides: [{
+    id: slideId,
+    name: options.get('name') ?? title,
+    elements: [{
+      id: `${slideId}-web`,
+      type: 'web' as const,
+      x: 0, y: 0, w: deck.canvas.w, h: deck.canvas.h, rot: 0, z: 1, opacity: 1,
+      class: [], style: {},
+      src: page.src,
+      poster: null,
+      interactive: !flags.has('no-interaction'),
+      title,
+    }],
+  }] }).slides[0];
+
+  // A still of the page for everything that cannot run it: PDF export,
+  // rail thumbnails, the authoring preview. Captured through the real player
+  // before the slide is inserted, from a one-slide view of this deck, so the
+  // insert already carries the poster. Optional in every sense: no export
+  // bundle or no display simply means no poster.
+  let poster: string | null = null;
+  if (!flags.has('no-poster')) {
+    try {
+      const shots = await mkdtemp(join(tmpdir(), 'web-poster-'));
+      const { images } = await renderSlidesToPng({
+        deckDir,
+        deck: { ...deck, slides: [slide] },
+        outDir: shots,
+        slides: [{ id: slideId, number: 1 }],
+        annotate: false,
+        built: false,
+        selectedElementIds: [],
+      });
+      const shot = images[0]?.path;
+      if (shot) {
+        const name = page.src.replace(/^assets\//, '').replace(/\.html?$/i, '.poster.png');
+        const { copyFile } = await import('node:fs/promises');
+        await copyFile(shot, join(deckDir, 'assets', name));
+        poster = `assets/${name}`;
+        const element = slide.elements[0];
+        if (element.type === 'web') element.poster = poster;
+      }
+    } catch (error) {
+      io.err(`No poster captured (${error instanceof Error ? error.message : String(error)}); the slide still works, previews show an inert frame.`);
+    }
+  }
+
+  return applyTransaction(deckDir, {
+    version: AGENT_PROTOCOL_VERSION,
+    label: `Import web page ${title}`,
+    operations: [{ op: 'insertSlides', afterSlideId, slides: [slide] }],
+  }, io, {
+    slideId,
+    src: page.src,
+    poster,
+    bytes: page.bytes,
+    title,
+    hint: 'The page fills the canvas. To place it in a smaller box, export the slide with `inspect --html` and resize the data-element="web" div like any other element.',
+  });
+}
+
+/**
+ * `web add`: the page as an asset, nothing else. The usual shape of an
+ * interactive slide is a real title and caption — ordinary text objects the
+ * deck can restyle — with the interactive thing in a box beside them, so the
+ * page should hold only that thing, sized for its box. This stages it under
+ * assets/web/ with the bridge runtime, checks it at the box size, and writes a
+ * poster of it; the reply gives the `data-src` and `data-poster` to put on a
+ * `<div data-element="web">` in an authoring page.
+ */
+async function webAddCommand(argv: string[], io: CliIo): Promise<number> {
+  const { flags, options, positional } = parseFlags(argv, ['size', 'title']);
+  ensureKnownFlags('web add', flags, []);
+  ensurePositionals('web add', positional, 2);
+  if (positional.length < 2) {
+    io.err('web add needs a deck folder and one HTML file');
+    return EXIT_USAGE;
+  }
+  const deckDir = resolveDeckDir(positional[0], io);
+  const pagePath = resolve(io.cwd, positional[1]);
+  if (!existsSync(pagePath)) {
+    io.err(`No such file: ${pagePath}`);
+    return EXIT_ERROR;
+  }
+  const size = /^(\d+)x(\d+)$/.exec(options.get('size') ?? '1920x1080');
+  if (!size) throw new UsageError(`--size takes WIDTHxHEIGHT, not "${options.get('size')}".`);
+  const width = Number(size[1]);
+  const height = Number(size[2]);
+  const source = await readFile(pagePath, 'utf8');
+  const title = options.get('title') ?? titleFromHtml(source) ?? positional[1].replace(/^.*[\\/]/, '').replace(/\.[^.]+$/, '');
+  const page = await importWebPage(deckDir, pagePath, injectWebBridgeRuntime);
+  const posterRel = page.src.replace(/\.html?$/i, '.poster.png');
+  let check: Awaited<ReturnType<typeof checkWebPage>> | null = null;
+  try {
+    check = await checkWebPage({
+      pagePath: join(deckDir, page.src),
+      width,
+      height,
+      screenshot: join(deckDir, posterRel),
+    });
+  } catch (error) {
+    io.err(`No poster captured (${error instanceof Error ? error.message : String(error)}).`);
+  }
+  const poster = check ? posterRel : null;
+  io.out(json({
+    src: page.src,
+    poster,
+    title,
+    size: { w: width, h: height },
+    bytes: page.bytes,
+    ...(check ? { ok: check.ok, problems: check.problems, console: check.console, remoteRequests: check.remoteRequests } : {}),
+    markup: `<div data-element="web" data-src="${page.src}"${poster ? ` data-poster="${poster}"` : ''} data-title="${title.replace(/"/g, '&quot;')}" style="width:${width}px;height:${height}px"></div>`,
+    hint: 'Put that div in an authoring page (slide-agent new) beside a real <h1> and caption; its CSS box is its geometry.',
+  }));
+  return check && !check.ok ? EXIT_ERROR : EXIT_OK;
+}
+
+/**
+ * `web replace`: iterate on a page that is already on a slide. Re-importing
+ * made a second slide and left the first behind; this swaps the document
+ * behind the existing element (the named slide's first web element), captures
+ * a fresh poster at the element's own size, and removes the previous page and
+ * poster when nothing else in the deck still shows them.
+ */
+async function webReplaceCommand(argv: string[], io: CliIo): Promise<number> {
+  const { flags, options, positional } = parseFlags(argv, ['title']);
+  ensureKnownFlags('web replace', flags, []);
+  ensurePositionals('web replace', positional, 3);
+  if (positional.length < 3) {
+    io.err('web replace needs a deck folder, a slide (id or number), and one HTML file');
+    return EXIT_USAGE;
+  }
+  const deckDir = resolveDeckDir(positional[0], io);
+  const pagePath = resolve(io.cwd, positional[2]);
+  if (!existsSync(pagePath)) {
+    io.err(`No such file: ${pagePath}`);
+    return EXIT_ERROR;
+  }
+  const deck = await loadDeck(deckDir);
+  const slideId = slideIdForRef(deck, positional[1]);
+  const slide = deck.slides.find((candidate) => candidate.id === slideId);
+  if (!slide) {
+    io.err(`No such slide: ${positional[1]}`);
+    return EXIT_ERROR;
+  }
+  const element = slide.elements.find((candidate) => candidate.type === 'web');
+  if (!element || element.type !== 'web') {
+    io.err(`Slide ${slide.id} has no web element to replace`);
+    return EXIT_ERROR;
+  }
+  const previous = { src: element.src, poster: element.poster };
+  const source = await readFile(pagePath, 'utf8');
+  const title = options.get('title') ?? titleFromHtml(source) ?? element.title;
+  const page = await importWebPage(deckDir, pagePath, injectWebBridgeRuntime);
+  const posterRel = page.src.replace(/\.html?$/i, '.poster.png');
+  let check: Awaited<ReturnType<typeof checkWebPage>> | null = null;
+  try {
+    check = await checkWebPage({
+      pagePath: join(deckDir, page.src),
+      width: Math.round(element.w),
+      height: Math.round(element.h),
+      screenshot: join(deckDir, posterRel),
+    });
+  } catch (error) {
+    io.err(`No poster captured (${error instanceof Error ? error.message : String(error)}).`);
+  }
+  const updated = {
+    ...slide,
+    elements: slide.elements.map((candidate) => candidate === element
+      ? { ...element, src: page.src, poster: check ? posterRel : null, title }
+      : candidate),
+  };
+  const code = await applyTransaction(deckDir, {
+    version: AGENT_PROTOCOL_VERSION,
+    label: `Replace web page on ${slide.id}`,
+    operations: [{ op: 'replaceSlide', slideId: slide.id, slide: updated }],
+  }, io, {
+    slideId: slide.id,
+    elementId: element.id,
+    src: page.src,
+    poster: check ? posterRel : null,
+    title,
+    ...(check ? { ok: check.ok, problems: check.problems } : {}),
+    removed: [] as string[],
+  });
+  if (code !== EXIT_OK) return code;
+
+  // The old page and poster, gone unless another slide still shows them.
+  const after = await loadDeck(deckDir);
+  const stillUsed = new Set(after.slides.flatMap((candidate) => candidate.elements.flatMap((el) =>
+    el.type === 'web' ? [el.src, el.poster ?? ''] : [])));
+  const { unlink } = await import('node:fs/promises');
+  for (const rel of [previous.src, previous.poster]) {
+    if (!rel || rel === page.src || rel === posterRel || stillUsed.has(rel)) continue;
+    if (!rel.startsWith('assets/web/')) continue;
+    await unlink(join(deckDir, rel)).catch(() => undefined);
+  }
+  return EXIT_OK;
+}
+
+/**
+ * `web check`: the interactivity test `render` cannot be. A PNG shows the
+ * page at rest; this runs it in a headless window the size of its box and
+ * reports script errors, content that does not fit, every network request it
+ * would make (refused, as an offline venue would), and whether it uses the
+ * deck bridge. An exit code of 1 with `problems` listed is the agent's cue to
+ * fix the page before importing it.
+ */
+async function webCheckCommand(argv: string[], io: CliIo): Promise<number> {
+  const { flags, options, positional } = parseFlags(argv, ['screenshot', 'size']);
+  ensureKnownFlags('web check', flags, []);
+  ensurePositionals('web check', positional, 1);
+  if (positional.length < 1) {
+    io.err('web check needs one HTML file');
+    return EXIT_USAGE;
+  }
+  const pagePath = resolve(io.cwd, positional[0]);
+  if (!existsSync(pagePath)) {
+    io.err(`No such file: ${pagePath}`);
+    return EXIT_ERROR;
+  }
+  const size = /^(\d+)x(\d+)$/.exec(options.get('size') ?? '1920x1080');
+  if (!size) throw new UsageError(`--size takes WIDTHxHEIGHT, not "${options.get('size')}".`);
+  // Checked with the bridge in place, as it will run once imported, so a page
+  // that calls `deckwerk.onActive` does not fail here for a missing global.
+  const staged = join(await mkdtemp(join(tmpdir(), 'web-check-')), positional[0].replace(/^.*[\\/]/, ''));
+  await writeFile(staged, injectWebBridgeRuntime(await readFile(pagePath, 'utf8')), 'utf8');
+  const screenshot = options.get('screenshot');
+  const result = await checkWebPage({
+    pagePath: staged,
+    width: Number(size[1]),
+    height: Number(size[2]),
+    screenshot: screenshot ? resolve(io.cwd, screenshot) : null,
+  });
+  io.out(json({ ...result, checked: pagePath }));
+  return result.ok ? EXIT_OK : EXIT_ERROR;
+}
+
+function titleFromHtml(html: string): string | null {
+  const match = /<title[^>]*>([^<]*)<\/title>/i.exec(html);
+  const title = match?.[1].replace(/\s+/g, ' ').trim();
+  return title ? title : null;
+}
+
+/**
  * Comments are how humans leave instructions inside the deck (on slides or on
  * individual elements). List them, reply, and resolve them from the CLI so a
  * file-based agent never has to read deck.json for them. Mutations go through
@@ -782,7 +1134,7 @@ async function applyTransaction(
   const expectedRevision = draft.expectedRevision
     ?? live?.deckRevision
     ?? deckRevision(await loadDeck(deckDir));
-  const transaction = AgentTransactionSchema.parse({ ...draft, expectedRevision });
+  let transaction = AgentTransactionSchema.parse({ ...draft, expectedRevision });
 
   // With the editor up, the transaction must go through it: its in-memory deck
   // is the real document, and routing through it is what makes the change one
@@ -791,12 +1143,22 @@ async function applyTransaction(
     // A generous wait: the editor may be busy compiling a watched save of the
     // very same file. Timing out while the editor still applies the change is
     // worse than waiting — the caller's natural reaction is to apply again.
-    const response = await request(deckDir, {
+    const send = () => request(deckDir, {
       version: AGENT_PROTOCOL_VERSION,
       id: requestId(),
       kind: 'transaction',
       transaction,
     }, 120_000);
+    let response = await send();
+    // The sidecar's revision trails the editor by a debounce, so a command run
+    // straight after the previous one read a stale revision and "conflicted"
+    // with a deck nobody else had touched. When the revision was the CLI's own
+    // guess — not one the caller pinned on purpose — the editor's answer names
+    // the current one; use it and send once more.
+    if (response.status === 'conflict' && draft.expectedRevision === undefined) {
+      transaction = AgentTransactionSchema.parse({ ...draft, expectedRevision: response.revision });
+      response = await send();
+    }
     io.out(json({
       status: response.status,
       revision: response.revision,

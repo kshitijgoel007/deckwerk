@@ -182,7 +182,7 @@ describe('collab server', () => {
   it('lists the decks in the hosted directory', async () => {
     const decks = await (await fetch(`http://127.0.0.1:${server.port}/api/decks`)).json() as
       Array<{ id: string; title: string; slides: number }>;
-    expect(decks).toEqual([{ id: DECK_ID, title: 'Collab', slides: 2 }]);
+    expect(decks).toEqual([{ id: DECK_ID, title: 'Collab', slides: 2, folder: '' }]);
   });
 
   it('does not subscribe shared-agent state when its requested port is unavailable', async () => {
@@ -1113,7 +1113,9 @@ describe('collab server', () => {
 
   it('refuses a web export of a deck outside the served directory', async () => {
     const response = await fetch(exportUrl('deck=..%2F..%2Fetc'));
-    expect(response.status).toBe(403);
+    // Deck ids may nest now, so a traversal attempt is a malformed id rather
+    // than a permission problem — refused either way, before any route runs.
+    expect(response.status).toBe(400);
   });
 
   it('reports a missing deck rather than exporting an empty bundle', async () => {

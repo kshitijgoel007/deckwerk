@@ -66,6 +66,7 @@ import { dragImageSource, type ClipboardImageSource } from '@shared/clipboardIma
 import type { ImportedAsset } from '@shared/ipc.js';
 import { newComment, openCommentsPopover, openCount } from './comments.js';
 import { reportRenderDivergences } from './renderInvariants.js';
+import { isWebBridgeAction } from '@shared/webBridge.js';
 import { reportSelectionViolations } from './selectionInvariants.js';
 import {
   HANDLES,
@@ -513,6 +514,13 @@ export class EditorCanvas {
   /** Id of the text element currently being edited in place, if any. */
   private editingId: string | null = null;
   /**
+   * Web elements whose page is running live on the canvas. The canvas shows a
+   * web element as its poster (or an inert frame) so it can be selected and
+   * dragged like any object; a page made live takes pointer input itself
+   * until Escape or a click anywhere else on the canvas ends it.
+   */
+  private liveWebIds = new Set<string>();
+  /**
    * Ends the live text-editing session, if there is one. Every entry point
    * into text editing goes through `beginTextEdit`, and several of them (the
    * context menu's "Edit text", the inspector's, a re-entry after undo) can
@@ -738,7 +746,8 @@ export class EditorCanvas {
         (src) => window.api.assetUrl(src),
         {
           context: 'an in-place patch',
-          skipElementIds: this.editingId ? [this.editingId] : [],
+          // Live pages deliberately differ from the preview render.
+          skipElementIds: [...(this.editingId ? [this.editingId] : []), ...this.liveWebIds],
         },
       );
       this.scheduleTableHeightSync();
@@ -815,6 +824,9 @@ export class EditorCanvas {
     // A rebuild replaces placeholder nodes, wiping their progress rings and
     // preview frames; restore them from the client-local upload state.
     applyPendingHud(this.slideLayer);
+    // A live page survives the rebuild too, so an edit elsewhere on the slide
+    // does not knock the author out of the page they were using.
+    this.applyWebLiveState();
 
     this.rescale();
     this.drawOverlay(deck, slide.elements, selection);
@@ -1757,6 +1769,14 @@ export class EditorCanvas {
     // the canvas host to let CSS swap the handle cursor while it is hovered.
     window.addEventListener('keydown', (ev) => {
       if (ev.key === 'Meta' || ev.metaKey) this.setRotationModifier(true);
+      if (ev.key === 'Escape' && this.liveWebIds.size > 0 && !this.editingId) this.endWebLive();
+    });
+    // A live page holds the keyboard; its runtime forwards the keys it does
+    // not use, and Escape is the one the canvas answers.
+    window.addEventListener('message', (ev) => {
+      if (!isWebBridgeAction(ev.data) || ev.data.action !== 'key' || ev.data.key !== 'Escape') return;
+      const frames = this.slideLayer.querySelectorAll<HTMLIFrameElement>('.web-live iframe.web-frame');
+      if ([...frames].some((frame) => frame.contentWindow === ev.source)) this.endWebLive();
     });
     window.addEventListener('keyup', (ev) => {
       if (ev.key === 'Meta' || !ev.metaKey) this.setRotationModifier(false);
@@ -1801,6 +1821,9 @@ export class EditorCanvas {
     if (target.closest('.welcome-screen, .zoom-controls, .notes-toggle, .notes-drawer')) return;
     const slide = this.store.slide;
     if (!slide) return;
+    // A press that reaches the canvas was not on a live page (the frame keeps
+    // those), so it is the implicit "back to editing".
+    this.endWebLive();
 
     // Suppress the browser's own text selection: dragging across a slide would
     // otherwise sweep-select the text of every element it crossed.
@@ -2630,6 +2653,75 @@ export class EditorCanvas {
       this.beginTextEdit(hit.id);
     } else if (hit.type === 'video') {
       this.toggleVideo(hit.id);
+    } else if (hit.type === 'web') {
+      this.toggleWebLive(hit.id);
+    }
+  }
+
+  /** Whether this web element's page is currently running on the canvas. */
+  isWebLive(elementId: string): boolean {
+    return this.liveWebIds.has(elementId);
+  }
+
+  /**
+   * Run a web element's page on the canvas, or stop it. Live, the page gets
+   * the pointer and the keyboard inside its box; a click anywhere else on the
+   * canvas or Escape (pressed on the canvas, or inside the page, which the
+   * bridge forwards) returns the element to an editable poster.
+   */
+  toggleWebLive(elementId: string): boolean {
+    const el = this.store.slide?.elements.find((e) => e.id === elementId);
+    if (!el || el.type !== 'web') return false;
+    if (this.liveWebIds.has(elementId)) this.liveWebIds.delete(elementId);
+    else this.liveWebIds.add(elementId);
+    this.applyWebLiveState();
+    this.onWebLiveChange?.();
+    return this.liveWebIds.has(elementId);
+  }
+
+  /** Stop every live page; the canvas is for editing again. */
+  endWebLive(): void {
+    if (this.liveWebIds.size === 0) return;
+    this.liveWebIds.clear();
+    this.applyWebLiveState();
+    this.onWebLiveChange?.();
+  }
+
+  /** Called whenever the set of live pages changes, so panels can relabel. */
+  onWebLiveChange?: () => void;
+
+  /**
+   * Make the DOM agree with `liveWebIds`: a live element carries the player's
+   * live frame in place of the preview render, plus a badge saying how to get
+   * back. Idempotent, and called after every rebuild so a redraw elsewhere on
+   * the slide does not silently stop a page the author is using.
+   */
+  private applyWebLiveState(): void {
+    const slide = this.store.slide;
+    if (!slide) return;
+    for (const id of [...this.liveWebIds]) {
+      if (!slide.elements.some((e) => e.id === id && e.type === 'web')) this.liveWebIds.delete(id);
+    }
+    for (const el of slide.elements) {
+      if (el.type !== 'web') continue;
+      const node = this.slideLayer.querySelector<HTMLElement>(
+        `[data-element-id="${CSS.escape(el.id)}"]`,
+      );
+      if (!node) continue;
+      const live = this.liveWebIds.has(el.id);
+      if (node.classList.contains('web-live') === live) continue;
+      const fresh = renderElement(el, live
+        ? { resolveSrc: (src) => window.api.assetUrl(src) }
+        : { resolveSrc: (src) => window.api.assetUrl(src), mediaPreload: 'metadata' });
+      if (live) {
+        fresh.classList.add('web-live');
+        const badge = document.createElement('span');
+        badge.className = 'web-live-badge';
+        badge.dataset.editorOnly = 'true';
+        badge.textContent = 'Live · Esc to edit';
+        fresh.appendChild(badge);
+      }
+      node.replaceWith(fresh);
     }
   }
 

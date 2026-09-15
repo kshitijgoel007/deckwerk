@@ -285,6 +285,25 @@ const HtmlElement = BaseElement.extend({
 });
 
 /**
+ * A sandboxed web page — an interactive chart, a demo, a Claude artifact —
+ * shown live inside its box. The document is a deck-relative HTML file under
+ * `assets/`; it runs in an `<iframe sandbox="allow-scripts">`, so it can use
+ * JavaScript but never reaches the deck, the app, or another slide. Previews
+ * and print show `poster` when there is one.
+ */
+const WebElement = BaseElement.extend({
+  type: z.literal('web'),
+  /** Deck-relative path to a complete HTML document, normally `assets/web/…html`. */
+  src: z.string(),
+  /** Deck-relative still used wherever the page cannot run (PDF, thumbnails). */
+  poster: z.string().nullable().default(null),
+  /** Whether the page receives pointer input while presenting. Off, clicks advance the deck. */
+  interactive: z.boolean().default(true),
+  /** Accessible name and inspector label for the embedded page. */
+  title: z.string().default(''),
+});
+
+/**
  * Produced by the Keynote importer when it meets an object it cannot map.
  * Carries the original geometry so the slide stays laid out correctly, and
  * renders as a labelled dashed box so the gap is visible rather than silent.
@@ -302,6 +321,7 @@ export const ElementSchema = z.discriminatedUnion('type', [
   VideoElement,
   ShapeElement,
   HtmlElement,
+  WebElement,
   UnsupportedElement,
 ]);
 

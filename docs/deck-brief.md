@@ -100,8 +100,14 @@ the browser computes the geometry. While the editor is open, saving the file
 updates exactly those slides about a second later, as one undoable change.
 With the editor closed there is no watcher, so apply the same file explicitly:
 
-    slide-agent apply . --html edit/work.html
+    slide-agent apply . --html edit/work.html   # waits for the compile, prints `changes`
     slide-agent validate
+
+Saving alone is enough with the editor open; `apply` on the same file is the
+way to *wait* for that compile and read what it did (the editor compiles a
+document once, so the two never add up). A save has landed when the editor
+has stamped `data-slide-id` onto your new sections. The untouched starter
+sections from `slide-agent new` add nothing until you edit them.
 
 **Adding slides is a different file from changing them.** `slide-agent new >
 edit/add.html` writes a blank authoring page with the same canvas, theme and
@@ -172,7 +178,13 @@ the original where it is and the new section inserts right after it.
   The compile keeps it as one native, editable table: outer resizing scales
   all columns, internal dividers change adjacent column widths, and row height
   follows the styled content. Use `data-table-widths="1,2,1"` when authored
-  column proportions matter; otherwise columns begin equal.
+  column proportions matter; otherwise columns begin equal. **Unstyled tables
+  get a plain 1px grid on every cell**; a designed table starts by resetting
+  it — `.results th, .results td { border: 0; }` — and then draws only the
+  rules it wants (a heavy line under the header, hairlines between rows,
+  generous right padding, `font-variant-numeric: tabular-nums` for columns of
+  numbers). Inline `style` on cells is kept but hard to maintain; the class in
+  `theme.css` is the place.
 - **Arrows and lines:** a `<div>` holding one `<svg>` with a single `<line>`
   becomes a native line. For a real arrow — deck stroke width and head — give
   the wrapper the deck's shape attributes and mark the SVG as paint only:
@@ -186,6 +198,27 @@ the original where it is and the new section inserts right after it.
 
   It lays out like any flex item. A bare SVG `<line>` with `marker-end` and no
   wrapper attributes currently arrives as a hairline without its head.
+- **Interactive pages (JavaScript):** the compile strips scripts, so a thing
+  that needs them — an interactive chart, a slider, a demo — lives in a
+  sandboxed **web element**. Keep *only the interactive thing* in it: the
+  slide's title and caption are ordinary text beside it. Author the page for
+  its box (no heading of its own), then `slide-agent web add . chart.html
+  --size 1680x780 --title "…"` — it stages the page under `assets/web/`,
+  checks it at that size, captures a poster, and prints the exact
+  `<div data-element="web" data-src=… data-poster=… style="width:…;height:…">`
+  to drop into your authoring page next to an `<h1>` and a `<p>`. Only a page
+  that *is* a whole slide goes in full-canvas with `slide-agent web import`.
+  To iterate, `slide-agent web replace . <slide> page.html` swaps the page
+  behind an existing web slide — never import twice.
+  Pages run with scripts only — no network while presenting, no access to the
+  deck — so inline data and images and design for the box with no scrolling.
+  `window.deckwerk` (injected) offers `onActive`, `onStep`, `next`, `prev`. The import captures a poster for
+  thumbnails and PDF; match the deck's fonts and colours inside the page
+  yourself, since `theme.css` does not reach into it. Before importing, run
+  `slide-agent web check page.html` — it runs the page headlessly and reports
+  script errors, overflow past 1920×1080, and network it would need. Write
+  page files with a file-writing tool or a quoted heredoc (`<<'EOF'`), never
+  an unquoted one, or the shell expands `${…}` inside your JavaScript.
 - Wrapper `<div>`s are layout: they dissolve on compile and their children
   become the slide objects. Do not hand-copy `class="element …"` wrappers
   from exports around your own markup; plain semantic HTML is the input.
