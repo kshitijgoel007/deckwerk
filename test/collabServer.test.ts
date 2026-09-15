@@ -4,78 +4,13 @@ import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import WebSocket from 'ws';
-import { connect as connect_, createServer as createNetServer } from 'node:net';
+import { connect as connect_ } from 'node:net';
 import { emptyDeck, parseDeck, type Deck } from '../src/shared/deck.js';
 import { saveDeck } from '../src/main/deckStore.js';
 import { COLLAB_PROTOCOL_VERSION, ServerMessageSchema, type ClientMessage, type ServerMessage } from '../src/shared/collab.js';
-import {
-  startCollabServer, type NativeDraftPreview, type RunningCollabServer,
-} from '../src/server/collabServer.js';
-import type { AgentChatState } from '../src/shared/ipc.js';
-import type { SharedAgentRuntimeLike } from '../src/server/sharedAgent.js';
+import { startCollabServer, type RunningCollabServer } from '../src/server/collabServer.js';
 
 const DECK_ID = 'demo';
-
-const sharedAgentState = (deckPath: string, over: Partial<AgentChatState> = {}): AgentChatState => ({
-  deckPath,
-  chatId: 'shared-thread-1',
-  conversations: [],
-  connection: 'ready',
-  auth: 'signedIn',
-  accountLabel: 'owner@example.com',
-  models: [],
-  selectedModel: null,
-  selectedReasoningEffort: null,
-  fastMode: false,
-  scratchpad: null,
-  busy: false,
-  activity: null,
-  messages: [],
-  error: null,
-  ...over,
-});
-
-class FakeSharedAgent implements SharedAgentRuntimeLike {
-  readonly name = 'Workshop Agent';
-  sent: Array<{ participantId: string; text: string }> = [];
-  prompts: string[] = [];
-  private listeners = new Set<(state: AgentChatState, participantId: string) => void>();
-  get listenerCount() { return this.listeners.size; }
-
-  async getState(deckPath: string, participantId: string) {
-    return sharedAgentState(deckPath, { chatId: `thread-${participantId}` });
-  }
-  async send(deckPath: string, participantId: string, request: { text: string }, prepare: () => Promise<string>) {
-    this.sent.push({ participantId, text: request.text });
-    this.prompts.push(await prepare());
-    const state = sharedAgentState(deckPath, {
-      chatId: `thread-${participantId}`,
-      messages: [{ id: 'user-1', role: 'user', text: request.text }],
-    });
-    for (const listener of this.listeners) listener(state, participantId);
-    return state;
-  }
-  async login(deckPath: string, participantId: string) {
-    void participantId;
-    return { state: sharedAgentState(deckPath), authUrl: 'https://chatgpt.com/auth/demo' };
-  }
-  async switchAccount(deckPath: string, participantId: string) { return this.login(deckPath, participantId); }
-  async setModel(deckPath: string) { return sharedAgentState(deckPath); }
-  async setReasoningEffort(deckPath: string) { return sharedAgentState(deckPath); }
-  async setFastMode(deckPath: string) { return sharedAgentState(deckPath); }
-  async interrupt(deckPath: string) { return sharedAgentState(deckPath); }
-  async reset(deckPath: string) { return sharedAgentState(deckPath); }
-  async select(deckPath: string) { return sharedAgentState(deckPath); }
-  setScratchpad(deckPath: string, _participantId: string, scratchpad: AgentChatState['scratchpad']) {
-    return sharedAgentState(deckPath, { scratchpad });
-  }
-  chatId(_deckPath: string, participantId: string) { return `thread-${participantId}`; }
-  subscribe(listener: (state: AgentChatState, participantId: string) => void) {
-    this.listeners.add(listener);
-    return () => this.listeners.delete(listener);
-  }
-  close() { this.listeners.clear(); }
-}
 
 class TestClient {
   private socket: WebSocket;
@@ -139,7 +74,6 @@ describe('collab server', () => {
   let rootDir: string;
   let deckDir: string;
   let server: RunningCollabServer;
-  let publishedNativeDraft: NativeDraftPreview | null;
   let clients: TestClient[] = [];
 
   const connect = async (name?: string, deckId = DECK_ID) => {
@@ -150,7 +84,6 @@ describe('collab server', () => {
   };
 
   beforeEach(async () => {
-    publishedNativeDraft = null;
     rootDir = await mkdtemp(join(tmpdir(), 'collab-root-'));
     deckDir = join(rootDir, DECK_ID);
     await mkdir(deckDir, { recursive: true });
@@ -167,8 +100,6 @@ describe('collab server', () => {
       rootDir,
       port: 0,
       host: '127.0.0.1',
-      getAgentChatId: () => 'thread-1',
-      onNativeDraft: (draft) => { publishedNativeDraft = draft; },
     });
   });
 
@@ -183,83 +114,6 @@ describe('collab server', () => {
     const decks = await (await fetch(`http://127.0.0.1:${server.port}/api/decks`)).json() as
       Array<{ id: string; title: string; slides: number }>;
     expect(decks).toEqual([{ id: DECK_ID, title: 'Collab', slides: 2, folder: '' }]);
-  });
-
-  it('does not subscribe shared-agent state when its requested port is unavailable', async () => {
-    const blocker = createNetServer();
-    await new Promise<void>((resolvePromise, reject) => {
-      blocker.once('error', reject);
-      blocker.listen(0, '127.0.0.1', resolvePromise);
-    });
-    const address = blocker.address();
-    if (!address || typeof address === 'string') throw new Error('test server did not bind TCP');
-    const sharedAgent = new FakeSharedAgent();
-    try {
-      await expect(startCollabServer({
-        rootDir,
-        port: address.port,
-        host: '127.0.0.1',
-        sharedAgent,
-      })).rejects.toMatchObject({ code: 'EADDRINUSE' });
-      expect(sharedAgent.listenerCount).toBe(0);
-    } finally {
-      await new Promise<void>((resolvePromise) => blocker.close(() => resolvePromise()));
-    }
-  });
-
-  it('exposes one server-owned shared agent to every browser in opt-in test mode', async () => {
-    await server.close();
-    const sharedAgent = new FakeSharedAgent();
-    server = await startCollabServer({
-      rootDir,
-      port: 0,
-      host: '127.0.0.1',
-      sharedAgent,
-    });
-    const base = `http://127.0.0.1:${server.port}`;
-    const participant = 'participant-alice';
-
-    const config = await (await fetch(`${base}/api/config`)).json() as any;
-    expect(config.sharedAgent).toEqual({
-      enabled: true,
-      name: 'Workshop Agent',
-      canManageAccount: true,
-    });
-
-    const state = await (await fetch(
-      `${base}/api/shared-agent/state?deck=${DECK_ID}&participant=${participant}`,
-    )).json() as AgentChatState;
-    expect(state).toMatchObject({
-      deckPath: DECK_ID,
-      chatId: 'thread-participant-alice',
-      accountLabel: 'owner@example.com',
-    });
-    const bob = await (await fetch(
-      `${base}/api/shared-agent/state?deck=${DECK_ID}&participant=participant-bob`,
-    )).json() as AgentChatState;
-    expect(bob.chatId).toBe('thread-participant-bob');
-
-    const sent = await fetch(`${base}/api/shared-agent/send?deck=${DECK_ID}&participant=${participant}`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ author: 'Alice', text: 'Polish slide two' }),
-    });
-    expect(sent.status).toBe(200);
-    expect(sharedAgent.sent).toEqual([{
-      participantId: participant,
-      text: '[Request from Alice]\nPolish slide two',
-    }]);
-    expect(sharedAgent.prompts[0]).toContain(
-      `http://127.0.0.1:${server.port}/?deck=${DECK_ID}&agent=1&agentSession=${participant}`,
-    );
-
-    const login = await fetch(`${base}/api/shared-agent/login?deck=${DECK_ID}&participant=${participant}`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: '{}',
-    });
-    expect(login.status).toBe(200);
-    expect(await login.json()).toMatchObject({ authUrl: 'https://chatgpt.com/auth/demo' });
   });
 
   it('returns a compact deck-wide transcript in reading order with neighboring slides', async () => {
@@ -281,14 +135,15 @@ describe('collab server', () => {
     expect(transcript.revision).toMatch(/^[a-f0-9]{64}$/);
   });
 
-  it('redirects normal agent sessions to the read-only real-player viewer', async () => {
+  it('redirects agent session links to the read-only real-player viewer', async () => {
     const base = `http://127.0.0.1:${server.port}`;
     const response = await fetch(`${base}/?deck=${DECK_ID}&agent=1&name=Test`, { redirect: 'manual' });
     expect(response.status).toBe(302);
     expect(response.headers.get('location')).toBe(`/present.html?deck=${DECK_ID}&agent=1&name=Test&slide=1`);
 
     const debug = await fetch(`${base}/?deck=${DECK_ID}&agent=1&debug=1`, { redirect: 'manual' });
-    expect(debug.status).not.toBe(302);
+    expect(debug.status).toBe(302);
+    expect(debug.headers.get('location')).toBe(`/present.html?deck=${DECK_ID}&agent=1&debug=1&slide=1`);
   });
 
   it('creates new decks inside the root and refuses duplicates', async () => {
@@ -592,472 +447,16 @@ describe('collab server', () => {
     expect(deck.slides.length).toBeGreaterThan(0);
   });
 
-  it('previews and applies HTML once while preserving slide comments', async () => {
+  it('retires the direct HTTP agent authoring API in favor of the filesystem bridge', async () => {
     const base = `http://127.0.0.1:${server.port}`;
-    const added = await fetch(`${base}/api/comments?deck=${DECK_ID}`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ slideId: 's1', author: 'Benchmark', text: 'Replace this slide.' }),
-    });
-    expect(added.status).toBe(200);
-    const comment = await added.json() as { id: string };
-    const context = await (await fetch(`${base}/api/context?deck=${DECK_ID}`)).json() as { revision: string };
-    const preview = await fetch(`${base}/api/preview-html?deck=${DECK_ID}`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        html: '<!doctype html><section class="slide" style="width:1920px;height:1080px;background:#123"><h1>Replaced</h1></section>',
-        target: { mode: 'replace', slideIds: ['s1'] },
-      }),
-    });
-    expect(preview.status).toBe(200);
-    const draft = await preview.json() as {
-      draftId: string; revision: string; report: { nativeObjectRatio: number };
-      comparisonUrl: string; workflow: { state: string; nextAction: { action: string } };
-    };
-    expect(draft.revision).toBe(context.revision);
-    expect(draft.report.nativeObjectRatio).toBeGreaterThan(0);
-    expect((draft as any).report.timingsMs).toMatchObject({
-      sanitize: expect.any(Number), compile: expect.any(Number),
-      overflowCheck: expect.any(Number), total: expect.any(Number),
-    });
-    expect(draft.workflow).toMatchObject({
-      state: 'ready-to-apply', nextAction: { action: 'inspect-comparison-once' },
-    });
-    expect(draft).toMatchObject({
-      blockingIssues: [], nextAction: { action: 'inspect-comparison-once' },
-    });
-
-    const request = {
-      draftId: draft.draftId, expectedRevision: draft.revision,
-      idempotencyKey: 'replace-s1-once', label: 'Agent: replace first slide',
-    };
-    const observer = await connect('Observer');
-    const applied = await fetch(`${base}/api/apply-html?deck=${DECK_ID}`, {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(request),
-    });
-    expect(applied.status).toBe(200);
-    expect(await applied.json()).toMatchObject({
-      idempotent: false,
-      slideIds: ['s1'],
-      label: 'Agent: replace first slide',
-      playerUrls: [{
-        slideId: 's1',
-        url: `/present.html?deck=${DECK_ID}&slide=1&agent=1`,
-        pngUrl: `/api/render-slide.png?deck=${DECK_ID}&slideId=s1`,
-      }],
-      stopCondition: expect.stringContaining('Stop unless'),
-    });
-    const historyTxn = await observer.client.nextOfKind('txn');
-    expect(historyTxn).toMatchObject({
-      byClientId: 'agent-http',
-      agentChatId: 'thread-1',
-      label: 'Agent: replace first slide',
-      ops: [expect.objectContaining({ op: 'replaceSlide', slideId: 's1' })],
-    });
-    const replay = await fetch(`${base}/api/apply-html?deck=${DECK_ID}`, {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(request),
-    });
-    expect(await replay.json()).toMatchObject({
-      idempotent: true,
-      slideIds: ['s1'],
-      label: 'Agent: replace first slide',
-    });
-
-    const deck = await (await fetch(`${base}/api/deck?deck=${DECK_ID}`)).json() as Deck;
-    expect(deck.slides).toHaveLength(2);
-    expect(deck.slides[0].id).toBe('s1');
-    expect(deck.slides[0].comments?.some((row) => row.id === comment.id)).toBe(true);
-    const rendered = await fetch(`${base}/api/render-slide?deck=${DECK_ID}&slideId=s1`);
-    expect(rendered.status).toBe(200);
-    expect(await rendered.json()).toMatchObject({
-      slideId: 's1', slide: 1, url: `/present.html?deck=${DECK_ID}&slide=1&agent=1`,
-    });
-    const replied = await fetch(`${base}/api/comments?deck=${DECK_ID}`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        slideId: 's1', parentId: comment.id, author: 'Agent',
-        text: 'Implemented and verified in the real player.',
-      }),
-    });
-    expect(replied.status).toBe(200);
-    const reply = await replied.json() as { id: string };
-    const resolved = await fetch(`${base}/api/comments/resolve?deck=${DECK_ID}`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ commentId: comment.id, resolved: true }),
-    });
-    expect(resolved.status).toBe(200);
-    const replyResolved = await fetch(`${base}/api/comments/resolve?deck=${DECK_ID}`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ commentId: reply.id, resolved: true }),
-    });
-    expect(replyResolved.status).toBe(200);
-
-    const comments = await (await fetch(`${base}/api/comments?deck=${DECK_ID}`)).json() as {
-      comments: Array<{ id: string; resolved: boolean }>;
-    };
-    expect(comments.comments.filter((row) => !row.resolved && [comment.id, reply.id].includes(row.id)))
-      .toEqual([]);
-    const afterResolve = await (await fetch(`${base}/api/context?deck=${DECK_ID}`)).json() as {
-      outline: Array<{ id: string; openComments: number }>;
-    };
-    expect(afterResolve.outline.find((slide) => slide.id === 's1')?.openComments).toBe(0);
-  }, 20_000);
-
-  it('allows an HTML replacement to expand one target into multiple slides', async () => {
-    const base = `http://127.0.0.1:${server.port}`;
-    const preview = await fetch(`${base}/api/preview-html?deck=${DECK_ID}`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        html: '<!doctype html><section class="slide"><h1>Part one</h1></section><section class="slide"><h1>Part two</h1></section>',
-        target: { mode: 'replace', slideIds: ['s1'] },
-      }),
-    });
-    expect(preview.status).toBe(200);
-    const draft = await preview.json() as { draftId: string; revision: string };
-    const observer = await connect('Replacement observer');
-    const applied = await fetch(`${base}/api/apply-html?deck=${DECK_ID}`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        draftId: draft.draftId,
-        expectedRevision: draft.revision,
-        idempotencyKey: 'expand-s1',
-        label: 'Agent: expand first slide',
-      }),
-    });
-    expect(applied.status).toBe(200);
-    const result = await applied.json() as { slideIds: string[] };
-    expect(result.slideIds).toHaveLength(2);
-    expect(result.slideIds[0]).toBe('s1');
-
-    const historyTxn = await observer.client.nextOfKind('txn');
-    expect(historyTxn).toMatchObject({
-      ops: [
-        expect.objectContaining({ op: 'replaceSlide', slideId: 's1' }),
-        expect.objectContaining({ op: 'insertSlides', afterSlideId: 's1' }),
-      ],
-    });
-    const deck = await (await fetch(`${base}/api/deck?deck=${DECK_ID}`)).json() as Deck;
-    expect(deck.slides.map((slide) => slide.id))
-      .toEqual(['s1', result.slideIds[1], 's2']);
-  }, 20_000);
-
-  it('discovers, previews, and atomically applies surgical native edits', async () => {
-    const base = `http://127.0.0.1:${server.port}`;
-    const schema = await (await fetch(`${base}/api/edit-schema`)).json() as any;
-    expect(schema.semantics).toContain('Unmentioned properties and unrelated objects are preserved exactly.');
-    expect(schema.element.byType.text.map((row: any) => row.path)).toContain('align');
-
-    const inspectedResponse = await fetch(`${base}/api/inspect?deck=${DECK_ID}&slideIds=s1`);
-    expect(inspectedResponse.status).toBe(200);
-    const inspected = await inspectedResponse.json() as any;
-    expect(inspected.slides[0]).toMatchObject({
-      id: 's1',
-      elements: [expect.objectContaining({ id: 'e1', type: 'text', plainText: 'hi', semanticRole: 'title' })],
-    });
-
-    const previewResponse = await fetch(`${base}/api/preview-edits?deck=${DECK_ID}`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        expectedRevision: inspected.revision,
-        edits: [{
-          target: 'element', slideId: 's1', elementId: 'e1', expectedType: 'text',
-          set: { align: 'right', x: 40, w: 400, h: 80, 'style.font-family': 'Inter', 'style.font-size': '36px' },
-          unset: [],
-        }],
-      }),
-    });
-    expect(previewResponse.status).toBe(200);
-    const draft = await previewResponse.json() as any;
-    expect(draft).toMatchObject({
-      revision: inspected.revision,
-      affectedSlideIds: ['s1'],
-      affectedElementIds: ['e1'],
-      comparisonUrl: expect.stringContaining('/api/edit-drafts/'),
-      report: { newOrWorsenedOverflows: [] },
-    });
-    expect(publishedNativeDraft).toMatchObject({
-      draftId: draft.draftId,
-      slideCount: 1,
-      beforeUrl: expect.stringContaining('/before?deck=demo'),
-      afterUrl: expect.stringContaining('/after?deck=demo'),
-      comparisonUrl: expect.stringContaining('/compare?deck=demo'),
-    });
-    expect(draft.operations).toEqual([expect.objectContaining({ op: 'replaceElement', slideId: 's1', elementId: 'e1' })]);
-
-    // Preview is non-mutating and both states are directly inspectable.
-    const beforeApply = await (await fetch(`${base}/api/deck?deck=${DECK_ID}`)).json() as Deck;
-    expect(beforeApply.slides[0].elements[0]).toMatchObject({ x: 0, w: 100, align: 'left' });
-    expect(draft.slides[0].beforeUrl).toContain(`deck=${DECK_ID}`);
-    expect(draft.slides[0].afterUrl).toContain(`deck=${DECK_ID}`);
-    const beforeView = await fetch(`${base}${draft.slides[0].beforeUrl}`);
-    const afterView = await fetch(`${base}${draft.slides[0].afterUrl}`);
-    expect(beforeView.status).toBe(200);
-    expect(afterView.status).toBe(200);
-    expect(await afterView.text()).toContain('hi');
-    const comparisonView = await fetch(`${base}${draft.comparisonUrl}`);
-    expect(comparisonView.status).toBe(200);
-    const comparisonHtml = await comparisonView.text();
-    expect(comparisonHtml).toContain('Before / After comparison');
-    expect(comparisonHtml.match(/<iframe/g)).toHaveLength(2);
-
-    const observer = await connect('Native observer');
-    const request = {
-      draftId: draft.draftId,
-      expectedRevision: draft.revision,
-      idempotencyKey: 'native-edit-once',
-      label: 'Agent: unify title formatting',
-    };
-    const appliedResponse = await fetch(`${base}/api/apply-edits?deck=${DECK_ID}`, {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(request),
-    });
-    expect(appliedResponse.status).toBe(200);
-    expect(await appliedResponse.json()).toMatchObject({
-      idempotent: false, slideIds: ['s1'], elementIds: ['e1'], label: request.label,
-      playerUrls: [{ slideId: 's1', url: `/present.html?deck=${DECK_ID}&slide=1&agent=1` }],
-      stopCondition: expect.stringContaining('Stop unless'),
-    });
-    expect(await observer.client.nextOfKind('txn')).toMatchObject({
-      byClientId: 'agent-http', agentChatId: 'thread-1', label: request.label,
-      ops: [expect.objectContaining({ op: 'replaceElement', slideId: 's1', elementId: 'e1' })],
-    });
-    const afterApply = await (await fetch(`${base}/api/deck?deck=${DECK_ID}`)).json() as Deck;
-    expect(afterApply.slides[0].elements[0]).toMatchObject({
-      x: 40, w: 400, h: 80, align: 'right', style: { 'font-family': 'Inter', 'font-size': '36px' },
-    });
-    expect(afterApply.slides[1]).toEqual(beforeApply.slides[1]);
-
-    const replay = await fetch(`${base}/api/apply-edits?deck=${DECK_ID}`, {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(request),
-    });
-    expect(await replay.json()).toMatchObject({ idempotent: true, label: request.label });
-    const reused = await fetch(`${base}/api/apply-edits?deck=${DECK_ID}`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ ...request, label: 'Different intent' }),
-    });
-    expect(reused.status).toBe(409);
-  }, 20_000);
-
-  it('rejects invalid native properties and revision-conflicted edit drafts without mutation', async () => {
-    const base = `http://127.0.0.1:${server.port}`;
-    const context = await (await fetch(`${base}/api/context?deck=${DECK_ID}`)).json() as { revision: string };
-    const invalid = await fetch(`${base}/api/preview-edits?deck=${DECK_ID}`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ edits: [{ target: 'element', slideId: 's1', elementId: 'e1', set: { id: 'changed' }, unset: [] }] }),
-    });
-    expect(invalid.status).toBe(400);
-    expect(await invalid.json()).toMatchObject({ error: expect.stringContaining('not editable') });
-
-    const unsafe = await fetch(`${base}/api/preview-edits?deck=${DECK_ID}`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ edits: [{
-        target: 'element', slideId: 's1', elementId: 'e1',
-        set: { 'style.background-image': 'url(https://example.com/tracker.png)' }, unset: [],
-      }] }),
-    });
-    expect(unsafe.status).toBe(400);
-    expect(await unsafe.json()).toMatchObject({ error: expect.stringContaining('blocked external') });
-
-    const preview = await fetch(`${base}/api/preview-edits?deck=${DECK_ID}`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        expectedRevision: context.revision,
-        edits: [{ target: 'element', slideId: 's1', elementId: 'e1', set: { align: 'right', w: 300 }, unset: [] }],
-      }),
-    });
-    expect(preview.status).toBe(200);
-    const draft = await preview.json() as { draftId: string; revision: string };
-    await fetch(`${base}/api/comments?deck=${DECK_ID}`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ slideId: 's1', text: 'Concurrent change' }),
-    });
-    const conflicted = await fetch(`${base}/api/apply-edits?deck=${DECK_ID}`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ draftId: draft.draftId, expectedRevision: draft.revision, idempotencyKey: 'conflict', label: 'Should not land' }),
-    });
-    expect(conflicted.status).toBe(409);
-    const deck = await (await fetch(`${base}/api/deck?deck=${DECK_ID}`)).json() as Deck;
-    expect(deck.slides[0].elements[0]).toMatchObject({ align: 'left', w: 100 });
-  }, 20_000);
-
-  it('accepts a raw HTML preview body so command-line agents do not escape large JSON', async () => {
-    const base = `http://127.0.0.1:${server.port}`;
-    const preview = await fetch(
-      `${base}/api/preview-html?deck=${DECK_ID}&mode=replace&slideIds=s1`,
-      {
-        method: 'POST',
-        headers: { 'content-type': 'text/html; charset=utf-8' },
-        body: '<!doctype html><section class="slide"><h1>Raw HTML</h1></section>',
-      },
-    );
-    expect(preview.status).toBe(200);
-    expect(await preview.json()).toMatchObject({
-      draftId: expect.any(String),
-      target: { mode: 'replace', slideIds: ['s1'] },
-    });
-  }, 20_000);
-
-  it('serves source previews with a deck-relative base and the real theme', async () => {
-    await mkdir(join(deckDir, 'assets'), { recursive: true });
-    const pixel = Buffer.from(
-      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
-      'base64',
-    );
-    await writeFile(join(deckDir, 'assets', 'pixel.png'), pixel);
-    await writeFile(join(deckDir, 'theme.css'), '.from-deck-theme { color: rgb(1, 2, 3); }', 'utf8');
-
-    const base = `http://127.0.0.1:${server.port}`;
-    const preview = await fetch(`${base}/api/preview-html?deck=${DECK_ID}`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        html: '<!doctype html><html><head><link rel="stylesheet" href="theme.css"></head><body><section class="slide"><img src="assets/pixel.png"><p class="from-deck-theme">Themed</p></section></body></html>',
-        target: { mode: 'replace', slideIds: ['s1'] },
-      }),
-    });
-    expect(preview.status).toBe(200);
-    const draft = await preview.json() as { draftId: string; sourceUrl: string; comparisonUrl: string };
-    const savedSource = await readFile(join(deckDir, 'edit', '.scratchpad', 'source.html'), 'utf8');
-    const savedImported = await readFile(join(deckDir, 'edit', '.scratchpad', 'imported.html'), 'utf8');
-    expect(savedSource).toContain('<base href="../../">');
-    expect(savedSource).toContain('src="assets/pixel.png"');
-    expect(savedImported).toContain('<base href="../../">');
-    expect(savedImported).toContain('Themed');
-    const source = await (await fetch(`${base}${draft.sourceUrl}?deck=${DECK_ID}`)).text();
-    expect(source).toContain(`<base href="/decks/${DECK_ID}/">`);
-    expect(source).toContain('.from-deck-theme { color: rgb(1, 2, 3); }');
-    expect(source).toContain('src="assets/pixel.png"');
-
-    const comparison = await (await fetch(`${base}${draft.comparisonUrl}?deck=${DECK_ID}`)).text();
-    expect(comparison).toContain('Source / Imported comparison');
-    expect(comparison).toContain(`/api/html-drafts/`);
-    expect(comparison).toContain('scratchpad=slides');
-    expect(comparison.match(/<iframe/g)).toHaveLength(2);
-
-    const fitted = await (await fetch(
-      `${base}${draft.sourceUrl}?deck=${DECK_ID}&scratchpad=slides`,
-    )).text();
-    expect(fitted).toContain('data-agent-scratchpad-script');
-    expect(fitted).toContain("'ArrowRight'");
-    expect(fitted).toContain('--agent-scratchpad-scale');
-    expect(fitted).toContain("frame.append(slide)");
-    expect(fitted).not.toMatch(/agent-scratchpad-slides\s*>\s*\.slide/);
-    const contact = await (await fetch(
-      `${base}${draft.sourceUrl}?deck=${DECK_ID}&scratchpad=contact`,
-    )).text();
-    expect(contact).toContain('agent-scratchpad-grid');
-    expect(contact).toContain('Contact sheet zoom');
-    expect(contact).not.toContain('.agent-scratchpad-cell > .slide');
-
-    const asset = await fetch(`${base}/decks/${DECK_ID}/assets/pixel.png`);
-    expect(asset.status).toBe(200);
-    expect(Buffer.from(await asset.arrayBuffer())).toEqual(pixel);
-
-    const sourcePngUrl = `${base}/api/html-drafts/${draft.draftId}/source/slide-1.png?deck=${DECK_ID}`;
-    const importedPngUrl = `${base}/api/html-drafts/${draft.draftId}/imported/slide-1.png?deck=${DECK_ID}`;
-    const sourcePngResponse = await fetch(sourcePngUrl);
-    const importedPngResponse = await fetch(importedPngUrl);
-    expect(sourcePngResponse.status).toBe(200);
-    expect(importedPngResponse.status).toBe(200);
-    expect(sourcePngResponse.headers.get('x-deckwerk-render-cache')).toBe('miss');
-    const sourcePng = Buffer.from(await sourcePngResponse.arrayBuffer());
-    const importedPng = Buffer.from(await importedPngResponse.arrayBuffer());
-    expect(sourcePng.subarray(0, 8).toString('hex')).toBe('89504e470d0a1a0a');
-    expect(importedPng.subarray(0, 8).toString('hex')).toBe('89504e470d0a1a0a');
-    const cachedResponse = await fetch(sourcePngUrl);
-    expect(cachedResponse.headers.get('x-deckwerk-render-cache')).toBe('hit');
-    const cached = Buffer.from(await cachedResponse.arrayBuffer());
-    expect(cached).toEqual(sourcePng);
-  }, 20_000);
-
-  it('refuses to apply a draft with blocked resources', async () => {
-    const base = `http://127.0.0.1:${server.port}`;
-    const preview = await fetch(`${base}/api/preview-html?deck=${DECK_ID}`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        html: '<section class="slide"><img src="https://example.com/live.png"><h1>Unsafe draft</h1></section>',
-        target: { mode: 'replace', slideIds: ['s1'] },
-      }),
-    });
-    expect(preview.status).toBe(200);
-    const draft = await preview.json() as {
-      draftId: string; revision: string;
-      workflow: { state: string }; blockingIssues: Array<{ code: string; fix: string }>;
-      nextAction: { action: string };
-    };
-    expect(draft).toMatchObject({
-      workflow: { state: 'blocked' },
-      blockingIssues: [{ code: 'blocked-resource' }],
-      nextAction: { action: 'revise-html' },
-    });
-    const applied = await fetch(`${base}/api/apply-html?deck=${DECK_ID}`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        draftId: draft.draftId,
-        expectedRevision: draft.revision,
-        idempotencyKey: 'blocked-draft',
-        label: 'Must not apply',
-      }),
-    });
-    expect(applied.status).toBe(422);
-    expect(await applied.json()).toMatchObject({
-      error: expect.stringContaining('blocking import diagnostics'),
-      blockingDiagnostics: ['blockedResources'],
-    });
-
-    const deck = await (await fetch(`${base}/api/deck?deck=${DECK_ID}`)).json() as Deck;
-    expect(deck.slides[0].elements[0].id).toBe('e1');
-
-    const missing = await fetch(`${base}/api/preview-html?deck=${DECK_ID}`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        html: '<section class="slide"><img src="assets/not-there.png"><h1>Missing local asset</h1></section>',
-        target: { mode: 'replace', slideIds: ['s1'] },
-      }),
-    });
-    expect(missing.status).toBe(200);
-    expect(await missing.json()).toMatchObject({
-      blockingIssues: [{ code: 'missing-asset' }],
-      nextAction: { action: 'revise-html' },
-      report: { missingAssets: ['assets/not-there.png'], blockedResources: [] },
-      workflow: {
-        state: 'blocked',
-        blockingIssues: [{ code: 'missing-asset', message: expect.stringContaining('assets/not-there.png') }],
-      },
-    });
-  }, 20_000);
-
-  it('rejects an HTML draft after the deck revision changes', async () => {
-    const base = `http://127.0.0.1:${server.port}`;
-    const preview = await fetch(`${base}/api/preview-html?deck=${DECK_ID}`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        html: '<!doctype html><section class="slide" style="width:1920px;height:1080px"><h1>Stale</h1></section>',
-        target: { mode: 'insert', afterSlideId: 's1' },
-      }),
-    });
-    const draft = await preview.json() as { draftId: string; revision: string };
-    await fetch(`${base}/api/comments?deck=${DECK_ID}`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ slideId: 's1', text: 'This changes the revision.' }),
-    });
-    const conflict = await fetch(`${base}/api/apply-html?deck=${DECK_ID}`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        draftId: draft.draftId, expectedRevision: draft.revision,
-        idempotencyKey: 'stale-draft',
-      }),
-    });
-    expect(conflict.status).toBe(409);
-    expect(await conflict.json()).toMatchObject({ error: 'revision conflict', expected: draft.revision });
-  }, 20_000);
-
-  /**
-   * "End collaboration" is `POST /api/end` -> `onSessionEnd` -> `close()`.
-   * Every browser in the session leaves connections behind that never go
-   * idle on their own: a <video> that has buffered enough simply stops
-   * reading its range response, and that response stays open. `close()`
-   * waits for exactly those, so the host clicked the button and nothing
-   * happened. Ending the session means disconnecting everyone, so the
-   * teardown has to be able to finish while a stalled reader is attached.
-   */
+    for (const path of ['/api/brief', '/api/edit-schema', '/api/preview-html']) {
+      const response = await fetch(`${base}${path}?deck=${DECK_ID}`);
+      expect(response.status).toBe(410);
+      expect(await response.json()).toMatchObject({
+        error: expect.stringContaining('slide-agent connect'),
+      });
+    }
+  });
   it('ends the session even while a client is holding a stalled response open', async () => {
     await server.close();
     let ended = 0;

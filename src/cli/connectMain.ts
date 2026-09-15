@@ -13,9 +13,9 @@ import { runConnectCommand } from './agentConnect.js';
 
 const USAGE = `usage: node deckwerk-connect.mjs '<session url>' [--dir <folder>] [--agent <command>|--no-agent] [--name <text>]
 
-Mirrors the hosted deck the URL names into a folder on this machine, keeps it
-in sync both ways, and starts your agent there (claude or codex from PATH, or
---agent). The Agent panel in the browser prints the URL, participant id included.
+Mirrors the hosted deck the URL names into a folder on this machine and keeps it
+in sync both ways. Point your existing filesystem agent at that folder, or use
+--agent to explicitly start a command. The Agent panel prints the complete URL.
 `;
 
 const args = process.argv.slice(2);

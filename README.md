@@ -37,9 +37,9 @@ DeckWerk auto-transcodes videos and images into compatible formats.
 
 ### Native agent integration
 
-DeckWerk is designed so that AI agents can create and edit presentations directly. The desktop app embeds Codex; on a shared server, every collaborator connects the agent CLI they already use on their own machine with one command from the browser's Agent panel, which mirrors the deck folder locally and keeps it in sync. Only Node is needed.
+DeckWerk is designed so that AI agents can create and edit presentations directly. It does not run or own an agent account: the **Agent…** button tells you how to point the filesystem-based agent you already use at the deck. In a browser collaboration session, the same button gives you one command that mirrors the live deck folder onto your machine and keeps it in sync. Only Node is needed for the remote bridge.
 
-Agents author slides using the web-layout and front-end skills at which they already excel. They can work within an existing deck’s visual language, reuse its assets and typography, and make changes. When agents author HTML slides that aren't compatible with DeckWerk's editor, they don't break; they simply will not be as editable for the human.
+In both cases the authoring loop is the same: run `slide-agent context`, export or create an HTML file under `edit/`, then edit and save it. DeckWerk compiles that HTML into ordinary editable slide objects, applies the save as one named undoable change, and shows it in History. JavaScript-driven content is explicitly staged as a web element; titles, captions, and other non-interactive content remain normal editable objects.
 
 ### Effortless collaboration on trusted networks
 

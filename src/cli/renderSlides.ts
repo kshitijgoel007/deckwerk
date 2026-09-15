@@ -1,6 +1,8 @@
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Deck } from '@shared/deck.js';
@@ -104,11 +106,56 @@ export async function checkWebPage(request: {
   height: number;
   screenshot?: string | null;
 }): Promise<WebPageCheck> {
+  const started = Date.now();
+  // `web check` immediately followed by `web add` is the documented safe
+  // workflow. Both commands receive the same bridge-injected document, so
+  // keep the expensive Chromium result briefly and let add reuse it. The
+  // short TTL protects pages that load sibling files whose contents are not
+  // represented in the HTML digest.
+  const source = await readFile(request.pagePath);
+  const digest = createHash('sha256')
+    .update('deckwerk-web-check-v1\0')
+    .update(source)
+    .update(`\0${request.width}x${request.height}`)
+    .digest('hex');
+  const cacheDir = join(tmpdir(), 'deckwerk-web-check-cache');
+  const cachedJson = join(cacheDir, `${digest}.json`);
+  const cachedPng = join(cacheDir, `${digest}.png`);
+  const ttlMs = 5 * 60_000;
+  try {
+    const info = await stat(cachedJson);
+    if (Date.now() - info.mtimeMs <= ttlMs) {
+      const cached = JSON.parse(await readFile(cachedJson, 'utf8')) as WebPageCheck;
+      if (request.screenshot) await copyFile(cachedPng, request.screenshot);
+      return {
+        ...cached,
+        screenshot: request.screenshot ?? null,
+        cacheHit: true,
+        durationMs: Date.now() - started,
+      };
+    }
+  } catch {
+    // A miss is the normal first command in the check -> add workflow.
+  }
+
+  await mkdir(cacheDir, { recursive: true });
   const dir = await tempDir('slide-agent-web-check-');
   const jobPath = join(dir, 'check-job.json');
-  await writeFile(jobPath, JSON.stringify({ ...request, settleMs: 800 }), 'utf8');
+  await writeFile(jobPath, JSON.stringify({
+    ...request,
+    screenshot: cachedPng,
+    settleMs: 800,
+  }), 'utf8');
   const script = fileURLToPath(new URL('../../scripts/check-web-page.cjs', import.meta.url));
-  return JSON.parse(await runElectron(script, jobPath)) as WebPageCheck;
+  const checked = JSON.parse(await runElectron(script, jobPath)) as WebPageCheck;
+  await writeFile(cachedJson, JSON.stringify({ ...checked, screenshot: null }), 'utf8');
+  if (request.screenshot) await copyFile(cachedPng, request.screenshot);
+  return {
+    ...checked,
+    screenshot: request.screenshot ?? null,
+    cacheHit: false,
+    durationMs: Date.now() - started,
+  };
 }
 
 export interface WebPageCheck {
@@ -118,23 +165,52 @@ export interface WebPageCheck {
   console: Array<{ level: string; message: string; line: number; source: string }>;
   remoteRequests: string[];
   screenshot: string | null;
+  /** True when this identical page and viewport were checked in the last five minutes. */
+  cacheHit: boolean;
+  /** Wall-clock time spent serving this check, including cache lookup or Chromium. */
+  durationMs: number;
 }
 
 function runElectron(script: string, jobPath: string): Promise<string> {
   return new Promise((resolvePromise, reject) => {
-    const child = spawn(electronBinary(), [script, jobPath], {
+    // Electron's npm binary cannot use its setuid sandbox in unprivileged
+    // Linux CI containers (the helper is not root-owned there). Keep the
+    // normal sandbox everywhere else; CI already isolates the whole job.
+    const args = process.platform === 'linux' && process.env.CI
+      ? ['--no-sandbox', script, jobPath]
+      : [script, jobPath];
+    const child = spawn(electronBinary(), args, {
       stdio: ['ignore', 'pipe', 'pipe'],
       env: { ...process.env, ELECTRON_DISABLE_SECURITY_WARNINGS: '1' },
     });
     let out = '';
     let err = '';
+    let settled = false;
+    // A malformed or unlucky page must not strand an agent behind an
+    // unbounded Chromium await. Healthy checks finish in ~1–2 seconds; keep a
+    // generous ceiling and fail with an actionable message instead of making
+    // the whole authoring turn appear hung.
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      child.kill('SIGKILL');
+      reject(new Error('Interactive page check exceeded 20 seconds; simplify the page and retry.'));
+    }, 20_000);
     child.stdout.on('data', (chunk) => (out += chunk));
     child.stderr.on('data', (chunk) => {
       err += chunk;
       if (process.env.SLIDE_AGENT_DEBUG === '1') process.stderr.write(String(chunk));
     });
-    child.on('error', reject);
+    child.on('error', (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(error);
+    });
     child.on('close', (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
       if (code === 0 && out.trim()) resolvePromise(out);
       else reject(new Error(err.trim() || `Slide capture failed with exit code ${code}`));
     });

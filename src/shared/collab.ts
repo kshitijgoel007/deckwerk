@@ -22,7 +22,7 @@ export const CursorPositionSchema = z.object({
   y: z.number(),
 });
 
-/** Browser participant ids, as the shared-agent routes already spell them. */
+/** Browser participant ids used to pair a person with their filesystem bridge. */
 export const PARTICIPANT_ID_PATTERN = /^[a-zA-Z0-9_-]{8,80}$/;
 
 export const PresenceStateSchema = z.object({

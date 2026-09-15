@@ -818,7 +818,10 @@ function renderWeb(
     poster.alt = el.title;
     poster.style.width = '100%';
     poster.style.height = '100%';
-    poster.style.objectFit = 'cover';
+    // A poster is evidence, not decorative media. If the authored web box
+    // changes aspect ratio after capture, keep the whole still visible rather
+    // than cropping chart labels and controls off its edges.
+    poster.style.objectFit = 'contain';
     poster.style.display = 'block';
     box.appendChild(poster);
     return box;

@@ -20,7 +20,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { agentRuntimePaths } from '../src/main/agentRuntime.js';
 import { AGENT_GUIDE_MARKER } from '../src/main/agentGuide.js';
-import type { AgentChatState } from '../src/shared/ipc.js';
+import type { AgentPanelState as AgentChatState } from '../src/shared/ipc.js';
 
 /**
  * A participant's own agent, on their own machine, in a hosted session: the
@@ -125,7 +125,7 @@ describe('slide-agent connect', { timeout: 120_000 }, () => {
     return { code, stdout: out.join(''), stderr: err.join('') };
   };
   const state = async (): Promise<AgentChatState> => (await fetch(
-    `${base()}/api/shared-agent/state?deck=${DECK_ID}&participant=${PARTICIPANT}`,
+    `${base()}/api/agent-panel/state?deck=${DECK_ID}&participant=${PARTICIPANT}`,
   )).json() as Promise<AgentChatState>;
   const serverDeck = async (): Promise<Deck> => parseDeck(await (await fetch(`${base()}/api/deck?deck=${DECK_ID}`)).json());
   const connectPeer = async (hello: Partial<Extract<ClientMessage, { kind: 'hello' }>> = {}) => {
@@ -194,11 +194,14 @@ describe('slide-agent connect', { timeout: 120_000 }, () => {
   });
 
   it('advertises local agents to the browser without a server-owned agent', async () => {
-    const config = await (await fetch(`${base()}/api/config`)).json() as { sharedAgent: unknown };
-    expect(config.sharedAgent).toEqual({
-      enabled: true, name: 'Agent', canManageAccount: true, mode: 'local',
+    const config = await (await fetch(`${base()}/api/config`)).json() as { agentPanel: unknown };
+    expect(config.agentPanel).toEqual({
+      enabled: true, name: 'Your agent', canManageAccount: true, mode: 'local',
     });
     expect((await state()).connection).toBe('unavailable');
+    expect((await fetch(`${base()}/api/brief?deck=${DECK_ID}`)).status).toBe(410);
+    expect((await fetch(`${base()}/api/preview-html?deck=${DECK_ID}`, { method: 'POST' })).status).toBe(410);
+    expect((await fetch(`${base()}/api/agent-mirror/new.html?deck=${DECK_ID}`)).status).toBe(404);
   });
 
   it('mirrors the deck root and stands in for the editor behind the CLI, both ways', async () => {
@@ -222,7 +225,7 @@ describe('slide-agent connect', { timeout: 120_000 }, () => {
 
     // The browser's panel sees the agent, by name, and the room sees a peer.
     const attached = await state();
-    expect(attached).toMatchObject({ connection: 'ready', auth: 'signedIn', accountLabel: 'Test agent' });
+    expect(attached).toMatchObject({ connection: 'ready', agentName: 'Test agent' });
     expect(attached.messages[0]).toMatchObject({ role: 'system', text: expect.stringContaining('connected') });
     const presence = await browser.nextOfKind('presence');
     expect(presence.state).toMatchObject({ name: 'Test agent', agent: true });
@@ -267,6 +270,9 @@ describe('slide-agent connect', { timeout: 120_000 }, () => {
     await writeFile(join(mirrorDir, 'assets', 'new.png'), PNG);
     await until(async () => existsSync(join(deckDir, 'assets', 'new.png')), 'the asset to reach the server');
     expect(await readFile(join(deckDir, 'assets', 'new.png'))).toEqual(PNG);
+    await mkdir(join(mirrorDir, 'assets', 'web'), { recursive: true });
+    await writeFile(join(mirrorDir, 'assets', 'web', 'page.html'), '<!doctype html><button>Live</button>', 'utf8');
+    await until(async () => existsSync(join(deckDir, 'assets', 'web', 'page.html')), 'the nested web asset to reach the server');
 
     // Saving an authoring page in edit/ syncs it, stamps ids back, and feeds
     // the browser's scratchpad through the server's own preview.
@@ -315,14 +321,18 @@ describe('slide-agent connect', { timeout: 120_000 }, () => {
 
   it('keeps the mirror routes inside the deck folder', async () => {
     const file = (path: string, init?: RequestInit) =>
-      fetch(`${base()}/api/agent-mirror/file?deck=${DECK_ID}&path=${encodeURIComponent(path)}`, init);
+      fetch(`${base()}/api/agent-mirror/file?deck=${DECK_ID}&path=${encodeURIComponent(path)}`, {
+        ...init, headers: { 'x-deckwerk-bridge': '1', ...(init?.headers ?? {}) },
+      });
     expect((await file('../demo/deck.json')).status).toBe(400);
     expect((await file('edit/work.html')).status).toBe(400);
     expect((await file('.deckwerk-secret')).status).toBe(400);
     expect((await file('assets/missing.png')).status).toBe(404);
     expect(Buffer.from(await (await file('assets/pic.png')).arrayBuffer())).toEqual(PNG);
 
-    const listed = await (await fetch(`${base()}/api/agent-mirror/files?deck=${DECK_ID}`)).json() as {
+    const listed = await (await fetch(`${base()}/api/agent-mirror/files?deck=${DECK_ID}`, {
+      headers: { 'x-deckwerk-bridge': '1' },
+    })).json() as {
       files: Array<{ path: string }>;
     };
     expect(listed.files.map((entry) => entry.path)).toEqual(['assets/pic.png']);
@@ -332,6 +342,8 @@ describe('slide-agent connect', { timeout: 120_000 }, () => {
     expect((await file('assets/pic.png', { method: 'PUT', body: Buffer.from('different') })).status).toBe(409);
     expect((await file('assets/fresh.png', { method: 'PUT', body: PNG })).status).toBe(200);
     expect(await readFile(join(deckDir, 'assets', 'fresh.png'))).toEqual(PNG);
+    expect((await file('assets/web/fresh.html', { method: 'PUT', body: '<!doctype html>' })).status).toBe(200);
+    expect(await readFile(join(deckDir, 'assets', 'web', 'fresh.html'), 'utf8')).toBe('<!doctype html>');
   });
 
   it('puts a page that opens its socket and its agent stream at once into one room', async () => {
@@ -340,7 +352,7 @@ describe('slide-agent connect', { timeout: 120_000 }, () => {
     const [first, second] = await Promise.all([
       connectPeer({ name: 'A', participant: PARTICIPANT }),
       connectPeer({ name: 'B' }),
-      fetch(`${base()}/api/shared-agent/events?deck=${DECK_ID}&participant=${PARTICIPANT}`, { signal: events.signal })
+      fetch(`${base()}/api/agent-panel/events?deck=${DECK_ID}&participant=${PARTICIPANT}`, { signal: events.signal })
         .catch(() => null),
       fetch(`${base()}/api/context?deck=${DECK_ID}`),
     ]);
@@ -354,14 +366,15 @@ describe('slide-agent connect', { timeout: 120_000 }, () => {
 
   it('serves the authoring verbs over HTTP and syncs a page with the editor\'s semantics', async () => {
     const q = `deck=${DECK_ID}&agentSession=${PARTICIPANT}`;
+    const bridgeHeaders = { 'x-deckwerk-bridge': '1' };
     // Export by number, blank page, validation.
-    const exported = await (await fetch(`${base()}/api/agent-mirror/export.html?${q}&slide=2`)).text();
+    const exported = await (await fetch(`${base()}/api/agent-mirror/export.html?${q}&slide=2`, { headers: bridgeHeaders })).text();
     expect(exported).toContain('data-slide-id="s2"');
     expect(exported).not.toContain('data-slide-id="s1"');
-    expect((await fetch(`${base()}/api/agent-mirror/export.html?${q}&slide=9`)).status).toBe(404);
-    const blank = await (await fetch(`${base()}/api/agent-mirror/new.html?${q}&count=2`)).text();
-    expect(blank.match(/<section class="slide">/g)).toHaveLength(2);
-    const validation = await (await fetch(`${base()}/api/agent-mirror/validate?${q}&slide=1`)).json() as { valid: boolean; scope: string[] };
+    expect((await fetch(`${base()}/api/agent-mirror/export.html?${q}&slide=9`, { headers: bridgeHeaders })).status).toBe(404);
+    const blank = await (await fetch(`${base()}/api/agent-mirror/new.html?${q}&count=2`, { headers: bridgeHeaders })).text();
+    expect(blank.match(/<section class="slide"[^>]*>/g)).toHaveLength(2);
+    const validation = await (await fetch(`${base()}/api/agent-mirror/validate?${q}&slide=1`, { headers: bridgeHeaders })).json() as { valid: boolean; scope: string[] };
     expect(validation).toMatchObject({ valid: true, scope: ['s1'] });
 
     // A human leaves a comment on slide 2; the agent's HTML save must not lose it.
@@ -370,7 +383,7 @@ describe('slide-agent connect', { timeout: 120_000 }, () => {
       body: JSON.stringify({ slideId: 's2', author: 'Vincent', text: 'keep me' }),
     });
     const sync = (html: string) => fetch(`${base()}/api/agent-mirror/sync-html?${q}`, {
-      method: 'POST', headers: { 'content-type': 'text/html' }, body: html,
+      method: 'POST', headers: { ...bridgeHeaders, 'content-type': 'text/html' }, body: html,
     });
     // Re-syncing an untouched export changes nothing and applies nothing.
     const untouched = await (await sync(exported)).json() as { applied: boolean; changes: { replaced: string[] } };
@@ -383,8 +396,9 @@ describe('slide-agent connect', { timeout: 120_000 }, () => {
     const after = await serverDeck();
     expect(after.slides[1].comments?.map((comment) => comment.text)).toEqual(['keep me']);
     expect(after.slides[1].elements.some((element) => element.type === 'text' && element.html.includes('Two, revised'))).toBe(true);
-    // The participant's panel saw it: an HTTP agent with this id is "connected".
-    expect((await state()).connection).toBe('ready');
+    // HTTP transport alone is not an agent connection. Only the filesystem
+    // bridge's WebSocket attachment lights the participant's panel.
+    expect((await state()).connection).toBe('unavailable');
   });
 
   it('lets the generated ./deck command drive the session from the mirror', async () => {
@@ -416,6 +430,22 @@ describe('slide-agent connect', { timeout: 120_000 }, () => {
     await deck('comments', '--resolve', added.commentId);
     expect(JSON.parse(await deck('comments', '--unresolved')).commentCount).toBe(0);
 
+    const webPage = join(mirrorDir, 'chart.html');
+    await writeFile(webPage, '<!doctype html><html><head><title>Live chart</title></head><body><button onclick="this.textContent=\'Changed\'">Change</button></body></html>', 'utf8');
+    const checked = JSON.parse(await deck('web', 'check', webPage, '--size', '800x450')) as { ok: boolean };
+    expect(checked.ok).toBe(true);
+    const staged = JSON.parse(await deck('web', 'add', '.', webPage, '--size', '800x450')) as {
+      ok: boolean; src: string; poster: string; markup: string;
+    };
+    expect(staged).toMatchObject({ ok: true });
+    expect(staged.src).toMatch(/^assets\/web\/chart\.[a-f0-9]{8}\.html$/);
+    expect(staged.poster).toMatch(/^assets\/web\/chart\.[a-f0-9]{8}\.poster\.png$/);
+    expect(staged.markup).toContain('data-element="web"');
+    expect(existsSync(join(mirrorDir, staged.src))).toBe(true);
+    expect(existsSync(join(mirrorDir, staged.poster))).toBe(true);
+    expect(existsSync(join(deckDir, staged.src))).toBe(true);
+    expect(existsSync(join(deckDir, staged.poster))).toBe(true);
+
     // A blank page is not synced until edited; an explicit apply then reports
     // the insert once and a second apply is idempotent.
     const page = await deck('new', '--count', '1');
@@ -432,6 +462,8 @@ describe('slide-agent connect', { timeout: 120_000 }, () => {
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 1500));
     expect((await serverDeck()).slides).toHaveLength(3);
     expect(await readFile(file, 'utf8')).toContain(`data-slide-id="${result.changes.inserted[0]}"`);
+    const afterInsert = JSON.parse(await deck('context')) as { outline: Array<{ title: string }> };
+    expect(afterInsert.outline[2].title).toBe('From ./deck');
 
     const rendered = JSON.parse(await deck('render', '--slide', '1', '--output', join(mirrorDir, 'shots'))) as { images: Array<{ path: string }> };
     expect(existsSync(rendered.images[0].path)).toBe(true);

@@ -305,7 +305,7 @@ describe('edit history', () => {
     expect(store.history()[0].label).toBe('Reverted to Agent edit');
   });
 
-  it('shows a verbose Agent description and opens its linked chat independently', () => {
+  it('shows a verbose filesystem Agent description without a chat transcript link', () => {
     const store = new EditorStore(emptyDeck('History'), '/tmp/history');
     const revised = structuredClone(store.get().deck);
     revised.title = 'Agent revision';
@@ -315,12 +315,10 @@ describe('edit history', () => {
       agentChatId: 'thread-7',
     });
     const host = document.createElement('div');
-    const opened: string[] = [];
-    new HistoryPanel(host, store, { onOpenAgentChat: (chatId) => opened.push(chatId) });
+    new HistoryPanel(host, store);
     expect(host.querySelector('.history-description')?.textContent)
       .toContain('Changed 2 revised slides and 3 added objects');
-    host.querySelector<HTMLButtonElement>('.history-chat-link')?.click();
-    expect(opened).toEqual(['thread-7']);
+    expect(host.querySelector('.history-chat-link')).toBeNull();
   });
 
   it('expands an Agent transaction label with a structural edit summary', () => {

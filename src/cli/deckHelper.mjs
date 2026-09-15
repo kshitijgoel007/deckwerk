@@ -38,6 +38,11 @@ The loop:
   apply     --html <file> [--after <id|number>] [--label <text>]
                                           sync a page now and print what changed
 
+Saving and apply are two ways to request the same sync. For the fastest path,
+either save and let the bridge watch it, or run apply immediately after writing
+when you need the changes reply; apply then supersedes the pending watched save.
+Do not wait for the watched sync and apply the unchanged page afterward.
+
 Everything else:
 
   docs                                    the full brief (AGENTS.md)
@@ -49,6 +54,11 @@ Everything else:
   comments  --add <text> (--slide <id|number> | --element <elementId>) [--author <name>]
   asset import <paths...>                 import media through the server; the JSON
                                           output tells you the final assets/… src
+  web check <page.html> [--size <WxH>]    run an interactive page in the server's
+                                          browser: errors, overflow, network use
+  web add <page.html> [--size <WxH>] [--title <text>]
+                                          stage a checked page plus poster under
+                                          assets/web/ and print its web-element markup
   preview                                 the URL where people see this deck live
   theme     …                             theme.css is a file here: edit it directly
 
@@ -83,7 +93,10 @@ function apiUrl(path, params = {}) {
 async function api(path, params = {}, init = {}) {
   let response;
   try {
-    response = await fetch(apiUrl(path, params), init);
+    response = await fetch(apiUrl(path, params), {
+      ...init,
+      headers: { 'x-deckwerk-bridge': '1', ...(init.headers ?? {}) },
+    });
   } catch (error) {
     fail(`Could not reach ${session().origin}: ${error.message}. Is the bridge still connected?`);
   }
@@ -289,8 +302,40 @@ async function main(argv) {
       out({ commentCount: rows.length, comments: rows });
       return EXIT_OK;
     }
+    case 'web': {
+      const [verb, ...webArgs] = rest;
+      if (verb !== 'check' && verb !== 'add') {
+        fail('usage: ./deck web check <page.html> [--size WxH]\n       ./deck web add <page.html> [--size WxH] [--title text]', EXIT_USAGE);
+      }
+      const { options, positional: rawPositional } = parseArgs(webArgs, ['size', 'title']);
+      const positional = rawPositional[0] === '.' ? rawPositional.slice(1) : rawPositional;
+      if (positional.length !== 1) fail(`web ${verb} needs one HTML file`, EXIT_USAGE);
+      const pagePath = resolve(process.cwd(), positional[0]);
+      if (!existsSync(pagePath)) fail(`No such file: ${pagePath}`);
+      const size = options.get('size') ?? '1920x1080';
+      if (!/^\d+x\d+$/.test(size)) fail(`--size takes WIDTHxHEIGHT, not "${size}".`, EXIT_USAGE);
+      const result = await api(`/api/agent-mirror/web/${verb}`, {
+        name: basename(pagePath), size, title: options.get('title'),
+      }, {
+        method: 'POST', headers: { 'content-type': 'text/html; charset=utf-8' }, body: readFileSync(pagePath),
+      });
+      if (verb === 'add') {
+        for (const relative of result.assets ?? []) {
+          const response = await fetch(apiUrl('/api/agent-mirror/file', { path: relative }), {
+            headers: { 'x-deckwerk-bridge': '1' },
+          });
+          if (!response.ok) fail(`Could not mirror staged ${relative} (${response.status})`);
+          const local = join(ROOT, relative);
+          mkdirSync(dirname(local), { recursive: true });
+          writeFileSync(local, Buffer.from(await response.arrayBuffer()));
+        }
+      }
+      out(result);
+      return result.ok === false ? EXIT_ERROR : EXIT_OK;
+    }
     case 'asset': {
-      const [verb, ...paths] = rest;
+      const [verb, ...rawPaths] = rest;
+      const paths = rawPaths[0] === '.' ? rawPaths.slice(1) : rawPaths;
       if (verb !== 'import' || paths.length === 0) fail('usage: ./deck asset import <paths...>', EXIT_USAGE);
       const assets = [];
       const failures = [];
@@ -303,7 +348,9 @@ async function main(argv) {
           // right away so a page can reference it before the sync catches up.
           const local = join(ROOT, imported.src);
           if (!existsSync(local)) {
-            const response = await fetch(apiUrl('/api/agent-mirror/file', { path: imported.src }));
+            const response = await fetch(apiUrl('/api/agent-mirror/file', { path: imported.src }), {
+              headers: { 'x-deckwerk-bridge': '1' },
+            });
             if (response.ok) {
               mkdirSync(dirname(local), { recursive: true });
               writeFileSync(local, Buffer.from(await response.arrayBuffer()));

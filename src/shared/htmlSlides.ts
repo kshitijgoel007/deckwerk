@@ -1064,7 +1064,7 @@ function elementToHtml(element: SlideElement, build?: TimelineEntry): string {
         + ` data-title="${escape(element.title)}"`
         + ` ${styleAttr(position, inline, 'overflow:hidden;')}>`
         + notAnObject(element.poster
-          ? `<img src="${escape(element.poster)}" alt="${escape(element.title)}" style="display:block;width:100%;height:100%;object-fit:cover;">`
+          ? `<img src="${escape(element.poster)}" alt="${escape(element.title)}" style="display:block;width:100%;height:100%;object-fit:contain;">`
           : `<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;`
             + `font:24px system-ui,sans-serif;color:#667;background:#eef0f3;border:2px dashed #99a;box-sizing:border-box;">`
             + `web page: ${escape(element.title || element.src)}</div>`)

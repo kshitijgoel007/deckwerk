@@ -2,8 +2,8 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { basename, join, resolve } from 'node:path';
 import { importKeynote } from '../src/main/keynoteImport.js';
 import { loadDeck, saveDeck } from '../src/main/deckStore.js';
-import { agentClipboardPrompt } from '../src/server/agentBrief.js';
 import { defaultClientDir, startCollabServer } from '../src/server/collabServer.js';
+import { LocalAgentRegistry } from '../src/server/localAgents.js';
 
 const existingDeckDir = process.env.EDIT_BENCHMARK_EXISTING_DECK
   ? resolve(process.env.EDIT_BENCHMARK_EXISTING_DECK)
@@ -56,15 +56,20 @@ if (!clientDir) throw new Error('The collaboration client is not built. Run npm 
 const server = await startCollabServer({
   rootDir: decksDir,
   hostedDeckId: deckId,
-  agentMode: true,
+  localAgents: new LocalAgentRegistry({ name: 'Native editing agent' }),
   clientDir,
   host: '0.0.0.0',
   port,
 });
 
 const base = (server.urls.find((url) => !url.includes('127.0.0.1')) ?? server.urls[0]).replace(/\/$/, '');
-const agentUrl = `${base}/?deck=${encodeURIComponent(deckId)}&name=Native+Editing+Agent&agent=1`;
-const generalPrompt = agentClipboardPrompt(agentUrl, deckId);
+const generalPrompt = `# DeckWerk filesystem-agent benchmark
+
+Use only DeckWerk's filesystem authoring interface. Work in the mirror folder
+created by the collaboration page's Agent… command. Read its AGENTS.md in full,
+begin with \`slide-agent context\`, and author slides by editing and saving HTML
+files under \`edit/\`. Do not call the collaboration server's HTTP or WebSocket
+routes directly.`;
 const taskPrompt = await readFile(taskPromptPath, 'utf8');
 const session = {
   deckId,
@@ -77,7 +82,7 @@ const session = {
   combinedPrompt: join(root, 'combined-prompt.txt'),
   humanUrl: `http://127.0.0.1:${port}/?deck=${encodeURIComponent(deckId)}&name=Vincent`,
   playerUrl: `http://127.0.0.1:${port}/present.html?deck=${encodeURIComponent(deckId)}&slide=${commentSlideIndex + 1}&agent=1`,
-  agentUrl,
+  url: `${base}/?deck=${encodeURIComponent(deckId)}&name=Native+Editing+Evaluator`,
 };
 await writeFile(session.generalPrompt, generalPrompt, 'utf8');
 await writeFile(session.combinedPrompt, `${generalPrompt}\n\n# Concrete task\n\n${taskPrompt}`, 'utf8');

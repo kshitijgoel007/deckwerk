@@ -44,15 +44,15 @@ are intentionally omitted.
 
 ## Agents and authoring workflows
 
-- [x] **P1 — Personal embedded Agent for the desktop host.** A desktop-hosted
-  collaboration keeps the host's private Agent account, saved conversation,
-  model, reasoning, speed, history, steering, and stop controls. Agent edits
-  join the same live transaction stream as human edits. Remote collaborators
-  see the edits and Agent presence but cannot access the host's panel or account.
-- [ ] **P2 — External-file authoring round trip.** Desktop watches `theme.css`
-  and `edit/*.html` on disk. Define a browser-safe equivalent, such as a local
-  File System Access handle where supported plus explicit import/export
-  elsewhere; do not imply that a downloaded archive remains live-linked.
+- [x] **P1 — One bring-your-own-agent workflow.** The desktop points the user's
+  existing filesystem agent at the deck folder. The browser provides a
+  `slide-agent connect` command that creates a watched local mirror. Both use
+  the same `context` / `inspect --html` / edit-and-save loop, and both send
+  changes through the same labeled collaboration transactions and History.
+- [x] **P2 — External-file authoring round trip.** Desktop watches `theme.css`
+  and `edit/*.html` directly. The remote bridge mirrors those files and syncs
+  saves to the authoritative collaboration session; a downloaded archive is
+  still an ordinary snapshot, not a live link.
 
 ## Export and local files
 

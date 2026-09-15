@@ -1,9 +1,5 @@
 import type { EditorStore, HistoryItem } from './store.js';
 
-export interface HistoryPanelOptions {
-  onOpenAgentChat?: (chatId: string) => void;
-}
-
 /** Browsable deck snapshots. Selecting an older entry creates a new revert state. */
 export class HistoryPanel {
   private stale = false;
@@ -13,7 +9,6 @@ export class HistoryPanel {
   constructor(
     private host: HTMLElement,
     private store: EditorStore,
-    private options: HistoryPanelOptions = {},
   ) {
     store.subscribeHistory(() => {
       if (this.host.hidden) {
@@ -144,14 +139,6 @@ export class HistoryPanel {
     button.append(meta);
     button.addEventListener('click', () => this.store.restoreHistory(item.id));
     row.appendChild(button);
-    if (item.agentChatId && this.options.onOpenAgentChat) {
-      const chat = document.createElement('button');
-      chat.type = 'button';
-      chat.className = 'history-chat-link';
-      chat.textContent = 'Open Agent chat';
-      chat.addEventListener('click', () => this.options.onOpenAgentChat?.(item.agentChatId!));
-      row.appendChild(chat);
-    }
     return row;
   }
 }

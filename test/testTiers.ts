@@ -42,6 +42,9 @@ const BROWSER_BY_NATURE = [
   'test/collabServer.test.ts',
   'test/htmlAuthoring.test.ts',
   'test/scratchpadRenderingBrowser.test.ts',
+  // `web check` launches Electron behind the CLI boundary; keep those tests
+  // out of the fully parallel unit pool and in the sandbox-configured tier.
+  'test/webElement.test.ts',
 ];
 
 /** Real clipboard traffic: writes through the browser, or a cut/copy/paste chord. */

@@ -19,8 +19,6 @@ import { saveDeck } from '../src/main/deckStore.js';
 import { COLLAB_PROTOCOL_VERSION, ServerMessageSchema, type ServerMessage } from '../src/shared/collab.js';
 import { startCollabServer, type RunningCollabServer } from '../src/server/collabServer.js';
 import { resolveIdentity, readDeckAccess, type DeckAccess } from '../src/server/accessControl.js';
-import type { SharedAgentRuntimeLike } from '../src/server/sharedAgent.js';
-import type { AgentChatState } from '../src/shared/ipc.js';
 import type { IncomingMessage } from 'node:http';
 
 const ADMIN = 'vincent@tailnet.example';
@@ -485,71 +483,5 @@ describe('collab server without --access (unchanged behavior)', () => {
     expect(decks).toEqual([{ id: 'open', title: 'Open deck', slides: 1, folder: '' }]);
     expect((await fetch(`http://127.0.0.1:${server.port}/api/deck?deck=open`)).status).toBe(200);
     expect((await fetch(`http://127.0.0.1:${server.port}/api/access?deck=open`)).status).toBe(404);
-  });
-});
-
-describe('collab server with --access and --shared-agent', () => {
-  let rootDir: string;
-  let server: RunningCollabServer;
-
-  const agentState = (deckPath: string): AgentChatState => ({
-    deckPath, chatId: 'thread', conversations: [], connection: 'ready', auth: 'signedIn',
-    accountLabel: 'owner@example.com', models: [], selectedModel: null, selectedReasoningEffort: null,
-    fastMode: false, scratchpad: null, busy: false, activity: null, messages: [], error: null,
-  });
-  const logins: string[] = [];
-  const fakeAgent: SharedAgentRuntimeLike = {
-    name: 'Lab agent',
-    getState: async (deckPath) => agentState(deckPath),
-    send: async (deckPath) => agentState(deckPath),
-    login: async (deckPath) => { logins.push('login'); return { state: agentState(deckPath), authUrl: null }; },
-    switchAccount: async (deckPath) => { logins.push('switch'); return { state: agentState(deckPath), authUrl: null }; },
-    setModel: async (deckPath) => agentState(deckPath),
-    setReasoningEffort: async (deckPath) => agentState(deckPath),
-    setFastMode: async (deckPath) => agentState(deckPath),
-    interrupt: async (deckPath) => agentState(deckPath),
-    reset: async (deckPath) => agentState(deckPath),
-    select: async (deckPath) => agentState(deckPath),
-    setScratchpad: (deckPath) => agentState(deckPath),
-    chatId: () => 'thread',
-    subscribe: () => () => {},
-    close: () => {},
-  };
-
-  beforeEach(async () => {
-    rootDir = await mkdtemp(join(tmpdir(), 'collab-access-agent-'));
-    const dir = join(rootDir, 'open');
-    await mkdir(dir, { recursive: true });
-    await saveDeck(dir, parseDeck({ ...emptyDeck('Open deck'), slides: [{ id: 's1', name: 'One' }] }));
-    logins.length = 0;
-    server = await startCollabServer({
-      rootDir, port: 0, host: '127.0.0.1', accessControl: { admin: ADMIN }, sharedAgent: fakeAgent,
-    });
-  });
-
-  afterEach(async () => {
-    await server.close();
-    await rm(rootDir, { recursive: true, force: true });
-  });
-
-  it('lets only the admin manage the shared agent account — loopback alone no longer means "the owner"', async () => {
-    const base = `http://127.0.0.1:${server.port}`;
-    // Behind tailscale serve every request is a loopback request; Alice's
-    // must not read as the host's.
-    const aliceConfig = await (await fetch(`${base}/api/config`, { headers: asUser(ALICE) })).json() as any;
-    expect(aliceConfig.sharedAgent).toMatchObject({ enabled: true, canManageAccount: false });
-    const adminConfig = await (await fetch(`${base}/api/config`)).json() as any;
-    expect(adminConfig.sharedAgent).toMatchObject({ enabled: true, canManageAccount: true });
-
-    const aliceLogin = await fetch(`${base}/api/shared-agent/login?deck=open&participant=alice-participant`, {
-      method: 'POST', headers: { ...asUser(ALICE), 'content-type': 'application/json' }, body: '{}',
-    });
-    expect(aliceLogin.status).toBe(403);
-    expect(logins).toEqual([]);
-    const adminLogin = await fetch(`${base}/api/shared-agent/login?deck=open&participant=admin-participant`, {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}',
-    });
-    expect(adminLogin.status).toBe(200);
-    expect(logins).toEqual(['login']);
   });
 });
