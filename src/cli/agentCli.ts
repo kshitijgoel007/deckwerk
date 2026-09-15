@@ -105,7 +105,8 @@ Working on a deck someone hosts on a collaboration server:
   connect   <sessionUrl> [--dir <folder>] [--agent <command>|--no-agent]
             [--name <text>]               mirror the hosted deck into a folder
                                           on this machine, keep it in sync both
-                                          ways, and start your agent there. The
+                                          ways. Point your existing agent there;
+                                          --agent explicitly starts one. The
                                           Agent panel in the browser prints the
                                           exact command, participant id included.
 
@@ -246,8 +247,8 @@ export async function runAgentCli(argv: string[], io: CliIo): Promise<number> {
 /* --- commands --- */
 
 /**
- * Join a hosted session with your own agent: mirror the deck root here, run
- * the file bridge the CLI talks to, and start the agent inside the mirror.
+ * Join a hosted session with your own agent: mirror the deck root here and run
+ * the file bridge it talks to. Starting a named process is explicit opt-in.
  */
 async function connectCommand(argv: string[], io: CliIo): Promise<number> {
   const { flags, options, positional } = parseFlags(argv, ['dir', 'agent', 'name']);
@@ -824,7 +825,14 @@ async function webAddCommand(argv: string[], io: CliIo): Promise<number> {
     title,
     size: { w: width, h: height },
     bytes: page.bytes,
-    ...(check ? { ok: check.ok, problems: check.problems, console: check.console, remoteRequests: check.remoteRequests } : {}),
+    ...(check ? {
+      ok: check.ok,
+      problems: check.problems,
+      console: check.console,
+      remoteRequests: check.remoteRequests,
+      cacheHit: check.cacheHit,
+      durationMs: check.durationMs,
+    } : {}),
     markup: `<div data-element="web" data-src="${page.src}"${poster ? ` data-poster="${poster}"` : ''} data-title="${title.replace(/"/g, '&quot;')}" style="width:${width}px;height:${height}px"></div>`,
     hint: 'Put that div in an authoring page (slide-agent new) beside a real <h1> and caption; its CSS box is its geometry.',
   }));

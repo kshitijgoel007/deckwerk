@@ -19,8 +19,7 @@ import {
   withThemeBlock,
 } from '@shared/themes.js';
 import { AgentBridge, type HtmlSyncOutcome } from './agentBridge.js';
-import { AgentChatPanel } from './agentChatPanel.js';
-import { AgentChatHistoryModal } from './agentChatHistoryModal.js';
+import { AgentPanel } from './agentPanel.js';
 import { createDeckWerkButton } from './aboutDialog.js';
 import { trackPreviewFrameRecovery } from '../player/previewFrameRecovery.js';
 import { EditorCanvas } from './canvas.js';
@@ -141,10 +140,7 @@ new SpeakerNotesDrawer(el('canvas'), store, {
 });
 const inspector = new Inspector(el('inspector'), store);
 new TimelinePanel(el('timeline'), store);
-const agentChatHistoryModal = new AgentChatHistoryModal(window.api);
-new HistoryPanel(el('history'), store, {
-  onOpenAgentChat: (chatId) => void agentChatHistoryModal.open(chatId),
-});
+new HistoryPanel(el('history'), store);
 const rail = new SlideRail(el('rail'), store);
 const editorBody = el('body');
 const railDivider = document.createElement('div');
@@ -233,10 +229,14 @@ const welcome = new WelcomeScreen(el('canvas'), {
   importKeynote: importKeynotePresentation,
   importPowerPoint: importPowerPointPresentation,
 });
-const agentChatPanel = new AgentChatPanel({
-  api: window.api,
+const agentPanel = new AgentPanel({
+  api: {
+    getState: () => window.api.getAgentPanelState(),
+    onState: (listener) => window.api.onAgentPanelState(listener),
+  },
   currentDeckPath: () => store.get().dir,
-  onClose: () => void endAgentChat(),
+  connectCommand: 'Starting a filesystem agent session…',
+  onClose: () => void endAgentSession(),
 });
 
 /**
@@ -477,11 +477,11 @@ function buildToolbar(): void {
   const secondaryActions = document.createElement('span');
   secondaryActions.className = 'toolbar-expanded-secondary-actions';
   secondaryActions.append(
-    barButton('Agent…', () => void toggleAgentChat()),
+    barButton('Agent…', () => void toggleAgentPanel()),
     collaborateButton,
   );
   const compactSecondary = createToolbarPicker('More', [
-    { label: 'Agent…', action: () => void toggleAgentChat() },
+    { label: 'Agent…', action: () => void toggleAgentPanel() },
     { label: 'Collaboration…', action: () => void startSharing() },
   ]);
   compactSecondary.classList.add('toolbar-compact-secondary-action');
@@ -570,12 +570,12 @@ async function exportPdf(): Promise<void> {
   }
 }
 
-async function toggleAgentChat(): Promise<void> {
-  if (!agentChatPanel.element.hidden) {
-    agentChatPanel.hide();
+async function toggleAgentPanel(): Promise<void> {
+  if (!agentPanel.element.hidden) {
+    agentPanel.hide();
     return;
   }
-  setStatusMessage('Starting embedded agent session…');
+  setStatusMessage('Preparing a filesystem agent handoff…');
   try {
     await cssEditor.flush();
     await save();
@@ -585,16 +585,17 @@ async function toggleAgentChat(): Promise<void> {
         ...captureEditorView(store),
       });
       connectAgentSession(connection);
+      if (connection.agentCommand) agentPanel.setConnectCommand(connection.agentCommand);
     }
-    agentChatPanel.show();
-    setStatusMessage('Agent chat opened; HTTP API brief copied to clipboard.');
+    agentPanel.show();
+    setStatusMessage('Agent handoff ready; the connect command was copied to the clipboard.');
   } catch (err) {
     setStatusMessage(`Agent session failed: ${err instanceof Error ? err.message : err}`);
   }
 }
 
-async function endAgentChat(): Promise<void> {
-  agentChatPanel.hide();
+async function endAgentSession(): Promise<void> {
+  agentPanel.hide();
   if (!agentSessionBridge) return;
   setStatusMessage('Closing agent session…');
   try {
@@ -741,7 +742,7 @@ function connectAgentSession(connection: AgentSessionConnection): void {
       queueAgentSessionSnapshot();
       setStatusMessage(activeSessionMode === 'collaboration'
         ? 'Collaboration connected — edits and cursors sync live.'
-        : 'Agent chat connected — edits sync live.');
+        : 'Filesystem agent connected — edits sync live.');
     },
     onDeckReplaced: (deck, label, options) => {
       store.applyRemote(deck, label, options);
@@ -1272,11 +1273,11 @@ window.api.onAgentSessionState?.((state) => {
   if (state.active) connectAgentSession(state);
   else {
     const endedMode = activeSessionMode;
-    agentChatPanel.hide();
+    agentPanel.hide();
     disconnectAgentSession();
     setStatusMessage(endedMode === 'collaboration'
       ? 'Collaboration ended; presentation saved.'
-      : 'Agent chat closed; presentation saved.');
+      : 'Agent session closed; presentation saved.');
   }
 });
 

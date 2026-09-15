@@ -17,9 +17,8 @@ import { launchWebEditor, type WebEditorSession } from './support/webEditorSessi
  * In the browser the editor is itself a collaboration peer and Present mounts
  * `present.html` in an iframe over the editor tab, seeded from the deck the
  * tab already holds. What has to hold is that an Agent edit which arrives
- * over the collaboration protocol (or through the HTTP Agent surface) is what
- * the audience sees the moment Present is clicked — not the deck the tab
- * loaded with.
+ * over the collaboration protocol is what the audience sees the moment
+ * Present is clicked — not the deck the tab loaded with.
  *
  * FakeAgent is the deterministic peer from the desktop suite, speaking the
  * real localhost protocol to the real server; no model, login, or network.
@@ -231,100 +230,8 @@ describe.skipIf(!electronBinary)('web Agent presentation synchronization', () =>
     await endPresentation(session);
   }, 120_000);
 
-  it('presents an edit made through the HTTP Agent surface (/api/apply-edits)', async () => {
-    // The HTTP surface patches existing objects (element, slide, deck) and has
-    // no insertion form, so the marker element exists up front with
-    // placeholder text and the Agent rewrites its `html`.
-    const deck = emptyDeck('Agent presentation regression');
-    deck.slides[0].elements.push({
-      id: MARKER_ID,
-      type: 'text',
-      x: 180,
-      y: 400,
-      w: 1560,
-      h: 200,
-      rot: 0,
-      z: 0,
-      opacity: 1,
-      class: [],
-      style: {},
-      html: 'PLACEHOLDER BEFORE THE AGENT',
-      align: 'center',
-      valign: 'middle',
-    });
-    session = await launchWebEditor(
-      [{ id: DECK_ID, deck, themeCss: THEME_CSS }],
-      { tmpPrefix: 'web-agent-present-http-' },
-    );
-    const { cdp, origin } = session;
-    const deckQuery = `deck=${encodeURIComponent(DECK_ID)}`;
-
-    // The contract the Agent reads before editing must document what it uses.
-    const schema = await (await fetch(`${origin}/api/edit-schema`)).json() as {
-      element: { byType: { text: Array<{ path: string }> } };
-    };
-    expect(schema.element.byType.text.map((property) => property.path)).toContain('html');
-
-    const previewResponse = await fetch(`${origin}/api/preview-edits?${deckQuery}`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        edits: [{
-          target: 'element',
-          slideId: 'slide-1',
-          elementId: MARKER_ID,
-          expectedType: 'text',
-          set: { html: MARKER },
-          unset: [],
-        }],
-      }),
-    });
-    expect(previewResponse.status, await previewResponse.clone().text()).toBe(200);
-    const draft = await previewResponse.json() as {
-      draftId: string; revision: string; affectedElementIds: string[];
-    };
-    expect(draft.affectedElementIds).toEqual([MARKER_ID]);
-
-    const applyResponse = await fetch(`${origin}/api/apply-edits?${deckQuery}`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        draftId: draft.draftId,
-        expectedRevision: draft.revision,
-        idempotencyKey: 'fake-agent-http-presentation-edit',
-        label: 'Fake Agent (HTTP): set presentation marker',
-      }),
-    });
-    expect(applyResponse.status, await applyResponse.clone().text()).toBe(200);
-    expect(await applyResponse.json()).toMatchObject({
-      idempotent: false,
-      slideIds: ['slide-1'],
-      elementIds: [MARKER_ID],
-    });
-
-    await eventually(
-      async () => cdp.evaluate<boolean>(EDITOR_SHOWS_MARKER),
-      'the web editor did not receive the HTTP Agent edit',
-      Boolean,
-      30_000,
-    );
-    await eventually(
-      async () => (await session!.fetchDeck()).slides[0].elements
-        .some((element) => element.id === MARKER_ID && element.type === 'text' && element.html === MARKER),
-      'the server deck did not record the HTTP Agent edit',
-    );
-
-    const rendered = await presentAndReadAudience(session);
-    expect(rendered).toMatchObject({
-      markerText: MARKER,
-      elementCount: 1,
-      slideId: 'slide-1',
-    });
-    expect(rendered.markerText).not.toContain('PLACEHOLDER');
-
-    await endPresentation(session);
-  }, 120_000);
 });
+
 
 describe.skipIf(electronBinary)('web Agent presentation synchronization (skipped)', () => {
   it('needs Electron', () => {

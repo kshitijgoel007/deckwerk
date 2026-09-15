@@ -60,62 +60,23 @@ export const IPC = {
   agentContextPublish: 'agent:contextPublish',
   agentRequest: 'agent:request',
   agentResponse: 'agent:response',
-  agentChatGetState: 'agentChat:getState',
-  agentChatGetTranscript: 'agentChat:getTranscript',
-  agentChatSelect: 'agentChat:select',
-  agentChatSend: 'agentChat:send',
-  agentChatLogin: 'agentChat:login',
-  agentChatSwitchAccount: 'agentChat:switchAccount',
-  agentChatSetModel: 'agentChat:setModel',
-  agentChatSetReasoningEffort: 'agentChat:setReasoningEffort',
-  agentChatSetFastMode: 'agentChat:setFastMode',
-  agentChatInterrupt: 'agentChat:interrupt',
-  agentChatReset: 'agentChat:reset',
-  agentChatState: 'agentChat:state',
-  workflowStart: 'workflow:start',
+  /** Read-only status/activity/scratchpad for the user's filesystem agent. */
+  agentPanelGetState: 'agentPanel:getState',
+  agentPanelState: 'agentPanel:state',
   collabStart: 'collab:start',
   agentSessionStart: 'agentSession:start',
   agentSessionEnd: 'agentSession:end',
   agentSessionState: 'agentSession:state',
 } as const;
 
-export type AgentChatConnection = 'connecting' | 'ready' | 'unavailable';
-export type AgentChatAuth = 'unknown' | 'signedOut' | 'signedIn';
-
-export interface AgentChatMessage {
+export interface AgentPanelMessage {
   id: string;
-  role: 'user' | 'assistant' | 'system';
+  role: 'assistant' | 'system';
   text: string;
   error?: boolean;
 }
 
-export interface AgentChatConversationSummary {
-  chatId: string;
-  title: string;
-  updatedAt: string;
-  messageCount: number;
-  active: boolean;
-}
-
-export interface AgentChatTranscript {
-  chatId: string;
-  accountLabel: string | null;
-  updatedAt: string;
-  messages: AgentChatMessage[];
-}
-
-export interface AgentChatModel {
-  model: string;
-  displayName: string;
-  description: string;
-  isDefault: boolean;
-  reasoningEfforts: Array<{ effort: string; description: string }>;
-  defaultReasoningEffort: string | null;
-  serviceTiers: Array<{ id: string; name: string; description: string }>;
-  defaultServiceTier: string | null;
-}
-
-export interface AgentChatScratchpad {
+export interface AgentScratchpad {
   draftId: string;
   slideCount: number;
   sourceUrl: string;
@@ -127,70 +88,16 @@ export interface AgentChatScratchpad {
   importedLabel?: string;
 }
 
-/** Complete renderer snapshot for one open deck's embedded agent conversation. */
-export interface AgentChatState {
+/** Read-only status for a user-owned filesystem agent bridge. */
+export interface AgentPanelState {
   deckPath: string;
-  /** Stable Codex thread id used to link Agent-authored history entries. */
-  chatId: string | null;
-  /** Current and archived conversations saved with this deck. */
-  conversations: AgentChatConversationSummary[];
-  connection: AgentChatConnection;
-  auth: AgentChatAuth;
-  accountLabel: string | null;
-  models: AgentChatModel[];
-  selectedModel: string | null;
-  selectedReasoningEffort: string | null;
-  fastMode: boolean;
-  scratchpad: AgentChatScratchpad | null;
+  connection: 'ready' | 'unavailable';
+  agentName: string | null;
+  scratchpad: AgentScratchpad | null;
   busy: boolean;
   activity: string | null;
-  messages: AgentChatMessage[];
+  messages: AgentPanelMessage[];
   error: string | null;
-}
-
-export interface AgentChatSendRequest {
-  text: string;
-}
-
-export interface AgentChatSelectRequest {
-  chatId: string;
-}
-
-export interface AgentChatSetModelRequest {
-  model: string;
-}
-
-export interface AgentChatSetReasoningEffortRequest {
-  effort: string;
-}
-
-export interface AgentChatSetFastModeRequest {
-  enabled: boolean;
-}
-
-/** The workflow templates a UI action can instantiate (see workflows/). */
-export type WorkflowKind = 'rework-selected-slides' | 'beautify-deck' | 'draft-new-slides';
-
-/** A UI request to hand part of the deck to an agent, with instructions. */
-export interface WorkflowStartRequest {
-  kind: WorkflowKind;
-  /** The user's typed instructions, verbatim (may be empty). */
-  instructions: string;
-  /** Selection at the moment of the click; scope for rework workflows. */
-  selectedSlideIds: string[];
-  /** Active slide id — the insertion anchor for draft workflows. */
-  activeSlideId: string | null;
-}
-
-export interface WorkflowStartResult {
-  /** Where the assembled prompt was written, inside the deck folder. */
-  promptPath: string;
-  /** Directory of pre-rendered PNGs handed to the agent. */
-  renderDir: string;
-  /** True when a terminal running the agent was opened. */
-  launched: boolean;
-  /** How to start the agent by hand when it was not launched. */
-  command: string;
 }
 
 export interface CollabStartRequest extends EditorViewSnapshot {
@@ -205,6 +112,10 @@ export interface AgentSessionConnection {
   name: string;
   /** Which desktop feature owns the background collaboration connection. */
   mode?: 'agent' | 'collaboration';
+  /** Filesystem bridge handoff, present for an Agent session. */
+  agentUrl?: string;
+  /** Ready-to-paste command that mirrors the session onto the user's machine. */
+  agentCommand?: string;
 }
 
 export type AgentSessionState = AgentSessionConnection | { active: false };

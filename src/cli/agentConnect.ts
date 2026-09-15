@@ -52,8 +52,9 @@ import deckHelperSource from './deckHelper.mjs?raw';
  * History. Saved pages in `edit/` are compiled by the server — the machine
  * that already has the browser — so this process bundles no browser at all.
  *
- * Finally it starts the agent CLI of the person's choosing inside the folder,
- * so working here is exactly "launch the agent in the deck root".
+ * It deliberately does not choose or start an agent unless the person passes
+ * `--agent`: the normal flow is to keep this bridge running and point an
+ * already-running filesystem agent at the mirrored deck root.
  */
 
 export const MIRROR_MARKER_FILE = '.deckwerk-mirror.json';
@@ -313,9 +314,9 @@ export function connectAgentBridge(options: ConnectOptions): AgentBridge {
     for (const slide of deck.slides) {
       if (slide.background.image) wanted.add(slide.background.image);
       for (const element of slide.elements) {
-        if (element.type === 'image' || element.type === 'video') {
+        if (element.type === 'image' || element.type === 'video' || element.type === 'web') {
           wanted.add(element.src);
-          if (element.type === 'video' && element.poster) wanted.add(element.poster);
+          if ((element.type === 'video' || element.type === 'web') && element.poster) wanted.add(element.poster);
         }
       }
     }
@@ -732,7 +733,7 @@ export function connectAgentBridge(options: ConnectOptions): AgentBridge {
           debounceLocal(`html:${path}`, HTML_SAVE_DEBOUNCE_MS, () => onLocalHtml(path));
         }
       }),
-      watch(assetsDir, (_event, filename) => {
+      watch(assetsDir, { recursive: true }, (_event, filename) => {
         if (!filename) return;
         const entry = String(filename);
         debounceLocal(`asset:${entry}`, LOCAL_CHANGE_DEBOUNCE_MS, () => onLocalAsset(entry));
@@ -936,7 +937,7 @@ export interface ConnectCommandOptions {
   signal?: AbortSignal;
 }
 
-/** The interactive flow: mirror, then run the agent inside. */
+/** The interactive flow: mirror, then optionally run an explicitly named agent. */
 export async function runConnectCommand(options: ConnectCommandOptions): Promise<number> {
   const { io } = options;
   const bridge = connectAgentBridge({ url: options.url, dir: options.dir, name: options.name, io });
@@ -944,12 +945,9 @@ export async function runConnectCommand(options: ConnectCommandOptions): Promise
   await bridge.ready;
   io.err(`Deck mirrored at ${bridge.dir}`);
 
-  const command = options.agent === false ? null : options.agent ?? await defaultAgentCommand();
+  const command = typeof options.agent === 'string' ? options.agent : null;
   if (!command) {
-    io.err(options.agent === false
-      ? 'Bridge running. Start your agent in that folder; Ctrl-C here disconnects.'
-      : 'No agent CLI found on PATH (looked for claude and codex). Bridge running: start your agent in that folder, '
-        + 'or pass --agent <command>. Ctrl-C here disconnects.');
+    io.err('Bridge running. Point your existing agent at that folder; Ctrl-C here disconnects.');
     await waitForStop(options.signal);
     await bridge.close();
     return 0;
@@ -979,29 +977,6 @@ export async function runConnectCommand(options: ConnectCommandOptions): Promise
   await bridge.close();
   io.err(`\nDisconnected from ${bridge.target.origin}. The mirror stays at ${bridge.dir}.`);
   return code;
-}
-
-/** The agent CLI to start when the person named none: an env override, then PATH. */
-export async function defaultAgentCommand(): Promise<string | null> {
-  const configured = process.env.SLIDE_AGENT_COMMAND?.trim();
-  if (configured) return configured;
-  for (const candidate of ['claude', 'codex']) {
-    if (await onPath(candidate)) return candidate;
-  }
-  return null;
-}
-
-async function onPath(binary: string): Promise<boolean> {
-  for (const entry of (process.env.PATH ?? '').split(process.platform === 'win32' ? ';' : ':')) {
-    if (!entry) continue;
-    const candidates = process.platform === 'win32'
-      ? [join(entry, `${binary}.exe`), join(entry, `${binary}.cmd`), join(entry, binary)]
-      : [join(entry, binary)];
-    for (const candidate of candidates) {
-      if (existsSync(candidate)) return true;
-    }
-  }
-  return false;
 }
 
 function waitForStop(signal?: AbortSignal): Promise<void> {

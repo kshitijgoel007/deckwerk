@@ -21,13 +21,7 @@ import type { ClipboardImageSource } from '@shared/clipboardImages.js';
 import { IPC } from '@shared/ipc.js';
 import type {
   AgentContextDraft,
-  AgentChatSendRequest,
-  AgentChatSelectRequest,
-  AgentChatSetModelRequest,
-  AgentChatSetReasoningEffortRequest,
-  AgentChatSetFastModeRequest,
-  AgentChatState,
-  AgentChatTranscript,
+  AgentPanelState,
   AgentSessionConnection,
   AgentSessionState,
   AgentResponse,
@@ -48,17 +42,9 @@ import type {
   RasterTarget,
   TrimRequest,
   TrimResult,
-  WorkflowStartRequest,
-  WorkflowStartResult,
   VideoPosterRequest,
   VideoPosterResult,
 } from '@shared/ipc.js';
-import { startWorkflow } from './workflow.js';
-import { AgentChatController } from './agentChat.js';
-import { AgentVisualPolicy } from './agentVisualPolicy.js';
-import { DesktopSharedAgent } from './desktopSharedAgent.js';
-import { callPresentationApi } from './agentPresentationApi.js';
-import type { DynamicToolCall, DynamicToolResult } from './codexAppServer.js';
 import { installAssetProtocol, registerAssetScheme } from './assetProtocol.js';
 import {
   createDeck,
@@ -112,10 +98,9 @@ import {
   type WindowContinuityState,
 } from './windows.js';
 import {
-  defaultClientDir, startCollabServer, type HtmlDraftPreview, type NativeDraftPreview,
-  type RunningCollabServer,
+  defaultClientDir, startCollabServer, type RunningCollabServer,
 } from '../server/collabServer.js';
-import { agentClipboardPrompt, collaborationInviteUrl } from '../server/agentBrief.js';
+import { LocalAgentRegistry } from '../server/localAgents.js';
 import {
   chooseAudienceDisplay,
   chooseDisplayById,
@@ -123,6 +108,15 @@ import {
   shouldShowAudienceWindow,
   swappedPresentationDisplays,
 } from './presentationDisplays.js';
+
+/** Pick a loopback URL for the local bridge and a reachable URL for people. */
+function collaborationInviteUrl(urls: string[], deckId: string, agent = false): string | null {
+  const base = agent
+    ? (urls.find((url) => url.includes('127.0.0.1')) ?? urls[0])
+    : (urls.find((url) => !url.includes('127.0.0.1')) ?? urls[0]);
+  if (!base) return null;
+  return `${base}?deck=${encodeURIComponent(deckId)}${agent ? '&agent=1' : ''}`;
+}
 
 /**
  * Main process: owns the filesystem, ffmpeg and the windows. The renderer never
@@ -136,140 +130,25 @@ registerAssetScheme();
 
 /**
  * Each open presentation lives in its own editor window, with its own session,
- * watchers and satellite windows; see `deckWindows.ts`. Collaboration and the
- * embedded Agent chat are the exception: both host one authoritative server
- * pinned to a single deck, and the agent's sign-in is a single machine-wide
- * login, so they stay one-at-a-time for the whole app. `collabOwner` is the
- * document that holds the session, so a second presentation asking to share is
- * told one is already running instead of quietly taking it over.
+ * watchers and satellite windows; see `deckWindows.ts`. Collaboration and a
+ * filesystem-agent session each host one authoritative server pinned to a
+ * single deck, so they stay one-at-a-time for the whole app. `collabOwner` is
+ * the document that holds the session, so a second presentation asking to
+ * share is told one is already running instead of quietly taking it over.
  */
 let collabServer: RunningCollabServer | null = null;
 let collabMode: 'window' | 'agent-background' | 'collaboration-background' | null = null;
 let collabOwner: DeckWindowState | null = null;
 let agentSessionReturn: Promise<void> | null = null;
 let quitting = false;
-const agentChatStateListeners = new Set<(
-  state: AgentChatState,
-  conversationKey: string,
-) => void>();
-const agentChat = new AgentChatController({
-  // DeckWerk owns its embedded agent login. Switching it must not sign the
-  // user's other Codex clients in or out.
-  codexHome: join(app.getPath('userData'), 'agent-codex'),
-  openExternal: async (url) => {
-    const parsed = new URL(url);
-    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
-      throw new Error(`Refusing to open unsupported sign-in URL: ${parsed.protocol}`);
-    }
-    await shell.openExternal(url);
-  },
-  onState: (state, conversationKey) => {
-    // The desktop conversation belongs to whichever window has that deck open;
-    // a partitioned key is a shared-server browser conversation, not a window's.
-    const owner = conversationKey === '' ? stateForDeckDir(state.deckPath) : null;
-    if (owner && !owner.editor.isDestroyed()) {
-      owner.editor.webContents.send(IPC.agentChatState, state);
-    }
-    for (const listener of agentChatStateListeners) listener(state, conversationKey);
-  },
-  onDynamicToolCall: handleAgentDynamicTool,
-});
-const desktopSharedAgent = new DesktopSharedAgent({
-  controller: agentChat,
-  subscribe: (listener) => {
-    agentChatStateListeners.add(listener);
-    return () => agentChatStateListeners.delete(listener);
-  },
-});
-const agentVisualPolicy = new AgentVisualPolicy();
+const localAgents = new LocalAgentRegistry();
+let desktopAgentParticipantId: string | null = null;
 
-async function handleAgentDynamicTool(call: DynamicToolCall): Promise<DynamicToolResult> {
-  if (call.tool === 'presentation_api') {
-    const hosted = collabOwner?.session;
-    if (!collabServer || !hosted) {
-      throw new Error('The deck-scoped slide server is not running');
-    }
-    return callPresentationApi(call, { port: collabServer.port, deckPath: hosted.dir });
-  }
-  if (call.tool !== 'browser_open') throw new Error(`Unknown DeckWerk tool: ${call.tool}`);
-  const args = call.arguments && typeof call.arguments === 'object'
-    ? call.arguments as Record<string, unknown>
-    : {};
-  if (typeof args.url !== 'string') throw new Error('browser_open requires an absolute URL');
-  const requestedUrl = new URL(args.url);
-  const collaborationOrigin = collabServer ? `http://127.0.0.1:${collabServer.port}` : undefined;
-  const visual = agentVisualPolicy.decide(call.turnId, requestedUrl, collaborationOrigin);
-  const url = visual.url;
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-    throw new Error(`browser_open only supports HTTP(S), not ${url.protocol}`);
-  }
-  const numberInRange = (value: unknown, fallback: number, min: number, max: number) => {
-    const number = typeof value === 'number' && Number.isFinite(value) ? Math.round(value) : fallback;
-    return Math.min(max, Math.max(min, number));
-  };
-  const width = numberInRange(args.width, 1440, 320, 2560);
-  const height = numberInRange(args.height, 900, 240, 1600);
-  const waitMs = numberInRange(args.waitMs, 250, 0, 5000);
-  if (visual.duplicate) {
-    return {
-      success: true,
-      contentItems: [{
-        type: 'inputText',
-        text: JSON.stringify({
-          url: url.href,
-          screenshot: 'duplicate-suppressed',
-          instruction: 'Reuse the visual already returned in this turn. Do not add another capture to model context.',
-        }),
-      }],
-    };
-  }
-  const win = new BrowserWindow({
-    width,
-    height,
-    show: false,
-    useContentSize: true,
-    webPreferences: {
-      offscreen: true,
-      backgroundThrottling: false,
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true,
-    },
-  });
-  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
-  try {
-    await Promise.race([
-      win.loadURL(url.href),
-      new Promise<never>((_resolve, reject) => setTimeout(
-        () => reject(new Error(`Timed out opening ${url.href}`)),
-        30_000,
-      )),
-    ]);
-    await win.webContents.executeJavaScript('document.fonts.ready.then(() => true)');
-    await win.webContents.executeJavaScript(
-      'Promise.all([...document.images].map((image) => image.decode().catch(() => null))).then(() => true)',
-    );
-    if (waitMs > 0) await new Promise((resolvePromise) => setTimeout(resolvePromise, waitMs));
-    const metadata = await win.webContents.executeJavaScript(`(() => ({
-      title: document.title,
-      url: location.href,
-      text: (document.body?.innerText || '').slice(0, 12000),
-      viewport: { width: innerWidth, height: innerHeight },
-      document: { width: document.documentElement.scrollWidth, height: document.documentElement.scrollHeight },
-    }))()`) as Record<string, unknown>;
-    if (visual.canonicalized) metadata.canonicalizedFrom = requestedUrl.href;
-    const screenshot = (await win.webContents.capturePage()).toDataURL();
-    return {
-      success: true,
-      contentItems: [
-        { type: 'inputText', text: JSON.stringify(metadata) },
-        { type: 'inputImage', imageUrl: screenshot },
-      ],
-    };
-  } finally {
-    if (!win.isDestroyed()) win.destroy();
-  }
-}
+localAgents.subscribe((state, participantId) => {
+  if (participantId !== desktopAgentParticipantId) return;
+  const editor = collabOwner?.editor;
+  if (editor && !editor.isDestroyed()) editor.webContents.send(IPC.agentPanelState, state);
+});
 
 function moveFullscreenWindowToDisplay(
   win: BrowserWindow | null,
@@ -396,6 +275,7 @@ function endBackgroundAgentSession(): Promise<void> {
     return Promise.resolve();
   }
   const owner = collabOwner;
+  const endingAgentSession = collabMode === 'agent-background';
 
   agentSessionReturn = (async () => {
     const closing = collabServer;
@@ -403,7 +283,6 @@ function endBackgroundAgentSession(): Promise<void> {
     collabMode = null;
     collabOwner = null;
     try {
-      if (owner?.session) await agentChat.suspend(owner.session.dir);
       closing?.notifyEnded();
       // Let WebSocket queue the terminal frame before close() terminates peers.
       if (closing) await new Promise<void>((resolvePromise) => setImmediate(resolvePromise));
@@ -422,6 +301,7 @@ function endBackgroundAgentSession(): Promise<void> {
     // The owner is no longer the collaboration's, so address it directly.
     owner.editor.webContents.send(IPC.agentSessionState, { active: false });
   })().finally(() => {
+    if (endingAgentSession) desktopAgentParticipantId = null;
     agentSessionReturn = null;
   });
   return agentSessionReturn;
@@ -756,7 +636,7 @@ app.on('window-all-closed', () => {
 app.on('before-quit', () => {
   quitting = true;
   for (const state of editorStates()) void state.agentRuntime.close();
-  agentChat.close();
+  localAgents.close();
   void collabServer?.close();
 });
 
@@ -822,83 +702,10 @@ function registerHandlers(): void {
   ipcMain.on(IPC.agentResponse, (event, response: AgentResponse) => {
     void requireOwner(event).agentRuntime.respond(response);
   });
-  ipcMain.handle(IPC.agentChatGetState, async (event): Promise<AgentChatState> => {
+  ipcMain.handle(IPC.agentPanelGetState, async (event): Promise<AgentPanelState> => {
     const s = requireSession(event);
-    return agentChat.getState(s.dir);
-  });
-  ipcMain.handle(
-    IPC.agentChatGetTranscript,
-    async (event, request: AgentChatSelectRequest): Promise<AgentChatTranscript | null> => {
-      const s = requireSession(event);
-      if (!request || typeof request.chatId !== 'string') throw new Error('A chat id is required');
-      return agentChat.getTranscript(s.dir, request.chatId);
-    },
-  );
-  ipcMain.handle(
-    IPC.agentChatSelect,
-    async (event, request: AgentChatSelectRequest): Promise<AgentChatState> => {
-      const s = requireSession(event);
-      if (!request || typeof request.chatId !== 'string') throw new Error('A chat id is required');
-      return agentChat.select(s.dir, request.chatId);
-    },
-  );
-  ipcMain.handle(IPC.agentChatLogin, async (event): Promise<AgentChatState> => {
-    const s = requireSession(event);
-    return agentChat.login(s.dir);
-  });
-  ipcMain.handle(IPC.agentChatSwitchAccount, async (event): Promise<AgentChatState> => {
-    const s = requireSession(event);
-    return agentChat.switchAccount(s.dir);
-  });
-  ipcMain.handle(
-    IPC.agentChatSetModel,
-    async (event, request: AgentChatSetModelRequest): Promise<AgentChatState> => {
-      const s = requireSession(event);
-      if (!request || typeof request.model !== 'string') throw new Error('A model is required');
-      return agentChat.setModel(s.dir, request.model);
-    },
-  );
-  ipcMain.handle(
-    IPC.agentChatSetReasoningEffort,
-    async (event, request: AgentChatSetReasoningEffortRequest): Promise<AgentChatState> => {
-      const s = requireSession(event);
-      if (!request || typeof request.effort !== 'string') {
-        throw new Error('A reasoning effort is required');
-      }
-      return agentChat.setReasoningEffort(s.dir, request.effort);
-    },
-  );
-  ipcMain.handle(
-    IPC.agentChatSetFastMode,
-    async (event, request: AgentChatSetFastModeRequest): Promise<AgentChatState> => {
-      const s = requireSession(event);
-      if (!request || typeof request.enabled !== 'boolean') {
-        throw new Error('A fast mode setting is required');
-      }
-      return agentChat.setFastMode(s.dir, request.enabled);
-    },
-  );
-  ipcMain.handle(
-    IPC.agentChatSend,
-    async (event, request: AgentChatSendRequest): Promise<AgentChatState> => {
-      const s = requireSession(event);
-      if (!request || typeof request.text !== 'string') throw new Error('A message is required');
-      return agentChat.send(s.dir, request, async () => {
-        if (!collabServer) throw new Error('The deck-scoped agent session is not running');
-        const deckId = basename(s.dir);
-        const joinUrl = collaborationInviteUrl(collabServer.urls, deckId, true);
-        if (!joinUrl) throw new Error('The agent session has no reachable URL');
-        return agentClipboardPrompt(joinUrl, deckId);
-      });
-    },
-  );
-  ipcMain.handle(IPC.agentChatInterrupt, async (event): Promise<AgentChatState> => {
-    const s = requireSession(event);
-    return agentChat.interrupt(s.dir);
-  });
-  ipcMain.handle(IPC.agentChatReset, async (event): Promise<AgentChatState> => {
-    const s = requireSession(event);
-    return agentChat.reset(s.dir);
+    const participantId = desktopAgentParticipantId ??= randomUUID();
+    return localAgents.getState(s.dir, participantId);
   });
 
   ipcMain.handle(
@@ -925,7 +732,7 @@ function registerHandlers(): void {
     (event, snapshot: DeckSessionSnapshot): void => {
       const state = requireOwner(event);
       const s = requireSession(event);
-      // During an embedded Agent session the collaboration server is the only
+      // During a filesystem Agent session the collaboration server is the only
       // deck.json writer. Present/PDF/web export still live in the main process,
       // so mirror the authoritative renderer state in memory without racing the
       // server's debounced persistence. Like an ordinary save, a mirror that
@@ -1436,14 +1243,39 @@ function registerHandlers(): void {
   // address. A desktop agent runs on this machine and should prefer loopback:
   // browser sandboxes commonly block private-LAN navigation while allowing
   // localhost, which is exactly the surface the editor has launched for it.
-  const copyJoinLink = (urls: string[], deckId: string, agent = false): void => {
-    const joinUrl = collaborationInviteUrl(urls, deckId, agent);
-    if (!joinUrl) return;
+  const shellArgument = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
+  const localAgentHandoff = (
+    urls: string[],
+    deckId: string,
+    participantId: string,
+  ): { url: string; command: string } | null => {
+    const joinUrl = collaborationInviteUrl(urls, deckId, true);
+    if (!joinUrl) return null;
+    const url = new URL(joinUrl);
+    url.searchParams.set('agent', participantId);
+    const launcher = defaultLauncherPath() ?? 'slide-agent';
+    return {
+      url: url.href,
+      command: `${shellArgument(launcher)} connect ${shellArgument(url.href)}`,
+    };
+  };
+  const copyJoinLink = (
+    urls: string[],
+    deckId: string,
+    agentParticipantId?: string,
+  ): { url: string; command: string } | null => {
+    const handoff = agentParticipantId
+      ? localAgentHandoff(urls, deckId, agentParticipantId)
+      : null;
+    const joinUrl = handoff?.url ?? collaborationInviteUrl(urls, deckId, false);
+    if (!joinUrl) return null;
     // The OS clipboard is the developer's, not the test's: an integration run
     // must not overwrite what they were about to paste, nor what a clipboard
     // test running beside this one just put there.
-    if (process.env['DECKWERK_HEADLESS_TEST'] === '1') return;
-    clipboard.writeText(agent ? agentClipboardPrompt(joinUrl, deckId) : joinUrl);
+    if (process.env['DECKWERK_HEADLESS_TEST'] !== '1') {
+      clipboard.writeText(handoff?.command ?? joinUrl);
+    }
+    return handoff;
   };
 
   const stopDeckWatchers = (state: DeckWindowState): void => {
@@ -1466,33 +1298,7 @@ function registerHandlers(): void {
       agentMode,
       clientDir,
       onSessionEnd,
-      sharedAgent: agentMode ? undefined : desktopSharedAgent,
-      sharedAgentAccess: agentMode ? undefined : 'loopback' as const,
-      onHtmlDraft: agentMode ? (draft: HtmlDraftPreview) => {
-        agentChat.setScratchpad(s.dir, {
-          draftId: draft.draftId,
-          slideCount: draft.slideCount,
-          sourceUrl: draft.sourceUrl,
-          importedUrl: draft.importedUrl,
-          comparisonUrl: draft.comparisonUrl,
-          sourceContactSheetUrl: draft.sourceContactSheetUrl,
-          importedContactSheetUrl: draft.importedContactSheetUrl,
-        });
-      } : undefined,
-      onNativeDraft: agentMode ? (draft: NativeDraftPreview) => {
-        agentChat.setScratchpad(s.dir, {
-          draftId: draft.draftId,
-          slideCount: draft.slideCount,
-          sourceUrl: draft.beforeUrl,
-          importedUrl: draft.afterUrl,
-          comparisonUrl: draft.comparisonUrl,
-          sourceContactSheetUrl: draft.beforeUrl,
-          importedContactSheetUrl: draft.afterUrl,
-          sourceLabel: 'Before',
-          importedLabel: 'After',
-        });
-      } : undefined,
-      getAgentChatId: agentMode ? () => agentChat.chatId(s.dir) : undefined,
+      localAgents,
     };
     try {
       return await startCollabServer(base);
@@ -1505,7 +1311,7 @@ function registerHandlers(): void {
 
   /**
    * Start an authoritative HTTP session while keeping the native editor in
-   * place as an ordinary WebSocket peer. Both embedded Agent mode and normal
+   * place as an ordinary WebSocket peer. Both filesystem Agent mode and normal
    * user collaboration use this path; only the invite and shared-Agent policy
    * differ.
    */
@@ -1526,6 +1332,9 @@ function registerHandlers(): void {
     const deckId = basename(s.dir);
     const name = userInfo().username || 'Host';
     const wantedMode = mode === 'agent' ? 'agent-background' : 'collaboration-background';
+    if (mode === 'agent' && !desktopAgentParticipantId) {
+      desktopAgentParticipantId = randomUUID();
+    }
 
     if (collabServer && collabMode !== wantedMode) {
       await endBackgroundAgentSession();
@@ -1546,13 +1355,18 @@ function registerHandlers(): void {
       throw new Error('A different collaboration session is already running');
     }
 
-    copyJoinLink(collabServer.urls, deckId, mode === 'agent');
+    const handoff = copyJoinLink(
+      collabServer.urls,
+      deckId,
+      mode === 'agent' ? desktopAgentParticipantId ?? undefined : undefined,
+    );
     const connection: AgentSessionConnection = {
       active: true,
       deckId,
       name,
       mode,
       wsUrl: `ws://127.0.0.1:${collabServer.port}/ws?deck=${encodeURIComponent(deckId)}`,
+      ...(handoff ? { agentUrl: handoff.url, agentCommand: handoff.command } : {}),
     };
     sendAgentSessionState(connection);
     return connection;
@@ -1578,14 +1392,6 @@ function registerHandlers(): void {
     }
     return startBackgroundSession(event, 'collaboration');
   });
-
-  ipcMain.handle(
-    IPC.workflowStart,
-    async (event, request: WorkflowStartRequest): Promise<WorkflowStartResult> => {
-      const s = requireSession(event);
-      return startWorkflow(s.dir, s.deck, request);
-    },
-  );
 
   ipcMain.handle(IPC.videoPoster, async (event, req: VideoPosterRequest): Promise<VideoPosterResult> => {
     const s = requireSession(event);

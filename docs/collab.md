@@ -32,12 +32,10 @@ editor back through the same continuous handoff. The button only appears (and
 loopback client in a hosted session, i.e. the host machine.
 
 The loopback host also keeps the desktop's **Agent…** control during
-collaboration. It uses the same private account and saved deck conversation as
-the native editor; Agent edits enter the shared transaction stream, so human
-peers see them live, in History, and as Agent presence. Remote collaborators do
-not receive the host's Agent panel or account controls. Starting collaboration
-while the native Agent panel is already active preserves that conversation
-across the handoff.
+collaboration. It explains how to point an existing filesystem agent at the
+deck; it does not run an agent or own an account. Agent edits enter the shared
+transaction stream, so human peers see them live, in History, and as Agent
+presence.
 
 Only one deck can be hosted at a time, across every window the app has open:
 see **Known limits**.
@@ -47,41 +45,24 @@ ship it in `dist/collab`.
 
 ## Agent sessions
 
-The **Agent…** toolbar button starts the established deck-scoped collaboration
-server and opens a compact chat panel beneath the toolbar, backed by Codex App
-Server. The native editor stays visible and joins that server as a collaboration
-peer, so the HTTP API remains the one authoritative writer while the chat is active.
+The **Agent…** toolbar button is onboarding for an agent the user already runs.
+On desktop it shows the open deck folder and the `slide-agent` starting
+commands. In a browser collaboration session it shows a `slide-agent connect`
+command that creates a local mirror of the live deck. DeckWerk has no embedded
+chat, model picker, login, or server-owned agent account.
 
-On the first message in a chat, DeckWerk:
+After that small difference in setup, both surfaces use the same loop:
 
-1. Wraps `AGENT_BRIEF` with the loopback session URL, API origin, and hosted
-   deck ID using `agentClipboardPrompt`—the exact prompt copied by the previous
-   Agent workflow.
-2. Passes that complete prompt as the Codex thread's developer instructions.
-3. Runs turns from a neutral scratch workspace with approvals disabled and
-   network access enabled. The live deck is reachable only through the
-   loopback HTTP API.
-4. Streams text and activity into the dropdown chat panel while API transactions
-   appear in the native editor and History panel. Real-player requests also
-   show the slide the agent is inspecting as a presence dot in the slide rail.
+1. `slide-agent context` reads the outline and current selection.
+2. `slide-agent inspect --html …` or `slide-agent new` creates an authoring file
+   under `edit/`.
+3. Editing and saving that file synchronizes it into the presentation.
 
-Follow-up messages reuse both the Codex thread and live HTTP session. **New
-chat** clears only the Codex thread; **Stop** interrupts the active turn.
-Choosing **Close** in the panel ends the hosted session, flushes the server, and
-returns the already-open editor to ordinary file-backed persistence.
-
-The panel displays the ChatGPT email used by its embedded agent. **Switch
-account** signs out only DeckWerk's isolated Codex profile, discards threads
-created by the previous account, and opens the managed ChatGPT sign-in flow.
-The **Model** picker is populated from that account's live Codex model catalog;
-the server-marked default is selected initially, and changes apply on the next
-message in that deck's conversation.
-
-While a turn is running, the composer remains available: another message
-steers the active turn instead of waiting for it to finish. **Stop** remains a
-separate control. When the selected model advertises a fast service tier, the
-lightning button toggles it; lit means fast/priority service, unlit means the
-standard service tier. Model and speed changes wait until the active turn ends.
+Every accepted save is still compiled into native objects and applied as one
+named, revision-checked transaction. It remains visible to collaborators,
+appears in History, and can be undone normally. The panel's scratchpad shows
+the bridge's current activity and source/imported previews; it is a view of the
+filesystem workflow, not a second authoring interface.
 
 ## Comments
 
@@ -170,7 +151,7 @@ With the flag on:
   then, and `publicRole` defaults to `edit` for the same reason.
 - New and imported decks start **private** to their creator.
 - The deck list is filtered per user and grouped in the picker (yours /
-  shared with you / public); every deck-scoped route — HTTP API, assets,
+  shared with you / public); every deck-scoped route — application requests, assets,
   WebSocket join — enforces the same check, and revoking access closes that
   person's live sockets immediately.
 - **Edit or view-only.** Every grant carries a role, and grants add up: a
@@ -203,28 +184,28 @@ With the flag on:
   manages every deck.
 - Display names come from the tailnet identity; `?name=` and the name prompt
   are ignored.
-- Shared-agent account management (`--shared-agent` login / switch-account),
-  which is host-only without the flag, is admin-only with it: behind serve
-  every request is loopback, so "loopback" can no longer mean "the owner".
+- A remote agent bridge is admitted with the same tailnet identity as the
+  browser participant that requested its connection command. It receives only
+  that person's effective access to the deck.
 
 Without the flag, behavior is byte-for-byte the pre-access server — the
 desktop app's Collaborate/Agent flows never pass it.
 
-### Local agents (`slide-agent connect`)
+### Filesystem agents (`slide-agent connect`)
 
-The standalone server's default agent story is *bring your own*: the toolbar's
-**Agent…** button opens the same chat panel, but instead of a composer it shows
-a command that downloads the server's own bridge (`/deckwerk-connect.mjs`,
-built by `vite.bridge.config.ts` into `dist/collab`, source
-`src/cli/agentConnect.ts` + `connectMain.ts`) and runs it with Node 22+ against
-`'<origin>/?deck=<id>&agent=<participant>'`. Nothing is installed. That bridge:
+The standalone server uses the same *bring your own filesystem agent* model as
+desktop. The toolbar's **Agent…** button shows a command that downloads the
+server's bridge (`/deckwerk-connect.mjs`, built by `vite.bridge.config.ts` into
+`dist/collab`, source `src/cli/agentConnect.ts` + `connectMain.ts`) and runs it
+with Node 22+ against `'<origin>/?deck=<id>&agent=<participant>'`. Nothing is
+installed. That bridge:
 
 - mirrors the deck folder into `~/.deckwerk/mirrors/<host>/<deck>` (or
   `--dir`): everything the server lists under `GET /api/agent-mirror/files`
   (assets, fonts, …) plus `deck.json`, the theme and `notes.md` from the live
   session, an `AGENTS.md` brief rewritten for the mirror, a `CLAUDE.md` that
   imports it, and a generated `./deck` command (`src/cli/deckHelper.mjs`) that
-  takes `slide-agent`'s verbs and answers them over the HTTP API
+  takes `slide-agent`'s verbs and answers them over the bridge's private HTTP transport
   (`/api/agent-mirror/export.html`, `new.html`, `validate`, plus the existing
   comments, context, render and upload routes);
 - joins the room as a WebSocket peer whose hello carries
@@ -245,50 +226,20 @@ built by `vite.bridge.config.ts` into `dist/collab`, source
   (`PUT /api/agent-mirror/file`);
 - reports what it does with `agentEvent` frames, which the server's
   `LocalAgentRegistry` (`src/server/localAgents.ts`) turns into the panel's
-  activity log through the existing `/api/shared-agent/*` state stream;
-- starts the agent CLI in the mirror (`claude`, `codex`, `--agent <cmd>`, or
-  `--no-agent`) and disconnects when it exits.
+  activity log and scratchpad;
+- stays running as the filesystem bridge while the person points their existing
+  agent at the mirror. `--agent <cmd>` is an explicit convenience opt-in; the
+  bridge never discovers or launches an agent by default.
 
-The panel also offers **Copy a brief**: a prompt for an agent that drives the
-HTTP API directly with `agentSession=<participant>` on each call. The registry
-marks such a participant connected on the first tagged request (`touchHttp`)
-and logs applies and comments, so the panel and scratchpad follow it too.
-`slide-agent connect` from a checkout runs the same bridge.
+`slide-agent connect` from a checkout runs the same bridge. The generated
+mirror contains the deck's `AGENTS.md` and a local command shim, so the agent
+uses the same documented verbs as it does beside a desktop deck. The HTTP and
+WebSocket routes beneath the bridge are transport internals, not a second
+public authoring API.
 
-`--no-local-agents` disables it; `--shared-agent` replaces it. With `--access`
-the bridge must be admitted under the same tailnet login as the browser that
-announced the participant id.
-
-### Shared-agent test mode
-
-For demos, the headless server can run one Codex App Server identity that every
-browser participant shares:
-
-```bash
-npm run collab -- path/to/decks --shared-agent
-```
-
-The server machine must have the `codex` executable available. DeckWerk finds
-the copy bundled with ChatGPT on macOS or `codex` on `PATH`; set
-`DECKWERK_CODEX_PATH=/absolute/path/to/codex` to select one explicitly.
-
-Open the printed `http://127.0.0.1:…` URL on the server machine, choose a deck,
-open **Shared Agent**, and sign in with the ChatGPT account that should fund and
-own the demo agent. Login and account switching are accepted only over loopback;
-remote collaborators can use the resulting agent but cannot replace its account.
-
-The credentials live in an isolated Codex home at
-`~/.deckwerk/shared-agent-codex`, not in the normal Codex profile. Override it
-with `--agent-codex-home <dir>` or `DECKWERK_AGENT_CODEX_HOME`; set the visible
-name with `--agent-name "Workshop Agent"`. Every browser participant gets an
-independent conversation for each deck, so **New chat**, Stop, model settings,
-follow-ups, and transcript selection affect only that participant. The browser
-identity survives reloads through local storage; these test-mode conversations
-remain in server memory until the headless server exits.
-
-This is intentionally a trusted-network test mode: all participants share the
-same account and model allowance, even though their conversations are separate.
-Do not expose it to an untrusted network.
+`--no-local-agents` disables agent connections. With `--access` the bridge
+must be admitted under the same tailnet login as the browser that announced
+the participant id.
 
 ## In the client
 
@@ -402,8 +353,8 @@ the browser because nothing sets the inspector hooks that reveal them.
 
 ## Not in the browser client (v1)
 
-Agent workflow launching, and the destructive "Edit w/ ffmpeg…" trim-and-crop
-and "Rasterize & paint…" media editors. Like the desktop app, there is no
+The destructive "Edit w/ ffmpeg…" trim-and-crop and "Rasterize & paint…"
+media editors. Like the desktop app, there is no
 raw-CSS sidebar tab; theme.css is edited on disk (the server watcher
 broadcasts it) or through theme adoption. The full list, with what each one
 would take, is in [Desktop → web feature parity](desktop-web-parity.md).
@@ -412,22 +363,18 @@ would take, is in [Desktop → web feature parity](desktop-web-parity.md).
 
 - **One hosted session per desktop app, across all its windows.** The desktop
   app can have several presentations open at once, each in its own window, but
-  Collaborate and the embedded Agent chat are not per window: both start one
-  authoritative server pinned to a single deck, and the embedded agent has a
-  single machine-wide sign-in (`agent-codex` under the app's user data). A
-  second window asking to share while another window's session is running is
-  told to end that one first. What this implies:
+  collaboration hosting is not per window: it starts one authoritative server
+  pinned to a single deck. A second window asking to share while another
+  window's session is running is told to end that one first. What this implies:
   - You cannot host two presentations for co-editing at the same time from one
-    app, and you cannot run an Agent chat on one deck while another window
-    hosts a different one.
+    app.
   - Ending the session, or closing the window that started it, hands the
     ability back; the deck's disk watcher resumes for that window only.
   - Nothing here constrains the standalone server (**Running a standalone
     server**, above), which is already multi-deck and multi-user: it keeps a
     room per deck and is reached through the browser client, not through any
     desktop session.
-  - Making it per window would mean a server and port per open deck plus
-    splitting the shared agent login and shared-agent routing. That is a
+  - Making it per window would mean a server and port per open deck. That is a
     deliberate deferral, not an oversight.
 - Do not open the same deck folder in the Electron app while the collab
   server is hosting it: both are debounced whole-file writers and will

@@ -7,7 +7,7 @@ import { setIdSuffix } from '@shared/geometry.js';
 import { EditorCanvas } from '../editor/canvas.js';
 import { SpeakerNotesDrawer } from '../editor/speakerNotesDrawer.js';
 import { createDeckWerkButton } from '../editor/aboutDialog.js';
-import { installAgentApi, setAgentName } from './agentApi.js';
+import { setCommentAuthor } from '../editor/comments.js';
 import { CssEditor } from '../editor/cssEditor.js';
 import {
   createToolbarPicker,
@@ -41,11 +41,10 @@ import { createConnectionNotice } from './connectionNotice.js';
 import { createDeckOnServer, folderOf, importKeynoteToServer, importPowerPointToServer, showDeckPicker, showShareDialog } from './deckPicker.js';
 import { installNetApi } from './netApi.js';
 import { PresenceOverlay } from './presenceOverlay.js';
-import { installAgentWorkspace } from './agentWorkspace.js';
-import { createSharedAgentApi, type SharedAgentBrowserApi } from './sharedAgentApi.js';
+import { createAgentPanelApi, type AgentPanelBrowserApi } from './agentPanelApi.js';
 import { openEndCollaborationPopover } from './endCollaborationPopover.js';
 import { decodeEditorView, restoreEditorView } from '@shared/editorView.js';
-import { AgentChatPanel } from '../editor/agentChatPanel.js';
+import { AgentPanel } from '../editor/agentPanel.js';
 import { startPresenting } from './presentOverlay.js';
 import { rangeForSlideSelection } from '@shared/presentationRange.js';
 import { setRenderInvariantChecks } from '../editor/renderInvariants.js';
@@ -100,7 +99,7 @@ interface ServerConfig {
   hosted: boolean;
   deckId: string | null;
   urls: string[];
-  sharedAgent: null | {
+  agentPanel: null | {
     enabled: true;
     name: string;
     canManageAccount: boolean;
@@ -112,7 +111,7 @@ interface ServerConfig {
   access?: null | { user: string; name: string; admin: boolean };
 }
 
-let serverConfig: ServerConfig = { hosted: false, deckId: null, urls: [], sharedAgent: null, access: null };
+let serverConfig: ServerConfig = { hosted: false, deckId: null, urls: [], agentPanel: null, access: null };
 
 async function fetchServerConfig(): Promise<ServerConfig> {
   try {
@@ -121,7 +120,7 @@ async function fetchServerConfig(): Promise<ServerConfig> {
   } catch {
     // Older server without /api/config; behave like the multi-deck server.
   }
-  return { hosted: false, deckId: null, urls: [], sharedAgent: null, access: null };
+  return { hosted: false, deckId: null, urls: [], agentPanel: null, access: null };
 }
 
 /* --- deck selection -------------------------------------------------------- */
@@ -133,9 +132,8 @@ let initialViewPending = initialView !== null;
 const PRESENT_NEEDS_SERVER = 'Presenting needs the server — waiting to reconnect.';
 let statusMessage = '';
 let statusBusy = false;
-let participantName = '';
-let sharedAgentPanel: AgentChatPanel | null = null;
-let sharedAgentBrowserApi: SharedAgentBrowserApi | null = null;
+let agentPanel: AgentPanel | null = null;
+let agentPanelBrowserApi: AgentPanelBrowserApi | null = null;
 function setStatusMessage(text: string): void {
   statusMessage = text;
   statusBusy = false;
@@ -225,8 +223,6 @@ cssEditor.onChange = () => {
 };
 // The documented HTML-first surface and visible agent workspace share this
 // compiler and the live theme buffer.
-installAgentApi(store, deckId, { theme: () => cssEditor.getValue() });
-installAgentWorkspace(store);
 const presence = new PresenceOverlay(canvas, store);
 rail.presenceForSlide = (slideId) => presence.peersOnSlide(slideId);
 
@@ -302,9 +298,8 @@ const bridge = new CollabBridge(wsUrl, undefined, {
     // still-selected objects must be published to the server again.
     lastPresenceKey = '';
     lastCursorKey = '';
-    participantName = welcome.self.name;
     setIdSuffix(welcome.clientId.slice(0, 4));
-    setAgentName(welcome.self.name);
+    setCommentAuthor(welcome.self.name);
     connectionState = `connected as ${welcome.self.name}`;
     // The first welcome opens the document; every later one is a reconnect of
     // the same session, where the revision log and the selection must survive.
@@ -490,26 +485,6 @@ function localAgentSessionUrl(deck: string, participantId: string): string {
   session.searchParams.set('deck', deck);
   session.searchParams.set('agent', participantId);
   return session.href;
-}
-
-/** A prompt for an agent that will work the HTTP API directly, no bridge. */
-function localAgentBrief(deck: string, participantId: string): string {
-  const origin = location.origin;
-  const query = `deck=${encodeURIComponent(deck)}&agentSession=${encodeURIComponent(participantId)}`;
-  return `# Live presentation editing session
-
-Session URL: ${localAgentSessionUrl(deck, participantId)}
-API origin: ${origin}
-Deck ID: ${deck}
-
-You are editing a DeckWerk presentation that people are working on live. Everything
-happens over its HTTP API; start by reading the complete guide:
-
-    curl -s '${origin}/api/brief?${query}'
-
-Append \`${query}\` to every /api request: that is how your work is attributed
-to me and how your previews open in my browser. Read /api/comments before authoring —
-comments are the task list — and check the playerUrl a successful apply returns.`;
 }
 
 async function copyText(text: string): Promise<void> {
@@ -719,18 +694,18 @@ function buildToolbar(): void {
     secondaryActions.append(barButton('Share…', share));
     compactSecondaryEntries.push({ label: 'Share…', action: share });
   }
-  if (serverConfig.sharedAgent?.enabled) {
-    const toggleSharedAgent = (): void => sharedAgentPanel?.toggle();
-    const agentLabel = serverConfig.sharedAgent.personal || serverConfig.sharedAgent.mode === 'local'
+  if (serverConfig.agentPanel?.enabled) {
+    const toggleAgentPanel = (): void => agentPanel?.toggle();
+    const agentLabel = serverConfig.agentPanel.personal || serverConfig.agentPanel.mode === 'local'
       ? 'Agent…'
       : 'Shared Agent';
     const agent = barButton(
       agentLabel,
-      toggleSharedAgent,
+      toggleAgentPanel,
     );
     agent.id = 'agent-chat-trigger';
     secondaryActions.append(agent);
-    compactSecondaryEntries.push({ label: agentLabel, action: toggleSharedAgent });
+    compactSecondaryEntries.push({ label: agentLabel, action: toggleAgentPanel });
   }
   if (serverConfig.hosted) {
     const copyInviteLink = (): void => {
@@ -862,14 +837,7 @@ function renderStatus(): void {
     const invite = serverConfig.urls.find((u) => !u.includes('127.0.0.1')) ?? serverConfig.urls[0];
     if (invite) bits.push(`invite: ${invite}`);
   }
-  if (serverConfig.sharedAgent?.enabled && serverConfig.sharedAgent.mode !== 'local') {
-    bits.push(serverConfig.sharedAgent.personal
-      ? `${serverConfig.sharedAgent.name}: host agent`
-      : `${serverConfig.sharedAgent.name}: shared test mode`);
-  }
-  // Visible in any screenshot or accessibility read of the page, so an agent
-  // that lands here cold finds its onboarding without guessing endpoints.
-  bits.push('agents: GET /api/brief · await window.agent.seeComments()');
+  if (serverConfig.agentPanel?.enabled) bits.push('your filesystem agent can connect from Agent…');
   el('status').textContent = bits.join('  ·  ');
   el('status').dataset.busy = statusBusy ? 'true' : 'false';
   el('status').setAttribute('aria-busy', String(statusBusy));
@@ -879,27 +847,18 @@ function renderStatus(): void {
 // before first paint of the buttons keeps New/Open/Import from flashing in.
 void fetchServerConfig().then((config) => {
   serverConfig = config;
-  if (config.sharedAgent?.enabled && !sharedAgentPanel) {
-    sharedAgentBrowserApi = createSharedAgentApi(deckId!, () => participantName || 'Guest');
-    const local = config.sharedAgent.mode === 'local';
-    sharedAgentPanel = new AgentChatPanel({
-      api: sharedAgentBrowserApi.api,
+  if (config.agentPanel?.enabled && !agentPanel) {
+    agentPanelBrowserApi = createAgentPanelApi(deckId!);
+    const local = config.agentPanel.mode === 'local';
+    agentPanel = new AgentPanel({
+      api: agentPanelBrowserApi.api,
       currentDeckPath: () => deckId,
-      title: config.sharedAgent.personal || local
-        ? config.sharedAgent.name
-        : `${config.sharedAgent.name} · test mode`,
-      userRoleLabel: config.sharedAgent.personal || local ? 'You' : 'Participant',
-      canManageAccount: config.sharedAgent.canManageAccount,
-      ...(local ? {
-        localAgent: {
-          connectCommand: localAgentConnectCommand(deckId!, sharedAgentBrowserApi.participantId),
-          brief: localAgentBrief(deckId!, sharedAgentBrowserApi.participantId),
-        },
-      } : {}),
+      title: config.agentPanel.name,
+      connectCommand: localAgentConnectCommand(deckId!, agentPanelBrowserApi.participantId),
     });
     // The bridge a person starts from that panel pairs with this browser's
     // selection through the participant id announced in the hello.
-    if (local) bridge.setParticipant(sharedAgentBrowserApi.participantId);
+    if (local) bridge.setParticipant(agentPanelBrowserApi.participantId);
   }
   buildToolbar();
   renderStatus();
@@ -914,4 +873,4 @@ renderStatus();
 
 // Console access for debugging and driving a session from devtools.
 Object.assign(window, { store, canvas, rail, bridge });
-window.addEventListener('beforeunload', () => sharedAgentBrowserApi?.close());
+window.addEventListener('beforeunload', () => agentPanelBrowserApi?.close());

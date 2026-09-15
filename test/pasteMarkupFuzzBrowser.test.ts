@@ -153,6 +153,14 @@ describe.skipIf(!electronBinary)('pasted markup survives being edited', () => {
       browser.log,
     );
     editor = await Cdp.connect(target.webSocketDebuggerUrl!);
+    // Bare Xvfb has no window manager to grant the Electron window input
+    // focus. Clipboard writes can still resolve in that state while the
+    // following native paste command lands nowhere, leaving the fixture text
+    // unchanged. Keep this target focused the same way the dedicated
+    // clipboard browser suite does.
+    await editor.call('Emulation.setFocusEmulationEnabled', { enabled: true });
+    await editor.call('Page.bringToFront');
+    await editor.evaluate('window.focus()');
     await eventually(async () => editor!.evaluate<boolean>(`(
       document.getElementById('status')?.textContent?.includes('connected as Paste Fuzz') === true
       && Boolean(document.querySelector('${PASTE_CONTENT}'))

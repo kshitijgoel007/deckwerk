@@ -391,9 +391,9 @@ export function validateDeckIntegrity(deck: Deck, assetExists?: (src: string) =>
     for (const element of slide.elements) {
       if (elementIds.has(element.id)) errors.push(`Duplicate element id: ${element.id}`);
       elementIds.add(element.id);
-      if (assetExists && (element.type === 'image' || element.type === 'video')) {
+      if (assetExists && (element.type === 'image' || element.type === 'video' || element.type === 'web')) {
         if (!assetExists(element.src)) errors.push(`Missing asset for ${element.id}: ${element.src}`);
-        if (element.type === 'video' && element.poster && !assetExists(element.poster)) {
+        if ((element.type === 'video' || element.type === 'web') && element.poster && !assetExists(element.poster)) {
           errors.push(`Missing poster for ${element.id}: ${element.poster}`);
         }
       }

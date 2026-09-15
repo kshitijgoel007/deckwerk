@@ -41,7 +41,7 @@ export interface HistoryItem {
   label: string;
   /** Longer explanation shown beneath the compact history title. */
   description?: string;
-  /** Saved embedded Agent conversation that produced this state. */
+  /** Filesystem Agent session that produced this state (legacy persisted key). */
   agentChatId?: string;
   /**
    * What this entry edited, e.g. `text:<elementId>`. Purely a display hint:

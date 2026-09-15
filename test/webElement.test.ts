@@ -11,6 +11,7 @@ import {
 import { referencedAssets } from '../src/main/exportDeck.js';
 import { EXIT_ERROR, EXIT_OK, runAgentCli } from '../src/cli/agentCli.js';
 import { createDeck, loadDeck } from '../src/main/deckStore.js';
+import { validateDeckIntegrity } from '../src/shared/agent.js';
 
 /**
  * A `web` element is a sandboxed page shown live inside a slide. These tests
@@ -63,6 +64,7 @@ describe('web element', () => {
     expect(html).toContain('data-element="web"');
     expect(html).toContain('data-src="assets/web/chart.html"');
     expect(html).toContain('data-poster="assets/web/chart.png"');
+    expect(html).toContain('object-fit:contain');
     expect(html).toContain('data-interactive="false"');
     // The stand-in inside is paint, not an object of its own.
     expect(html).toContain('<img data-element="none"');
@@ -76,6 +78,18 @@ describe('web element', () => {
       src: 'assets/web/page.html', poster: 'assets/web/page.png', interactive: true, title: '',
     });
     expect([...referencedAssets(deck)]).toEqual(['assets/web/page.html', 'assets/web/page.png']);
+  });
+
+  it('validates the page and poster as assets', () => {
+    const deck = emptyDeck();
+    deck.slides[0].elements.push({
+      id: 'w', type: 'web', x: 0, y: 0, w: 1920, h: 1080, rot: 0, z: 1, opacity: 1, class: [], style: {},
+      src: 'assets/web/missing.html', poster: 'assets/web/missing.png', interactive: true, title: '',
+    });
+    expect(validateDeckIntegrity(deck, () => false)).toEqual([
+      'Missing asset for w: assets/web/missing.html',
+      'Missing poster for w: assets/web/missing.png',
+    ]);
   });
 });
 
@@ -167,12 +181,16 @@ describe('slide-agent web import', { timeout: 30_000 }, () => {
     await createDeck(dir, 'Deck');
     await writeFile(join(root, 'chart.html'), '<!doctype html><html><head><title>Chart</title></head><body style="margin:0"><div id="c" style="width:100%;height:100vh;background:#def"></div><script>document.getElementById("c").textContent = "ok";</script></body></html>');
 
+    const checked = await cli(root, 'web', 'check', 'chart.html', '--size', '1200x600');
+    expect(checked.code, checked.stderr).toBe(EXIT_OK);
     const result = await cli(root, 'web', 'add', dir, 'chart.html', '--size', '1200x600');
     expect(result.code, result.stderr).toBe(EXIT_OK);
     const reply = JSON.parse(result.stdout);
     expect(reply.src).toMatch(/^assets\/web\/chart\.[0-9a-f]{8}\.html$/);
     expect(reply.markup).toContain(`data-src="${reply.src}"`);
     expect(reply.markup).toContain('style="width:1200px;height:600px"');
+    expect(reply.cacheHit).toBe(true);
+    expect(reply.durationMs).toBeTypeOf('number');
     // Poster capture is best-effort: a source checkout may not have a built
     // export player or a browser available. When capture succeeds, both the
     // reply and authoring markup point at the staged image.
@@ -219,5 +237,16 @@ describe('slide-agent web import', { timeout: 30_000 }, () => {
     await writeFile(join(root, 'notes.txt'), 'plain');
     const result = await cli(root, 'web', 'import', dir, 'notes.txt');
     expect(result.code).toBe(EXIT_ERROR);
+  });
+
+  it('reports visible labels clipped by an overflow-hidden page', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'web-check-clipped-'));
+    cleanup.push(root);
+    await writeFile(join(root, 'clipped.html'), '<!doctype html><html><body style="margin:0;overflow:hidden"><span style="position:absolute;left:-30px;top:20px">Clipped label</span><script>window.ready=true</script></body></html>');
+    const result = await cli(root, 'web', 'check', 'clipped.html', '--size', '400x200');
+    expect(result.code).toBe(EXIT_ERROR);
+    expect(JSON.parse(result.stdout).problems).toEqual([
+      expect.stringMatching(/visible text\/control box.*may be clipped/),
+    ]);
   });
 });

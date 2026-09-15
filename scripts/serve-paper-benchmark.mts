@@ -2,6 +2,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { createDeck, saveDeck } from '../src/main/deckStore.js';
 import { defaultClientDir, startCollabServer } from '../src/server/collabServer.js';
+import { LocalAgentRegistry } from '../src/server/localAgents.js';
 
 const deckId = 'paper-showcase-benchmark';
 const root = resolve(
@@ -43,7 +44,7 @@ const clientDir = defaultClientDir(resolve(import.meta.dirname, '..'));
 const server = await startCollabServer({
   rootDir: decksDir,
   hostedDeckId: deckId,
-  agentMode: true,
+  localAgents: new LocalAgentRegistry({ name: 'Paper design agent' }),
   draftArchiveDir: draftsDir,
   clientDir,
   host: '0.0.0.0',
@@ -58,7 +59,7 @@ const session = {
   prompt: resolve('test/fixtures/agent-eval/paper-showcase-prompt.md'),
   humanUrl: `http://127.0.0.1:${port}/?deck=${deckId}&name=Vincent`,
   playerUrl: `http://127.0.0.1:${port}/present.html?deck=${deckId}&slide=1&agent=1`,
-  agentUrls: server.urls.map((url) => `${url}/?deck=${deckId}&name=Paper+Design+Agent&agent=1`),
+  urls: server.urls.map((url) => `${url}/?deck=${deckId}&name=Paper+Design+Evaluator`),
 };
 await writeFile(join(root, 'session.json'), JSON.stringify(session, null, 2), 'utf8');
 process.stdout.write(`${JSON.stringify(session)}\n`);

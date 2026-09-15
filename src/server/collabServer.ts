@@ -10,9 +10,8 @@ import { basename, dirname, extname, join, normalize, resolve } from 'node:path'
 import { isIP } from 'node:net';
 import { pathToFileURL } from 'node:url';
 import { WebSocketServer, type WebSocket } from 'ws';
-import { createDeck, importAsset, loadTheme, resolveAsset } from '../main/deckStore.js';
+import { createDeck, importAsset, importWebPage, loadTheme, resolveAsset } from '../main/deckStore.js';
 import { exportDeck, webExportUnavailableReason } from '../main/exportDeck.js';
-import { AGENT_BRIEF, agentClipboardPrompt } from './agentBrief.js';
 import { capabilities } from '../shared/capabilities.js';
 import { probeMedia } from '../main/ffmpeg.js';
 import { ClientMessageSchema, COLLAB_PROTOCOL_VERSION, type PresenceState, type ServerMessage } from '../shared/collab.js';
@@ -30,11 +29,13 @@ import { deckRevision } from '../main/agentRuntime.js';
 import { applyAgentTransaction, validateDeckIntegrity, type AgentOperation } from '../shared/agent.js';
 import { NativeEditRequestSchema, applyNativeEdits, nativeEditContract } from '../shared/nativeEdits.js';
 import { SlideSchema, type Deck, type Slide, type SlideElement } from '../shared/deck.js';
-import type { AgentChatState } from '../shared/ipc.js';
-import type { SharedAgentRuntimeLike } from './sharedAgent.js';
+import { deckOutline } from '../shared/deckDigest.js';
+import type { AgentPanelState } from '../shared/ipc.js';
 import type { LocalAgentRegistry } from './localAgents.js';
 import { planHtmlReplacement } from './htmlReplacement.js';
 import { htmlDraftWorkflow, type HtmlDraftWorkflow } from './htmlDraftWorkflow.js';
+import { injectWebBridgeRuntime } from '../shared/webBridge.js';
+import { checkWebPage } from '../cli/renderSlides.js';
 import {
   canAccessDeck,
   canEditDeck,
@@ -191,25 +192,14 @@ export interface CollabServerOptions {
   agentMode?: boolean;
   /** Optional evaluation-only folder that receives every submitted HTML draft. */
   draftArchiveDir?: string;
-  /** Publish the newest HTML work-in-progress to the embedded agent chat. */
+  /** Publish the newest HTML compile to the filesystem agent scratchpad. */
   onHtmlDraft?: (draft: HtmlDraftPreview) => void;
   /** Publish the newest native Before/After work-in-progress to the scratchpad. */
   onNativeDraft?: (draft: NativeDraftPreview) => void;
-  /** Attribute Agent HTTP edits to the embedded conversation that made them. */
-  getAgentChatId?: (deckId: string) => string | null;
-  /**
-   * Browser-backed Agent runtime. Headless test mode exposes it to every
-   * participant; the desktop uses sharedAgentAccess to keep its private Agent
-   * on the loopback host. Account management always remains loopback-only.
-   */
-  sharedAgent?: SharedAgentRuntimeLike;
-  /** Limit an app-owned Agent panel to the host while people still collaborate. */
-  sharedAgentAccess?: 'all' | 'loopback';
   /**
    * Let every participant connect their own local agent (`slide-agent
-   * connect`). Used when no server-owned `sharedAgent` is configured; the
-   * browser's Agent panel then shows the connect command instead of a
-   * composer, and bridges pair with participants over the WebSocket.
+   * connect`). The browser panel shows the handoff command and bridges pair
+   * with participants over the WebSocket.
    */
   localAgents?: LocalAgentRegistry;
   /** Override the external Keynote adapter in focused server tests. */
@@ -249,11 +239,10 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
   const host = options.host ?? '0.0.0.0';
   const hostedDeckId = options.hostedDeckId;
   const agentMode = Boolean(options.agentMode);
-  // A server-owned agent takes the panel when both are configured; otherwise
-  // participants' own local agents stand behind the same routes and streams.
-  const localAgents = options.sharedAgent ? undefined : options.localAgents;
-  const sharedAgent = options.sharedAgent ?? localAgents;
-  const sharedAgentAccess = options.sharedAgentAccess ?? 'all';
+  const localAgents = options.localAgents;
+  // Kept as a local alias while the private panel transport is renamed. This
+  // is only connection/activity state; DeckWerk never owns or invokes an agent.
+  const sharedAgent = localAgents;
   const accessControl = options.accessControl
     ? { admin: normalizeLogin(options.accessControl.admin) }
     : null;
@@ -531,7 +520,6 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
         ...(options.agentMode
           ? {
               label: 'The Agent updated the deck through its file-based authoring workspace.',
-              agentChatId: options.getAgentChatId?.(deckId) ?? undefined,
             }
           : {}),
       }),
@@ -573,30 +561,27 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
   const isHostRequest = (request: IncomingMessage): boolean => accessControl
     ? resolveIdentity(request, accessControl)?.login === accessControl.admin
     : isLoopbackRequest(request);
-  const canUseSharedAgent = (request: IncomingMessage): boolean => Boolean(sharedAgent)
-    && (sharedAgentAccess === 'all' || isHostRequest(request));
+  const canUseSharedAgent = (_request: IncomingMessage): boolean => Boolean(sharedAgent);
 
   const agentChatId = (deckId: string, participantId: string | null): string | null => {
     if (sharedAgent && participantId) return sharedAgent.chatId(deckDirOf(deckId), participantId);
-    return options.getAgentChatId?.(deckId) ?? null;
+    return null;
   };
 
   const publicAgentState = (
-    state: AgentChatState,
+    state: AgentPanelState,
     deckId: string,
-    canManageAccount: boolean,
-  ): AgentChatState => ({
+    _canManageAccount: boolean,
+  ): AgentPanelState => ({
     ...state,
     // Never expose the server's absolute deck path or the demo owner's email
     // to remote participants. The loopback owner retains normal account UI.
     // A participant's own local agent is theirs to see by name.
     deckPath: deckId,
-    accountLabel: canManageAccount || localAgents
-      ? state.accountLabel
-      : sharedAgent?.name ?? 'Shared Agent',
+    agentName: state.agentName,
   });
 
-  const emitSharedAgentState = (state: AgentChatState, participantId: string): void => {
+  const emitSharedAgentState = (state: AgentPanelState, participantId: string): void => {
     for (const stream of sharedAgentStreams) {
       if (stream.participantId !== participantId) continue;
       if (resolve(state.deckPath) !== deckDirOf(stream.deckId)) continue;
@@ -783,6 +768,10 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
     const deckParam = url.searchParams.get('deck');
     const agentSessionParam = normalizeSharedParticipantId(url.searchParams.get('agentSession'));
 
+    if (path.startsWith('/api/agent-mirror/') && request.headers[BRIDGE_HEADER] !== '1') {
+      return respondJson(response, 404, { error: 'not found' });
+    }
+
     // With access control on, every request needs a tailnet identity before it
     // gets a single byte — including the client bundle. One check here covers
     // every ?deck=-scoped route; the asset route and the WebSocket upgrade
@@ -810,27 +799,11 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
       && !(await deckWritable(identity, deckParam))) {
       return respondJson(response, 403, { error: 'you have view-only access to this presentation' });
     }
-    // A participant's own agent working over plain HTTP (the copied brief,
-    // no bridge) announces itself by the id on its requests; that is enough
-    // to light the panel and route its previews and activity there. A bridge
-    // says so in a header: its own mirror traffic is not a second agent, and
-    // its WebSocket is what the panel should report.
-    if (localAgents && deckParam && agentSessionParam && path.startsWith('/api/')
-      && !path.startsWith('/api/shared-agent/')
-      && request.headers[BRIDGE_HEADER] === undefined) {
-      try {
-        localAgents.touchHttp(deckDirOf(deckParam), agentSessionParam);
-      } catch {
-        // An invalid deck id fails in its route with a proper message.
-      }
-    }
-
-    // Agent sessions are observation-only in the browser. All authoring,
-    // comments, assets, and apply operations go through the HTTP API. Keep the
-    // old manual workspace only as an explicit human debugging surface.
+    // Agent invite URLs open the deck as a viewer. Authoring happens only in
+    // the filesystem mirror created by slide-agent connect.
     if ((path === '/' || path === '/index.html')
       && url.searchParams.get('agent') === '1'
-      && url.searchParams.get('debug') !== '1') {
+    ) {
       return redirectToViewer(response, url);
     }
 
@@ -888,12 +861,6 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
       return;
     }
 
-    if (path === '/api/brief' && request.method === 'GET') {
-      response.writeHead(200, { 'content-type': 'text/markdown; charset=utf-8' });
-      response.end(AGENT_BRIEF);
-      return;
-    }
-
     if (path === '/api/config' && request.method === 'GET') {
       respondJson(response, 200, {
         hosted: Boolean(hostedDeckId),
@@ -907,19 +874,28 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
           // do with that one. The client uses it to label its chrome.
           ...(deckParam ? { deckRole: await deckRoleOf(identity, deckParam) } : {}),
         } : null,
-        sharedAgent: canUseSharedAgent(request) ? {
+        agentPanel: canUseSharedAgent(request) ? {
           enabled: true,
           name: sharedAgent?.name ?? 'Agent',
           canManageAccount: isHostRequest(request),
-          ...(sharedAgentAccess === 'loopback' ? { personal: true } : {}),
-          ...(localAgents ? { mode: 'local' } : {}),
+          mode: 'local',
         } : null,
         urls: boundPort === null ? [] : reachableUrls(host, boundPort),
       });
       return;
     }
 
-    if (path === '/api/shared-agent/events' && request.method === 'GET') {
+    // Removed authoring surface. Agents use slide-agent against a local deck
+    // folder (or the folder mirrored by slide-agent connect); the server API
+    // is private transport for that bridge, not a second authoring contract.
+    if (['/api/brief', '/api/edit-schema', '/api/preview-edits', '/api/apply-edits',
+      '/api/preview-html', '/api/apply-html'].includes(path)) {
+      return respondJson(response, 410, {
+        error: 'The direct Agent HTTP API was removed. Click Agent… and use slide-agent connect.',
+      });
+    }
+
+    if (path === '/api/agent-panel/events' && request.method === 'GET') {
       if (!sharedAgent || !canUseSharedAgent(request)) {
         return respondJson(response, 404, { error: 'agent is not available to this client' });
       }
@@ -950,7 +926,7 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
       return;
     }
 
-    if (path === '/api/shared-agent/state' && request.method === 'GET') {
+    if (path === '/api/agent-panel/state' && request.method === 'GET') {
       if (!sharedAgent || !canUseSharedAgent(request)) {
         return respondJson(response, 404, { error: 'agent is not available to this client' });
       }
@@ -960,76 +936,6 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
       await getRoom(deckParam);
       const state = await sharedAgent.getState(deckDirOf(deckParam), participantId);
       respondJson(response, 200, publicAgentState(state, deckParam, isHostRequest(request)));
-      return;
-    }
-
-    if (path.startsWith('/api/shared-agent/') && request.method === 'POST') {
-      if (!sharedAgent || !canUseSharedAgent(request)) {
-        return respondJson(response, 404, { error: 'agent is not available to this client' });
-      }
-      if (!deckParam) return respondJson(response, 400, { error: 'missing deck' });
-      const participantId = sharedParticipantId(url);
-      if (!participantId) return respondJson(response, 400, { error: 'missing or invalid participant' });
-      await getRoom(deckParam);
-      const deckDir = deckDirOf(deckParam);
-      const payload = JSON.parse((await readBody(request)).toString('utf8') || '{}') as Record<string, unknown>;
-      const canManageAccount = isHostRequest(request);
-
-      if (path === '/api/shared-agent/login' || path === '/api/shared-agent/switch-account') {
-        if (!canManageAccount) {
-          return respondJson(response, 403, { error: 'only the server owner on loopback can manage the shared account' });
-        }
-        const result = path.endsWith('/login')
-          ? await sharedAgent.login(deckDir, participantId)
-          : await sharedAgent.switchAccount(deckDir, participantId);
-        respondJson(response, 200, {
-          state: publicAgentState(result.state, deckParam, true),
-          authUrl: result.authUrl,
-        });
-        return;
-      }
-
-      let state: AgentChatState;
-      if (path === '/api/shared-agent/send') {
-        const text = typeof payload.text === 'string' ? payload.text.trim() : '';
-        if (!text) return respondJson(response, 400, { error: 'missing text' });
-        const author = typeof payload.author === 'string'
-          ? payload.author.trim().replace(/\s+/g, ' ').slice(0, 80)
-          : '';
-        const attributed = author ? `[Request from ${author}]\n${text}` : text;
-        state = await sharedAgent.send(deckDir, participantId, { text: attributed }, async () => {
-          if (boundPort === null) throw new Error('collaboration server is not listening');
-          const sessionUrl = `http://127.0.0.1:${boundPort}/?deck=${encodeURIComponent(deckParam)}&agent=1&agentSession=${encodeURIComponent(participantId)}`;
-          return `${agentClipboardPrompt(sessionUrl, deckParam)}\n\n`
-            + `${sharedAgentAccess === 'loopback' ? 'Desktop host identity' : 'Shared demo identity'}: `
-            + `append \`agentSession=${participantId}\` to every /api request `
-            + 'so edits are attributed to this participant\'s Agent chat.';
-        });
-      } else if (path === '/api/shared-agent/interrupt') {
-        state = await sharedAgent.interrupt(deckDir, participantId);
-      } else if (path === '/api/shared-agent/reset') {
-        state = await sharedAgent.reset(deckDir, participantId);
-      } else if (path === '/api/shared-agent/select') {
-        const chatId = typeof payload.chatId === 'string' ? payload.chatId : '';
-        if (!chatId) return respondJson(response, 400, { error: 'missing chatId' });
-        state = await sharedAgent.select(deckDir, participantId, chatId);
-      } else if (path === '/api/shared-agent/model') {
-        const model = typeof payload.model === 'string' ? payload.model : '';
-        if (!model) return respondJson(response, 400, { error: 'missing model' });
-        state = await sharedAgent.setModel(deckDir, participantId, { model });
-      } else if (path === '/api/shared-agent/reasoning-effort') {
-        const effort = typeof payload.effort === 'string' ? payload.effort : '';
-        if (!effort) return respondJson(response, 400, { error: 'missing effort' });
-        state = await sharedAgent.setReasoningEffort(deckDir, participantId, { effort });
-      } else if (path === '/api/shared-agent/fast-mode') {
-        if (typeof payload.enabled !== 'boolean') {
-          return respondJson(response, 400, { error: 'missing enabled flag' });
-        }
-        state = await sharedAgent.setFastMode(deckDir, participantId, { enabled: payload.enabled });
-      } else {
-        return respondJson(response, 404, { error: 'unknown shared agent action' });
-      }
-      respondJson(response, 200, publicAgentState(state, deckParam, canManageAccount));
       return;
     }
 
@@ -1585,6 +1491,83 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
       return;
     }
 
+    // Interactive-page tooling for the zero-install mirror CLI. The server
+    // already owns the browser-backed HTML compiler, so it also performs the
+    // web-element check and poster capture; the participant's machine needs
+    // only Node, just like every other ./deck command.
+    if ((path === '/api/agent-mirror/web/check' || path === '/api/agent-mirror/web/add')
+      && request.method === 'POST') {
+      if (!localAgents) return respondJson(response, 404, { error: 'local agents are not enabled' });
+      if (!deckParam) return respondJson(response, 400, { error: 'missing deck' });
+      const size = /^(\d+)x(\d+)$/.exec(url.searchParams.get('size') ?? '1920x1080');
+      if (!size) return respondJson(response, 400, { error: 'size takes WIDTHxHEIGHT' });
+      const width = Number(size[1]);
+      const height = Number(size[2]);
+      if (width < 1 || height < 1 || width > 8192 || height > 8192) {
+        return respondJson(response, 400, { error: 'size must be between 1x1 and 8192x8192' });
+      }
+      const body = (await readBody(request)).toString('utf8');
+      if (!body.trim()) return respondJson(response, 400, { error: 'missing html' });
+      const requestedName = sanitizeFilename(url.searchParams.get('name') ?? 'page.html');
+      const pageName = /\.x?html?$/i.test(requestedName) ? requestedName : `${requestedName}.html`;
+      const temp = await mkdtemp(join(tmpdir(), 'deckwerk-mirror-web-'));
+      try {
+        const sourcePath = join(temp, pageName);
+        await writeFile(sourcePath, body, 'utf8');
+        if (path.endsWith('/check')) {
+          const stagedPath = join(temp, `staged-${pageName}`);
+          await writeFile(stagedPath, injectWebBridgeRuntime(body), 'utf8');
+          const checked = await checkWebPage({ pagePath: stagedPath, width, height });
+          respondJson(response, 200, { ...checked, checked: pageName });
+          return;
+        }
+
+        const room = await getRoom(deckParam);
+        const page = await importWebPage(room.session.dir, sourcePath, injectWebBridgeRuntime);
+        const poster = page.src.replace(/\.html?$/i, '.poster.png');
+        let checked: Awaited<ReturnType<typeof checkWebPage>> | null = null;
+        try {
+          checked = await checkWebPage({
+            pagePath: join(room.session.dir, page.src),
+            width,
+            height,
+            screenshot: join(room.session.dir, poster),
+          });
+        } catch {
+          // The live page remains useful without a poster. Match the local CLI:
+          // capture failure is reported but does not discard the staged page.
+        }
+        const titleMatch = /<title[^>]*>([^<]*)<\/title>/i.exec(body);
+        const title = (url.searchParams.get('title') ?? titleMatch?.[1] ?? basename(pageName, extname(pageName)))
+          .replace(/\s+/g, ' ').trim();
+        const escapedTitle = title.replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+        const actualPoster = checked ? poster : null;
+        respondJson(response, 200, {
+          src: page.src,
+          poster: actualPoster,
+          title,
+          size: { w: width, h: height },
+          bytes: page.bytes,
+          ...(checked ? {
+            ok: checked.ok,
+            problems: checked.problems,
+            console: checked.console,
+            remoteRequests: checked.remoteRequests,
+            cacheHit: checked.cacheHit,
+            durationMs: checked.durationMs,
+          } : { ok: null, problems: ['poster and browser check were unavailable on the server'] }),
+          assets: [page.src, ...(actualPoster ? [actualPoster] : [])],
+          markup: `<div data-element="web" data-src="${page.src}"${actualPoster ? ` data-poster="${actualPoster}"` : ''} data-title="${escapedTitle}" style="width:${width}px;height:${height}px"></div>`,
+          hint: 'Put that div in an authoring page beside a real <h1> and caption; its CSS box is its geometry.',
+        });
+      } catch (error) {
+        respondJson(response, 500, { error: String(error instanceof Error ? error.message : error) });
+      } finally {
+        await rm(temp, { recursive: true, force: true });
+      }
+      return;
+    }
+
     // A saved authoring page from a mirror, synced with the desktop watcher's
     // semantics: sections replace, add, delete and reorder exactly the range
     // the file governs, as one attributed transaction, and the same compile
@@ -1694,7 +1677,12 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
       const room = await getRoom(deckParam);
       const relative = mirrorPath(url.searchParams.get('path'));
       if (!relative) return respondJson(response, 400, { error: 'invalid path' });
-      const absolute = join(room.session.dir, relative);
+      let absolute: string;
+      try {
+        absolute = resolveAsset(room.session.dir, relative);
+      } catch (error) {
+        return respondJson(response, 400, { error: String(error instanceof Error ? error.message : error) });
+      }
       if (request.method === 'GET') {
         if (!existsSync(absolute) || !(await stat(absolute)).isFile()) {
           return respondJson(response, 404, { error: `no such file: ${relative}` });
@@ -1702,11 +1690,11 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
         await serveFileWithRanges(request, response, absolute);
         return;
       }
-      // Uploads land only in assets/, under the exact name the bridge's own
-      // import gave the file, so the deck the agent authored against and the
-      // deck everyone else sees reference the same `assets/…` path.
-      if (!relative.startsWith('assets/') || relative.slice('assets/'.length).includes('/')) {
-        return respondJson(response, 400, { error: 'only files directly under assets/ can be uploaded' });
+      // Uploads land only in assets/, under the exact relative path the agent
+      // authored against. Nested directories matter for interactive pages
+      // (`assets/web/...`) and remain confined by mirrorPath above.
+      if (!relative.startsWith('assets/')) {
+        return respondJson(response, 400, { error: 'only files under assets/ can be uploaded' });
       }
       const body = await readBody(request);
       if (existsSync(absolute)) {
@@ -1749,12 +1737,15 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
         deckId: deckParam,
         revision: deckRevision(room.session.deck),
         canvas: room.session.deck.canvas,
-        outline: room.session.deck.slides.map((slide, index) => ({
-          index: index + 1,
-          id: slide.id,
-          title: slide.name,
-          hidden: Boolean(slide.skipped),
-          openComments: [...(slide.comments ?? []), ...slide.elements.flatMap((element) => element.comments ?? [])]
+        outline: deckOutline(room.session.deck).map((entry) => ({
+          index: entry.index + 1,
+          id: entry.id,
+          title: entry.name || entry.title,
+          hidden: entry.skipped,
+          openComments: [
+            ...(room.session.deck.slides[entry.index].comments ?? []),
+            ...room.session.deck.slides[entry.index].elements.flatMap((element) => element.comments ?? []),
+          ]
             .filter((comment) => !comment.resolved).length,
         })),
       });

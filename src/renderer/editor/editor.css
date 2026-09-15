@@ -2855,7 +2855,7 @@ button.morph-object-hit.selected-source:hover:not(:disabled) {
 .canvas-host .slide-layer,
 .canvas-host .slide-layer > .slide { overflow: visible; }
 
-/* --- embedded agent chat --- */
+/* --- filesystem agent panel and scratchpad --- */
 
 .agent-chat-panel {
   position: fixed;

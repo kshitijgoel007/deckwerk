@@ -29,6 +29,7 @@ describe('the per-deck agent brief', () => {
     expect(text).toContain('# Working on this deck');
     expect(text).toContain('/opt/deckwerk/bin/slide-agent');
     expect(text).toContain('slide-agent new');
+    expect(text).toContain('newly created deck already has one empty slide');
     expect(text).toContain('data-arrow-end');
     expect(text).not.toContain('{{LAUNCHER_HINT}}');
   });

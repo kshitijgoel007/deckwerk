@@ -2,6 +2,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { createDeck, saveDeck } from '../src/main/deckStore.js';
 import { defaultClientDir, startCollabServer } from '../src/server/collabServer.js';
+import { LocalAgentRegistry } from '../src/server/localAgents.js';
 
 const deckId = 'agent-design-gap-benchmark';
 const root = resolve(
@@ -38,7 +39,7 @@ const clientDir = defaultClientDir(resolve(import.meta.dirname, '..'));
 const server = await startCollabServer({
   rootDir: decksDir,
   hostedDeckId: deckId,
-  agentMode: true,
+  localAgents: new LocalAgentRegistry({ name: 'Design gap agent' }),
   draftArchiveDir: draftsDir,
   clientDir,
   host: '0.0.0.0',
@@ -50,7 +51,7 @@ const session = {
   root,
   deckDir,
   draftsDir,
-  urls: server.urls.map((url) => `${url}/?deck=${deckId}&name=Design+Gap+Agent&agent=1`),
+  urls: server.urls.map((url) => `${url}/?deck=${deckId}&name=Design+Gap+Evaluator`),
 };
 await writeFile(join(root, 'session.json'), JSON.stringify(session, null, 2), 'utf8');
 process.stdout.write(`${JSON.stringify(session)}\n`);

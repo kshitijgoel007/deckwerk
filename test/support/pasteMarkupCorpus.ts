@@ -336,6 +336,11 @@ export function pasteCases(options: {
 
 /** Put both clipboard flavours on the real clipboard and press Cmd/Ctrl+V. */
 export async function pasteFromClipboard(cdp: Cdp, payload: ClipboardPayload): Promise<void> {
+  // On CI's bare Xvfb there is no window manager to keep the page focused.
+  // Clipboard API calls are evaluated with a user gesture, but Chromium's
+  // native paste command still requires the target page to be foregrounded.
+  await cdp.call('Page.bringToFront');
+  await cdp.evaluate('window.focus()');
   const written = await cdp.evaluate<string>(`(async () => {
     try {
       const items = { 'text/plain': new Blob([${JSON.stringify(payload.text)}], { type: 'text/plain' }) };
@@ -358,7 +363,8 @@ export async function pasteFromClipboard(cdp: Cdp, payload: ClipboardPayload): P
 }
 
 /**
- * Block until the clipboard reports the text just written, or give up quietly.
+ * Block until the clipboard reports the text just written. If reads are not
+ * permitted, allow a longer fixed settle before the native paste instead.
  *
  * Reading the clipboard needs a permission this session may not have; a
  * refusal is not a reason to fail a paste test, so an unreadable clipboard
@@ -367,19 +373,24 @@ export async function pasteFromClipboard(cdp: Cdp, payload: ClipboardPayload): P
  */
 async function clipboardHolds(cdp: Cdp, text: string): Promise<void> {
   const wanted = settleText(text);
-  try {
-    await eventually(
-      () => cdp.evaluate<string>(
-        `navigator.clipboard.readText().then((value) => value, (error) => 'clipboard-read-failed: ' + error)`,
-      ),
-      'the clipboard never reported the payload that was just written to it',
-      (value) => value.startsWith('clipboard-read-failed:') || settleText(value) === wanted,
-      5_000,
-    );
-  } catch {
-    // Never seen the payload; fall through to the settle below rather than
-    // failing here, so the paste itself reports what actually landed.
+  const read = () => cdp.evaluate<string>(
+    `navigator.clipboard.readText().then((value) => value, (error) => 'clipboard-read-failed: ' + error)`,
+  );
+  const first = await read();
+  if (first.startsWith('clipboard-read-failed:')) {
+    // Some Chromium configurations allow writes but refuse reads. We cannot
+    // prove readiness there, so give X11's clipboard owner hand-off a
+    // conservative settle rather than treating the refusal itself as proof
+    // that the requested payload is ready.
+    await wait(250);
+    return;
   }
+  await eventually(
+    read,
+    'the clipboard never reported the payload that was just written to it',
+    (value) => !value.startsWith('clipboard-read-failed:') && settleText(value) === wanted,
+    5_000,
+  );
   await wait(50);
 }
 

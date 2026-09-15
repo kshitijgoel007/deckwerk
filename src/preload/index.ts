@@ -6,13 +6,7 @@ import type { ClipboardImageSource } from '@shared/clipboardImages.js';
 import { IPC } from '@shared/ipc.js';
 import type {
   AgentContextDraft,
-  AgentChatSendRequest,
-  AgentChatSelectRequest,
-  AgentChatSetModelRequest,
-  AgentChatSetReasoningEffortRequest,
-  AgentChatSetFastModeRequest,
-  AgentChatState,
-  AgentChatTranscript,
+  AgentPanelState,
   AgentSessionConnection,
   AgentSessionState,
   AgentRequest,
@@ -38,8 +32,6 @@ import type {
   TrimProgress,
   TrimRequest,
   TrimResult,
-  WorkflowStartRequest,
-  WorkflowStartResult,
   VideoPosterRequest,
   VideoPosterResult,
   WebExportRequest,
@@ -158,34 +150,12 @@ const api = {
     on(IPC.operationProgress, fn),
   pdfReady: (jobId: string): void => ipcRenderer.send(IPC.exportPdfReady, jobId),
   exportHtml: (slideIds: string[]): Promise<string> => ipcRenderer.invoke(IPC.htmlExport, slideIds),
-  startWorkflow: (request: WorkflowStartRequest): Promise<WorkflowStartResult> =>
-    ipcRenderer.invoke(IPC.workflowStart, request),
   publishAgentContext: (context: AgentContextDraft): Promise<void> =>
     ipcRenderer.invoke(IPC.agentContextPublish, context),
   respondAgentRequest: (response: AgentResponse): void =>
     ipcRenderer.send(IPC.agentResponse, response),
-  getAgentChatState: (): Promise<AgentChatState> =>
-    ipcRenderer.invoke(IPC.agentChatGetState),
-  getAgentChatTranscript: (request: AgentChatSelectRequest): Promise<AgentChatTranscript | null> =>
-    ipcRenderer.invoke(IPC.agentChatGetTranscript, request),
-  selectAgentChat: (request: AgentChatSelectRequest): Promise<AgentChatState> =>
-    ipcRenderer.invoke(IPC.agentChatSelect, request),
-  sendAgentChatMessage: (request: AgentChatSendRequest): Promise<AgentChatState> =>
-    ipcRenderer.invoke(IPC.agentChatSend, request),
-  loginAgentChat: (): Promise<AgentChatState> =>
-    ipcRenderer.invoke(IPC.agentChatLogin),
-  switchAgentChatAccount: (): Promise<AgentChatState> =>
-    ipcRenderer.invoke(IPC.agentChatSwitchAccount),
-  setAgentChatModel: (request: AgentChatSetModelRequest): Promise<AgentChatState> =>
-    ipcRenderer.invoke(IPC.agentChatSetModel, request),
-  setAgentChatReasoningEffort: (request: AgentChatSetReasoningEffortRequest): Promise<AgentChatState> =>
-    ipcRenderer.invoke(IPC.agentChatSetReasoningEffort, request),
-  setAgentChatFastMode: (request: AgentChatSetFastModeRequest): Promise<AgentChatState> =>
-    ipcRenderer.invoke(IPC.agentChatSetFastMode, request),
-  interruptAgentChat: (): Promise<AgentChatState> =>
-    ipcRenderer.invoke(IPC.agentChatInterrupt),
-  resetAgentChat: (): Promise<AgentChatState> =>
-    ipcRenderer.invoke(IPC.agentChatReset),
+  getAgentPanelState: (): Promise<AgentPanelState> =>
+    ipcRenderer.invoke(IPC.agentPanelGetState),
 
   /** Start sharing while keeping this native editor connected as the host. */
   startCollab: (opts: CollabStartRequest): Promise<AgentSessionConnection> =>
@@ -227,8 +197,8 @@ const api = {
   onThemeCss: (fn: (css: string) => void): (() => void) => on(IPC.themeCss, fn),
   onAgentRequest: (fn: (request: AgentRequest) => void): (() => void) =>
     on(IPC.agentRequest, fn),
-  onAgentChatState: (fn: (state: AgentChatState) => void): (() => void) =>
-    on(IPC.agentChatState, fn),
+  onAgentPanelState: (fn: (state: AgentPanelState) => void): (() => void) =>
+    on(IPC.agentPanelState, fn),
   /** A file under the deck's `edit/` folder was saved and wants compiling. */
   onHtmlEdit: (fn: (file: AuthoredHtmlFile) => void): (() => void) =>
     on(IPC.htmlEdit, fn),

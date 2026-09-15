@@ -51,6 +51,18 @@ app.whenReady().then(async () => {
         bridgeInjected: Boolean(document.querySelector('script[data-deckwerk-bridge]')) || typeof window.deckwerk === 'object',
         usesBridge: /\\bdeckwerk\\.(onActive|onInactive|onStep|next|prev)\\b/.test(scripts),
         interactiveControls: document.querySelectorAll('button, input, select, textarea, [role="button"], [tabindex], a[href]').length,
+        clipped: [...document.body.querySelectorAll('*')].flatMap((el) => {
+          const style = getComputedStyle(el);
+          const hasOwnText = [...el.childNodes].some((node) => node.nodeType === Node.TEXT_NODE && node.textContent.trim());
+          const isControl = el.matches('button, input, select, textarea, [role="button"], a[href]');
+          if ((!hasOwnText && !isControl) || style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) return [];
+          const r = el.getBoundingClientRect();
+          if (r.width <= 0 || r.height <= 0 || (r.left >= -1 && r.top >= -1 && r.right <= innerWidth + 1 && r.bottom <= innerHeight + 1)) return [];
+          const label = el.tagName.toLowerCase()
+            + (el.id ? '#' + el.id : '')
+            + [...el.classList].slice(0, 2).map((name) => '.' + name).join('');
+          return [{ element: label, left: Math.round(r.left), top: Math.round(r.top), right: Math.round(r.right), bottom: Math.round(r.bottom) }];
+        }).slice(0, 20),
         externalStylesheets: [...document.querySelectorAll('link[rel~="stylesheet"]')].map((l) => l.href).slice(0, 10),
         bodyText: (document.body?.innerText || '').trim().slice(0, 200),
       };
@@ -63,6 +75,9 @@ app.whenReady().then(async () => {
     for (const failure of failures) problems.push(`failed to load ${failure.url}: ${failure.description}`);
     if (facts.scrollWidth > width + 1 || facts.scrollHeight > height + 1) {
       problems.push(`content overflows the ${width}×${height} box (${facts.scrollWidth}×${facts.scrollHeight}): the frame clips, it does not scroll`);
+    }
+    if (facts.clipped.length > 0) {
+      problems.push(`${facts.clipped.length} visible text/control box${facts.clipped.length === 1 ? '' : 'es'} cross the ${width}×${height} viewport and may be clipped: ${facts.clipped.slice(0, 5).map((entry) => entry.element).join(', ')}`);
     }
     if (remote.length > 0) {
       problems.push(`${remote.length} request${remote.length === 1 ? '' : 's'} to the network — blocked here, and unavailable while presenting offline: ${[...new Set(remote)].slice(0, 5).join(', ')}`);
