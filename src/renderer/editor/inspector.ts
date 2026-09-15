@@ -1595,6 +1595,11 @@ export class Inspector {
           ],
           selectedListStyle ?? listStyleOfHtml(el.html),
           (style) => {
+            // The control is disabled for a table (below). A change that
+            // reaches it anyway — automation, a click racing the disable —
+            // must not fall through to the model rewrite, which would wrap
+            // the table in a list.
+            if (/<table\b/i.test(el.html)) return;
             if (this.onApplyTextSelectionListStyle?.(style as ListStyle)) return;
             this.store.updateSelected((e) => {
               if (e.type === 'text') e.html = applyListStyleToHtml(e.html, style as ListStyle);

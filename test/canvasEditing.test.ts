@@ -1435,6 +1435,51 @@ describe('inline text editing', () => {
     expect(selection.isCollapsed).toBe(true);
   });
 
+  // Minimised from the nightly paste fuzz (seed 20260914, word-list-paragraphs
+  // → placeholder): Enter at the end of a pasted table cell, then typing.
+  // Chromium cannot split a cell, and in a pre-wrap box its fallback is a
+  // literal "\n" text node that nothing else in the editor produces.
+  it('breaks the line with <br> on Enter inside a table cell', () => {
+    const { canvas, host } = setup();
+    canvas.beginTextEdit('text-1');
+    const body = bodyOf(host, 'text-1');
+    body.innerHTML = '<table><tbody><tr><td>Operating margin</td></tr></tbody></table>';
+    const cell = body.querySelector('td')!;
+    const selection = window.getSelection()!;
+    const caretAt = (offset: number) => {
+      const range = document.createRange();
+      range.setStart(cell.firstChild!, offset);
+      range.collapse(true);
+      selection.removeAllRanges();
+      selection.addRange(range);
+    };
+    const pressEnter = () => body.dispatchEvent(new InputEvent('beforeinput', {
+      bubbles: true, cancelable: true, inputType: 'insertParagraph',
+    }));
+
+    caretAt('Operating margin'.length);
+    expect(pressEnter(), 'the editor owns Enter in a cell').toBe(false);
+    expect(cell.innerHTML).toBe('Operating margin<br><br>');
+    expect(selection.isCollapsed).toBe(true);
+    expect(selection.anchorNode).toBe(cell);
+    expect(selection.anchorOffset).toBe(2);
+    expect(cell.textContent).not.toContain('\n');
+
+    caretAt('Operating'.length);
+    expect(pressEnter()).toBe(false);
+    expect(cell.innerHTML).toBe('Operating<br> margin<br><br>');
+
+    // A paragraph inside a cell splits natively; the editor stays out of it.
+    cell.innerHTML = '<p>In a paragraph</p>';
+    const range = document.createRange();
+    range.setStart(cell.querySelector('p')!.firstChild!, 2);
+    range.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    expect(pressEnter()).toBe(true);
+    expect(cell.innerHTML).toBe('<p>In a paragraph</p>');
+  });
+
   it('creates a plain bulleted list from text inside a reset typing-style marker', () => {
     const { canvas, host } = setup();
     canvas.beginTextEdit('text-1');
