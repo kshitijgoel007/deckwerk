@@ -128,6 +128,11 @@ Everything else:
                                           size, for a data-element="web" box in
                                           your own authoring page beside a real
                                           title and caption (the usual choice)
+  web replace <deck> <slide> <page.html> [--title <text>]
+                                          swap the page behind an existing web
+                                          slide (or the first web box on it)
+                                          for a new version: new asset, new
+                                          poster, old files removed
   web check <page.html> [--screenshot <file.png>] [--size 1920x1080]
                                           run the page headlessly the way the
                                           frame will: script errors, overflow,
@@ -672,6 +677,7 @@ async function webCommand(argv: string[], io: CliIo): Promise<number> {
   const [sub, ...rest] = argv;
   if (sub === 'check') return webCheckCommand(rest, io);
   if (sub === 'add') return webAddCommand(rest, io);
+  if (sub === 'replace') return webReplaceCommand(rest, io);
   if (sub !== 'import') {
     io.err(`Unknown web command: ${sub ?? '(none)'}\n\n${USAGE}`);
     return EXIT_USAGE;
@@ -823,6 +829,89 @@ async function webAddCommand(argv: string[], io: CliIo): Promise<number> {
     hint: 'Put that div in an authoring page (slide-agent new) beside a real <h1> and caption; its CSS box is its geometry.',
   }));
   return check && !check.ok ? EXIT_ERROR : EXIT_OK;
+}
+
+/**
+ * `web replace`: iterate on a page that is already on a slide. Re-importing
+ * made a second slide and left the first behind; this swaps the document
+ * behind the existing element (the named slide's first web element), captures
+ * a fresh poster at the element's own size, and removes the previous page and
+ * poster when nothing else in the deck still shows them.
+ */
+async function webReplaceCommand(argv: string[], io: CliIo): Promise<number> {
+  const { flags, options, positional } = parseFlags(argv, ['title']);
+  ensureKnownFlags('web replace', flags, []);
+  ensurePositionals('web replace', positional, 3);
+  if (positional.length < 3) {
+    io.err('web replace needs a deck folder, a slide (id or number), and one HTML file');
+    return EXIT_USAGE;
+  }
+  const deckDir = resolveDeckDir(positional[0], io);
+  const pagePath = resolve(io.cwd, positional[2]);
+  if (!existsSync(pagePath)) {
+    io.err(`No such file: ${pagePath}`);
+    return EXIT_ERROR;
+  }
+  const deck = await loadDeck(deckDir);
+  const slideId = slideIdForRef(deck, positional[1]);
+  const slide = deck.slides.find((candidate) => candidate.id === slideId);
+  if (!slide) {
+    io.err(`No such slide: ${positional[1]}`);
+    return EXIT_ERROR;
+  }
+  const element = slide.elements.find((candidate) => candidate.type === 'web');
+  if (!element || element.type !== 'web') {
+    io.err(`Slide ${slide.id} has no web element to replace`);
+    return EXIT_ERROR;
+  }
+  const previous = { src: element.src, poster: element.poster };
+  const source = await readFile(pagePath, 'utf8');
+  const title = options.get('title') ?? titleFromHtml(source) ?? element.title;
+  const page = await importWebPage(deckDir, pagePath, injectWebBridgeRuntime);
+  const posterRel = page.src.replace(/\.html?$/i, '.poster.png');
+  let check: Awaited<ReturnType<typeof checkWebPage>> | null = null;
+  try {
+    check = await checkWebPage({
+      pagePath: join(deckDir, page.src),
+      width: Math.round(element.w),
+      height: Math.round(element.h),
+      screenshot: join(deckDir, posterRel),
+    });
+  } catch (error) {
+    io.err(`No poster captured (${error instanceof Error ? error.message : String(error)}).`);
+  }
+  const updated = {
+    ...slide,
+    elements: slide.elements.map((candidate) => candidate === element
+      ? { ...element, src: page.src, poster: check ? posterRel : null, title }
+      : candidate),
+  };
+  const code = await applyTransaction(deckDir, {
+    version: AGENT_PROTOCOL_VERSION,
+    label: `Replace web page on ${slide.id}`,
+    operations: [{ op: 'replaceSlide', slideId: slide.id, slide: updated }],
+  }, io, {
+    slideId: slide.id,
+    elementId: element.id,
+    src: page.src,
+    poster: check ? posterRel : null,
+    title,
+    ...(check ? { ok: check.ok, problems: check.problems } : {}),
+    removed: [] as string[],
+  });
+  if (code !== EXIT_OK) return code;
+
+  // The old page and poster, gone unless another slide still shows them.
+  const after = await loadDeck(deckDir);
+  const stillUsed = new Set(after.slides.flatMap((candidate) => candidate.elements.flatMap((el) =>
+    el.type === 'web' ? [el.src, el.poster ?? ''] : [])));
+  const { unlink } = await import('node:fs/promises');
+  for (const rel of [previous.src, previous.poster]) {
+    if (!rel || rel === page.src || rel === posterRel || stillUsed.has(rel)) continue;
+    if (!rel.startsWith('assets/web/')) continue;
+    await unlink(join(deckDir, rel)).catch(() => undefined);
+  }
+  return EXIT_OK;
 }
 
 /**
@@ -1045,7 +1134,7 @@ async function applyTransaction(
   const expectedRevision = draft.expectedRevision
     ?? live?.deckRevision
     ?? deckRevision(await loadDeck(deckDir));
-  const transaction = AgentTransactionSchema.parse({ ...draft, expectedRevision });
+  let transaction = AgentTransactionSchema.parse({ ...draft, expectedRevision });
 
   // With the editor up, the transaction must go through it: its in-memory deck
   // is the real document, and routing through it is what makes the change one
@@ -1054,12 +1143,22 @@ async function applyTransaction(
     // A generous wait: the editor may be busy compiling a watched save of the
     // very same file. Timing out while the editor still applies the change is
     // worse than waiting — the caller's natural reaction is to apply again.
-    const response = await request(deckDir, {
+    const send = () => request(deckDir, {
       version: AGENT_PROTOCOL_VERSION,
       id: requestId(),
       kind: 'transaction',
       transaction,
     }, 120_000);
+    let response = await send();
+    // The sidecar's revision trails the editor by a debounce, so a command run
+    // straight after the previous one read a stale revision and "conflicted"
+    // with a deck nobody else had touched. When the revision was the CLI's own
+    // guess — not one the caller pinned on purpose — the editor's answer names
+    // the current one; use it and send once more.
+    if (response.status === 'conflict' && draft.expectedRevision === undefined) {
+      transaction = AgentTransactionSchema.parse({ ...draft, expectedRevision: response.revision });
+      response = await send();
+    }
     io.out(json({
       status: response.status,
       revision: response.revision,

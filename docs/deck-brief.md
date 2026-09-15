@@ -208,6 +208,8 @@ the original where it is and the new section inserts right after it.
   `<div data-element="web" data-src=… data-poster=… style="width:…;height:…">`
   to drop into your authoring page next to an `<h1>` and a `<p>`. Only a page
   that *is* a whole slide goes in full-canvas with `slide-agent web import`.
+  To iterate, `slide-agent web replace . <slide> page.html` swaps the page
+  behind an existing web slide — never import twice.
   Pages run with scripts only — no network while presenting, no access to the
   deck — so inline data and images and design for the box with no scrolling.
   `window.deckwerk` (injected) offers `onActive`, `onStep`, `next`, `prev`. The import captures a poster for

@@ -281,6 +281,12 @@ goes in as one full-canvas slide instead:
 slide-agent web import . page.html --after 12 --title "Papers per year"
 ```
 
+**Iterating on a page.** Do not import it again — that is a second slide.
+`slide-agent web replace . 12 page.html` swaps the document behind slide 12's
+web element for the new version (new hash, fresh poster at the element's size,
+old files removed). For a box you placed yourself, `web add` the new version
+and change `data-src`/`data-poster` in your authoring page.
+
 **Test the page before importing it.** `render` shows a page at rest; it
 cannot tell you a script threw. `slide-agent web check page.html
 [--screenshot shot.png]` runs the page headlessly in a 1920×1080 frame with

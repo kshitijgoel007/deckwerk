@@ -180,6 +180,32 @@ describe('slide-agent web import', { timeout: 30_000 }, () => {
     expect((await loadDeck(dir)).slides).toHaveLength(1);
   });
 
+  it('replaces the page behind an existing web slide and drops the old files', { timeout: 60_000 }, async () => {
+    const root = await mkdtemp(join(tmpdir(), 'web-replace-'));
+    cleanup.push(root);
+    const dir = join(root, 'Deck');
+    await createDeck(dir, 'Deck');
+    await writeFile(join(root, 'v1.html'), '<!doctype html><html><head><title>V1</title></head><body><script>document.body.textContent="one"</script></body></html>');
+    await writeFile(join(root, 'v2.html'), '<!doctype html><html><head><title>V2</title></head><body><script>document.body.textContent="two"</script></body></html>');
+    const first = JSON.parse((await cli(root, 'web', 'import', dir, 'v1.html', '--no-poster')).stdout);
+    const before = await loadDeck(dir);
+
+    const result = await cli(root, 'web', 'replace', dir, first.slideId, 'v2.html');
+    expect(result.code, result.stderr).toBe(EXIT_OK);
+    const reply = JSON.parse(result.stdout);
+    expect(reply.slideId).toBe(first.slideId);
+    expect(reply.src).not.toBe(first.src);
+    expect(reply.title).toBe('V2');
+
+    const after = await loadDeck(dir);
+    expect(after.slides).toHaveLength(before.slides.length);
+    const element = after.slides.find((s) => s.id === first.slideId)!.elements[0];
+    expect(element).toMatchObject({ type: 'web', src: reply.src, title: 'V2' });
+    expect(existsSync(join(dir, reply.src))).toBe(true);
+    expect(existsSync(join(dir, first.src))).toBe(false);
+    if (reply.poster) expect(existsSync(join(dir, reply.poster))).toBe(true);
+  });
+
   it('refuses a file that is not HTML', async () => {
     const root = await mkdtemp(join(tmpdir(), 'web-import-'));
     cleanup.push(root);
