@@ -51,7 +51,7 @@ import { serveBundle } from './previewServer.js';
 import { exportDeck } from '../main/exportDeck.js';
 import { spawn } from 'node:child_process';
 import { htmlEditTransaction } from '../main/htmlAuthoring.js';
-import { renderSlidesToPng } from './renderSlides.js';
+import { checkWebPage, renderSlidesToPng } from './renderSlides.js';
 import { runConnectCommand } from './agentConnect.js';
 
 /**
@@ -122,6 +122,10 @@ Everything else:
                                           page — scripts and all — live in a
                                           sandboxed frame (a Claude artifact,
                                           an interactive chart, a demo)
+  web check <page.html> [--screenshot <file.png>] [--size 1920x1080]
+                                          run the page headlessly the way the
+                                          frame will: script errors, overflow,
+                                          network it would need, bridge use
   inspect   [deck] [--dom]                computed scenes, for questions
   render    [deck] [--selected|--slide id|number|--all] --output <dir>
             [--annotate] [--built]
@@ -291,6 +295,41 @@ async function applyCommand(argv: string[], io: CliIo): Promise<number> {
   const deck = await loadDeck(deckDir);
   const filePath = resolve(io.cwd, htmlPath);
   const authoredBefore = await readFile(filePath, 'utf8');
+
+  // With the editor open, the editor is the one compiler. It already watches
+  // edit/, so a file there is compiling (or compiled) the moment it was saved;
+  // asking it explicitly returns what that did, and it answers a request for
+  // the same document once — the CLI compiling alongside it used to insert
+  // every new section twice. The editor stamps the ids itself.
+  const live = await readLiveAgentContext(deckDir);
+  if (live) {
+    const response = await request(deckDir, {
+      version: AGENT_PROTOCOL_VERSION,
+      id: requestId(),
+      kind: 'htmlSync',
+      path: filePath,
+      contents: authoredBefore,
+      after: options.get('after') ?? null,
+      ...(options.get('label') ? { label: options.get('label') } : {}),
+    }, 180_000);
+    const outcome = (response.payload ?? {}) as Partial<{
+      changes: unknown; slides: unknown; warnings: string[]; message: string;
+    }>;
+    io.out(json({
+      status: response.status,
+      revision: response.revision,
+      applied: response.status === 'applied',
+      live: true,
+      ...(response.message ? { message: response.message } : {}),
+      ...(outcome.changes ? { changes: outcome.changes } : {}),
+      ...(outcome.slides ? { slides: outcome.slides } : {}),
+      ...(outcome.warnings && outcome.warnings.length > 0 ? { warnings: outcome.warnings } : {}),
+      ...(outcome.message ? { note: outcome.message } : {}),
+    }));
+    if (response.status === 'conflict') return EXIT_CONFLICT;
+    return response.status === 'error' ? EXIT_ERROR : EXIT_OK;
+  }
+
   // The same compile the editor performs on a watched save, in a headless
   // window because this path is the one taken with the editor closed.
   const { transaction, slides, warnings } = await htmlEditTransaction(
@@ -625,6 +664,7 @@ async function assetCommand(argv: string[], io: CliIo): Promise<number> {
  */
 async function webCommand(argv: string[], io: CliIo): Promise<number> {
   const [sub, ...rest] = argv;
+  if (sub === 'check') return webCheckCommand(rest, io);
   if (sub !== 'import') {
     io.err(`Unknown web command: ${sub ?? '(none)'}\n\n${USAGE}`);
     return EXIT_USAGE;
@@ -720,6 +760,44 @@ async function webCommand(argv: string[], io: CliIo): Promise<number> {
     title,
     hint: 'The page fills the canvas. To place it in a smaller box, export the slide with `inspect --html` and resize the data-element="web" div like any other element.',
   });
+}
+
+/**
+ * `web check`: the interactivity test `render` cannot be. A PNG shows the
+ * page at rest; this runs it in a headless window the size of its box and
+ * reports script errors, content that does not fit, every network request it
+ * would make (refused, as an offline venue would), and whether it uses the
+ * deck bridge. An exit code of 1 with `problems` listed is the agent's cue to
+ * fix the page before importing it.
+ */
+async function webCheckCommand(argv: string[], io: CliIo): Promise<number> {
+  const { flags, options, positional } = parseFlags(argv, ['screenshot', 'size']);
+  ensureKnownFlags('web check', flags, []);
+  ensurePositionals('web check', positional, 1);
+  if (positional.length < 1) {
+    io.err('web check needs one HTML file');
+    return EXIT_USAGE;
+  }
+  const pagePath = resolve(io.cwd, positional[0]);
+  if (!existsSync(pagePath)) {
+    io.err(`No such file: ${pagePath}`);
+    return EXIT_ERROR;
+  }
+  const size = /^(\d+)x(\d+)$/.exec(options.get('size') ?? '1920x1080');
+  if (!size) throw new UsageError(`--size takes WIDTHxHEIGHT, not "${options.get('size')}".`);
+  // Checked with the bridge in place, as it will run once imported, so a page
+  // that calls `deckwerk.onActive` does not fail here for a missing global.
+  const staged = join(await mkdtemp(join(tmpdir(), 'web-check-')), positional[0].replace(/^.*[\\/]/, ''));
+  await writeFile(staged, injectWebBridgeRuntime(await readFile(pagePath, 'utf8')), 'utf8');
+  const screenshot = options.get('screenshot');
+  const result = await checkWebPage({
+    pagePath: staged,
+    width: Number(size[1]),
+    height: Number(size[2]),
+    screenshot: screenshot ? resolve(io.cwd, screenshot) : null,
+  });
+  io.out(json({ ...result, checked: pagePath }));
+  return result.ok ? EXIT_OK : EXIT_ERROR;
 }
 
 function titleFromHtml(html: string): string | null {

@@ -264,6 +264,16 @@ Its CSS box is its geometry like any element; `data-poster="assets/…png"`
 gives PDF export and thumbnails a still, `data-interactive="false"` makes
 clicks on the page advance the deck instead of reaching the page.
 
+**Test the page before importing it.** `render` shows a page at rest; it
+cannot tell you a script threw. `slide-agent web check page.html
+[--screenshot shot.png]` runs the page headlessly in a 1920×1080 frame with
+the bridge in place and reports script errors, content that does not fit the
+box, every network request it would make (refused, as an offline venue would
+refuse them), and whether it uses `window.deckwerk`. A non-zero exit lists
+the problems; fix them, re-check, then import. Write page files with a
+file-writing tool or a *quoted* heredoc (`<<'EOF'`): an unquoted heredoc lets
+the shell expand `${…}` inside your JavaScript before the file is written.
+
 What the page can and cannot do:
 
 - It runs with `sandbox="allow-scripts"` and nothing else: scripts, yes; no
@@ -310,10 +320,15 @@ declaration entirely and put the replacement in `theme.css`.
 your file after each successful sync — a new section gains `data-slide-id`
 and the scope marker in `<head>` lists the slides the file now governs. Until
 that happens the save is still compiling (a page carrying much text or many
-sections can take ten seconds or more). Poll for the stamp rather than
-guessing, and **never run `apply` on a file the open editor is watching**:
-the watcher and the explicit apply would both compile the unstamped file and
-both insert its sections, and the deck ends up with every new slide twice.
+sections can take ten seconds or more). If you would rather not poll, run
+`slide-agent apply . --html edit/work.html` after saving: with the editor open
+it hands the file to the editor, waits for that one compile, and prints the
+`changes` it made. The editor compiles a given document once, so the watched
+save and the apply do not add up.
+
+The starter sections `slide-agent new` writes are ignored until you change
+them — saving the untouched skeleton adds nothing — so redirecting `new` into
+`edit/` and editing the file in place is safe.
 
 With the editor **closed** there is no watcher, so apply the same file
 explicitly, which does the identical thing:

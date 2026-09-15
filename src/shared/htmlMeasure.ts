@@ -372,7 +372,19 @@ export function measureSlides(doc: Document): MeasuredSlide[] {
   // body itself: with a scope recorded, "no sections" means "delete the range".
   const bodyHasContent = [...doc.body.children]
     .some((child) => !/^(script|style|link|template)$/i.test(child.tagName));
-  const roots: HTMLElement[] = found.length > 0 ? [...found] : bodyHasContent ? [doc.body] : [];
+  // A starter section straight out of `slide-agent new`, not yet edited, is
+  // not a slide. Inlined rather than imported: this function is serialised
+  // into the headless compile page, where no module import can be reached.
+  // Mirrors isPristinePlaceholder in htmlSlides.ts.
+  const pristinePlaceholder = (root: HTMLElement): boolean => {
+    if (root.dataset.placeholder !== 'true' || root.hasAttribute('data-slide-id')) return false;
+    const children = [...root.children];
+    return children.length === 1
+      && children[0].tagName.toLowerCase() === 'h1'
+      && (children[0].textContent ?? '').trim() === 'Title';
+  };
+  const roots: HTMLElement[] = (found.length > 0 ? [...found] : bodyHasContent ? [doc.body] : [])
+    .filter((root) => !pristinePlaceholder(root));
 
   const isBlock = (node: HTMLElement): boolean => {
     const display = computed(node).display;

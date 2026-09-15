@@ -1,6 +1,7 @@
 import { readdirSync, readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { cpus } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { LONG_TEST_FILES } from './longTestFiles.js';
 
 /**
@@ -17,7 +18,11 @@ import { LONG_TEST_FILES } from './longTestFiles.js';
  * - Everything else is a unit suite and runs fully parallel.
  */
 
-const TEST_DIR = join(process.cwd(), 'test');
+// This file's own folder, not the caller's cwd: vitest.config.ts imports it,
+// and the config is also loaded by `bin/slide-agent`, which runs from whatever
+// deck folder the agent is standing in — where `process.cwd()/test` does not
+// exist and the CLI died with ENOENT before parsing its arguments.
+const TEST_DIR = dirname(fileURLToPath(import.meta.url));
 
 const BROWSER_MARKERS = [
   /support\/browserSession\.js/,

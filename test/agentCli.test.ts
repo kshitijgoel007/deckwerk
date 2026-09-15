@@ -330,7 +330,18 @@ describe('slide-agent CLI', { timeout: 60_000 }, () => {
     expect(page.stdout).toContain('<base href="../">');
     expect(page.stdout).toMatch(/class="slide"/);
 
+    // Saved untouched — as it is the moment `new` is redirected into edit/ —
+    // the page adds nothing: its starter sections are not slides until edited.
     await writeFile(join(dir, 'edit', 'add.html'), page.stdout, 'utf8');
+    const untouched = await cli('apply', '--html', join(dir, 'edit', 'add.html'));
+    expect(untouched.code).not.toBe(EXIT_OK);
+    expect(untouched.stderr).toMatch(/No slides found/);
+    expect((await onDisk()).slides).toHaveLength(2);
+
+    // Edited, each section is a new slide.
+    let n = 0;
+    const authored = page.stdout.replace(/<h1 class="role-title">Title<\/h1>/g, () => `<h1 class="role-title">New ${++n}</h1>`);
+    await writeFile(join(dir, 'edit', 'add.html'), authored, 'utf8');
     const applied = await parsed('apply', '--html', join(dir, 'edit', 'add.html'));
     expect(applied.code).toBe(EXIT_OK);
     expect(applied.json.changes).toMatchObject({ replaced: [], deleted: [] });

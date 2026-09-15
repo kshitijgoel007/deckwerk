@@ -84,9 +84,27 @@ export interface MeasuredSlide {
 const SCOPE_MARKER = 'slide-editor-scope:';
 
 /** A section an author fills in — no id, so it can only ever become a new slide. */
-const BLANK_SECTION = `<section class="slide">
+const BLANK_SECTION = `<section class="slide" data-placeholder="true">
   <h1 class="role-title">Title</h1>
 </section>`;
+
+/**
+ * A starter section nobody has touched yet. `slide-agent new > edit/add.html`
+ * lands in the watched folder *before* the author edits it, and the editor
+ * used to compile that save at once — four placeholder slides titled "Title"
+ * in the deck, stamped with ids the author's first real save then did not
+ * carry, so the real slides arrived as four more. An untouched placeholder is
+ * not a slide yet; it becomes one the moment its content changes (the
+ * attribute may stay — only the pristine markup is skipped).
+ */
+export function isPristinePlaceholder(root: Element): boolean {
+  if ((root as HTMLElement).dataset?.placeholder !== 'true') return false;
+  if (root.hasAttribute('data-slide-id')) return false;
+  const children = [...root.children];
+  return children.length === 1
+    && children[0].tagName.toLowerCase() === 'h1'
+    && (children[0].textContent ?? '').trim() === 'Title';
+}
 
 /**
  * The counterpart to SCOPE_RULES, for a page that governs nothing yet.

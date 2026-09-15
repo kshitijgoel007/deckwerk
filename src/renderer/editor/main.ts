@@ -18,7 +18,7 @@ import {
   themeStyleLabel,
   withThemeBlock,
 } from '@shared/themes.js';
-import { AgentBridge } from './agentBridge.js';
+import { AgentBridge, type HtmlSyncOutcome } from './agentBridge.js';
 import { AgentChatPanel } from './agentChatPanel.js';
 import { AgentChatHistoryModal } from './agentChatHistoryModal.js';
 import { createDeckWerkButton } from './aboutDialog.js';
@@ -265,6 +265,7 @@ const agent = new AgentBridge(store, {
   respond: (response) => window.api.respondAgentRequest(response),
   save,
   resolveSrc: (src) => window.api.assetUrl(src),
+  syncHtml: (edit) => applyHtmlEdit({ path: edit.path, contents: edit.contents }, { after: edit.after, label: edit.label }),
 });
 window.api.onAgentRequest?.((request) => void agent.handle(request));
 
@@ -277,7 +278,7 @@ window.api.onAgentRequest?.((request) => void agent.handle(request));
  * the user. The theme comes from the editor rather than from disk, so slides
  * are measured against the typography currently on screen.
  */
-window.api.onHtmlEdit?.((file) => void applyHtmlEdit(file));
+window.api.onHtmlEdit?.((file) => void applyHtmlEdit(file).catch(() => undefined));
 // notes.md saved outside the editor: the file is the whole set of notes, so
 // apply it to every slide as one undoable edit. The autosave that follows
 // rewrites deck.json and the file itself in normalised form.
@@ -294,15 +295,28 @@ window.api.onSpeakerNotesEdit?.((contents) => {
   setStatusMessage(`Applied notes.md${ignored}`);
 });
 
-let htmlEditQueue: Promise<void> = Promise.resolve();
+let htmlEditQueue: Promise<unknown> = Promise.resolve();
 
-function applyHtmlEdit(file: AuthoredHtmlFile): Promise<void> {
+/**
+ * The last document compiled for each authoring file, and what it did. A
+ * watched save and an explicit `apply` of the same file arrive as two
+ * requests for one document; compiling it twice inserted its new sections
+ * twice. The second request for identical contents gets the first's answer.
+ */
+const lastHtmlSync = new Map<string, { contents: string; outcome: HtmlSyncOutcome }>();
+
+function applyHtmlEdit(
+  file: AuthoredHtmlFile,
+  options: { after?: string | null; label?: string } = {},
+): Promise<HtmlSyncOutcome> {
   // Serialised: two saves in flight would compile against the same deck and
   // the second would apply operations built from a deck that no longer exists.
-  htmlEditQueue = htmlEditQueue.then(async () => {
+  const run = htmlEditQueue.then(async (): Promise<HtmlSyncOutcome> => {
     const name = fileName(file.path);
+    const previous = lastHtmlSync.get(file.path);
+    if (previous && previous.contents === file.contents) return previous.outcome;
     try {
-      const message = await runOperation(`Compiling ${name}…`, async (operation) => {
+      const outcome = await runOperation(`Compiling ${name}…`, async (operation): Promise<HtmlSyncOutcome> => {
         // Compiling takes a moment, and the user may edit during it. The
         // operations address slides by id in a deck that has since been replaced,
         // so compile again rather than apply them to a document that moved.
@@ -313,13 +327,26 @@ function applyHtmlEdit(file: AuthoredHtmlFile): Promise<void> {
             deck,
             file,
             cssEditor.getValue(),
+            options,
           );
           if (store.get().deck !== deck) continue;
           // Inline style the browser's parser dropped would otherwise vanish
           // silently: the page measured without it, yet the apply reads as clean.
           const warned = warnings.length === 0 ? ''
             : ` — ${warnings.length} style warning${warnings.length === 1 ? '' : 's'}: ${warnings[0]}`;
-          if (!transaction) return `${name} asks for no change${warned}`;
+          const summarise = (message: string, operations: typeof transaction extends null ? never : NonNullable<typeof transaction>['operations'] | []): HtmlSyncOutcome => ({
+            changes: htmlSyncSummary(operations),
+            slides: slides.map((slide) => ({
+              id: slide.id,
+              elements: slide.elements.map((element) => ({
+                id: element.id, type: element.type,
+                box: { x: element.x, y: element.y, w: element.w, h: element.h },
+              })),
+            })),
+            warnings,
+            message,
+          });
+          if (!transaction) return summarise(`${name} asks for no change${warned}`, []);
           operation.update(`Applying slides from ${name}`);
           store.replaceWithHistory(applyAgentTransaction(deck, transaction), transaction.label);
           await save();
@@ -329,21 +356,31 @@ function applyHtmlEdit(file: AuthoredHtmlFile): Promise<void> {
           if (adopted) {
             operation.update(`Writing assigned slide ids to ${name}`);
             await window.api.htmlAdopt?.(file.path, adopted, file.contents);
+            // The stamped document is what the file now holds; a save of it
+            // (the watcher echo, or the agent re-saving unchanged) is the same
+            // request again.
+            const stamped = summarise('', transaction.operations);
+            lastHtmlSync.set(file.path, { contents: adopted, outcome: stamped });
           }
           // What the save did, not merely that it did something: a file that
           // was meant to add a slide and instead replaced or deleted one reads
           // exactly like a success otherwise.
           const did = describeHtmlSync(htmlSyncSummary(transaction.operations));
-          return `Applied ${name} — ${did}${warned}`;
+          return summarise(`Applied ${name} — ${did}${warned}`, transaction.operations);
         }
-        return `${name}: the deck kept changing while it compiled — save it again`;
+        throw new Error(`${name}: the deck kept changing while it compiled — save it again`);
       });
-      setStatusMessage(message);
+      lastHtmlSync.set(file.path, { contents: file.contents, outcome });
+      setStatusMessage(outcome.message);
+      return outcome;
     } catch (err) {
       setStatusMessage(`${name}: ${err instanceof Error ? err.message : err}`);
+      throw err;
     }
   });
-  return htmlEditQueue;
+  // The queue itself never rejects, or one bad file would wedge every later save.
+  htmlEditQueue = run.catch(() => undefined);
+  return run;
 }
 
 /* --- toolbar --- */

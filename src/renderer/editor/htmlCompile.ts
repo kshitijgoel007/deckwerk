@@ -134,6 +134,7 @@ export async function authoredHtmlSync(
   deck: Deck,
   file: AuthoredHtmlFile,
   theme: string,
+  options: { after?: string | null; label?: string } = {},
 ): Promise<{ transaction: AgentTransaction | null; slides: Slide[]; warnings: string[] }> {
   const scope = htmlSlideScope(file.contents);
   const { slides, warnings } = await compileAuthoredHtml(deck, file.contents, theme);
@@ -144,7 +145,7 @@ export async function authoredHtmlSync(
     deck,
     slides,
     scope,
-    deck.slides[deck.slides.length - 1]?.id ?? null,
+    options.after ?? deck.slides[deck.slides.length - 1]?.id ?? null,
   );
   // A file that asks for nothing at all — no slides of its own and none to
   // delete — is a save to sit out, not an error to put in front of the user.
@@ -153,7 +154,7 @@ export async function authoredHtmlSync(
     transaction: {
       version: AGENT_PROTOCOL_VERSION,
       expectedRevision: await browserDeckRevision(deck),
-      label: `Update slides from ${fileName(file.path)}`,
+      label: options.label ?? `Update slides from ${fileName(file.path)}`,
       operations,
     },
     slides,

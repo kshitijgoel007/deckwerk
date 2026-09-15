@@ -211,6 +211,22 @@ export const AgentRequestSchema = z.discriminatedUnion('kind', [
     kind: z.literal('dom'),
     expectedRevision: z.string(),
   }),
+  /**
+   * "Compile this authoring file and apply it" — the same thing a watched
+   * save does, asked for explicitly. With the editor open the editor is the
+   * one compiler: a CLI that compiled the file itself alongside the watcher
+   * inserted every new section twice. The response payload carries the
+   * `changes` summary and the slides, so the caller learns what happened.
+   */
+  z.object({
+    version: z.literal(AGENT_PROTOCOL_VERSION),
+    id: z.string(),
+    kind: z.literal('htmlSync'),
+    path: z.string(),
+    contents: z.string(),
+    after: z.string().nullable().optional(),
+    label: z.string().optional(),
+  }),
 ]);
 
 export type AgentRequest = z.infer<typeof AgentRequestSchema>;

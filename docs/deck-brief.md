@@ -100,12 +100,14 @@ the browser computes the geometry. While the editor is open, saving the file
 updates exactly those slides about a second later, as one undoable change.
 With the editor closed there is no watcher, so apply the same file explicitly:
 
-    slide-agent apply . --html edit/work.html   # ONLY with the editor closed
+    slide-agent apply . --html edit/work.html   # waits for the compile, prints `changes`
     slide-agent validate
 
-A save has landed when the editor has stamped `data-slide-id` onto your new
-sections (poll the file; a large page takes several seconds). Never `apply` a
-file the open editor is watching — both paths would insert your new slides.
+Saving alone is enough with the editor open; `apply` on the same file is the
+way to *wait* for that compile and read what it did (the editor compiles a
+document once, so the two never add up). A save has landed when the editor
+has stamped `data-slide-id` onto your new sections. The untouched starter
+sections from `slide-agent new` add nothing until you edit them.
 
 **Adding slides is a different file from changing them.** `slide-agent new >
 edit/add.html` writes a blank authoring page with the same canvas, theme and
@@ -207,7 +209,11 @@ the original where it is and the new section inserts right after it.
   `onActive`, `onStep`, `next`, `prev`. Nothing inside is a slide object, so
   use it for what genuinely needs code. The import captures a poster for
   thumbnails and PDF; match the deck's fonts and colours inside the page
-  yourself, since `theme.css` does not reach into it.
+  yourself, since `theme.css` does not reach into it. Before importing, run
+  `slide-agent web check page.html` — it runs the page headlessly and reports
+  script errors, overflow past 1920×1080, and network it would need. Write
+  page files with a file-writing tool or a quoted heredoc (`<<'EOF'`), never
+  an unquoted one, or the shell expands `${…}` inside your JavaScript.
 - Wrapper `<div>`s are layout: they dissolve on compile and their children
   become the slide objects. Do not hand-copy `class="element …"` wrappers
   from exports around your own markup; plain semantic HTML is the input.

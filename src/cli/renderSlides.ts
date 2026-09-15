@@ -94,6 +94,32 @@ function electronBinary(): string {
   return createRequire(import.meta.url)('electron') as unknown as string;
 }
 
+/**
+ * Load a web page headlessly the way a web element shows it and report what a
+ * PNG cannot: console errors, overflow, network dependence, bridge use.
+ */
+export async function checkWebPage(request: {
+  pagePath: string;
+  width: number;
+  height: number;
+  screenshot?: string | null;
+}): Promise<WebPageCheck> {
+  const dir = await tempDir('slide-agent-web-check-');
+  const jobPath = join(dir, 'check-job.json');
+  await writeFile(jobPath, JSON.stringify({ ...request, settleMs: 800 }), 'utf8');
+  const script = fileURLToPath(new URL('../../scripts/check-web-page.cjs', import.meta.url));
+  return JSON.parse(await runElectron(script, jobPath)) as WebPageCheck;
+}
+
+export interface WebPageCheck {
+  ok: boolean;
+  problems: string[];
+  page: Record<string, unknown>;
+  console: Array<{ level: string; message: string; line: number; source: string }>;
+  remoteRequests: string[];
+  screenshot: string | null;
+}
+
 function runElectron(script: string, jobPath: string): Promise<string> {
   return new Promise((resolvePromise, reject) => {
     const child = spawn(electronBinary(), [script, jobPath], {
