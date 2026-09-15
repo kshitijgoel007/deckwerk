@@ -1480,6 +1480,30 @@ describe('inline text editing', () => {
     expect(cell.innerHTML).toBe('<p>In a paragraph</p>');
   });
 
+  // Minimised from the nightly paste fuzz (seeds 20260909 and 20260915 on
+  // CI's Linux fonts, where the drag-selected "first word" covered the whole
+  // box): Backspace over everything leaves Chromium's bare <br> at the top
+  // level, where the next typed text has no paragraph to land in.
+  it('gives a box emptied by deletion an empty paragraph for the caret', () => {
+    const { canvas, host } = setup();
+    canvas.beginTextEdit('text-1');
+    const body = bodyOf(host, 'text-1');
+    const selection = window.getSelection()!;
+    for (const leftover of ['<br>', '', ' ']) {
+      body.innerHTML = leftover;
+      body.dispatchEvent(new InputEvent('input', {
+        bubbles: true, inputType: 'deleteContentBackward',
+      }));
+      expect(body.innerHTML, `after deleting down to ${JSON.stringify(leftover)}`).toBe('<p><br></p>');
+      expect(selection.anchorNode).toBe(body.firstChild);
+      expect(selection.isCollapsed).toBe(true);
+    }
+    // A box that still holds a paragraph is left alone.
+    body.innerHTML = '<p>Kept</p>';
+    body.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward' }));
+    expect(body.innerHTML).toBe('<p>Kept</p>');
+  });
+
   it('creates a plain bulleted list from text inside a reset typing-style marker', () => {
     const { canvas, host } = setup();
     canvas.beginTextEdit('text-1');

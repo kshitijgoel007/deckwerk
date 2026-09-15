@@ -3354,8 +3354,32 @@ export class EditorCanvas {
       this.commitLiveTextDom('Insert link');
       return true;
     };
+    /**
+     * Deleting everything leaves Chromium's bare `<br>` (or nothing at all) at
+     * the top level: no block for the caret, so the next typed text lands
+     * outside any paragraph where no block control can reach it. Give the box
+     * the empty paragraph Return would have made.
+     */
+    const repairEmptiedBox = () => {
+      const remaining = [...body.childNodes].filter((child) => !(
+        child instanceof Text && child.data.replace(/[\s\u2060]/g, '') === ''
+      ));
+      if (remaining.length > 1) return;
+      if (remaining.length === 1 && !(remaining[0] instanceof HTMLBRElement)) return;
+      const paragraph = document.createElement('p');
+      paragraph.appendChild(document.createElement('br'));
+      body.replaceChildren(paragraph);
+      const caret = document.createRange();
+      caret.setStart(paragraph, 0);
+      caret.collapse(true);
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(caret);
+      this.textSelectionRange = caret.cloneRange();
+    };
     const onInput = (event?: Event) => {
       const typed = event instanceof InputEvent ? event : null;
+      if (typed?.inputType.startsWith('delete')) repairEmptiedBox();
       if (
         typed?.inputType === 'insertFromPaste'
         || typed?.inputType === 'insertFromPasteAsQuotation'
