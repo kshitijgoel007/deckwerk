@@ -101,7 +101,25 @@ describe.skipIf(!electronBinary)('web element in the browser editor and presenta
       `document.querySelectorAll('.handle[data-element-id="${WEB_ID}"]').length`),
       'the web element was not selected by clicking it', (count) => count > 0);
 
+    /* Live on the canvas: double-click runs the page in place, Escape ends it. */
+    const box = await editor.evaluate<{ x: number; y: number }>(`(() => {
+      const r = document.querySelector('#canvas [data-element-id="${WEB_ID}"]').getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    })()`);
+    await editor.doubleClickAt(box.x, box.y);
+    const liveState = () => editor!.evaluate<{ live: boolean; badge: string | null; pe: string | null }>(`(() => {
+      const n = document.querySelector('#canvas [data-element-id="${WEB_ID}"]');
+      const f = n?.querySelector('iframe.web-frame');
+      return { live: Boolean(n?.classList.contains('web-live')), badge: n?.querySelector('.web-live-badge')?.textContent ?? null,
+        pe: f ? getComputedStyle(f).pointerEvents : null };
+    })()`);
+    await eventually(liveState, 'double-click did not make the page live', (s) => s.live && s.pe === 'auto');
+    expect((await liveState()).badge).toMatch(/Esc/);
+    await editor.key('Escape', 27);
+    await eventually(liveState, 'Escape did not return the page to editing', (s) => !s.live && s.pe === 'none');
+
     /* Props: the web section is there and its Title field writes through. */
+    await editor.click(`#canvas [data-element-id="${WEB_ID}"]`, 'the web element');
     await editor.click('#side-tabs button[data-panel="inspector"]', 'Props tab');
     const field = await editor.evaluate<boolean>(`(() => {
       const wrap = [...document.querySelectorAll('#inspector .field')]
