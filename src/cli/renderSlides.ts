@@ -173,7 +173,13 @@ export interface WebPageCheck {
 
 function runElectron(script: string, jobPath: string): Promise<string> {
   return new Promise((resolvePromise, reject) => {
-    const child = spawn(electronBinary(), [script, jobPath], {
+    // Electron's npm binary cannot use its setuid sandbox in unprivileged
+    // Linux CI containers (the helper is not root-owned there). Keep the
+    // normal sandbox everywhere else; CI already isolates the whole job.
+    const args = process.platform === 'linux' && process.env.CI
+      ? ['--no-sandbox', script, jobPath]
+      : [script, jobPath];
+    const child = spawn(electronBinary(), args, {
       stdio: ['ignore', 'pipe', 'pipe'],
       env: { ...process.env, ELECTRON_DISABLE_SECURITY_WARNINGS: '1' },
     });
