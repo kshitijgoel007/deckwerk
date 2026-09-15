@@ -3379,7 +3379,15 @@ export class EditorCanvas {
     };
     const onInput = (event?: Event) => {
       const typed = event instanceof InputEvent ? event : null;
-      if (typed?.inputType.startsWith('delete')) repairEmptiedBox();
+      if (typed?.inputType.startsWith('delete')) {
+        repairEmptiedBox();
+        // Deleting a selection that spans a whole cell's text can take the
+        // cell's editor-only highlight class with it (Chromium rebuilds the
+        // cell's content), leaving a live cell range that paints nothing
+        // until the next render. Repaint it now, or drop a range whose cells
+        // the deletion removed.
+        if (this.tableSelection) this.syncTableSelectionHighlight();
+      }
       if (
         typed?.inputType === 'insertFromPaste'
         || typed?.inputType === 'insertFromPasteAsQuotation'

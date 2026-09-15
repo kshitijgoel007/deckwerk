@@ -1504,6 +1504,31 @@ describe('inline text editing', () => {
     expect(body.innerHTML).toBe('<p>Kept</p>');
   });
 
+  it('repaints the cell range highlight after a deletion strips it', () => {
+    const { store, canvas, host } = setup();
+    store.select(['text-1']);
+    store.updateSelected((element) => {
+      if (element.type === 'text') {
+        element.html = '<table><tbody><tr><td>Alpha beta</td><td>B</td></tr></tbody></table>';
+      }
+    });
+    canvas.beginTextEdit('text-1');
+    const body = bodyOf(host, 'text-1');
+    const cell = body.querySelector<HTMLTableCellElement>('td')!;
+    cell.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 9 }));
+    cell.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, cancelable: true, pointerId: 9 }));
+    document.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 9 }));
+    expect(canvas.tableSelectionInfo()).toMatchObject({ row: 0, column: 0, rowEnd: 0, columnEnd: 0 });
+    expect(cell.classList.contains('editor-table-selected')).toBe(true);
+
+    // What Chromium's deletion of the whole cell text leaves behind.
+    cell.removeAttribute('class');
+    cell.innerHTML = '<br>';
+    body.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward' }));
+    expect(cell.classList.contains('editor-table-selected')).toBe(true);
+    expect(canvas.tableSelectionInfo()).not.toBeNull();
+  });
+
   it('creates a plain bulleted list from text inside a reset typing-style marker', () => {
     const { canvas, host } = setup();
     canvas.beginTextEdit('text-1');
