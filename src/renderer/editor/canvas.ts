@@ -2912,13 +2912,20 @@ export class EditorCanvas {
     // session's coalesce key so the collab undo layer folds the whole stream
     // into one undoable "Edit text".
     let liveTimer = 0;
+    // Set by finish(). A render that rebuilds the slide ends this session and
+    // re-opens the edit as a new one on a fresh node — from inside whatever
+    // handler committed. That handler then carries on and re-arms this
+    // session's timers, and a pushLive firing on the detached old body would
+    // commit stale html that the new session adopts as a peer's change: the
+    // paste fuzz lost a typed line to exactly that. Nothing runs after the end.
+    let ended = false;
     // While an IME composition is open the DOM holds uncommitted preedit text
     // (the pinyin "ni" under the candidate window). Streaming or sealing it
     // would persist — and make undoable — text the author never committed.
     let composing = false;
     const pushLive = () => {
       liveTimer = 0;
-      if (this.editingId !== elementId) return;
+      if (ended || this.editingId !== elementId) return;
       if (composing) return;
       const html = authoredTextHtml(body);
       const current = findTextTarget(this.store.get().deck, elementId);
@@ -2967,7 +2974,7 @@ export class EditorCanvas {
         window.clearTimeout(liveTimer);
         liveTimer = 0;
       }
-      if (this.editingId !== elementId) return;
+      if (ended || this.editingId !== elementId) return;
       // Mid-composition the DOM holds uncommitted preedit; sealing it would
       // commit (and make undoable) text that never existed as authored
       // content. The run is not over either — no key bump. Try again after
@@ -3015,6 +3022,7 @@ export class EditorCanvas {
     };
     this.sealTextChunk = sealTextChunk;
     const scheduleIdleSeal = () => {
+      if (ended) return;
       if (idleSeal) window.clearTimeout(idleSeal);
       idleSeal = window.setTimeout(sealTextChunk, CHUNK_IDLE_MS);
     };
@@ -3319,6 +3327,7 @@ export class EditorCanvas {
     };
 
     const finish = (commit: boolean) => {
+      ended = true;
       if (this.finishTextEdit === finish) this.finishTextEdit = null;
       if (this.sealTextChunk === sealTextChunk) this.sealTextChunk = null;
       if (idleSeal) {
@@ -3437,8 +3446,40 @@ export class EditorCanvas {
       this.commitLiveTextDom('Insert link');
       return true;
     };
+    /**
+     * Deleting everything leaves Chromium's bare `<br>` (or nothing at all) at
+     * the top level: no block for the caret, so the next typed text lands
+     * outside any paragraph where no block control can reach it. Give the box
+     * the empty paragraph Return would have made.
+     */
+    const repairEmptiedBox = () => {
+      const remaining = [...body.childNodes].filter((child) => !(
+        child instanceof Text && child.data.replace(/[\s\u2060]/g, '') === ''
+      ));
+      if (remaining.length > 1) return;
+      if (remaining.length === 1 && !(remaining[0] instanceof HTMLBRElement)) return;
+      const paragraph = document.createElement('p');
+      paragraph.appendChild(document.createElement('br'));
+      body.replaceChildren(paragraph);
+      const caret = document.createRange();
+      caret.setStart(paragraph, 0);
+      caret.collapse(true);
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(caret);
+      this.textSelectionRange = caret.cloneRange();
+    };
     const onInput = (event?: Event) => {
       const typed = event instanceof InputEvent ? event : null;
+      if (typed?.inputType.startsWith('delete')) {
+        repairEmptiedBox();
+        // Deleting a selection that spans a whole cell's text can take the
+        // cell's editor-only highlight class with it (Chromium rebuilds the
+        // cell's content), leaving a live cell range that paints nothing
+        // until the next render. Repaint it now, or drop a range whose cells
+        // the deletion removed.
+        if (this.tableSelection) this.syncTableSelectionHighlight();
+      }
       if (
         typed?.inputType === 'insertFromPaste'
         || typed?.inputType === 'insertFromPasteAsQuotation'
@@ -3499,6 +3540,17 @@ export class EditorCanvas {
         // or carry an old bold/italic style into the new paragraph/list item.
         // Seal the authored run and restore the same flat caret first.
         sealActiveTypingStyle();
+        // Chromium cannot split a table cell the way it splits a paragraph,
+        // and in this white-space: pre-wrap box its fallback is a literal
+        // "\n" text node, which nothing else in the editor writes or reads
+        // (the nightly paste fuzz caught it: Enter in a pasted table cell,
+        // then typing). Cells break lines with <br>, as pasted multi-line
+        // cells do; own the break so Enter in a cell produces one.
+        if (this.breakLineInTableCell(body)) {
+          event.preventDefault();
+          onInput(event);
+          return;
+        }
       }
       const nativeFormat = event.inputType === 'formatBold'
         ? 'bold'
@@ -3939,6 +3991,40 @@ export class EditorCanvas {
     return saved && root.contains(saved.commonAncestorContainer) ? saved : null;
   }
 
+  /**
+   * Enter with the caret directly inside a table cell: insert the line break
+   * the cell model uses. Returns false when the caret is anywhere else,
+   * including inside a paragraph within a cell, which splits natively.
+   */
+  private breakLineInTableCell(body: HTMLElement): boolean {
+    const range = this.activeTextRange(body);
+    if (!range) return false;
+    const container = range.startContainer instanceof Element
+      ? range.startContainer
+      : range.startContainer.parentElement;
+    const block = container?.closest(TEXT_BLOCKS) ?? null;
+    if (!block || !block.matches('td, th') || !body.contains(block)) return false;
+    if (!range.collapsed) range.deleteContents();
+    const br = document.createElement('br');
+    range.insertNode(br);
+    // A break with nothing after it paints no new line, so the caret would
+    // have nowhere to stand: give it the placeholder break Chromium itself
+    // leaves at the end of a block. Typing lands before it.
+    const rest = document.createRange();
+    rest.setStartAfter(br);
+    rest.setEnd(block, block.childNodes.length);
+    if (rest.toString() === '' && !rest.cloneContents().querySelector('br, img')) {
+      block.appendChild(document.createElement('br'));
+    }
+    range.setStartAfter(br);
+    range.collapse(true);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    this.textSelectionRange = range.cloneRange();
+    return true;
+  }
+
   /** Text node whose authored style controls typing at a collapsed caret. */
   private textNodeAtCaret(root: HTMLElement, range: Range): Text | null {
     if (range.startContainer instanceof Text) return range.startContainer;
@@ -4069,7 +4155,7 @@ export class EditorCanvas {
     declarations: ReadonlyArray<readonly [TextRunStyleProperty, string]>,
   ): boolean {
     const offsets = this.textOffsetsForRange(content, originalRange);
-    if (!offsets) return false;
+    if (!offsets) return this.declineLiveTextFormat();
     let range = originalRange;
     const container = range.startContainer instanceof Element
       ? range.startContainer
@@ -4361,14 +4447,14 @@ export class EditorCanvas {
 
   /** Colour the markers for the current item or selected items, without touching their text. */
   applyTextSelectionMarkerColor(value: string | null): boolean {
-    if (!this.editingId || this.tableSelection) return false;
+    if (!this.editingId || this.tableSelection) return this.declineLiveTextFormat();
     const content = this.slideLayer.querySelector<HTMLElement>(
       `[data-element-id="${CSS.escape(this.editingId)}"] .text-content`,
     );
     const range = content ? this.activeTextRange(content) : null;
-    if (!content || !range || !content.contains(range.commonAncestorContainer)) return false;
+    if (!content || !range || !content.contains(range.commonAncestorContainer)) return this.declineLiveTextFormat();
     const items = this.listItemsForRange(content, range);
-    if (items.length === 0) return false;
+    if (items.length === 0) return this.declineLiveTextFormat();
     const offsets = this.textOffsetsForRange(content, range);
     for (const item of items) {
       if (value) {
@@ -4407,7 +4493,7 @@ export class EditorCanvas {
     );
     const range = content ? this.activeTextRange(content) : null;
     if (!content || !range || !content.contains(range.commonAncestorContainer)) {
-      return false;
+      return this.declineLiveTextFormat();
     }
 
     // Use the same offset-based formatter in Chromium and in the test/runtime
@@ -4447,7 +4533,7 @@ export class EditorCanvas {
   }
 
   applyTextSelectionAlignment(value: 'left' | 'center' | 'right' | 'justify'): boolean {
-    if (!this.editingId || this.tableSelection) return false;
+    if (!this.editingId || this.tableSelection) return this.declineLiveTextFormat();
     const content = this.slideLayer.querySelector<HTMLElement>(
       `[data-element-id="${CSS.escape(this.editingId)}"] .text-content`,
     );
@@ -4456,14 +4542,14 @@ export class EditorCanvas {
       ? live.getRangeAt(0)
       : this.textSelectionRange;
     if (!content || !range || range.collapsed || !content.contains(range.commonAncestorContainer)) {
-      return false;
+      return this.declineLiveTextFormat();
     }
     const blocks = [...content.querySelectorAll<HTMLElement>('p, li, div')]
       .filter((block) => {
         try { return range.intersectsNode(block); } catch { return false; }
       })
       .filter((block) => !block.querySelector('p, li, div'));
-    if (blocks.length === 0) return false;
+    if (blocks.length === 0) return this.declineLiveTextFormat();
     blocks.forEach((block) => { block.style.textAlign = value; });
     const next = document.createRange();
     next.setStartBefore(blocks[0]);
@@ -4692,7 +4778,7 @@ export class EditorCanvas {
     );
     const live = window.getSelection();
     const range = content ? this.listStyleRange(content) : null;
-    if (!content || !range) return false;
+    if (!content || !range) return this.declineLiveTextFormat();
     // Read now, not later: this is a live Range, and replacing the nodes it
     // points at collapses it. A caret is then left where it was rather than
     // replaced by a selection of the whole list — the marker changed, the
@@ -4711,7 +4797,7 @@ export class EditorCanvas {
         return false;
       }
     }) as HTMLElement[];
-    if (selectedBlocks.length === 0) return false;
+    if (selectedBlocks.length === 0) return this.declineLiveTextFormat();
 
     // If any selected text belongs to a list, that whole top-level list is the
     // formatting target. Unrelated paragraphs crossed by the Range are left
@@ -4844,6 +4930,24 @@ export class EditorCanvas {
     return true;
   }
 
+  /**
+   * A live-selection formatter that finds nothing to act on returns false and
+   * the inspector applies the choice to the element's html in the model
+   * instead. While a text edit is live, that html lags the DOM by whatever
+   * has been typed since the last seal, so the rewrite is built on stale text
+   * and the next seal then overwrites it — the click is silently lost. Bring
+   * the model up to date before handing over.
+   */
+  private declineLiveTextFormat(): false {
+    const elementId = this.editingId;
+    if (!elementId) return false;
+    const body = this.slideLayer.querySelector<HTMLElement>(
+      `[data-element-id="${CSS.escape(elementId)}"] .text-content`,
+    );
+    if (body && authoredTextHtml(body) !== this.textEditStoreBase) this.commitLiveTextDom('Edit text');
+    return false;
+  }
+
   private commitLiveTextDom(label: string): void {
     const elementId = this.editingId;
     if (!elementId) return;
@@ -4959,17 +5063,17 @@ export class EditorCanvas {
     const content = this.slideLayer.querySelector<HTMLElement>(
       `[data-element-id="${CSS.escape(this.editingId)}"] .text-content`,
     );
-    if (!content) return false;
+    if (!content) return this.declineLiveTextFormat();
     const range = this.activeTextRange(content);
     if (!range || !content.contains(range.commonAncestorContainer)) {
-      return false;
+      return this.declineLiveTextFormat();
     }
     if (range.collapsed) {
       return this.applyCollapsedTypingStyle(content, range, declarations);
     }
 
     const offsets = this.textOffsetsForRange(content, range);
-    if (!offsets || offsets.end <= offsets.start) return false;
+    if (!offsets || offsets.end <= offsets.start) return this.declineLiveTextFormat();
 
     // Never wrap a cross-block Range in one span. A selection containing
     // paragraphs or list items would put those blocks inside an inline span;
@@ -4977,7 +5081,7 @@ export class EditorCanvas {
     // each selected text run in place so the authored block structure is
     // exactly preserved.
     const slices = this.textSlicesForOffsets(content, offsets);
-    if (slices.length === 0) return false;
+    if (slices.length === 0) return this.declineLiveTextFormat();
 
     // A measured size replaces measured sizes, never proportional ones. A
     // selection dragged across a word and the superscript beside it asks for

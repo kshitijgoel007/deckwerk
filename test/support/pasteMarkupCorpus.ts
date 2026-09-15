@@ -423,11 +423,28 @@ export const MARKUP_INVARIANTS = `(root) => {
   // collapse paints here. Between items and blocks it is a blank line.
   const isBlock = (node) => node && node.nodeType === 1
     && /^(P|DIV|UL|OL|LI|TABLE|H1|H2|H3|H4|H5|H6|BLOCKQUOTE|PRE)$/.test(node.tagName);
+  // A newline at the edge of a run is only stray whitespace when nothing but
+  // a block edge or a <br> sits beside it there: a soft break the author
+  // typed (Chromium writes shift-return as "\\n" in a pre-wrap box) legitimately
+  // ends one inline run and starts the next once a word beside it is formatted.
+  const neighbour = (text, side) => {
+    let node = text;
+    while (node && node !== root && !isBlock(node)) {
+      const sibling = side === 'previous' ? node.previousSibling : node.nextSibling;
+      if (sibling) return sibling;
+      node = node.parentNode;
+    }
+    return null;
+  };
+  const hardEdge = (node) => node === null || isBlock(node)
+    || (node.nodeType === 1 && node.tagName === 'BR');
   const walker = root.ownerDocument.createTreeWalker(root, 4);
   for (let text = walker.nextNode(); text; text = walker.nextNode()) {
     const parent = text.parentNode;
     const inPre = parent && parent.closest && parent.closest('pre');
-    if (!inPre && (/^[ \\t\\r]*\\n/.test(text.data) || /\\n[ \\t\\r]*$/.test(text.data))) {
+    const startsWithNewline = /^[ \\t\\r]*\\n/.test(text.data) && hardEdge(neighbour(text, 'previous'));
+    const endsWithNewline = /\\n[ \\t\\r]*$/.test(text.data) && hardEdge(neighbour(text, 'next'));
+    if (!inPre && (startsWithNewline || endsWithNewline)) {
       problems.push('a text run starts or ends with a newline, which paints as a line break: '
         + JSON.stringify(text.data) + ' in ' + (parent ? parent.tagName.toLowerCase() : '?'));
     }
