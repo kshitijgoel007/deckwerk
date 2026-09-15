@@ -100,8 +100,12 @@ the browser computes the geometry. While the editor is open, saving the file
 updates exactly those slides about a second later, as one undoable change.
 With the editor closed there is no watcher, so apply the same file explicitly:
 
-    slide-agent apply . --html edit/work.html
+    slide-agent apply . --html edit/work.html   # ONLY with the editor closed
     slide-agent validate
+
+A save has landed when the editor has stamped `data-slide-id` onto your new
+sections (poll the file; a large page takes several seconds). Never `apply` a
+file the open editor is watching — both paths would insert your new slides.
 
 **Adding slides is a different file from changing them.** `slide-agent new >
 edit/add.html` writes a blank authoring page with the same canvas, theme and
@@ -172,7 +176,13 @@ the original where it is and the new section inserts right after it.
   The compile keeps it as one native, editable table: outer resizing scales
   all columns, internal dividers change adjacent column widths, and row height
   follows the styled content. Use `data-table-widths="1,2,1"` when authored
-  column proportions matter; otherwise columns begin equal.
+  column proportions matter; otherwise columns begin equal. **Unstyled tables
+  get a plain 1px grid on every cell**; a designed table starts by resetting
+  it — `.results th, .results td { border: 0; }` — and then draws only the
+  rules it wants (a heavy line under the header, hairlines between rows,
+  generous right padding, `font-variant-numeric: tabular-nums` for columns of
+  numbers). Inline `style` on cells is kept but hard to maintain; the class in
+  `theme.css` is the place.
 - **Arrows and lines:** a `<div>` holding one `<svg>` with a single `<line>`
   becomes a native line. For a real arrow — deck stroke width and head — give
   the wrapper the deck's shape attributes and mark the SVG as paint only:
@@ -195,7 +205,9 @@ the original where it is and the new section inserts right after it.
   while presenting, no access to the deck — so inline its data and images and
   design it for its box with no scrolling. `window.deckwerk` (injected) offers
   `onActive`, `onStep`, `next`, `prev`. Nothing inside is a slide object, so
-  use it for what genuinely needs code.
+  use it for what genuinely needs code. The import captures a poster for
+  thumbnails and PDF; match the deck's fonts and colours inside the page
+  yourself, since `theme.css` does not reach into it.
 - Wrapper `<div>`s are layout: they dissolve on compile and their children
   become the slide objects. Do not hand-copy `class="element …"` wrappers
   from exports around your own markup; plain semantic HTML is the input.

@@ -67,7 +67,8 @@ Adding slides rather than changing them is a different file — `slide-agent new
 them** below before you write either one.
 
 That is the whole thing. There is no fourth step: with the editor open, saving
-`edit/work.html` updates exactly those slides about 200 ms later, as one named,
+`edit/work.html` updates exactly those slides a moment later (a large file can
+take several seconds to lay out), as one named,
 undoable change. Keep editing and keep saving.
 
 **1. `context` — the map.** Every slide in order with its id and its title, the
@@ -193,7 +194,9 @@ turns into, not a list of things to opt into.
   `<dt>`/`<dd>`, `<figcaption>`, `<small>`, `<cite>`, and their inline markup.
   A `<ul>`/`<ol>` stays one object, markers and all, and a hand-written
   `<table>` becomes an editable deck table with the column widths the browser
-  measured.
+  measured. The player draws an unstyled table as a plain 1px grid; a
+  designed table resets that first (`.results th, .results td { border: 0 }`
+  in `theme.css`) and then adds only the rules it wants.
 - **Media** — `<img>` and `<video>`. A border, a radius, a circular mask, a
   ring shadow or a backdrop colour on the media *or on a frame that wraps only
   that media* becomes the picture's own, so a framed photograph is one object
@@ -248,7 +251,8 @@ slide-agent web import . page.html --after 12 --title "Papers per year"
 ```
 
 The page is copied to `assets/web/<name>.<hash>.html` (the JSON reply names
-the `src`) and a small runtime is written into it. To place the same document
+the `src`), a small runtime is written into it, and a poster still is captured
+for thumbnails and PDF (`--no-poster` skips that). To place the same document
 in a smaller box, or several on one slide, use the authoring page as usual:
 
 ```html
@@ -278,6 +282,12 @@ What the page can and cannot do:
 - Nothing inside is a slide object: no inspector restyling, Morph, auto-fit or
   overflow checks. When the *content* could be ordinary slides, make ordinary
   slides — they stay editable and the design stays consistent.
+- On the editor canvas the page shows as its poster so it can be selected and
+  dragged; a human double-clicks it (or uses Props → "Interact with page") to
+  run it in place, and Escape or a click elsewhere returns to editing. While
+  presenting it is always live.
+- The page does not load the deck's `theme.css`: carry the deck's fonts and
+  colours into the page yourself so it does not look pasted in.
 
 And two that are silently *lost*, so the compile reports them as warnings
 instead: `transform: scale()`/`skew()` (only rotation survives — size the
@@ -295,6 +305,15 @@ properties you never meant to touch. Parse the file with a real HTML parser, or
 at minimum treat `&quot;`/`&#39;` as atoms in any pattern that edits a style
 attribute. Deck-wide restyles rarely need this at all: delete the inline
 declaration entirely and put the replacement in `theme.css`.
+
+**Know when a save has landed.** The editor stamps the assigned ids into
+your file after each successful sync — a new section gains `data-slide-id`
+and the scope marker in `<head>` lists the slides the file now governs. Until
+that happens the save is still compiling (a page carrying much text or many
+sections can take ten seconds or more). Poll for the stamp rather than
+guessing, and **never run `apply` on a file the open editor is watching**:
+the watcher and the explicit apply would both compile the unstamped file and
+both insert its sections, and the deck ends up with every new slide twice.
 
 With the editor **closed** there is no watcher, so apply the same file
 explicitly, which does the identical thing:
@@ -352,7 +371,7 @@ my-talk/
 ```
 
 - **Save `edit/*.html` → the editor syncs that slide range into the deck**
-  within ~200 ms, as one undoable entry named after your file. The file records
+  within a few seconds, as one undoable entry named after your file. The file records
   its original ordered scope, so removing and moving sections is structural
   editing, not merely content replacement.
 - The editor lays the page out itself, in the same engine that draws the

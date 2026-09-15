@@ -117,7 +117,7 @@ Everything else:
                                           schema, ids, references, assets, and
                                           canvas overflows (scoped to your slides)
   asset import <deck> <paths...>          copy media into assets/, probed
-  web import <deck> <page.html> [--after <slideId>] [--title <text>]
+  web import <deck> <page.html> [--after <slideId>] [--title <text>] [--no-poster]
                                           add one slide showing a complete HTML
                                           page — scripts and all — live in a
                                           sandboxed frame (a Claude artifact,
@@ -630,7 +630,7 @@ async function webCommand(argv: string[], io: CliIo): Promise<number> {
     return EXIT_USAGE;
   }
   const { flags, options, positional } = parseFlags(rest, ['after', 'title', 'name']);
-  ensureKnownFlags('web import', flags, ['no-interaction']);
+  ensureKnownFlags('web import', flags, ['no-interaction', 'no-poster']);
   ensurePositionals('web import', positional, 2);
   if (positional.length < 2) {
     io.err('web import needs a deck folder and one HTML file');
@@ -675,6 +675,39 @@ async function webCommand(argv: string[], io: CliIo): Promise<number> {
       title,
     }],
   }] }).slides[0];
+
+  // A still of the page for everything that cannot run it: PDF export,
+  // rail thumbnails, the authoring preview. Captured through the real player
+  // before the slide is inserted, from a one-slide view of this deck, so the
+  // insert already carries the poster. Optional in every sense: no export
+  // bundle or no display simply means no poster.
+  let poster: string | null = null;
+  if (!flags.has('no-poster')) {
+    try {
+      const shots = await mkdtemp(join(tmpdir(), 'web-poster-'));
+      const { images } = await renderSlidesToPng({
+        deckDir,
+        deck: { ...deck, slides: [slide] },
+        outDir: shots,
+        slides: [{ id: slideId, number: 1 }],
+        annotate: false,
+        built: false,
+        selectedElementIds: [],
+      });
+      const shot = images[0]?.path;
+      if (shot) {
+        const name = page.src.replace(/^assets\//, '').replace(/\.html?$/i, '.poster.png');
+        const { copyFile } = await import('node:fs/promises');
+        await copyFile(shot, join(deckDir, 'assets', name));
+        poster = `assets/${name}`;
+        const element = slide.elements[0];
+        if (element.type === 'web') element.poster = poster;
+      }
+    } catch (error) {
+      io.err(`No poster captured (${error instanceof Error ? error.message : String(error)}); the slide still works, previews show an inert frame.`);
+    }
+  }
+
   return applyTransaction(deckDir, {
     version: AGENT_PROTOCOL_VERSION,
     label: `Import web page ${title}`,
@@ -682,6 +715,7 @@ async function webCommand(argv: string[], io: CliIo): Promise<number> {
   }, io, {
     slideId,
     src: page.src,
+    poster,
     bytes: page.bytes,
     title,
     hint: 'The page fills the canvas. To place it in a smaller box, export the slide with `inspect --html` and resize the data-element="web" div like any other element.',

@@ -628,6 +628,9 @@ function watchDeck(state: DeckWindowState): void {
       // spawned, and the compile is measured by the engine that will draw it.
       watch(editDir, (_event, filename) => {
         if (!filename || !String(filename).endsWith('.html')) return;
+        // Editors save through hidden temporaries (`.!1234!work.html`, `.work.html.swp`)
+        // that are renamed or gone before they can be read; they are not documents.
+        if (String(filename).startsWith('.')) return;
         const path = resolve(editDir, String(filename));
         // `.scratchpad/` holds persistent Agent preview evidence. Only direct
         // children of edit/ are authored documents whose saves update slides.
@@ -638,15 +641,20 @@ function watchDeck(state: DeckWindowState): void {
           htmlTimers.delete(path);
           try {
             const { readFile } = await import('node:fs/promises');
-            const first = await readFile(path, 'utf8');
             // A save is not necessarily atomic: reading during a large write
             // hands back a truncated document, which once compiled into an
-            // empty slide. Read twice with a pause — a file still growing
-            // differs between the reads — and skip a document that is visibly
-            // cut off; the write's own final event will retry it complete.
-            await new Promise((settle) => setTimeout(settle, 150));
-            const contents = await readFile(path, 'utf8');
-            if (contents !== first) return;
+            // empty slide. Read until two reads a pause apart agree. Waiting
+            // for "the write's own final event" instead lost saves outright:
+            // the directory watch reports a file being opened for writing,
+            // not its last byte landing, so a 600 KB authoring page written in
+            // place fired once, read as still growing, and was never compiled.
+            let contents = await readFile(path, 'utf8');
+            for (let attempt = 0; attempt < 20; attempt++) {
+              await new Promise((settle) => setTimeout(settle, 150));
+              const again = await readFile(path, 'utf8');
+              if (again === contents) break;
+              contents = again;
+            }
             if (/<html[\s>]/i.test(contents) && !/<\/html>/i.test(contents)) return;
             // The editor's own export lands here too; that event is an echo.
             if (state.lastWrittenHtml.get(path) === contents) {
