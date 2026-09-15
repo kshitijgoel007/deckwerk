@@ -198,16 +198,19 @@ the original where it is and the new section inserts right after it.
 
   It lays out like any flex item. A bare SVG `<line>` with `marker-end` and no
   wrapper attributes currently arrives as a hairline without its head.
-- **Interactive pages (JavaScript):** the compile strips scripts, so a page
-  that needs them — a Claude artifact, an interactive chart, a demo — becomes
-  a sandboxed **web element** instead: `slide-agent web import . page.html`
-  adds it as one full-canvas slide (the reply names its `src`), or place it
-  in a box with `<div data-element="web" data-src="assets/web/….html"
-  style="width:…;height:…"></div>`. It runs with scripts only — no network
-  while presenting, no access to the deck — so inline its data and images and
-  design it for its box with no scrolling. `window.deckwerk` (injected) offers
-  `onActive`, `onStep`, `next`, `prev`. Nothing inside is a slide object, so
-  use it for what genuinely needs code. The import captures a poster for
+- **Interactive pages (JavaScript):** the compile strips scripts, so a thing
+  that needs them — an interactive chart, a slider, a demo — lives in a
+  sandboxed **web element**. Keep *only the interactive thing* in it: the
+  slide's title and caption are ordinary text beside it. Author the page for
+  its box (no heading of its own), then `slide-agent web add . chart.html
+  --size 1680x780 --title "…"` — it stages the page under `assets/web/`,
+  checks it at that size, captures a poster, and prints the exact
+  `<div data-element="web" data-src=… data-poster=… style="width:…;height:…">`
+  to drop into your authoring page next to an `<h1>` and a `<p>`. Only a page
+  that *is* a whole slide goes in full-canvas with `slide-agent web import`.
+  Pages run with scripts only — no network while presenting, no access to the
+  deck — so inline data and images and design for the box with no scrolling.
+  `window.deckwerk` (injected) offers `onActive`, `onStep`, `next`, `prev`. The import captures a poster for
   thumbnails and PDF; match the deck's fonts and colours inside the page
   yourself, since `theme.css` does not reach into it. Before importing, run
   `slide-agent web check page.html` — it runs the page headlessly and reports

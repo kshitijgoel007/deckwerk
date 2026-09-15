@@ -122,6 +122,12 @@ Everything else:
                                           page — scripts and all — live in a
                                           sandboxed frame (a Claude artifact,
                                           an interactive chart, a demo)
+  web add <deck> <page.html> [--size <WxH>] [--title <text>]
+                                          stage a page as an asset — no slide —
+                                          checked and with a poster at the box
+                                          size, for a data-element="web" box in
+                                          your own authoring page beside a real
+                                          title and caption (the usual choice)
   web check <page.html> [--screenshot <file.png>] [--size 1920x1080]
                                           run the page headlessly the way the
                                           frame will: script errors, overflow,
@@ -665,6 +671,7 @@ async function assetCommand(argv: string[], io: CliIo): Promise<number> {
 async function webCommand(argv: string[], io: CliIo): Promise<number> {
   const [sub, ...rest] = argv;
   if (sub === 'check') return webCheckCommand(rest, io);
+  if (sub === 'add') return webAddCommand(rest, io);
   if (sub !== 'import') {
     io.err(`Unknown web command: ${sub ?? '(none)'}\n\n${USAGE}`);
     return EXIT_USAGE;
@@ -760,6 +767,62 @@ async function webCommand(argv: string[], io: CliIo): Promise<number> {
     title,
     hint: 'The page fills the canvas. To place it in a smaller box, export the slide with `inspect --html` and resize the data-element="web" div like any other element.',
   });
+}
+
+/**
+ * `web add`: the page as an asset, nothing else. The usual shape of an
+ * interactive slide is a real title and caption — ordinary text objects the
+ * deck can restyle — with the interactive thing in a box beside them, so the
+ * page should hold only that thing, sized for its box. This stages it under
+ * assets/web/ with the bridge runtime, checks it at the box size, and writes a
+ * poster of it; the reply gives the `data-src` and `data-poster` to put on a
+ * `<div data-element="web">` in an authoring page.
+ */
+async function webAddCommand(argv: string[], io: CliIo): Promise<number> {
+  const { flags, options, positional } = parseFlags(argv, ['size', 'title']);
+  ensureKnownFlags('web add', flags, []);
+  ensurePositionals('web add', positional, 2);
+  if (positional.length < 2) {
+    io.err('web add needs a deck folder and one HTML file');
+    return EXIT_USAGE;
+  }
+  const deckDir = resolveDeckDir(positional[0], io);
+  const pagePath = resolve(io.cwd, positional[1]);
+  if (!existsSync(pagePath)) {
+    io.err(`No such file: ${pagePath}`);
+    return EXIT_ERROR;
+  }
+  const size = /^(\d+)x(\d+)$/.exec(options.get('size') ?? '1920x1080');
+  if (!size) throw new UsageError(`--size takes WIDTHxHEIGHT, not "${options.get('size')}".`);
+  const width = Number(size[1]);
+  const height = Number(size[2]);
+  const source = await readFile(pagePath, 'utf8');
+  const title = options.get('title') ?? titleFromHtml(source) ?? positional[1].replace(/^.*[\\/]/, '').replace(/\.[^.]+$/, '');
+  const page = await importWebPage(deckDir, pagePath, injectWebBridgeRuntime);
+  const posterRel = page.src.replace(/\.html?$/i, '.poster.png');
+  let check: Awaited<ReturnType<typeof checkWebPage>> | null = null;
+  try {
+    check = await checkWebPage({
+      pagePath: join(deckDir, page.src),
+      width,
+      height,
+      screenshot: join(deckDir, posterRel),
+    });
+  } catch (error) {
+    io.err(`No poster captured (${error instanceof Error ? error.message : String(error)}).`);
+  }
+  const poster = check ? posterRel : null;
+  io.out(json({
+    src: page.src,
+    poster,
+    title,
+    size: { w: width, h: height },
+    bytes: page.bytes,
+    ...(check ? { ok: check.ok, problems: check.problems, console: check.console, remoteRequests: check.remoteRequests } : {}),
+    markup: `<div data-element="web" data-src="${page.src}"${poster ? ` data-poster="${poster}"` : ''} data-title="${title.replace(/"/g, '&quot;')}" style="width:${width}px;height:${height}px"></div>`,
+    hint: 'Put that div in an authoring page (slide-agent new) beside a real <h1> and caption; its CSS box is its geometry.',
+  }));
+  return check && !check.ok ? EXIT_ERROR : EXIT_OK;
 }
 
 /**

@@ -245,24 +245,41 @@ demo, a page somebody already built such as a Claude artifact) is a different
 kind of object: a **web element**, a complete HTML document shown live inside
 its box in a sandboxed frame.
 
-```bash
-slide-agent web import . page.html                   # one new full-canvas slide
-slide-agent web import . page.html --after 12 --title "Papers per year"
-```
+**Keep only the interactive thing inside the box.** The title, the caption,
+the takeaway are ordinary slide text — they follow the theme, they can be
+restyled, they read in the outline, they export to PDF. So author the page for
+*its box* (the chart, the slider, the demo — no heading of its own), stage it,
+and place it in an authoring page beside real text:
 
-The page is copied to `assets/web/<name>.<hash>.html` (the JSON reply names
-the `src`), a small runtime is written into it, and a poster still is captured
-for thumbnails and PDF (`--no-poster` skips that). To place the same document
-in a smaller box, or several on one slide, use the authoring page as usual:
+```bash
+slide-agent web add . chart.html --size 1680x780 --title "Training curves"
+#  → { "src": "assets/web/chart.a1b2c3d4.html", "poster": "…poster.png",
+#      "ok": true, "problems": [], "markup": "<div data-element=\"web\" …>" }
+```
 
 ```html
-<div data-element="web" data-src="assets/web/page.a1b2c3d4.html"
-     data-title="Papers per year" style="width: 1200px; height: 700px;"></div>
+<section class="slide" style="padding: 90px 120px; display: flex; flex-direction: column; gap: 28px;">
+  <h1 class="role-heading">Five runs, five learning rates</h1>
+  <div data-element="web" data-src="assets/web/chart.a1b2c3d4.html"
+       data-poster="assets/web/chart.a1b2c3d4.poster.png" data-title="Training curves"
+       style="width: 1680px; height: 780px;"></div>
+  <p class="role-caption">Solid is training loss, dashed is validation. Hover for values.</p>
+</section>
 ```
 
-Its CSS box is its geometry like any element; `data-poster="assets/…png"`
-gives PDF export and thumbnails a still, `data-interactive="false"` makes
-clicks on the page advance the deck instead of reaching the page.
+`web add` copies the page to `assets/web/<name>.<hash>.html`, writes a small
+runtime into it, runs it once at the box size (see `web check` below — the
+reply carries the same `problems`), and captures a poster for thumbnails and
+PDF. The div's CSS box is its geometry like any element;
+`data-interactive="false"` makes clicks on the page advance the deck instead
+of reaching the page.
+
+A page that *is* a whole slide — a finished artifact with its own title —
+goes in as one full-canvas slide instead:
+
+```bash
+slide-agent web import . page.html --after 12 --title "Papers per year"
+```
 
 **Test the page before importing it.** `render` shows a page at rest; it
 cannot tell you a script threw. `slide-agent web check page.html

@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -157,6 +158,26 @@ describe('slide-agent web import', { timeout: 30_000 }, () => {
     const twice = await loadDeck(dir);
     expect(twice.slides.map((s) => s.id)).toContain(again.slideId);
     expect(twice.slides.at(-1)!.elements[0]).toMatchObject({ interactive: false });
+  });
+
+  it('stages a page as an asset with a poster at the box size, no slide added', { timeout: 60_000 }, async () => {
+    const root = await mkdtemp(join(tmpdir(), 'web-add-'));
+    cleanup.push(root);
+    const dir = join(root, 'Deck');
+    await createDeck(dir, 'Deck');
+    await writeFile(join(root, 'chart.html'), '<!doctype html><html><head><title>Chart</title></head><body style="margin:0"><div id="c" style="width:100%;height:100vh;background:#def"></div><script>document.getElementById("c").textContent = "ok";</script></body></html>');
+
+    const result = await cli(root, 'web', 'add', dir, 'chart.html', '--size', '1200x600');
+    expect(result.code, result.stderr).toBe(EXIT_OK);
+    const reply = JSON.parse(result.stdout);
+    expect(reply.src).toMatch(/^assets\/web\/chart\.[0-9a-f]{8}\.html$/);
+    expect(reply.markup).toContain(`data-src="${reply.src}"`);
+    expect(reply.markup).toContain('style="width:1200px;height:600px"');
+    expect(reply.ok).toBe(true);
+    expect(reply.poster).toMatch(/\.poster\.png$/);
+    expect(existsSync(join(dir, reply.poster))).toBe(true);
+    // An asset, not a slide: the deck is as it was.
+    expect((await loadDeck(dir)).slides).toHaveLength(1);
   });
 
   it('refuses a file that is not HTML', async () => {
