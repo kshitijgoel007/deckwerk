@@ -19,7 +19,7 @@ import { createConnectionNotice } from './connectionNotice.js';
 import { PlayerPaintReadiness } from './playerReadiness.js';
 import { createPresentationBus, type PresentationRole } from './presentationBus.js';
 import { trackVideoLoading } from '../player/videoLoadingProgress.js';
-import { slideLinkFromEvent } from '../player/links.js';
+import { eventOnInteractiveWeb, slideLinkFromEvent } from '../player/links.js';
 import { selectionPreventsAdvance } from '../player/presentationPointer.js';
 
 /**
@@ -280,7 +280,7 @@ function unmountAudience(): void {
 window.addEventListener('click', (event) => {
   if (consumeFullscreenGesture()) return;
   if (role !== 'audience' || agentViewer) return;
-  if (slideLinkFromEvent(event)) return;
+  if (slideLinkFromEvent(event) || eventOnInteractiveWeb(event)) return;
   if (selectionPreventsAdvance()) return;
   advance();
 });

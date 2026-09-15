@@ -12,7 +12,7 @@ const ElementEditSchema = z.object({
   target: z.literal('element'),
   slideId: z.string().min(1),
   elementId: z.string().min(1),
-  expectedType: z.enum(['text', 'image', 'video', 'shape', 'html', 'unsupported']).optional(),
+  expectedType: z.enum(['text', 'image', 'video', 'shape', 'html', 'web', 'unsupported']).optional(),
   set: SetValuesSchema,
   unset: UnsetPathsSchema,
 });
@@ -139,6 +139,12 @@ const ELEMENT_PROPERTIES: Record<SlideElement['type'], PropertyDoc[]> = {
   ],
   html: [
     { path: 'html', type: 'string', description: 'Markup held by this isolated fallback object.', example: '<div>Fallback</div>' },
+  ],
+  web: [
+    { path: 'src', type: 'deck-relative asset path', description: 'The sandboxed HTML document this box shows live.', example: 'assets/web/chart.a1b2c3d4.html' },
+    { path: 'poster', type: 'deck-relative asset path|null', description: 'Still shown where the page cannot run (PDF, thumbnails).', example: 'assets/web/chart.poster.png' },
+    { path: 'interactive', type: 'boolean', description: 'Whether the page receives clicks while presenting. Off, clicks advance the deck.', example: true },
+    { path: 'title', type: 'string', description: 'Accessible name of the embedded page.', example: 'Papers per year' },
   ],
   unsupported: [],
 };

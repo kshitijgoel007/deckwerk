@@ -24,6 +24,16 @@ export interface AgentBridgeOptions {
   respond: (response: AgentResponse) => void;
   save: () => Promise<void>;
   resolveSrc: (src: string) => string;
+  /** Compile and apply an authoring file the way a watched save does. */
+  syncHtml?: (edit: { path: string; contents: string; after?: string | null; label?: string }) => Promise<HtmlSyncOutcome>;
+}
+
+/** What one authoring-file sync did, as reported back to the caller. */
+export interface HtmlSyncOutcome {
+  changes: { replaced: string[]; inserted: string[]; deleted: string[]; moved: number };
+  slides: Array<{ id: string; elements: Array<{ id: string; type: string; box: { x: number; y: number; w: number; h: number } }> }>;
+  warnings: string[];
+  message: string;
 }
 
 /** Publishes the editor's live, computed selection through the file-backed main-process bridge. */
@@ -73,6 +83,30 @@ export class AgentBridge {
   async handle(request: AgentRequest): Promise<void> {
     const deck = this.store.get().deck;
     const revision = await browserDeckRevision(deck);
+    if (request.kind === 'htmlSync') {
+      try {
+        if (!this.options.syncHtml) throw new Error('This editor cannot compile authoring files');
+        const outcome = await this.options.syncHtml({
+          path: request.path, contents: request.contents, after: request.after ?? null, label: request.label,
+        });
+        this.options.respond({
+          version: AGENT_PROTOCOL_VERSION,
+          id: request.id,
+          status: 'applied',
+          revision: await browserDeckRevision(this.store.get().deck),
+          payload: outcome,
+        });
+      } catch (error) {
+        this.options.respond({
+          version: AGENT_PROTOCOL_VERSION,
+          id: request.id,
+          status: 'error',
+          revision,
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
+      return;
+    }
     if (request.kind === 'transaction') {
       if (request.transaction.expectedRevision !== revision) {
         this.options.respond({

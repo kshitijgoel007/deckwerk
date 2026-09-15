@@ -450,6 +450,27 @@ export function capabilities(): Capability[] {
       ],
     },
     {
+      id: 'web-element',
+      what: 'A sandboxed web page — an interactive chart, a demo, a Claude artifact — running live inside its box.',
+      when: 'Content that needs JavaScript: hover states driven by script, sliders, live simulations, a page somebody already built. Static markup should be ordinary slide objects instead.',
+      notes: [
+        'Import a complete HTML document with `slide-agent web import <deck> page.html [--after <slideId>] [--title <text>]`; it lands in assets/web/, content-hashed, as a full-canvas slide. The JSON reply names the src.',
+        'In an authoring page, `<div data-element="web" data-src="assets/web/page.a1b2c3d4.html" data-title="…" style="width:…;height:…"></div>` places one anywhere; its CSS box is its geometry like any element.',
+        'The page runs in an iframe with sandbox="allow-scripts": scripts yes, but no access to the deck, the app, other slides, the network at presentation time (author with inlined data and assets), popups or navigation. Remote URLs are refused.',
+        'The import writes a small runtime that exposes window.deckwerk — onActive(fn), onInactive(fn), onStep(fn), next(), prev() — and forwards unhandled arrow/space keys so a focused page never traps the presenter.',
+        'Design for the element box (usually the 1920×1080 canvas) with no scrolling. Clicks inside the page go to the page while `interactive` is true; set it false to have them advance the deck.',
+        'Nothing inside the page is a slide object: it cannot be restyled with the inspector, Morphed, or auto-fitted. Set `poster` to a still for PDF export and thumbnails.',
+      ],
+      elements: [
+        text('cap-web-title', 'A live web page, sandboxed', TITLE, { class: ['role-title'] }),
+        {
+          id: 'cap-web', type: 'web', x: 160, y: 300, w: 1600, h: 640, rot: 0, z: 2,
+          opacity: 1, class: [], style: {},
+          src: 'assets/web/chart.a1b2c3d4.html', poster: null, interactive: true, title: 'Papers per year',
+        },
+      ],
+    },
+    {
       id: 'html-element',
       what: 'An escape hatch element holding arbitrary markup.',
       when: 'A small structure the object model has no vocabulary for — for example a tight two-column flow inside one box. Reach for real text, table, image, and shape elements first.',

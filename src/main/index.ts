@@ -85,7 +85,7 @@ import { importKeynote } from './keynoteImport.js';
 import { importPowerPoint } from './pptxImport.js';
 import { loadDeckHistory, saveDeckHistory } from './deckHistoryStore.js';
 import { serializeSpeakerNotes, SPEAKER_NOTES_FILE } from '@shared/speakerNotes.js';
-import { HTML_EDIT_DIR, writeHtmlScope } from './htmlAuthoring.js';
+import { HTML_EDIT_DIR, isAuthoringFileName, readSettledFile, writeHtmlScope } from './htmlAuthoring.js';
 import { AGENT_GUIDE_FILE, defaultLauncherPath, writeAgentGuide } from './agentGuide.js';
 import {
   attachWindow,
@@ -627,7 +627,7 @@ function watchDeck(state: DeckWindowState): void {
       // already a browser and lays them out in an offscreen iframe. Nothing is
       // spawned, and the compile is measured by the engine that will draw it.
       watch(editDir, (_event, filename) => {
-        if (!filename || !String(filename).endsWith('.html')) return;
+        if (!filename || !isAuthoringFileName(String(filename))) return;
         const path = resolve(editDir, String(filename));
         // `.scratchpad/` holds persistent Agent preview evidence. Only direct
         // children of edit/ are authored documents whose saves update slides.
@@ -637,16 +637,9 @@ function watchDeck(state: DeckWindowState): void {
         htmlTimers.set(path, setTimeout(async () => {
           htmlTimers.delete(path);
           try {
-            const { readFile } = await import('node:fs/promises');
-            const first = await readFile(path, 'utf8');
-            // A save is not necessarily atomic: reading during a large write
-            // hands back a truncated document, which once compiled into an
-            // empty slide. Read twice with a pause — a file still growing
-            // differs between the reads — and skip a document that is visibly
-            // cut off; the write's own final event will retry it complete.
-            await new Promise((settle) => setTimeout(settle, 150));
-            const contents = await readFile(path, 'utf8');
-            if (contents !== first) return;
+            // A save is not necessarily atomic; see readSettledFile for why
+            // the read waits for the write to finish rather than giving up.
+            const contents = await readSettledFile(path);
             if (/<html[\s>]/i.test(contents) && !/<\/html>/i.test(contents)) return;
             // The editor's own export lands here too; that event is an echo.
             if (state.lastWrittenHtml.get(path) === contents) {

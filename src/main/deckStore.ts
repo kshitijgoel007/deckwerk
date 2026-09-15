@@ -399,6 +399,35 @@ function realPath(target: string): string {
   }
 }
 
+/**
+ * Copy a complete HTML document into `assets/web/` for a `web` element.
+ *
+ * Content-hashed like media, so re-importing the same page is a no-op and an
+ * edited page gets a new name (and so a fresh cache entry everywhere). The
+ * deck's bridge runtime is written into the page unless it already carries
+ * it: that is what gives the page `window.deckwerk` and keeps the presenter's
+ * arrow keys working while the page has focus.
+ */
+export async function importWebPage(
+  deckDir: string,
+  sourcePath: string,
+  prepare: (html: string) => string,
+): Promise<{ src: string; bytes: number }> {
+  const ext = extname(sourcePath).toLowerCase();
+  if (!/^\.x?html?$/.test(ext)) {
+    throw new Error(`Not an HTML document: ${basename(sourcePath)}`);
+  }
+  const html = prepare(await readFile(sourcePath, 'utf8'));
+  const hash = createHash('sha256').update(html).digest('hex').slice(0, 8);
+  const stem = sanitize(basename(sourcePath, extname(sourcePath)));
+  const dir = join(deckDir, ASSETS_DIR, 'web');
+  await mkdir(dir, { recursive: true });
+  const name = `${stem}.${hash}.html`;
+  const dest = join(dir, name);
+  if (!existsSync(dest)) await writeFile(dest, html, 'utf8');
+  return { src: `${ASSETS_DIR}/web/${name}`, bytes: Buffer.byteLength(html, 'utf8') };
+}
+
 function sanitize(name: string): string {
   return name.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'asset';
 }

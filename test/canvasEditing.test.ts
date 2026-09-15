@@ -1435,6 +1435,100 @@ describe('inline text editing', () => {
     expect(selection.isCollapsed).toBe(true);
   });
 
+  // Minimised from the nightly paste fuzz (seed 20260914, word-list-paragraphs
+  // → placeholder): Enter at the end of a pasted table cell, then typing.
+  // Chromium cannot split a cell, and in a pre-wrap box its fallback is a
+  // literal "\n" text node that nothing else in the editor produces.
+  it('breaks the line with <br> on Enter inside a table cell', () => {
+    const { canvas, host } = setup();
+    canvas.beginTextEdit('text-1');
+    const body = bodyOf(host, 'text-1');
+    body.innerHTML = '<table><tbody><tr><td>Operating margin</td></tr></tbody></table>';
+    const cell = body.querySelector('td')!;
+    const selection = window.getSelection()!;
+    const caretAt = (offset: number) => {
+      const range = document.createRange();
+      range.setStart(cell.firstChild!, offset);
+      range.collapse(true);
+      selection.removeAllRanges();
+      selection.addRange(range);
+    };
+    const pressEnter = () => body.dispatchEvent(new InputEvent('beforeinput', {
+      bubbles: true, cancelable: true, inputType: 'insertParagraph',
+    }));
+
+    caretAt('Operating margin'.length);
+    expect(pressEnter(), 'the editor owns Enter in a cell').toBe(false);
+    expect(cell.innerHTML).toBe('Operating margin<br><br>');
+    expect(selection.isCollapsed).toBe(true);
+    expect(selection.anchorNode).toBe(cell);
+    expect(selection.anchorOffset).toBe(2);
+    expect(cell.textContent).not.toContain('\n');
+
+    caretAt('Operating'.length);
+    expect(pressEnter()).toBe(false);
+    expect(cell.innerHTML).toBe('Operating<br> margin<br><br>');
+
+    // A paragraph inside a cell splits natively; the editor stays out of it.
+    cell.innerHTML = '<p>In a paragraph</p>';
+    const range = document.createRange();
+    range.setStart(cell.querySelector('p')!.firstChild!, 2);
+    range.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    expect(pressEnter()).toBe(true);
+    expect(cell.innerHTML).toBe('<p>In a paragraph</p>');
+  });
+
+  // Minimised from the nightly paste fuzz (seeds 20260909 and 20260915 on
+  // CI's Linux fonts, where the drag-selected "first word" covered the whole
+  // box): Backspace over everything leaves Chromium's bare <br> at the top
+  // level, where the next typed text has no paragraph to land in.
+  it('gives a box emptied by deletion an empty paragraph for the caret', () => {
+    const { canvas, host } = setup();
+    canvas.beginTextEdit('text-1');
+    const body = bodyOf(host, 'text-1');
+    const selection = window.getSelection()!;
+    for (const leftover of ['<br>', '', ' ']) {
+      body.innerHTML = leftover;
+      body.dispatchEvent(new InputEvent('input', {
+        bubbles: true, inputType: 'deleteContentBackward',
+      }));
+      expect(body.innerHTML, `after deleting down to ${JSON.stringify(leftover)}`).toBe('<p><br></p>');
+      expect(selection.anchorNode).toBe(body.firstChild);
+      expect(selection.isCollapsed).toBe(true);
+    }
+    // A box that still holds a paragraph is left alone.
+    body.innerHTML = '<p>Kept</p>';
+    body.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward' }));
+    expect(body.innerHTML).toBe('<p>Kept</p>');
+  });
+
+  it('repaints the cell range highlight after a deletion strips it', () => {
+    const { store, canvas, host } = setup();
+    store.select(['text-1']);
+    store.updateSelected((element) => {
+      if (element.type === 'text') {
+        element.html = '<table><tbody><tr><td>Alpha beta</td><td>B</td></tr></tbody></table>';
+      }
+    });
+    canvas.beginTextEdit('text-1');
+    const body = bodyOf(host, 'text-1');
+    const cell = body.querySelector<HTMLTableCellElement>('td')!;
+    cell.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 9 }));
+    cell.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, cancelable: true, pointerId: 9 }));
+    document.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 9 }));
+    expect(canvas.tableSelectionInfo()).toMatchObject({ row: 0, column: 0, rowEnd: 0, columnEnd: 0 });
+    expect(cell.classList.contains('editor-table-selected')).toBe(true);
+
+    // What Chromium's deletion of the whole cell text leaves behind.
+    cell.removeAttribute('class');
+    cell.innerHTML = '<br>';
+    body.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward' }));
+    expect(cell.classList.contains('editor-table-selected')).toBe(true);
+    expect(canvas.tableSelectionInfo()).not.toBeNull();
+  });
+
   it('creates a plain bulleted list from text inside a reset typing-style marker', () => {
     const { canvas, host } = setup();
     canvas.beginTextEdit('text-1');

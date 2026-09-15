@@ -10,12 +10,17 @@ import { join } from 'node:path';
 import type { IncomingMessage } from 'node:http';
 import {
   canAccessDeck,
+  canEditDeck,
   canManageDeck,
+  deckRoleFor,
+  folderVisibleTo,
   normalizeLogin,
   readDeckAccess,
+  readFolderOwner,
   resolveIdentity,
   UserDirectory,
   writeDeckAccess,
+  writeFolderOwner,
   type DeckAccess,
 } from '../src/server/accessControl.js';
 
@@ -23,6 +28,11 @@ const ADMIN = 'admin@tailnet.example';
 const ALICE = 'alice@tailnet.example';
 const BOB = 'bob@tailnet.example';
 const CONFIG = { admin: ADMIN };
+
+const share = (login: string, role: 'edit' | 'view' = 'edit') => ({ login, role });
+const deckAccess = (partial: Partial<DeckAccess> & { owner: string }): DeckAccess => ({
+  visibility: 'private', sharedWith: [], publicRole: 'edit', ...partial,
+});
 
 const fakeRequest = (remoteAddress: string | undefined, headers: Record<string, string | string[]>) =>
   ({ socket: { remoteAddress }, headers } as unknown as IncomingMessage);
@@ -85,93 +95,195 @@ describe('readDeckAccess', () => {
       sharedWith: ['Bob@Tailnet.Example', BOB, '', '  ', 42, null],
     }));
     expect(await readDeckAccess(dir, CONFIG)).toEqual({
-      owner: ALICE, visibility: 'private', sharedWith: [BOB],
+      owner: ALICE, visibility: 'private', sharedWith: [share(BOB)], publicRole: 'edit',
     });
+  });
+
+  it('reads pre-roles sidecars as edit grants, and roled ones as written', async () => {
+    // Bare logins are what sharing wrote before view-only existed, and what
+    // it meant then was edit. Reading them any other way would silently
+    // demote every collaborator on an existing server.
+    await write(JSON.stringify({ owner: ALICE, visibility: 'private', sharedWith: [BOB] }));
+    expect((await readDeckAccess(dir, CONFIG)).sharedWith).toEqual([share(BOB, 'edit')]);
+    await write(JSON.stringify({
+      owner: ALICE,
+      visibility: 'public',
+      publicRole: 'view',
+      sharedWith: [{ login: 'Bob@Tailnet.Example', role: 'view' }, { login: 'x', role: 'nonsense' }],
+    }));
+    expect(await readDeckAccess(dir, CONFIG)).toEqual({
+      owner: ALICE,
+      visibility: 'public',
+      publicRole: 'view',
+      sharedWith: [share(BOB, 'view'), share('x', 'edit')],
+    });
+  });
+
+  it('keeps the most permissive grant when a login is listed twice', async () => {
+    await write(JSON.stringify({
+      owner: ALICE,
+      visibility: 'private',
+      sharedWith: [{ login: BOB, role: 'view' }, { login: BOB, role: 'edit' }],
+    }));
+    expect((await readDeckAccess(dir, CONFIG)).sharedWith).toEqual([share(BOB, 'edit')]);
+    await write(JSON.stringify({
+      owner: ALICE,
+      visibility: 'private',
+      sharedWith: [{ login: BOB, role: 'edit' }, { login: BOB, role: 'view' }],
+    }));
+    expect((await readDeckAccess(dir, CONFIG)).sharedWith).toEqual([share(BOB, 'edit')]);
   });
 
   it('treats a missing sidecar as public and admin-owned', async () => {
     expect(await readDeckAccess(dir, { admin: 'Admin@Tailnet.Example' })).toEqual({
-      owner: ADMIN, visibility: 'public', sharedWith: [],
+      owner: ADMIN, visibility: 'public', sharedWith: [], publicRole: 'edit',
     });
   });
 
   it('never fails closed on a corrupt sidecar (the admin must stay able to repair it)', async () => {
     for (const raw of ['not json', '', '[]', 'null', '42', '"string"']) {
       await write(raw);
-      expect(await readDeckAccess(dir, CONFIG)).toEqual({ owner: ADMIN, visibility: 'public', sharedWith: [] });
+      expect(await readDeckAccess(dir, CONFIG)).toEqual({
+        owner: ADMIN, visibility: 'public', sharedWith: [], publicRole: 'edit',
+      });
     }
   });
 
   it('falls back field by field on wrong types', async () => {
-    await write(JSON.stringify({ owner: 12, visibility: 'secret', sharedWith: 'bob' }));
-    expect(await readDeckAccess(dir, CONFIG)).toEqual({ owner: ADMIN, visibility: 'public', sharedWith: [] });
+    await write(JSON.stringify({ owner: 12, visibility: 'secret', sharedWith: 'bob', publicRole: 'boss' }));
+    expect(await readDeckAccess(dir, CONFIG)).toEqual({
+      owner: ADMIN, visibility: 'public', sharedWith: [], publicRole: 'edit',
+    });
     await write(JSON.stringify({ owner: ALICE, visibility: 'PRIVATE' }));
     // Visibility is an exact enum: anything but "private" is public.
     expect((await readDeckAccess(dir, CONFIG)).visibility).toBe('public');
   });
 
   it('round-trips through writeDeckAccess', async () => {
-    const access: DeckAccess = { owner: ALICE, visibility: 'private', sharedWith: [BOB] };
+    const access: DeckAccess = {
+      owner: ALICE, visibility: 'private', sharedWith: [share(BOB, 'view')], publicRole: 'edit',
+    };
     await writeDeckAccess(dir, access);
     expect(JSON.parse(await readFile(join(dir, 'access.json'), 'utf8'))).toEqual(access);
     expect(await readDeckAccess(dir, CONFIG)).toEqual(access);
   });
 });
 
+describe('folder sidecars', () => {
+  let dir: string;
+  beforeEach(async () => { dir = await mkdtemp(join(tmpdir(), 'folder-owner-')); });
+  afterEach(async () => { await rm(dir, { recursive: true, force: true }); });
+
+  it('round-trips the creator and falls back to the admin', async () => {
+    expect(await readFolderOwner(dir, CONFIG)).toBe(ADMIN);
+    await writeFolderOwner(dir, ' Alice@Tailnet.Example ');
+    expect(await readFolderOwner(dir, CONFIG)).toBe(ALICE);
+    await writeFile(join(dir, 'folder.json'), '{not json', 'utf8');
+    expect(await readFolderOwner(dir, CONFIG)).toBe(ADMIN);
+  });
+});
+
+describe('folderVisibleTo', () => {
+  it('hides a folder holding nothing this person can open', () => {
+    const empty = { owner: ALICE, accessibleDecks: 0 };
+    expect(folderVisibleTo(BOB, empty, CONFIG)).toBe(false);
+    // ...but never from the admin, nor from the person who just made it and
+    // still has to put the first presentation inside.
+    expect(folderVisibleTo(ADMIN, empty, CONFIG)).toBe(true);
+    expect(folderVisibleTo(ALICE, empty, CONFIG)).toBe(true);
+    // One shared presentation inside is all it takes.
+    expect(folderVisibleTo(BOB, { owner: ALICE, accessibleDecks: 1 }, CONFIG)).toBe(true);
+  });
+});
+
 describe('access decision matrix', () => {
   const stranger = 'carol@tailnet.example';
-  const cases: Array<{
-    access: DeckAccess;
-    expect: Record<string, { open: boolean; manage: boolean }>;
-  }> = [
+  type Expectation = { role: 'owner' | 'edit' | 'view' | null; manage: boolean };
+  const cases: Array<{ what: string; access: DeckAccess; expect: Record<string, Expectation> }> = [
     {
-      access: { owner: ALICE, visibility: 'private', sharedWith: [BOB] },
+      what: 'a private deck shared for editing',
+      access: deckAccess({ owner: ALICE, visibility: 'private', sharedWith: [share(BOB)] }),
       expect: {
-        [ADMIN]: { open: true, manage: true },
-        [ALICE]: { open: true, manage: true },
-        [BOB]: { open: true, manage: false },
-        [stranger]: { open: false, manage: false },
+        [ADMIN]: { role: 'owner', manage: true },
+        [ALICE]: { role: 'owner', manage: true },
+        [BOB]: { role: 'edit', manage: false },
+        [stranger]: { role: null, manage: false },
       },
     },
     {
-      access: { owner: ALICE, visibility: 'public', sharedWith: [] },
+      what: 'a private deck shared for viewing',
+      access: deckAccess({ owner: ALICE, visibility: 'private', sharedWith: [share(BOB, 'view')] }),
       expect: {
-        [ADMIN]: { open: true, manage: true },
-        [ALICE]: { open: true, manage: true },
-        [BOB]: { open: true, manage: false },
-        [stranger]: { open: true, manage: false },
+        [ALICE]: { role: 'owner', manage: true },
+        [BOB]: { role: 'view', manage: false },
+        [stranger]: { role: null, manage: false },
       },
     },
     {
-      // The legacy fallback: no sidecar.
-      access: { owner: ADMIN, visibility: 'public', sharedWith: [] },
+      what: 'a public deck (legacy: everyone edits)',
+      access: deckAccess({ owner: ALICE, visibility: 'public' }),
       expect: {
-        [ADMIN]: { open: true, manage: true },
-        [ALICE]: { open: true, manage: false },
-        [stranger]: { open: true, manage: false },
+        [ADMIN]: { role: 'owner', manage: true },
+        [ALICE]: { role: 'owner', manage: true },
+        [BOB]: { role: 'edit', manage: false },
+        [stranger]: { role: 'edit', manage: false },
       },
     },
     {
-      // Admin-owned and private: nobody but the admin.
-      access: { owner: ADMIN, visibility: 'private', sharedWith: [] },
+      what: 'a public read-only deck with one named editor',
+      access: deckAccess({
+        owner: ALICE, visibility: 'public', publicRole: 'view', sharedWith: [share(BOB)],
+      }),
       expect: {
-        [ADMIN]: { open: true, manage: true },
-        [ALICE]: { open: false, manage: false },
+        [ALICE]: { role: 'owner', manage: true },
+        [BOB]: { role: 'edit', manage: false },
+        [stranger]: { role: 'view', manage: false },
+      },
+    },
+    {
+      what: 'a public editable deck where somebody is listed as a viewer',
+      access: deckAccess({
+        owner: ALICE, visibility: 'public', publicRole: 'edit', sharedWith: [share(BOB, 'view')],
+      }),
+      // Grants add up: listing Bob as a viewer must not take away the edit
+      // rights the deck already hands to everyone.
+      expect: {
+        [BOB]: { role: 'edit', manage: false },
+        [stranger]: { role: 'edit', manage: false },
+      },
+    },
+    {
+      what: 'the legacy fallback: no sidecar',
+      access: deckAccess({ owner: ADMIN, visibility: 'public' }),
+      expect: {
+        [ADMIN]: { role: 'owner', manage: true },
+        [ALICE]: { role: 'edit', manage: false },
+        [stranger]: { role: 'edit', manage: false },
+      },
+    },
+    {
+      what: 'admin-owned and private: nobody but the admin',
+      access: deckAccess({ owner: ADMIN, visibility: 'private' }),
+      expect: {
+        [ADMIN]: { role: 'owner', manage: true },
+        [ALICE]: { role: null, manage: false },
       },
     },
   ];
 
-  for (const { access, expect: expected } of cases) {
-    it(`${access.visibility} deck owned by ${access.owner} shared with [${access.sharedWith}]`, () => {
-      for (const [login, { open, manage }] of Object.entries(expected)) {
-        expect(canAccessDeck(login, access, CONFIG), `${login} open`).toBe(open);
+  for (const { what, access, expect: expected } of cases) {
+    it(what, () => {
+      for (const [login, { role, manage }] of Object.entries(expected)) {
+        expect(deckRoleFor(login, access, CONFIG), `${login} role`).toBe(role);
+        expect(canAccessDeck(login, access, CONFIG), `${login} open`).toBe(role !== null);
+        expect(canEditDeck(login, access, CONFIG), `${login} edit`).toBe(role === 'owner' || role === 'edit');
         expect(canManageDeck(login, access, CONFIG), `${login} manage`).toBe(manage);
       }
     });
   }
 
   it('matches the admin case-insensitively via the config, and never a raw un-normalized login', () => {
-    const access: DeckAccess = { owner: ALICE, visibility: 'private', sharedWith: [] };
+    const access = deckAccess({ owner: ALICE, visibility: 'private' });
     expect(canAccessDeck(ADMIN, access, { admin: 'Admin@Tailnet.Example' })).toBe(true);
     // Subjects are always normalized before they reach the matrix; an
     // un-normalized subject is a caller bug and must not match by accident.

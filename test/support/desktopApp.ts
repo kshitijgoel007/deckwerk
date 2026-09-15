@@ -19,7 +19,8 @@ import { collabClientDir, sharedBuild } from './collabClient.js';
  * Windows are hidden through `DECKWERK_HEADLESS_TEST` (windows.ts), so a test
  * run never raises the editor, the audience window or a print window over the
  * developer's desk. The main process switches Chromium's background throttles
- * off in that mode, so hidden does not mean slow.
+ * off in that mode, so hidden does not mean slow — except under CI's bare
+ * Xvfb, see NEEDS_VISIBLE_WINDOW_ON_CI.
  */
 
 /**
@@ -28,7 +29,12 @@ import { collabClientDir, sharedBuild } from './collabClient.js';
  * actively harmful for such suites: X11 without a window manager never gives
  * a window that was never mapped the input focus, so
  * `navigator.clipboard.write` throws "Document is not focused" and keyboard
- * chords land nowhere. Suites that only observe the DOM stay hidden
+ * chords land nowhere. With the throttles off, Chromium also treats the
+ * never-mapped window as visible and aligns input dispatch to compositor
+ * frames that never come, so every DevTools input event waits out a fixed
+ * fallback: the exhaustive formatting matrix ran at 2.8 s/case hidden against
+ * 145 ms/case shown, and failed its budget. Long input-heavy matrices opt in
+ * too. Suites that only observe the DOM stay hidden
  * everywhere — showing every window on Linux CI made the X input method join
  * the IME driver test and broke the audience-window handoff.
  */

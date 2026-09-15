@@ -67,7 +67,8 @@ Adding slides rather than changing them is a different file — `slide-agent new
 them** below before you write either one.
 
 That is the whole thing. There is no fourth step: with the editor open, saving
-`edit/work.html` updates exactly those slides about 200 ms later, as one named,
+`edit/work.html` updates exactly those slides a moment later (a large file can
+take several seconds to lay out), as one named,
 undoable change. Keep editing and keep saving.
 
 **1. `context` — the map.** Every slide in order with its id and its title, the
@@ -193,7 +194,9 @@ turns into, not a list of things to opt into.
   `<dt>`/`<dd>`, `<figcaption>`, `<small>`, `<cite>`, and their inline markup.
   A `<ul>`/`<ol>` stays one object, markers and all, and a hand-written
   `<table>` becomes an editable deck table with the column widths the browser
-  measured.
+  measured. The player draws an unstyled table as a plain 1px grid; a
+  designed table resets that first (`.results th, .results td { border: 0 }`
+  in `theme.css`) and then adds only the rules it wants.
 - **Media** — `<img>` and `<video>`. A border, a radius, a circular mask, a
   ring shadow or a backdrop colour on the media *or on a frame that wraps only
   that media* becomes the picture's own, so a framed photograph is one object
@@ -233,6 +236,92 @@ resizable, editable only by rewriting the markup (`validate` lists them as
 - **A container that mixes loose prose with block children** — usually a block
   element inside a `<p>`, which the HTML parser closes early. Wrap the prose.
 
+### Interactive pages: the `web` element
+
+Everything above is static by design — the compile strips `<script>`, `<iframe>`
+and event handlers before it measures a page, and what it produces are inert
+objects. Content that needs JavaScript (an interactive chart, a slider-driven
+demo, a page somebody already built such as a Claude artifact) is a different
+kind of object: a **web element**, a complete HTML document shown live inside
+its box in a sandboxed frame.
+
+**Keep only the interactive thing inside the box.** The title, the caption,
+the takeaway are ordinary slide text — they follow the theme, they can be
+restyled, they read in the outline, they export to PDF. So author the page for
+*its box* (the chart, the slider, the demo — no heading of its own), stage it,
+and place it in an authoring page beside real text:
+
+```bash
+slide-agent web add . chart.html --size 1680x780 --title "Training curves"
+#  → { "src": "assets/web/chart.a1b2c3d4.html", "poster": "…poster.png",
+#      "ok": true, "problems": [], "markup": "<div data-element=\"web\" …>" }
+```
+
+```html
+<section class="slide" style="padding: 90px 120px; display: flex; flex-direction: column; gap: 28px;">
+  <h1 class="role-heading">Five runs, five learning rates</h1>
+  <div data-element="web" data-src="assets/web/chart.a1b2c3d4.html"
+       data-poster="assets/web/chart.a1b2c3d4.poster.png" data-title="Training curves"
+       style="width: 1680px; height: 780px;"></div>
+  <p class="role-caption">Solid is training loss, dashed is validation. Hover for values.</p>
+</section>
+```
+
+`web add` copies the page to `assets/web/<name>.<hash>.html`, writes a small
+runtime into it, runs it once at the box size (see `web check` below — the
+reply carries the same `problems`), and captures a poster for thumbnails and
+PDF. The div's CSS box is its geometry like any element;
+`data-interactive="false"` makes clicks on the page advance the deck instead
+of reaching the page.
+
+A page that *is* a whole slide — a finished artifact with its own title —
+goes in as one full-canvas slide instead:
+
+```bash
+slide-agent web import . page.html --after 12 --title "Papers per year"
+```
+
+**Iterating on a page.** Do not import it again — that is a second slide.
+`slide-agent web replace . 12 page.html` swaps the document behind slide 12's
+web element for the new version (new hash, fresh poster at the element's size,
+old files removed). For a box you placed yourself, `web add` the new version
+and change `data-src`/`data-poster` in your authoring page.
+
+**Test the page before importing it.** `render` shows a page at rest; it
+cannot tell you a script threw. `slide-agent web check page.html
+[--screenshot shot.png]` runs the page headlessly in a 1920×1080 frame with
+the bridge in place and reports script errors, content that does not fit the
+box, every network request it would make (refused, as an offline venue would
+refuse them), and whether it uses `window.deckwerk`. A non-zero exit lists
+the problems; fix them, re-check, then import. Write page files with a
+file-writing tool or a *quoted* heredoc (`<<'EOF'`): an unquoted heredoc lets
+the shell expand `${…}` inside your JavaScript before the file is written.
+
+What the page can and cannot do:
+
+- It runs with `sandbox="allow-scripts"` and nothing else: scripts, yes; no
+  access to the deck, the app, other slides, popups, or navigation. Remote
+  URLs as `src` are refused. Assume **no network while presenting** — inline
+  data, images (data: URIs) and fonts, or accept the fallback font.
+- Design it for its box, normally the 1920×1080 canvas, with no scrolling. A
+  page authored for a browser window usually needs one fixed-size stage that
+  it scales to the viewport.
+- `window.deckwerk` (from the injected runtime) gives it `onActive(fn)`,
+  `onInactive(fn)`, `onStep(fn)` — `fn({ step, steps })` — and `next()` /
+  `prev()`, so a page can start an animation when its slide appears or drive
+  the deck's builds. Navigation keys the page leaves unhandled are forwarded to
+  the deck, so a focused page never traps the presenter; a page that wants the
+  arrows calls `preventDefault`.
+- Nothing inside is a slide object: no inspector restyling, Morph, auto-fit or
+  overflow checks. When the *content* could be ordinary slides, make ordinary
+  slides — they stay editable and the design stays consistent.
+- On the editor canvas the page shows as its poster so it can be selected and
+  dragged; a human double-clicks it (or uses Props → "Interact with page") to
+  run it in place, and Escape or a click elsewhere returns to editing. While
+  presenting it is always live.
+- The page does not load the deck's `theme.css`: carry the deck's fonts and
+  colours into the page yourself so it does not look pasted in.
+
 And two that are silently *lost*, so the compile reports them as warnings
 instead: `transform: scale()`/`skew()` (only rotation survives — size the
 element directly) and `backdrop-filter` (use a translucent fill). CSS columns
@@ -249,6 +338,20 @@ properties you never meant to touch. Parse the file with a real HTML parser, or
 at minimum treat `&quot;`/`&#39;` as atoms in any pattern that edits a style
 attribute. Deck-wide restyles rarely need this at all: delete the inline
 declaration entirely and put the replacement in `theme.css`.
+
+**Know when a save has landed.** The editor stamps the assigned ids into
+your file after each successful sync — a new section gains `data-slide-id`
+and the scope marker in `<head>` lists the slides the file now governs. Until
+that happens the save is still compiling (a page carrying much text or many
+sections can take ten seconds or more). If you would rather not poll, run
+`slide-agent apply . --html edit/work.html` after saving: with the editor open
+it hands the file to the editor, waits for that one compile, and prints the
+`changes` it made. The editor compiles a given document once, so the watched
+save and the apply do not add up.
+
+The starter sections `slide-agent new` writes are ignored until you change
+them — saving the untouched skeleton adds nothing — so redirecting `new` into
+`edit/` and editing the file in place is safe.
 
 With the editor **closed** there is no watcher, so apply the same file
 explicitly, which does the identical thing:
@@ -306,7 +409,7 @@ my-talk/
 ```
 
 - **Save `edit/*.html` → the editor syncs that slide range into the deck**
-  within ~200 ms, as one undoable entry named after your file. The file records
+  within a few seconds, as one undoable entry named after your file. The file records
   its original ordered scope, so removing and moving sections is structural
   editing, not merely content replacement.
 - The editor lays the page out itself, in the same engine that draws the

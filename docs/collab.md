@@ -113,6 +113,29 @@ tailscale address is among them). Collaborators open the URL in a browser and
 pick a presentation; `?name=Alice` sets the display name, otherwise the client
 asks once and the server falls back to `Guest n`.
 
+### Folders
+
+Decks can live in folders under the root, nested up to 8 levels deep. A folder
+is an ordinary directory that holds decks (and other folders) instead of a
+`deck.json` — make one in the picker or in Finder, either works — and a deck's
+id is simply its path, so `clients/acme/pitch` is the deck `pitch` inside
+`clients/acme`. Every deck-scoped route, the asset URLs and the WebSocket take
+that path as the id.
+
+- `GET /api/folders` lists the folders this person can see, each with its
+  parent, its name and how many decks of theirs it holds.
+- `POST /api/folders?path=clients/acme` creates one (parents included).
+  `DELETE /api/folders?path=…` removes one, and only when it is empty:
+  deleting presentations is never a side effect of a folder operation.
+- `POST /api/decks?name=…&folder=…` and the two import routes create inside a
+  folder; the picker and the toolbar pass the folder you are working in.
+- `POST /api/decks/move?deck=<id>&folder=<path>` files an existing deck
+  somewhere else. The id is the room key and the session directory, so a move
+  is refused while anyone has the deck open.
+
+The picker browses the tree with a breadcrumb; New, Import and New folder all
+act in the folder you are looking at.
+
 ### Access control (`--access`)
 
 By default the server has no notion of users: every deck under the root is
@@ -137,20 +160,41 @@ anywhere: tailnet membership is the authentication.
 With the flag on:
 
 - Each deck folder gets an `access.json` sidecar:
-  `{ "owner": <login>, "visibility": "public" | "private", "sharedWith": [<logins>] }`.
+  `{ "owner": <login>, "visibility": "public" | "private", "publicRole":
+  "edit" | "view", "sharedWith": [{ "login": …, "role": "edit" | "view" }] }`.
   It is not part of `deck.json`, so it can never be edited through a deck
   transaction. A deck without the sidecar is public and admin-owned, so
   enabling the flag on an existing decks directory changes nothing until
-  someone restricts a deck.
+  someone restricts a deck. Sidecars written before roles existed hold bare
+  logins in `sharedWith`; those read as `edit`, which is what sharing meant
+  then, and `publicRole` defaults to `edit` for the same reason.
 - New and imported decks start **private** to their creator.
 - The deck list is filtered per user and grouped in the picker (yours /
   shared with you / public); every deck-scoped route — HTTP API, assets,
   WebSocket join — enforces the same check, and revoking access closes that
-  person's live sockets immediately. Sharing grants edit rights; there is no
-  read-only participant.
+  person's live sockets immediately.
+- **Edit or view-only.** Every grant carries a role, and grants add up: a
+  person's role is the most permissive of their own share and what the deck's
+  public setting gives everyone, so a public read-only deck can still have
+  named editors, and listing someone as a viewer never removes access they
+  already had. A view-only participant gets the presentation page instead of
+  the editor (the server redirects `/?deck=…`), reads every route, and is
+  refused every write: non-GET deck-scoped requests answer 403, and
+  transactions or theme changes arriving on its socket are answered with a
+  resync instead of being applied. Losing edit rights mid-session closes that
+  socket the same way losing access does.
+- **Folders are invisible until something inside them is yours.** A folder is
+  listed only if it holds at least one deck you can open, at any depth — so
+  somebody who has been shared nothing inside a folder never learns it is
+  there. The exceptions are the admin, and whoever created the folder (who
+  still has to put the first deck in it). Creating a folder writes a
+  `folder.json` sidecar naming the creator; a folder without one belongs to
+  the admin.
 - `GET/PUT /api/access?deck=<id>` reads and (owner or admin only) changes a
   deck's permissions; the client's Share… dialog — in the toolbar and on
-  picker rows you manage — is the UI for it. Ownership transfer is admin-only.
+  picker rows you manage — is the UI for it, with a role next to every person
+  and a separate role for "everyone else" when the deck is public. Ownership
+  transfer is admin-only.
 - The server remembers everyone it has identified in `users.json` at the
   decks root and serves the list at `GET /api/users`; the Share… dialog uses
   it to autocomplete people by tailnet login or display name. Being listed

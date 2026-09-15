@@ -184,6 +184,7 @@ function similarity(a: SlideElement, b: SlideElement): number {
       return 20 + sizeScore + positionScore;
     }
     case 'html': return b.type === 'html' && a.html === b.html ? 100 : 0;
+    case 'web': return b.type === 'web' && a.src === b.src ? 100 : 0;
     case 'unsupported':
       return b.type === 'unsupported' && a.originalType === b.originalType &&
         a.note === b.note ? 90 : 0;

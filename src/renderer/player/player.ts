@@ -21,6 +21,7 @@ import {
 } from '@shared/morph.js';
 import { morphTransforms, type Rect, type TextLayout } from './morphTransform.js';
 import { isPendingSrc } from '@shared/media.js';
+import { WEB_BRIDGE_SOURCE, isWebBridgeAction, type WebBridgeEvent } from '@shared/webBridge.js';
 
 /**
  * The runtime that owns navigation and turns timeline entries into DOM and
@@ -125,7 +126,53 @@ export class Player {
     if (typeof document !== 'undefined') {
       document.addEventListener('visibilitychange', this.onVisibilityChange);
     }
+    if (typeof window !== 'undefined') {
+      window.addEventListener('message', this.onWebBridgeMessage);
+    }
   }
+
+  /** The last deck → page event, replayed to a frame that finishes loading after it was sent. */
+  private lastWebEvent: WebBridgeEvent | null = null;
+
+  /**
+   * Tell every web frame on the stage what the deck is doing. A frame that is
+   * still loading has no listener yet, so the message is repeated when it
+   * loads — a page's `onActive` then fires exactly once, whichever came first.
+   */
+  private notifyWebFrames(event: WebBridgeEvent): void {
+    this.lastWebEvent = event;
+    for (const frame of this.stage.querySelectorAll<HTMLIFrameElement>('iframe.web-frame')) {
+      if (frame.dataset.bridgeBound !== 'true') {
+        frame.dataset.bridgeBound = 'true';
+        frame.addEventListener('load', () => {
+          if (frame.isConnected && this.lastWebEvent) {
+            frame.contentWindow?.postMessage(this.lastWebEvent, '*');
+          }
+        });
+      }
+      frame.contentWindow?.postMessage(event, '*');
+    }
+  }
+
+  /**
+   * A web page asking the deck to move. Only frames on this stage are heard —
+   * the message's `source` window must be one of ours — so a page cannot drive
+   * a presentation it is not part of. Forwarded keys are re-dispatched on the
+   * host window, where whatever bound the presenting keys handles them.
+   */
+  private onWebBridgeMessage = (event: MessageEvent): void => {
+    if (!isWebBridgeAction(event.data)) return;
+    const frames = [...this.stage.querySelectorAll<HTMLIFrameElement>('iframe.web-frame')];
+    if (!frames.some((frame) => frame.contentWindow === event.source)) return;
+    const message = event.data;
+    if (message.action === 'next') this.next();
+    else if (message.action === 'prev') this.prev();
+    else {
+      window.dispatchEvent(new KeyboardEvent('keydown', {
+        key: message.key, bubbles: true, cancelable: true,
+      }));
+    }
+  };
 
   private onVisibilityChange = (): void => {
     if (document.visibilityState !== 'visible' || this.blanked) return;
@@ -152,6 +199,9 @@ export class Player {
     this.resizeObserver.disconnect();
     if (typeof document !== 'undefined') {
       document.removeEventListener('visibilitychange', this.onVisibilityChange);
+    }
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('message', this.onWebBridgeMessage);
     }
     // Detached media elements keep playing and keep downloading; a destroyed
     // player must leave neither a voice nor an open connection behind.
@@ -278,6 +328,7 @@ export class Player {
     this.adoptWarmedImages(rendered);
     revealImagesWhenDecoded(rendered);
     this.stage.replaceChildren(rendered);
+    this.notifyWebFrames({ source: WEB_BRIDGE_SOURCE, event: 'active', step: this.cursor.step, steps });
 
     // Two passes, because identity has to win globally rather than per node: a
     // single pass let an earlier-painting element claim the live video by file
@@ -728,6 +779,7 @@ export class Player {
     this.clearPending();
     const slide = this.deck.slides[this.cursor.slide];
     this.cursor = { slide: this.cursor.slide, step };
+    this.notifyWebFrames({ source: WEB_BRIDGE_SOURCE, event: 'step', step, steps: stepCount(slide) });
 
     const entries = groupIntoSteps(slide)[step] ?? [];
     // State is tracked incrementally so each action lands on top of what the

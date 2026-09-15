@@ -536,7 +536,15 @@ describe('slide-agent theme', () => {
       await liveEditor();
 
       for (const status of ['conflict', 'error'] as const) {
-        const answered = answerNextRequest(status);
+        // An unpinned transaction retries one conflict with the revision the
+        // editor reports, to cover a stale sidecar. Refuse that retry too so
+        // this still exercises the terminal-conflict path.
+        const answered = status === 'conflict'
+          ? (async () => {
+              await answerNextRequest(status);
+              await answerNextRequest(status);
+            })()
+          : answerNextRequest(status);
         const result = await cli('theme', 'apply', '--id', 'noir', '--scope', 'deck');
         await answered;
         expect(result.code, status).not.toBe(EXIT_OK);

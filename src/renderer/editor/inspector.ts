@@ -108,6 +108,10 @@ export class Inspector {
   onRasterRequest?: (el: Extract<SlideElement, { type: 'image' }>) => void;
   /** Play/pause the video on the editing canvas; returns the new playing state. */
   onTogglePlay?: (elementId: string) => boolean;
+  /** Run or stop a web element's page on the canvas; returns whether it is live now. */
+  onToggleWebLive?: (elementId: string) => boolean;
+  /** Whether a web element's page is running on the canvas right now. */
+  isWebLive?: (elementId: string) => boolean;
   /** Start editing a text element in place on the canvas. */
   onEditText?: (elementId: string) => void;
   /** Whether the canvas currently owns a live text selection. */
@@ -1595,6 +1599,11 @@ export class Inspector {
           ],
           selectedListStyle ?? listStyleOfHtml(el.html),
           (style) => {
+            // The control is disabled for a table (below). A change that
+            // reaches it anyway — automation, a click racing the disable —
+            // must not fall through to the model rewrite, which would wrap
+            // the table in a list.
+            if (/<table\b/i.test(el.html)) return;
             if (this.onApplyTextSelectionListStyle?.(style as ListStyle)) return;
             this.store.updateSelected((e) => {
               if (e.type === 'text') e.html = applyListStyleToHtml(e.html, style as ListStyle);
@@ -1800,6 +1809,56 @@ export class Inspector {
           },
         ));
         wrap.append(typography.section, layout.section);
+        return wrap;
+      }
+
+      case 'web': {
+        const wrap = typeSections();
+        const page = optionSection('Web page', 'web-page-options');
+        // Interact in place. Double-clicking the page on the canvas does the
+        // same thing; this is the discoverable version.
+        const live = document.createElement('button');
+        live.className = 'primary panel-action web-live-toggle';
+        const setLabel = (on: boolean) => {
+          live.textContent = on ? 'Back to editing' : 'Interact with page';
+          live.title = on
+            ? 'Stop the page and make it a draggable object again (Esc)'
+            : 'Run the page on the canvas so you can hover, click and type in it';
+        };
+        setLabel(this.isWebLive?.(el.id) ?? false);
+        live.addEventListener('click', () => {
+          setLabel(this.onToggleWebLive?.(el.id) ?? false);
+        });
+        page.content.appendChild(live);
+        page.content.appendChild(
+          textAreaField('Document (deck-relative .html)', el.src, (v) =>
+            this.store.updateSelected((e) => {
+              if (e.type === 'web') e.src = v.trim();
+            }),
+          ),
+        );
+        page.content.appendChild(
+          textAreaField('Title', el.title, (v) =>
+            this.store.updateSelected((e) => {
+              if (e.type === 'web') e.title = v.trim();
+            }),
+          ),
+        );
+        page.content.appendChild(
+          textAreaField('Poster (deck-relative image, optional)', el.poster ?? '', (v) =>
+            this.store.updateSelected((e) => {
+              if (e.type === 'web') e.poster = v.trim() || null;
+            }),
+          ),
+        );
+        page.content.appendChild(
+          checkboxField('Page receives clicks while presenting', el.interactive, (v) =>
+            this.store.updateSelected((e) => {
+              if (e.type === 'web') e.interactive = v;
+            }),
+          ),
+        );
+        wrap.appendChild(page.section);
         return wrap;
       }
 

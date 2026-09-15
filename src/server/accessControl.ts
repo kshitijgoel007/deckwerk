@@ -16,6 +16,17 @@
  * through a deck transaction. A deck without the sidecar is public and
  * admin-owned, so enabling the flag on an existing decks directory changes
  * nothing until somebody shares or restricts a deck.
+ *
+ * Every grant carries a role — `edit` or `view`. Roles only ever add up: a
+ * person's role is the most permissive of what their explicit share gives
+ * them and what the deck's public setting gives everyone, so sharing a public
+ * deck for editing works, and listing somebody as a viewer never takes away
+ * access they already had from the deck being public.
+ *
+ * Folders are ordinary directories under the decks root that hold decks (and
+ * other folders) instead of a `deck.json`. They carry their own one-line
+ * `folder.json` sidecar naming the creator, because folder visibility is
+ * otherwise entirely derived: see `folderVisibleTo`.
  */
 
 import { readFile, writeFile } from 'node:fs/promises';
@@ -34,13 +45,32 @@ export interface Identity {
   name: string;
 }
 
+/** What a grant lets somebody do. `view` never writes: not a byte. */
+export type AccessRole = 'edit' | 'view';
+
+/** One person's grant on a deck. */
+export interface DeckShare {
+  login: string;
+  role: AccessRole;
+}
+
 export interface DeckAccess {
   owner: string;
   visibility: 'public' | 'private';
-  sharedWith: string[];
+  /**
+   * Named grants. Sidecars written before roles existed hold bare logins;
+   * those read back as `edit`, which is what sharing meant then.
+   */
+  sharedWith: DeckShare[];
+  /** What `visibility: "public"` grants everyone else on the server. */
+  publicRole: AccessRole;
 }
 
+/** A deck's owner (or the admin) outranks both share roles. */
+export type DeckRole = 'owner' | AccessRole;
+
 export const ACCESS_FILE = 'access.json';
+export const FOLDER_FILE = 'folder.json';
 
 export function normalizeLogin(value: string): string {
   return value.trim().toLowerCase();
@@ -84,12 +114,41 @@ export function resolveIdentity(
   return { login: normalizeLogin(config.admin), name: config.admin };
 }
 
+function asRole(value: unknown, fallback: AccessRole): AccessRole {
+  return value === 'view' || value === 'edit' ? value : fallback;
+}
+
+/**
+ * Normalize a sidecar's share list. Entries are `{ login, role }`; a bare
+ * string is a pre-roles sidecar and means edit. One entry per login wins —
+ * the most permissive, so a duplicated person is never quietly demoted.
+ */
+export function normalizeShares(value: unknown): DeckShare[] {
+  if (!Array.isArray(value)) return [];
+  const byLogin = new Map<string, DeckShare>();
+  for (const entry of value) {
+    const raw = typeof entry === 'string' ? { login: entry, role: 'edit' } : entry;
+    if (!raw || typeof raw !== 'object') continue;
+    const candidate = raw as { login?: unknown; role?: unknown };
+    if (typeof candidate.login !== 'string' || !candidate.login.trim()) continue;
+    const login = normalizeLogin(candidate.login);
+    const role = asRole(candidate.role, 'edit');
+    const existing = byLogin.get(login);
+    if (existing?.role === 'edit') continue;
+    byLogin.set(login, { login, role });
+  }
+  return [...byLogin.values()];
+}
+
 /** Read a deck's sidecar; a missing or unreadable file is public/admin-owned. */
 export async function readDeckAccess(deckDir: string, config: AccessControlConfig): Promise<DeckAccess> {
   const fallback: DeckAccess = {
     owner: normalizeLogin(config.admin),
     visibility: 'public',
     sharedWith: [],
+    // Public used to mean "everyone can edit it", and a sidecar-less deck is
+    // exactly the pre-roles case, so that is what it keeps meaning.
+    publicRole: 'edit',
   };
   let raw: string;
   try {
@@ -104,11 +163,8 @@ export async function readDeckAccess(deckDir: string, config: AccessControlConfi
         ? normalizeLogin(parsed.owner)
         : fallback.owner,
       visibility: parsed.visibility === 'private' ? 'private' : 'public',
-      sharedWith: Array.isArray(parsed.sharedWith)
-        ? [...new Set(parsed.sharedWith
-            .filter((entry): entry is string => typeof entry === 'string' && entry.trim() !== '')
-            .map(normalizeLogin))]
-        : [],
+      sharedWith: normalizeShares(parsed.sharedWith),
+      publicRole: asRole(parsed.publicRole, 'edit'),
     };
   } catch {
     // A corrupt sidecar must not lock the admin out of the deck; treating it
@@ -121,14 +177,81 @@ export async function writeDeckAccess(deckDir: string, access: DeckAccess): Prom
   await writeFile(join(deckDir, ACCESS_FILE), `${JSON.stringify(access, null, 2)}\n`, 'utf8');
 }
 
+/**
+ * This person's role on this deck, or null if they may not open it at all.
+ * Grants add up rather than override: the most permissive of the explicit
+ * share and the public setting wins.
+ */
+export function deckRoleFor(
+  login: string,
+  access: DeckAccess,
+  config: AccessControlConfig,
+): DeckRole | null {
+  if (login === normalizeLogin(config.admin) || access.owner === login) return 'owner';
+  const granted: AccessRole[] = [];
+  const share = access.sharedWith.find((entry) => entry.login === login);
+  if (share) granted.push(share.role);
+  if (access.visibility === 'public') granted.push(access.publicRole);
+  if (granted.length === 0) return null;
+  return granted.includes('edit') ? 'edit' : 'view';
+}
+
 export function canAccessDeck(login: string, access: DeckAccess, config: AccessControlConfig): boolean {
-  if (login === normalizeLogin(config.admin)) return true;
-  if (access.visibility === 'public') return true;
-  return access.owner === login || access.sharedWith.includes(login);
+  return deckRoleFor(login, access, config) !== null;
+}
+
+/** Whether this person may change the deck — transactions, uploads, the agent. */
+export function canEditDeck(login: string, access: DeckAccess, config: AccessControlConfig): boolean {
+  const role = deckRoleFor(login, access, config);
+  return role === 'owner' || role === 'edit';
 }
 
 export function canManageDeck(login: string, access: DeckAccess, config: AccessControlConfig): boolean {
   return login === normalizeLogin(config.admin) || access.owner === login;
+}
+
+/**
+ * Who created a folder. Like a deck's sidecar, a missing one means the admin:
+ * folders that predate the feature (or were made in Finder) belong to the
+ * machine owner.
+ */
+export async function readFolderOwner(dir: string, config: AccessControlConfig): Promise<string> {
+  try {
+    const parsed = JSON.parse(await readFile(join(dir, FOLDER_FILE), 'utf8')) as { owner?: unknown };
+    if (typeof parsed.owner === 'string' && parsed.owner.trim()) return normalizeLogin(parsed.owner);
+  } catch {
+    // Missing or corrupt: fall through to the admin, same as a deck sidecar.
+  }
+  return normalizeLogin(config.admin);
+}
+
+export async function writeFolderOwner(dir: string, owner: string): Promise<void> {
+  await writeFile(
+    join(dir, FOLDER_FILE),
+    `${JSON.stringify({ owner: normalizeLogin(owner) }, null, 2)}\n`,
+    'utf8',
+  );
+}
+
+/**
+ * Whether a folder exists at all, as far as this person is concerned.
+ *
+ * A folder is a container, not a thing that is itself shared: it is visible
+ * exactly when it holds at least one deck this person may open, at any depth.
+ * Someone who has been shared nothing inside it never learns it exists — not
+ * its name, not that the people above them keep work there. The two
+ * exceptions are the people for whom an invisible folder would be a bug
+ * rather than a secret: the admin, and the person who just created it (who
+ * still has to be able to put the first deck in).
+ */
+export function folderVisibleTo(
+  login: string,
+  folder: { owner: string; accessibleDecks: number },
+  config: AccessControlConfig,
+): boolean {
+  if (login === normalizeLogin(config.admin)) return true;
+  if (folder.owner === login) return true;
+  return folder.accessibleDecks > 0;
 }
 
 export interface KnownUser {

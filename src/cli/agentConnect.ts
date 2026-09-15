@@ -457,6 +457,13 @@ export function connectAgentBridge(options: ConnectOptions): AgentBridge {
       });
       return;
     }
+    if (request.kind === 'htmlSync') {
+      await respond({
+        version: 1, id: request.id, status: 'error', revision: deckRevision(shadow),
+        message: 'On a hosted deck the mirror syncs edit/*.html when you save it; there is nothing to apply separately.',
+      });
+      return;
+    }
     const current = deckRevision(shadow);
     if (request.transaction.expectedRevision !== current) {
       await respond({
