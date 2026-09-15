@@ -3355,6 +3355,31 @@ button.morph-object-hit.selected-source:hover:not(:disabled) {
   font: inherit;
 }
 
+.import-progress-dialog { width: min(480px, calc(100vw - 56px)); }
+.import-progress-status {
+  display: flex;
+  min-height: 38px;
+  align-items: center;
+  gap: 10px;
+  color: var(--muted, #8a93a6);
+  line-height: 1.45;
+}
+.import-progress-status::before {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  border: 2px solid color-mix(in srgb, var(--accent) 28%, transparent);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: status-progress-spin 700ms linear infinite;
+  content: '';
+}
+.import-progress-status.failed { color: var(--text); }
+.import-progress-status.failed::before { display: none; }
+@media (prefers-reduced-motion: reduce) {
+  .import-progress-status::before { animation-duration: 1400ms; }
+}
+
 .pdf-export-dialog { width: min(440px, calc(100vw - 56px)); }
 .web-export-dialog { width: min(480px, calc(100vw - 56px)); }
 .web-export-quality { padding-top: 4px; }

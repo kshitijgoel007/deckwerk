@@ -614,8 +614,18 @@ function buildToolbar(): void {
       access: serverConfig.access ?? null,
     });
     const importEntries = [
-      { label: 'Keynote…', action: () => importKeynoteToServer(setStatusMessage, here) },
-      { label: 'PowerPoint…', action: () => importPowerPointToServer(setStatusMessage, here) },
+      {
+        label: 'Keynote…',
+        action: () => importKeynoteToServer(
+          setStatusMessage, here, { configureSharing: Boolean(serverConfig.access) },
+        ),
+      },
+      {
+        label: 'PowerPoint…',
+        action: () => importPowerPointToServer(
+          setStatusMessage, here, { configureSharing: Boolean(serverConfig.access) },
+        ),
+      },
     ];
     fileActions.append(
       barButton('New', () => {

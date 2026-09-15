@@ -67,25 +67,106 @@ export async function createDeckOnServer(folder = ''): Promise<void> {
   goTo(body.id);
 }
 
-export function importKeynoteToServer(onStatus: (text: string) => void, folder = ''): void {
-  importPresentationToServer(onStatus, { accept: '.key', route: '/api/import-keynote', folder });
+export function importKeynoteToServer(
+  onStatus: (text: string) => void,
+  folder = '',
+  options: { configureSharing?: boolean } = {},
+): void {
+  importPresentationToServer(onStatus, {
+    accept: '.key', route: '/api/import-keynote', folder, label: 'Keynote', ...options,
+  });
 }
 
-export function importPowerPointToServer(onStatus: (text: string) => void, folder = ''): void {
-  importPresentationToServer(onStatus, { accept: '.pptx', route: '/api/import-pptx', folder });
+export function importPowerPointToServer(
+  onStatus: (text: string) => void,
+  folder = '',
+  options: { configureSharing?: boolean } = {},
+): void {
+  importPresentationToServer(onStatus, {
+    accept: '.pptx', route: '/api/import-pptx', folder, label: 'PowerPoint', ...options,
+  });
+}
+
+/**
+ * Importing happens in one long HTTP request, so there are no useful byte
+ * totals after the upload completes. Keep quick failures quiet, then put an
+ * indeterminate activity dialog above whichever picker/menu launched it.
+ */
+function importProgress(filename: string, label: string): {
+  finish(): void;
+  fail(message: string): void;
+} {
+  const overlay = document.createElement('div');
+  overlay.className = 'workflow-overlay import-progress-overlay';
+  const box = document.createElement('div');
+  box.className = 'workflow-dialog import-progress-dialog';
+  const title = document.createElement('h2');
+  title.textContent = `Importing ${label}`;
+  const status = document.createElement('div');
+  status.className = 'import-progress-status';
+  status.setAttribute('role', 'status');
+  status.setAttribute('aria-live', 'polite');
+  status.setAttribute('aria-busy', 'true');
+  status.textContent = `Converting “${filename}”… This can take a minute for a large presentation.`;
+  box.append(title, status);
+  overlay.append(box);
+
+  let shown = false;
+  const timer = window.setTimeout(() => {
+    shown = true;
+    document.body.append(overlay);
+  }, 500);
+  return {
+    finish: () => {
+      window.clearTimeout(timer);
+      overlay.remove();
+    },
+    fail: (message) => {
+      window.clearTimeout(timer);
+      if (!shown) document.body.append(overlay);
+      shown = true;
+      title.textContent = `${label} import failed`;
+      status.classList.add('failed');
+      status.setAttribute('aria-busy', 'false');
+      status.textContent = message;
+      const actions = document.createElement('div');
+      actions.className = 'workflow-actions';
+      const close = document.createElement('button');
+      close.textContent = 'Close';
+      close.addEventListener('click', () => overlay.remove());
+      actions.append(close);
+      box.append(actions);
+      close.focus();
+    },
+  };
 }
 
 function importPresentationToServer(
   onStatus: (text: string) => void,
-  source: { accept: string; route: string; folder: string },
+  source: {
+    accept: string;
+    route: string;
+    folder: string;
+    label: string;
+    configureSharing?: boolean;
+  },
 ): void {
   const input = document.createElement('input');
   input.type = 'file';
   input.accept = source.accept;
+  input.hidden = true;
+  // Keep the chooser's control in the document. Besides giving assistive and
+  // browser automation tooling a real upload target, this lets Chromium own
+  // the control for the whole native chooser lifetime instead of relying on a
+  // detached input surviving until the user has picked a file.
+  document.body.append(input);
+  input.addEventListener('cancel', () => input.remove(), { once: true });
   input.addEventListener('change', () => {
     const file = input.files?.[0];
+    input.remove();
     if (!file) return;
     onStatus(`Importing ${file.name}… this can take a minute for a large deck.`);
+    const progress = importProgress(file.name, source.label);
     void (async () => {
       const name = file.name.replace(/\.(key|pptx)$/i, '');
       const response = await fetch(
@@ -94,8 +175,18 @@ function importPresentationToServer(
       );
       const body = await response.json() as { id?: string; error?: string };
       if (!response.ok || !body.id) throw new Error(body.error ?? 'import failed');
-      goTo(body.id);
-    })().catch((error) => onStatus(`Import failed: ${error instanceof Error ? error.message : error}`));
+      progress.finish();
+      if (source.configureSharing) {
+        const openImportedDeck = () => goTo(body.id!);
+        showShareDialog(body.id, onStatus, openImportedDeck, openImportedDeck);
+      } else {
+        goTo(body.id);
+      }
+    })().catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      onStatus(`Import failed: ${message}`);
+      progress.fail(message);
+    });
   });
   input.click();
 }
@@ -299,8 +390,12 @@ export function showDeckPicker(opts: {
         reopen(body.path);
       })().catch((error) => opts.onStatus(`Create failed: ${error instanceof Error ? error.message : error}`));
     }),
-    makeButton('Import Keynote…', () => importKeynoteToServer(opts.onStatus, folder)),
-    makeButton('Import PowerPoint…', () => importPowerPointToServer(opts.onStatus, folder)),
+    makeButton('Import Keynote…', () => importKeynoteToServer(
+      opts.onStatus, folder, { configureSharing: Boolean(opts.access) },
+    )),
+    makeButton('Import PowerPoint…', () => importPowerPointToServer(
+      opts.onStatus, folder, { configureSharing: Boolean(opts.access) },
+    )),
   );
   if (opts.dismissable) {
     const cancel = makeButton('Cancel', () => overlay.remove());
@@ -403,7 +498,12 @@ const ROLE_LABEL: Record<'edit' | 'view', string> = {
  * Visibility + share list for one deck, backed by GET/PUT /api/access.
  * Read-only for participants who can open the deck but don't manage it.
  */
-export function showShareDialog(deckId: string, onStatus: (text: string) => void, onSaved?: () => void): void {
+export function showShareDialog(
+  deckId: string,
+  onStatus: (text: string) => void,
+  onSaved?: () => void,
+  onClosed?: () => void,
+): void {
   const overlay = document.createElement('div');
   overlay.className = 'workflow-overlay';
   const box = document.createElement('div');
@@ -419,10 +519,14 @@ export function showShareDialog(deckId: string, onStatus: (text: string) => void
   actions.className = 'workflow-actions';
   const close = document.createElement('button');
   close.textContent = 'Close';
-  close.addEventListener('click', () => overlay.remove());
+  const closeDialog = () => {
+    overlay.remove();
+    onClosed?.();
+  };
+  close.addEventListener('click', closeDialog);
   actions.append(close);
   overlay.addEventListener('click', (event) => {
-    if (event.target === overlay) overlay.remove();
+    if (event.target === overlay) closeDialog();
   });
 
   void (async () => {
