@@ -106,6 +106,58 @@ The editor canvas and the Player keep real `<video>` elements: they play. A
 capture path (`holdFrame`) is skipped, and if a frame cannot be read (a tainted
 canvas) the element is simply left alone — the old behaviour.
 
+### Renditions: the wire copy is not the author's copy
+
+A deck's assets are whatever the author had. A real talk measured here: 1.1 GB
+across 73 slides, screen recordings at 10–26 Mbit/s, single clips of 118 MB.
+Those are the right thing to keep on disk and the wrong thing to hand a
+browser on the far end of a link — at 26 Mbit/s a clip cannot arrive in real
+time over normal wifi, so preloading it earlier only means starving something
+else. Measured cold over an 8 Mbit/s link, before any of this existed: a 48 MB
+clip never showed a frame at all, and a 51 MB one took 15 seconds.
+
+This is the conclusion every hosted deck reached. Google Slides will not play
+an arbitrary uploaded file; a Drive video plays a *transcoded rendition* and
+makes you wait for one to exist. So does this: `src/server/
+streamingRenditions.ts` keeps one H.264 rendition per source — capped at
+1080p, CRF 23, faststart — in a cache outside the deck folder, and the asset
+route serves it in place of the original. Nothing is written into the author's
+`assets/`, so a deck archive, an export and the editor all still carry the
+originals, where quality rather than latency is the point.
+
+The rules that keep it honest:
+
+- **Only clips that need it.** Above 6 Mbit/s or above 1080p, and at least
+  8 MB. Below the size floor the question has to be free to answer, because
+  the serving path asks it on every request.
+- **Serving never waits.** `ready()` is synchronous and returns null rather
+  than blocking; a slide streaming the original beats a slide waiting for
+  ffmpeg. The request that missed queues the transcode for next time.
+- **One at a time.** A presenting machine is also the server.
+- **Pending means revalidate.** While a rendition is merely intended, the
+  original is served `public, no-cache` even under a content-hashed name: an
+  immutable copy of the original would never be asked about again, and the
+  rendition would never reach the client. The ETag of the rendition is salted
+  so it cannot 304 against the ETag the client holds for the original.
+- **Keyed by name, size and mtime**, not by path, so renaming a deck or a
+  folder does not throw away an hour of encoding.
+- **Never bigger than the source.** A rendition that came out larger is
+  discarded and the original served; failure of any kind falls back to the
+  original.
+- **Pruned after 90 days.** Every edited or deleted asset leaves its rendition
+  behind, and a server hosting years of talks would keep all of them. Losing
+  one that is still wanted costs a background re-encode and nothing else.
+
+Renditions are built when a deck is opened (in slide order, so the front of
+the talk is ready first) and on demand when an asset is requested. Neither is
+the right moment to discover a gigabyte of screen recordings, so there is also
+`npm run prepare:media -- <deck-or-decks-root>`, which does the whole job up
+front — what you want the day before a talk.
+
+Measured after, cold, on the same 8 Mbit/s link: the 48 MB clip starts in
+0.8 s and the 51 MB one in 0.6 s. At 3 Mbit/s they start in under 2 s. The
+benchmark is `dev/bench/presentVideoBench.mts`.
+
 ### Servers: hashed assets are immutable, and nothing is `no-store`
 
 Every asset written through `importAsset` is named `<stem>.<8-hex hash>.<ext>`
@@ -216,10 +268,30 @@ videos then sat on a loading spinner forever.
 
 The Player also **warms upcoming slides** (`warmUpcomingMedia`): while a slide
 is on screen it prepares media from the next two presentable slides (skipped
-slides do not consume the lookahead). Videos are fetched into the HTTP cache,
-strictly one transfer at a time and never a file the current slide is already
-fetching itself. Images are loaded and decoded as `<img>` elements, then the
-decoded element is adopted into the slide when it appears. This distinction
+slides do not consume the lookahead).
+
+Videos are warmed as whole *elements*, not just bytes: the lookahead opens a
+detached `<video>` (`preload="auto"`), seeks it to its in-point, waits for a
+decoded frame and parks it in the Player's pool under its presentation key,
+where `goTo` adopts it like any other pooled element. Cached bytes alone do
+not close the gap this exists for — a fresh `<video>` still paints nothing
+until it has attached, demuxed and decoded, which is the beat of black at
+every slide change that a remote session shows on every clip. Strictly one
+decode in flight, never a file the current slide is already fetching itself,
+and capped at four elements per lookahead (decoders and connections are both
+bounded); clips past that cap fall back to the old byte-only `fetch` warm,
+also one at a time.
+
+The lookahead does not start until the slide on screen can paint
+(`startLookaheadWhenVisibleSlideCanPaint`, capped at two seconds so a clip
+that never loads cannot disable it for the rest of the talk). It shares the
+origin's six connections with the visible slide, and on a remote server
+letting it start immediately is the difference between clicking Present and
+seeing the opening clip, and clicking Present and watching a black rectangle
+while bytes for a slide nobody has reached yet come down the same pipe.
+
+Images are loaded and decoded as `<img>` elements, then the decoded element
+is adopted into the slide when it appears. This distinction
 matters for large JPEGs: cached bytes can still paint as a thin band of decoded
 scanlines, while an adopted decoded bitmap appears atomically. Decodes run
 sequentially and stop after four images or 48 megapixels. Only the active
@@ -240,7 +312,12 @@ accumulates decoded bitmaps from the rest of the deck.
   Speaker View, passes `'metadata'` and that neither asset server says
   `no-store`.
 - `test/collabServer.test.ts` — ETag/304/immutable behaviour of the asset
-  route.
+  route, and that an oversized clip is served as its rendition, with a salted
+  ETag so the client's copy of the original cannot 304 against it.
+- `test/streamingRenditions.test.ts` — what earns a rendition and what does
+  not, the 1080p cap, one transcode shared between racing callers, the cache
+  key surviving a rename but not an edit, and the synchronous ready/pending
+  answers the serving path depends on.
 - `test/morph.test.ts` — the Morph panel's preview surfaces survive a
   re-render, and adopt their decoded elements when an edit rebuilds them.
 - `test/previewStillsBrowser.test.ts` — the real editor over a throttled link:
@@ -252,7 +329,11 @@ accumulates decoded bitmaps from the rest of the deck.
   visible, the poster seek is re-armed, and a gate-aborted source is restored.
 - `test/playerVideoReuse.test.ts` — element reuse across navigation: pooling,
   continuity, in-point reset, fetch abort, and that reuse never crosses
-  presentations.
+  presentations. Also the lookahead: it holds until the visible slide can
+  paint, decodes one upcoming clip at a time into an element the next slide
+  adopts, opens one element for a clip two slides share, respects skipped
+  slides and the decode budget, and gives up a decode the deck navigated away
+  from.
 - `test/editorImageWarmup.test.ts` — the editor decodes a next-slide image once
   and adopts that exact node on navigation.
 - `test/canvasVideoReuseBrowser.test.ts` — the same rule through the real rail

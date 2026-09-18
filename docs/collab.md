@@ -113,9 +113,16 @@ that path as the id.
 - `POST /api/decks/move?deck=<id>&folder=<path>` files an existing deck
   somewhere else. The id is the room key and the session directory, so a move
   is refused while anyone has the deck open.
+- `POST /api/decks/rename?deck=<id>&name=<name>` renames a deck: the last
+  segment of its id and the title the picker shows are the same name, so both
+  change together. Like a move it waits for the room to be empty.
+- `POST /api/folders/rename?path=<path>&name=<name>` renames a folder in
+  place. Every deck inside is filed under that path, so all of their ids
+  change at once and none of them may be open.
 
 The picker browses the tree with a breadcrumb; New, Import and New folder all
-act in the folder you are looking at.
+act in the folder you are looking at. Each row a person manages carries
+Rename…, and a deck row also Move… and Share….
 
 ### Access control (`--access`)
 
@@ -246,9 +253,45 @@ the participant id.
 - **Open / New** — the toolbar lists every deck on the server, creates new
   ones (server-side `createDeck`, so theme.css and the agent brief stub come
   along).
-- **Import Keynote…** / **Import PowerPoint…** — uploads a `.key` or `.pptx`
-  file; the server runs the same importer sidecar as the desktop app and the
-  deck opens when it finishes.
+- **Import…** — one menu in the deck picker, with an entry per format.
+  Keynote (`.key`) and PowerPoint (`.pptx`) upload the file and run the same
+  importer sidecar as the desktop app.
+
+  A DeckWerk deck can come either way round, because a deck on disk is a
+  *folder* and a file chooser cannot pick one — Open just descends into it.
+  **DeckWerk deck folder…** therefore opens a directory chooser; the browser
+  hands back the folder's files, which the client zips (`src/shared/zip.ts`,
+  the same format the server streams out) into exactly the archive the route
+  takes. It checks for `deck.json` before uploading anything, so picking the
+  folder *above* the deck says so instead of sending a megabyte to be
+  rejected. **DeckWerk deck archive (.zip)…** takes what **Save As… → Deck
+  archive** produced — the deck folder's contents, or a single folder wrapping
+  them, as Finder's "Compress" and Explorer's "Send to → Compressed folder"
+  produce. Either way the deck is named after the folder and opens when the
+  import finishes.
+
+  An uploaded archive's `access.json` is discarded rather than honoured; the
+  importer becomes the owner.
+- **Share…** — on an `--access` server, who may open one presentation. Two
+  sections, the shape Google Docs settled on: **People with access** lists the
+  owner and every named grant with a role each, and **General access** is the
+  one rule for everyone else — *Restricted* or *Everyone on this server* — with
+  the role that hands them beside it. A sentence underneath says what the two
+  add up to ("Anyone on this server can open it. Only the people listed above
+  can change it."), because the sentence is what people actually read. **Copy
+  link** is there too. Grants add up rather than override, so a deck can be
+  readable by everyone and editable by a few.
+
+  Uploading a talk you have already given is therefore: import it, then set
+  General access to *Everyone on this server · Can view*. Imports deliberately
+  have no publishing shortcut of their own — one deck, one place that answers
+  who can open it.
+
+- **Preparing video** — the server keeps a streaming rendition of any clip too
+  big to send as-is (`docs/media-loading.md`, "Renditions"), built when a deck
+  is opened and cached outside the deck folder. `npm run prepare:media --
+  <deck-or-decks-root>` does a whole deck up front instead of letting the
+  first presentation pay for it.
 - **Save As… → Deck archive (.zip)…** — everyone, at any point, can save
   the whole deck folder (`deck.json`, `theme.css`, `assets/`). The server
   flushes the live session first, so the archive is exactly what everyone

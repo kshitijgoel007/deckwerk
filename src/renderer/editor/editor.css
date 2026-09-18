@@ -3311,43 +3311,185 @@ button.morph-object-hit.selected-source:hover:not(:disabled) {
   justify-content: flex-end;
 }
 
-/* Deck picker groups + sharing (collab client, --access servers). */
-.deck-picker-list { display: flex; flex-direction: column; gap: 4px; max-height: 52vh; overflow-y: auto; }
+/* Every dialog is a scroll container (max-height + overflow: auto in
+   appChrome.css), which clips an absolutely positioned menu inside it. A menu
+   opened in a dialog is therefore placed in viewport coordinates instead; the
+   picker sets top/left itself. */
+.shape-menu.shape-menu-fixed {
+  position: fixed;
+  top: auto;
+  left: auto;
+  z-index: 10001;
+}
+
+/* Deck picker (collab client): the file manager for the server's decks.
+   Every other dialog here asks one question and is sized for it; this one is
+   a place you browse, so it takes the window — a frame of overlay around a
+   header, a scrolling list of rows in columns, and a footer of actions. */
+.workflow-dialog.deck-picker {
+  --deck-picker-columns: minmax(0, 1fr) 150px 190px 110px;
+  --deck-picker-gutter: 18px;
+  width: calc(100vw - 48px);
+  height: calc(100vh - 48px);
+  max-height: none;
+  padding: 0;
+  gap: 0;
+  overflow: hidden;
+}
+
+.deck-picker-head {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 14px;
+  padding: 14px var(--deck-picker-gutter);
+  border-bottom: 1px solid var(--line);
+  background: var(--panel-2, var(--panel));
+}
+.deck-picker-head h2 { flex: none; }
+
+/* The column labels sit in the same grid as the rows, so a listing reads down
+   its columns instead of only across each row. */
+.deck-picker-columns {
+  flex: none;
+  padding: 6px var(--deck-picker-gutter);
+  border-bottom: 1px solid var(--line);
+}
+.deck-picker-columns .deck-picker-row {
+  color: var(--muted, #8a93a6);
+  font: 600 10px var(--mono);
+  text-transform: uppercase;
+  letter-spacing: .08em;
+}
+
+.deck-picker-list {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+  flex-direction: column;
+  gap: 1px;
+  padding: 10px var(--deck-picker-gutter);
+  overflow-y: auto;
+}
+
+.deck-picker-foot {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  padding: 12px var(--deck-picker-gutter);
+  border-top: 1px solid var(--line);
+  background: var(--panel-2, var(--panel));
+}
+.deck-picker-foot .deck-picker-progress { flex: 1; min-width: 0; }
+.deck-picker-foot .workflow-actions { flex: none; margin-left: auto; }
+
 .deck-picker-group {
-  margin-top: 8px;
+  margin-top: 14px;
   color: var(--muted, #8a93a6);
   font: 600 10px var(--mono);
   text-transform: uppercase;
   letter-spacing: .08em;
 }
 .deck-picker-group:first-child { margin-top: 0; }
-.deck-picker-row-group { display: flex; gap: 4px; align-items: stretch; }
+
+.deck-picker-row-group { display: flex; gap: 6px; align-items: center; }
 .deck-picker-row-group .deck-picker-row { flex: 1; min-width: 0; }
-.deck-picker-row { text-align: left; }
+/* Fixed width, and empty on the rows whose actions this person does not get,
+   so every name column still starts and ends in the same place. */
+.deck-picker-actions {
+  display: flex;
+  flex: none;
+  width: 250px;
+  gap: 4px;
+  justify-content: flex-end;
+}
+
+.deck-picker-row {
+  display: grid;
+  padding: 7px 10px;
+  border: 1px solid transparent;
+  background: none;
+  color: inherit;
+  gap: 12px;
+  grid-template-columns: var(--deck-picker-columns);
+  align-items: center;
+  text-align: left;
+}
+button.deck-picker-row:hover { border-color: var(--line); background: var(--panel-2); }
+button.deck-picker-row.active { border-color: var(--accent); }
+.deck-picker-name, .deck-picker-cell {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.deck-picker-cell { color: var(--muted, #8a93a6); font: 500 11px var(--mono); }
 .deck-picker-share { flex: none; white-space: nowrap; }
-.deck-picker-trail { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.deck-picker-trail { display: flex; flex: 1; min-width: 0; flex-wrap: wrap; align-items: center; gap: 4px; }
 .deck-picker-crumb { padding: 2px 6px; }
 .deck-picker-crumb:disabled { opacity: 1; font-weight: 600; }
 .deck-picker-crumb-sep { color: var(--muted, #8a93a6); }
-.deck-picker-folder::before { content: '📁  '; }
-.share-dialog-body { display: flex; flex-direction: column; gap: 10px; }
-.share-dialog-owner { margin: 0; color: var(--muted, #8a93a6); }
-.share-dialog-visibility, .share-dialog-shared { display: flex; flex-direction: column; gap: 5px; }
-.share-dialog-chips { display: flex; flex-wrap: wrap; gap: 5px; }
-.share-dialog-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 3px 4px 3px 10px;
+.deck-picker-folder .deck-picker-name::before { content: '📁  '; }
+/* Import progress. The toolbar's status line is behind this overlay, so an
+   upload has to report itself here or it reports itself nowhere. */
+.deck-picker-progress {
+  margin: 0;
+  padding: 7px 9px;
   border: 1px solid var(--line);
-  border-radius: 999px;
+  background: var(--panel-2, var(--bg));
+  color: var(--text);
+  font: 500 11px var(--mono);
 }
-.share-dialog-chip select { padding: 2px 4px; }
-.share-dialog-chip-remove { padding: 0 6px; border: 0; background: none; }
-.share-dialog-empty { color: var(--muted, #8a93a6); }
+.share-dialog-body { display: flex; flex-direction: column; gap: 16px; }
+.share-dialog-owner { margin: 0; color: var(--muted, #8a93a6); }
+.share-dialog-visibility { display: flex; flex-direction: column; gap: 5px; }
+
+/* Sharing reads as two questions — which people, then everyone else — so it
+   is laid out as two headed sections rather than one stack of controls. */
+.share-dialog-section { display: flex; flex-direction: column; gap: 8px; }
+.share-dialog-section h3 {
+  margin: 0;
+  color: var(--muted, #8a93a6);
+  font: 600 10px var(--mono);
+  text-transform: uppercase;
+  letter-spacing: .08em;
+}
+
+.share-dialog-people { display: flex; flex-direction: column; }
+.share-dialog-person {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 5px 0;
+  border-top: 1px solid var(--line);
+}
+.share-dialog-person:first-child { border-top: 0; }
+.share-dialog-person-who { display: flex; flex-direction: column; min-width: 0; }
+.share-dialog-person-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.share-dialog-person-login {
+  color: var(--muted, #8a93a6);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.share-dialog-person-controls { display: inline-flex; align-items: center; gap: 4px; flex: none; }
+.share-dialog-person-controls select { padding: 2px 4px; }
+.share-dialog-person-remove { padding: 0 6px; border: 0; background: none; }
+.share-dialog-role-fixed { flex: none; color: var(--muted, #8a93a6); font-size: 12px; }
+
+.share-dialog-general { display: flex; gap: 6px; align-items: center; }
+.share-dialog-note { margin: 0; color: var(--muted, #8a93a6); font-size: 12px; line-height: 1.5; }
+/* Reserve the taller of the sentences so switching does not jump the dialog. */
+.share-dialog .share-dialog-note { min-height: 2.6em; }
+.share-dialog-copy { margin-right: auto; }
+
 .share-dialog-add { display: flex; gap: 6px; }
 .share-dialog-add input {
   flex: 1;
+  min-width: 0;
   padding: 6px 8px;
   border: 1px solid var(--line);
   background: var(--bg);

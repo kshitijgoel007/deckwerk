@@ -1,7 +1,8 @@
 /**
  * Deck chooser for the collab client: browses the server's folders, lists the
- * presentations in the one you are looking at, creates new ones, and imports a
- * Keynote or PowerPoint file server-side. Picking a deck navigates to
+ * presentations in the one you are looking at, creates new ones, renames and
+ * files them away, and imports a Keynote file, a PowerPoint file or a DeckWerk
+ * deck archive server-side. Picking a deck navigates to
  * `?deck=<id>` — a full reload is the simplest correct way to re-key every
  * deck-scoped route and socket. A deck id is its folder path, so "acme/pitch"
  * is the deck "pitch" inside the folder "acme".
@@ -12,6 +13,9 @@
  * can only view, and offers the Share… dialog on decks the user manages. A
  * folder with nothing shared inside it is simply not in the listing.
  */
+import { createToolbarPicker, type ToolbarPickerOption } from '../editor/exportPicker.js';
+import { buildZip, type ZipInput } from '../../shared/zip.js';
+
 
 interface DeckEntry {
   id: string;
@@ -67,37 +71,196 @@ export async function createDeckOnServer(folder = ''): Promise<void> {
   goTo(body.id);
 }
 
+/**
+ * What the server can turn into a deck, as the menu lists it.
+ *
+ * `folder: true` picks a directory rather than a file — a DeckWerk deck on
+ * disk is a folder, and a file chooser set to `.zip` cannot select one: the
+ * Open button just descends into it. The browser hands back the folder's
+ * files, which are zipped here into exactly the archive `/api/import-deck`
+ * already takes, so one server route serves both.
+ */
+const IMPORT_SOURCES = {
+  keynote: { label: 'Keynote…', accept: '.key', route: '/api/import-keynote' },
+  powerpoint: { label: 'PowerPoint…', accept: '.pptx', route: '/api/import-pptx' },
+  deck: { label: 'DeckWerk deck folder…', accept: '', route: '/api/import-deck', folder: true },
+  deckArchive: { label: 'DeckWerk deck archive (.zip)…', accept: '.zip', route: '/api/import-deck' },
+} as const;
+
+export type ImportSource = keyof typeof IMPORT_SOURCES;
+
 export function importKeynoteToServer(onStatus: (text: string) => void, folder = ''): void {
-  importPresentationToServer(onStatus, { accept: '.key', route: '/api/import-keynote', folder });
+  importToServer('keynote', onStatus, folder);
 }
 
 export function importPowerPointToServer(onStatus: (text: string) => void, folder = ''): void {
-  importPresentationToServer(onStatus, { accept: '.pptx', route: '/api/import-pptx', folder });
+  importToServer('powerpoint', onStatus, folder);
 }
 
-function importPresentationToServer(
+/** Upload a file and open the deck the server makes of it. */
+export function importToServer(
+  source: ImportSource,
   onStatus: (text: string) => void,
-  source: { accept: string; route: string; folder: string },
+  folder = '',
 ): void {
+  const definition = IMPORT_SOURCES[source];
+  const pickFolder = 'folder' in definition && definition.folder;
   const input = document.createElement('input');
   input.type = 'file';
-  input.accept = source.accept;
+  if (definition.accept) input.accept = definition.accept;
+  if (pickFolder) input.webkitdirectory = true;
   input.addEventListener('change', () => {
-    const file = input.files?.[0];
-    if (!file) return;
-    onStatus(`Importing ${file.name}… this can take a minute for a large deck.`);
+    const files = [...input.files ?? []];
+    if (files.length === 0) return;
     void (async () => {
-      const name = file.name.replace(/\.(key|pptx)$/i, '');
-      const response = await fetch(
-        `${source.route}?name=${encodeURIComponent(name)}${folderQuery(source.folder)}`,
-        { method: 'POST', body: file },
+      const upload = pickFolder
+        ? await zipPickedFolder(files, onStatus)
+        : { name: files[0].name, body: files[0] as Blob };
+      const name = upload.name.replace(/\.(key|pptx|zip)$/i, '');
+      const id = await postImport(
+        `${definition.route}?name=${encodeURIComponent(name)}${folderQuery(folder)}`,
+        upload.body,
+        (sent, total) => onStatus(total > 0
+          ? `Uploading “${upload.name}”… ${Math.round((sent / total) * 100)}% of ${formatSize(total)}`
+          : `Uploading “${upload.name}”…`),
+        () => onStatus(`Importing “${upload.name}”… this can take a minute for a large deck.`),
       );
-      const body = await response.json() as { id?: string; error?: string };
-      if (!response.ok || !body.id) throw new Error(body.error ?? 'import failed');
-      goTo(body.id);
+      goTo(id);
     })().catch((error) => onStatus(`Import failed: ${error instanceof Error ? error.message : error}`));
   });
   input.click();
+}
+
+/**
+ * POST the upload, reporting how much of it has gone out.
+ *
+ * `fetch` cannot report upload progress, and a deck with video in it is a
+ * long silent wait without it — which reads as nothing happening at all.
+ * XMLHttpRequest is the only API in a browser that exposes the request body's
+ * progress, so this one call uses it.
+ */
+function postImport(
+  url: string,
+  body: Blob,
+  onProgress: (sent: number, total: number) => void,
+  onUploaded: () => void,
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.open('POST', url);
+    request.upload.addEventListener('progress', (event) => {
+      onProgress(event.loaded, event.lengthComputable ? event.total : 0);
+    });
+    // The bytes are all out; whatever happens now is the server working.
+    request.upload.addEventListener('load', onUploaded);
+    request.addEventListener('load', () => {
+      let parsed: { id?: string; error?: string };
+      try {
+        parsed = JSON.parse(request.responseText) as typeof parsed;
+      } catch {
+        reject(new Error(`the server answered ${request.status} with something that is not JSON`));
+        return;
+      }
+      if (request.status >= 400 || !parsed.id) reject(new Error(parsed.error ?? `import failed (${request.status})`));
+      else resolve(parsed.id);
+    });
+    request.addEventListener('error', () => reject(new Error('the connection dropped during the upload')));
+    request.addEventListener('abort', () => reject(new Error('the upload was cancelled')));
+    request.send(body);
+  });
+}
+
+function formatSize(bytes: number): string {
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${Math.max(1, Math.round(bytes / 1024))} kB`;
+}
+
+/**
+ * Zip up the folder the chooser handed back.
+ *
+ * `webkitRelativePath` is the path under the folder the person picked, so the
+ * archive comes out with that folder as its single wrapping directory — the
+ * shape the import route already strips. The deck is named after the folder,
+ * which is how a deck on disk is named anyway.
+ */
+async function zipPickedFolder(
+  files: File[],
+  onStatus: (text: string) => void,
+): Promise<{ name: string; body: Blob }> {
+  const deckName = files[0].webkitRelativePath.split('/')[0] || 'deck';
+  if (!files.some((file) => file.webkitRelativePath.split('/').slice(1).join('/') === 'deck.json')) {
+    throw new Error(`“${deckName}” holds no deck.json — pick the deck's own folder, not the one above it.`);
+  }
+  const entries: ZipInput[] = [];
+  for (const file of files) {
+    onStatus(`Reading “${deckName}”… ${entries.length + 1} of ${files.length} files.`);
+    entries.push({
+      name: file.webkitRelativePath,
+      data: new Uint8Array(await file.arrayBuffer()),
+    });
+    // Let the status line actually paint between files; without this the
+    // whole folder is read in one frame and nothing is ever shown.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  onStatus(`Packing “${deckName}”…`);
+  return { name: deckName, body: new Blob([buildZip(entries)], { type: 'application/zip' }) };
+}
+
+/** The picker's Import menu: one entry per format the server can take. */
+export function importMenuEntries(
+  onStatus: (text: string) => void,
+  folder: string,
+): ToolbarPickerOption[] {
+  return (Object.keys(IMPORT_SOURCES) as ImportSource[]).map((source) => ({
+    label: IMPORT_SOURCES[source].label,
+    action: () => importToServer(source, onStatus, folder),
+  }));
+}
+
+/**
+ * One row of the listing: a name that opens the thing, then the columns that
+ * describe it. Rows and the header share this shape so the listing reads down
+ * its columns, which is what makes it a file manager rather than a menu.
+ */
+function pickerRow(
+  tag: 'button' | 'div',
+  name: string,
+  cells: string[],
+): HTMLElement {
+  const row = document.createElement(tag);
+  row.className = 'deck-picker-row';
+  const label = document.createElement('span');
+  label.className = 'deck-picker-name';
+  label.textContent = name;
+  row.append(label);
+  for (const text of cells) {
+    const cell = document.createElement('span');
+    cell.className = 'deck-picker-cell';
+    cell.textContent = text;
+    row.append(cell);
+  }
+  return row;
+}
+
+/** Wrap a row with the fixed-width slot its buttons live in. */
+function rowGroup(row: HTMLElement, buttons: HTMLElement[]): HTMLElement {
+  const wrapper = document.createElement('div');
+  wrapper.className = 'deck-picker-row-group';
+  const actions = document.createElement('div');
+  actions.className = 'deck-picker-actions';
+  actions.append(...buttons);
+  wrapper.append(row, actions);
+  return wrapper;
+}
+
+/** A button in a row's action slot. */
+function rowButton(label: string, hint: string, onClick: () => void): HTMLButtonElement {
+  const button = document.createElement('button');
+  button.className = 'deck-picker-share';
+  button.textContent = label;
+  button.title = hint;
+  button.addEventListener('click', onClick);
+  return button;
 }
 
 /** Which picker section a deck belongs in, from this user's point of view. */
@@ -141,18 +304,33 @@ export function showDeckPicker(opts: {
   };
 
   const folderRow = (entry: FolderEntry): HTMLElement => {
-    const row = document.createElement('button');
-    row.className = 'deck-picker-row deck-picker-folder';
-    row.textContent = `${entry.name}  ·  ${entry.decks} presentation${entry.decks === 1 ? '' : 's'}`;
+    const row = pickerRow('button', entry.name, [
+      `${entry.decks} presentation${entry.decks === 1 ? '' : 's'}`,
+      entry.owner ?? '',
+      '',
+    ]);
+    row.classList.add('deck-picker-folder');
     row.addEventListener('click', () => reopen(entry.path));
-    if (!entry.canManage && opts.access) return row;
-    const wrapper = document.createElement('div');
-    wrapper.className = 'deck-picker-row-group';
-    const remove = document.createElement('button');
-    remove.className = 'deck-picker-share';
-    remove.textContent = 'Delete…';
-    remove.title = 'Delete this folder (only when it is empty)';
-    remove.addEventListener('click', () => {
+    if (!entry.canManage && opts.access) return rowGroup(row, []);
+    const rename = rowButton('Rename…', 'Give this folder another name', () => {
+      const name = (window.prompt('New name for this folder?', entry.name) ?? '').trim();
+      if (!name || name === entry.name) return;
+      void (async () => {
+        const response = await fetch(
+          `/api/folders/rename?path=${encodeURIComponent(entry.path)}&name=${encodeURIComponent(name)}`,
+          { method: 'POST' },
+        );
+        const body = await response.json() as { path?: string; error?: string };
+        if (!response.ok || !body.path) throw new Error(body.error ?? `rename failed (${response.status})`);
+        opts.onStatus(`Renamed the folder to “${name}”`);
+        // Every deck inside is filed under the folder's path, so a deck open
+        // in this tab is now open at a path that no longer exists.
+        const open = new URLSearchParams(location.search).get('deck');
+        if (open?.startsWith(`${entry.path}/`)) goTo(`${body.path}/${open.slice(entry.path.length + 1)}`);
+        else reopen(folder);
+      })().catch((error) => opts.onStatus(`Rename failed: ${error instanceof Error ? error.message : error}`));
+    });
+    const remove = rowButton('Delete…', 'Delete this folder (only when it is empty)', () => {
       if (!window.confirm(`Delete the folder “${entry.name}”?`)) return;
       void (async () => {
         const response = await fetch(`/api/folders?path=${encodeURIComponent(entry.path)}`, { method: 'DELETE' });
@@ -162,41 +340,52 @@ export function showDeckPicker(opts: {
         reopen(folder);
       })().catch((error) => opts.onStatus(`Delete failed: ${error instanceof Error ? error.message : error}`));
     });
-    wrapper.append(row, remove);
-    return wrapper;
+    return rowGroup(row, [rename, remove]);
   };
 
   const deckRow = (deck: DeckEntry, folders: FolderEntry[]): HTMLElement => {
-    const row = document.createElement('button');
-    row.className = 'deck-picker-row';
-    const parts = [`${deck.title}  ·  ${deck.slides} slide${deck.slides === 1 ? '' : 's'}`];
-    if (opts.access && deck.owner && deck.owner !== opts.access.user) parts.push(deck.owner);
-    if (deck.role === 'view') parts.push('view only');
-    row.textContent = parts.join('  ·  ');
+    const access = deck.role === 'view'
+      ? 'view only'
+      : deck.visibility ? (deck.visibility === 'public' ? 'public' : 'private') : '';
+    const row = pickerRow('button', deck.title, [
+      `${deck.slides} slide${deck.slides === 1 ? '' : 's'}`,
+      opts.access && deck.owner && deck.owner !== opts.access.user ? deck.owner : '',
+      access,
+    ]);
     if (deck.id === current) row.classList.add('active');
     row.addEventListener('click', () => {
       if (deck.id === current) overlay.remove();
       else goTo(deck.id);
     });
-    if (!deck.canManage) return row;
-    const wrapper = document.createElement('div');
-    wrapper.className = 'deck-picker-row-group';
-    const move = document.createElement('button');
-    move.className = 'deck-picker-share';
-    move.textContent = 'Move…';
-    move.title = 'Put this presentation in a folder';
-    move.addEventListener('click', () => {
+    // Without --access the server has no owners, so everything is yours to
+    // manage — the same rule the folder rows already follow.
+    if (!(deck.canManage ?? !opts.access)) return rowGroup(row, []);
+    const rename = rowButton('Rename…', 'Give this presentation another name', () => {
+      const name = (window.prompt('New name for this presentation?', deck.title) ?? '').trim();
+      if (!name || name === deck.title) return;
+      void (async () => {
+        const response = await fetch(
+          `/api/decks/rename?deck=${encodeURIComponent(deck.id)}&name=${encodeURIComponent(name)}`,
+          { method: 'POST' },
+        );
+        const body = await response.json() as { id?: string; error?: string };
+        if (!response.ok || !body.id) throw new Error(body.error ?? `rename failed (${response.status})`);
+        opts.onStatus(`Renamed to “${name}”`);
+        // The name is also the last segment of the deck id, so a deck open in
+        // this tab has just moved out from under it.
+        if (deck.id === current) goTo(body.id);
+        else reopen(folder);
+      })().catch((error) => opts.onStatus(`Rename failed: ${error instanceof Error ? error.message : error}`));
+    });
+    const move = rowButton('Move…', 'Put this presentation in a folder', () => {
       showMoveDialog(deck, folders, opts.onStatus, (movedTo) => reopen(movedTo));
     });
-    const share = document.createElement('button');
-    share.className = 'deck-picker-share';
-    share.textContent = deck.visibility === 'public' ? 'Public · Share…' : 'Private · Share…';
-    share.title = 'Change who can open this presentation';
-    share.addEventListener('click', () => {
-      showShareDialog(deck.id, opts.onStatus, () => reopen(folder));
-    });
-    wrapper.append(row, move, share);
-    return wrapper;
+    const share = rowButton(
+      'Share…',
+      'Change who can open this presentation',
+      () => showShareDialog(deck.id, opts.onStatus, () => reopen(folder)),
+    );
+    return rowGroup(row, [rename, move, share]);
   };
 
   const renderTrail = (folders: FolderEntry[]) => {
@@ -299,20 +488,64 @@ export function showDeckPicker(opts: {
         reopen(body.path);
       })().catch((error) => opts.onStatus(`Create failed: ${error instanceof Error ? error.message : error}`));
     }),
-    makeButton('Import Keynote…', () => importKeynoteToServer(opts.onStatus, folder)),
-    makeButton('Import PowerPoint…', () => importPowerPointToServer(opts.onStatus, folder)),
   );
+
+  // Progress has to be shown inside the dialog: the toolbar's status line is
+  // behind this overlay, so reporting an upload there reads as nothing
+  // happening at all. It goes to both — the picker reloads the page when an
+  // import lands, and the toolbar is what is left afterwards.
+  const progress = document.createElement('p');
+  progress.className = 'deck-picker-progress';
+  progress.setAttribute('role', 'status');
+  progress.hidden = true;
+  const report = (text: string): void => {
+    progress.hidden = text === '';
+    progress.textContent = text;
+    opts.onStatus(text);
+  };
+
+  // Import is one menu rather than a button per format: the list grows with
+  // every format the server learns, and the dialog's footer does not. An
+  // import only imports — who may open the result is the Share… dialog's
+  // question, for every deck alike.
+  actions.append(createToolbarPicker(
+    'Import…',
+    importMenuEntries(report, folder),
+    { escapeClipping: true },
+  ));
   if (opts.dismissable) {
+    // Opened from an open deck, so leaving it must put you back where you
+    // were rather than anywhere: Cancel, first in the footer's actions.
     const cancel = makeButton('Cancel', () => overlay.remove());
-    actions.append(cancel);
+    actions.prepend(cancel);
     overlay.addEventListener('click', (event) => {
       if (event.target === overlay) overlay.remove();
     });
+    // A window-sized overlay leaves little background to click on, so the key
+    // everything else here closes with has to work too.
+    overlay.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') overlay.remove();
+    });
   }
 
-  box.append(title, trail, list, actions);
+  // Header, column labels, the listing, then the footer: the shape of a file
+  // manager, and the reason the listing is the only part that scrolls.
+  const head = document.createElement('div');
+  head.className = 'deck-picker-head';
+  head.append(title, trail);
+  const columns = document.createElement('div');
+  columns.className = 'deck-picker-columns';
+  columns.append(rowGroup(pickerRow('div', 'Name', ['Size', 'Owner', 'Access']), []));
+  const foot = document.createElement('div');
+  foot.className = 'deck-picker-foot';
+  foot.append(progress, actions);
+
+  box.append(head, columns, list, foot);
   overlay.append(box);
   document.body.append(overlay);
+  // Focusable so the Escape handler above hears the key without a click first.
+  box.tabIndex = -1;
+  box.focus();
 }
 
 /** Move one presentation into another folder (owner or admin only). */
@@ -399,6 +632,16 @@ const ROLE_LABEL: Record<'edit' | 'view', string> = {
   view: 'Can view',
 };
 
+/** A headed block of the share dialog. */
+function section(heading: string, ...content: HTMLElement[]): HTMLElement {
+  const wrap = document.createElement('section');
+  wrap.className = 'share-dialog-section';
+  const label = document.createElement('h3');
+  label.textContent = heading;
+  wrap.append(label, ...content);
+  return wrap;
+}
+
 /**
  * Visibility + share list for one deck, backed by GET/PUT /api/access.
  * Read-only for participants who can open the deck but don't manage it.
@@ -431,12 +674,10 @@ export function showShareDialog(deckId: string, onStatus: (text: string) => void
     if (!response.ok) throw new Error(info.error ?? `access lookup failed (${response.status})`);
     body.replaceChildren();
 
-    const ownerLine = document.createElement('p');
-    ownerLine.className = 'share-dialog-owner';
-    ownerLine.textContent = `Owner: ${info.owner}`;
-    body.append(ownerLine);
-
     if (!info.canManage) {
+      const ownerLine = document.createElement('p');
+      ownerLine.className = 'share-dialog-owner';
+      ownerLine.textContent = `Owner: ${info.owner}`;
       const note = document.createElement('p');
       const what = info.role === 'view'
         ? 'You can view it, but not change it.'
@@ -444,42 +685,17 @@ export function showShareDialog(deckId: string, onStatus: (text: string) => void
       note.textContent = `${info.visibility === 'public'
         ? 'This presentation is public: everyone on this server can open it.'
         : 'This presentation is private; the owner shared it with you.'} ${what}`;
-      body.append(note);
+      body.append(ownerLine, note);
       return;
     }
 
-    const visibilityLabel = document.createElement('label');
-    visibilityLabel.className = 'share-dialog-visibility';
-    visibilityLabel.textContent = 'Who can open it: ';
-    const visibility = document.createElement('select');
-    for (const [value, label] of [
-      ['private', 'Private — only you and people you list'],
-      ['public', 'Public — everyone on this server'],
-    ] as const) {
-      const option = document.createElement('option');
-      option.value = value;
-      option.textContent = label;
-      option.selected = info.visibility === value;
-      visibility.append(option);
-    }
-    visibilityLabel.append(visibility);
+    // Two sections, in the order the questions actually get asked: the named
+    // people first, then the blanket rule for everyone else. Google Docs
+    // settled on this split — "People with access" above "General access" —
+    // and it is the right one here: a named grant and the public setting add
+    // up rather than override, so seeing them stacked is seeing the answer.
 
-    // What "public" hands out. Kept separate from the named shares so a deck
-    // can be readable by everyone and editable by a few.
-    const publicRoleLabel = document.createElement('label');
-    publicRoleLabel.className = 'share-dialog-visibility';
-    publicRoleLabel.textContent = 'Everyone else: ';
-    const publicRole = document.createElement('select');
-    for (const value of ['view', 'edit'] as const) {
-      const option = document.createElement('option');
-      option.value = value;
-      option.textContent = ROLE_LABEL[value];
-      option.selected = info.publicRole === value;
-      publicRole.append(option);
-    }
-    publicRoleLabel.append(publicRole);
-
-    // People picker: current share list as rows with a role each, plus an
+    // People picker: the current share list as rows with a role each, plus an
     // input that autocompletes against everyone the server has seen before
     // (GET /api/users). Free-typed logins still work — the directory is a
     // convenience, not a gate on who can be shared with.
@@ -493,19 +709,12 @@ export function showShareDialog(deckId: string, onStatus: (text: string) => void
       }
     })();
     const nameOf = (login: string) => knownUsers.find((user) => user.login === login)?.name;
-
-    const sharedLabel = document.createElement('div');
-    sharedLabel.className = 'share-dialog-shared';
-    const sharedTitle = document.createElement('span');
-    sharedTitle.textContent = 'Shared with:';
-    const chips = document.createElement('div');
-    chips.className = 'share-dialog-chips';
     const shares: DeckShare[] = info.sharedWith.map((share) => ({ ...share }));
 
     const addRow = document.createElement('div');
     addRow.className = 'share-dialog-add';
     const entry = document.createElement('input');
-    entry.placeholder = knownUsers.length > 0 ? 'Add by name or login…' : 'tailnet login, e.g. alice@example.com';
+    entry.placeholder = knownUsers.length > 0 ? 'Add people by name or login…' : 'tailnet login, e.g. alice@example.com';
     entry.setAttribute('list', 'share-known-users');
     const newRole = document.createElement('select');
     for (const value of ['edit', 'view'] as const) {
@@ -526,22 +735,42 @@ export function showShareDialog(deckId: string, onStatus: (text: string) => void
         datalist.append(option);
       }
     };
-    const renderChips = () => {
-      chips.replaceChildren();
-      if (shares.length === 0) {
-        const empty = document.createElement('span');
-        empty.className = 'share-dialog-empty';
-        empty.textContent = visibility.value === 'public'
-          ? 'Nobody in particular — everyone gets what you chose above.'
-          : 'Nobody yet — only you can open it.';
-        chips.append(empty);
+
+    const people = document.createElement('div');
+    people.className = 'share-dialog-people';
+
+    /** One row of "People with access": who they are, and what they may do. */
+    const personRow = (login: string, roleControl: HTMLElement): HTMLElement => {
+      const row = document.createElement('div');
+      row.className = 'share-dialog-person';
+      const who = document.createElement('span');
+      who.className = 'share-dialog-person-who';
+      const name = nameOf(login);
+      const primary = document.createElement('span');
+      primary.className = 'share-dialog-person-name';
+      primary.textContent = name ?? login;
+      who.append(primary);
+      if (name) {
+        const secondary = document.createElement('span');
+        secondary.className = 'share-dialog-person-login';
+        secondary.textContent = login;
+        who.append(secondary);
       }
+      row.append(who, roleControl);
+      return row;
+    };
+
+    const renderPeople = () => {
+      people.replaceChildren();
+
+      // The owner is a person with access like any other, and showing them
+      // as a row answers "why can't I remove myself" before it is asked.
+      const ownerRole = document.createElement('span');
+      ownerRole.className = 'share-dialog-role-fixed';
+      ownerRole.textContent = 'Owner';
+      people.append(personRow(info.owner, ownerRole));
+
       for (const share of shares) {
-        const chip = document.createElement('span');
-        chip.className = 'share-dialog-chip';
-        const who = document.createElement('span');
-        const name = nameOf(share.login);
-        who.textContent = `${name ? `${name} · ` : ''}${share.login}`;
         const role = document.createElement('select');
         for (const value of ['edit', 'view'] as const) {
           const option = document.createElement('option');
@@ -556,18 +785,21 @@ export function showShareDialog(deckId: string, onStatus: (text: string) => void
         });
         const remove = document.createElement('button');
         remove.type = 'button';
-        remove.className = 'share-dialog-chip-remove';
+        remove.className = 'share-dialog-person-remove';
         remove.textContent = '✕';
         remove.title = `Stop sharing with ${share.login}`;
         remove.addEventListener('click', () => {
           shares.splice(shares.indexOf(share), 1);
-          renderChips();
+          renderPeople();
         });
-        chip.append(who, role, remove);
-        chips.append(chip);
+        const controls = document.createElement('span');
+        controls.className = 'share-dialog-person-controls';
+        controls.append(role, remove);
+        people.append(personRow(share.login, controls));
       }
       syncDatalist();
     };
+
     const addEntry = () => {
       const typed = entry.value.trim().toLowerCase();
       if (!typed) return;
@@ -578,7 +810,7 @@ export function showShareDialog(deckId: string, onStatus: (text: string) => void
         shares.push({ login, role: newRole.value === 'view' ? 'view' : 'edit' });
       }
       entry.value = '';
-      renderChips();
+      renderPeople();
     };
     const add = document.createElement('button');
     add.type = 'button';
@@ -595,15 +827,71 @@ export function showShareDialog(deckId: string, onStatus: (text: string) => void
       if (knownUsers.some((user) => user.login === entry.value.trim().toLowerCase())) addEntry();
     });
     addRow.append(entry, newRole, add, datalist);
-    sharedLabel.append(sharedTitle, chips, addRow);
-    renderChips();
 
-    const syncSharedVisibility = () => {
-      publicRoleLabel.hidden = visibility.value !== 'public';
-      if (shares.length === 0) renderChips(); // the empty line says something different
+    const peopleSection = section('People with access', addRow, people);
+
+    // General access: one row saying who else can open it, with the role it
+    // hands them beside it, and a plain sentence underneath saying what the
+    // combination actually means. The role selector is meaningless while the
+    // deck is restricted, so it is not shown then.
+    const generalRow = document.createElement('div');
+    generalRow.className = 'share-dialog-general';
+    const visibility = document.createElement('select');
+    for (const [value, label] of [
+      ['private', 'Restricted'],
+      ['public', 'Everyone on this server'],
+    ] as const) {
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = label;
+      option.selected = info.visibility === value;
+      visibility.append(option);
+    }
+    visibility.title = 'Who can open this presentation without being listed above';
+    const publicRole = document.createElement('select');
+    for (const value of ['view', 'edit'] as const) {
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = ROLE_LABEL[value];
+      option.selected = info.publicRole === value;
+      publicRole.append(option);
+    }
+    publicRole.title = 'What everyone else can do';
+    generalRow.append(visibility, publicRole);
+    const generalNote = document.createElement('p');
+    generalNote.className = 'share-dialog-note';
+
+    const syncGeneralAccess = () => {
+      const isPublic = visibility.value === 'public';
+      publicRole.hidden = !isPublic;
+      generalNote.textContent = isPublic
+        ? (publicRole.value === 'view'
+          ? 'Anyone on this server can open it. Only the people listed above can change it.'
+          : 'Anyone on this server can open and change it.')
+        : 'Only the people listed above can open it.';
     };
-    visibility.addEventListener('change', syncSharedVisibility);
-    syncSharedVisibility();
+    visibility.addEventListener('change', syncGeneralAccess);
+    publicRole.addEventListener('change', syncGeneralAccess);
+
+    const generalSection = section('General access', generalRow, generalNote);
+
+    renderPeople();
+    syncGeneralAccess();
+
+    // The link is the whole point of sharing something, and it is the one
+    // thing the old dialog made you go and find in the address bar.
+    const copyLink = document.createElement('button');
+    copyLink.type = 'button';
+    copyLink.className = 'share-dialog-copy';
+    copyLink.textContent = 'Copy link';
+    copyLink.addEventListener('click', () => {
+      const link = `${location.origin}/?deck=${encodeURIComponent(deckId)}`;
+      void navigator.clipboard?.writeText(link)
+        .then(() => onStatus(`Copied the link to “${deckId}”`))
+        // A clipboard a browser will not hand over is not a failure worth a
+        // dialog; showing the link lets the person copy it themselves.
+        .catch(() => onStatus(`Copy it by hand: ${link}`));
+    });
 
     const save = document.createElement('button');
     save.textContent = 'Save';
@@ -635,7 +923,10 @@ export function showShareDialog(deckId: string, onStatus: (text: string) => void
         onStatus(`Sharing failed: ${error instanceof Error ? error.message : error}`);
       });
     });
-    body.append(visibilityLabel, publicRoleLabel, sharedLabel, save);
+
+    body.append(peopleSection, generalSection);
+    actions.prepend(copyLink);
+    actions.append(save);
   })().catch((error) => {
     body.textContent = `Could not load sharing: ${error instanceof Error ? error.message : error}`;
   });

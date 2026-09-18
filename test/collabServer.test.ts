@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -8,6 +8,7 @@ import { connect as connect_ } from 'node:net';
 import { emptyDeck, parseDeck, type Deck } from '../src/shared/deck.js';
 import { saveDeck } from '../src/main/deckStore.js';
 import { COLLAB_PROTOCOL_VERSION, ServerMessageSchema, type ClientMessage, type ServerMessage } from '../src/shared/collab.js';
+import { renditionPath } from '../src/server/streamingRenditions.js';
 import { startCollabServer, type RunningCollabServer } from '../src/server/collabServer.js';
 
 const DECK_ID = 'demo';
@@ -348,6 +349,44 @@ describe('collab server', () => {
       const escape = await fetch(url);
       expect([403, 404]).toContain(escape.status);
     }
+  });
+
+  it('serves an oversized clip as its streaming rendition', async () => {
+    // A real talk's assets are 10-26 Mbit/s screen recordings. Handing those
+    // to a browser on the far end of a link is what made a slide sit black
+    // for fifteen seconds; the server sends the prepared rendition instead
+    // (docs/media-loading.md, "Renditions").
+    const cacheDir = join(rootDir, 'rendition-cache');
+    await mkdir(join(deckDir, 'assets'), { recursive: true });
+    await mkdir(cacheDir, { recursive: true });
+    const source = join(deckDir, 'assets', 'huge.mp4');
+    await writeFile(source, Buffer.alloc(9 * 1024 * 1024, 7));
+    const info = await stat(source);
+
+    await server.close();
+    server = await startCollabServer({
+      rootDir, port: 0, host: '127.0.0.1', mediaRenditions: { cacheDir },
+    });
+    const base = `http://127.0.0.1:${server.port}/decks/${DECK_ID}`;
+
+    // Nothing prepared yet: the original goes out, but never immutably — its
+    // replacement may land at any moment, and a client holding a year-long
+    // copy would never ask again.
+    const original = await fetch(`${base}/assets/huge.mp4`);
+    expect(original.status).toBe(200);
+    expect(original.headers.get('content-length')).toBe(String(info.size));
+    expect(original.headers.get('cache-control')).toBe('public, no-cache');
+
+    await writeFile(renditionPath(source, info.size, info.mtimeMs, cacheDir), 'RENDITION');
+    const served = await fetch(`${base}/assets/huge.mp4`);
+    expect(await served.text()).toBe('RENDITION');
+    // A different variant of the same URL must not answer 304 to the ETag the
+    // client holds for the original.
+    expect(served.headers.get('etag')).not.toBe(original.headers.get('etag'));
+    const stale = await fetch(`${base}/assets/huge.mp4`, {
+      headers: { 'if-none-match': original.headers.get('etag')! },
+    });
+    expect(stale.status).toBe(200);
   });
 
   it('serves the client bundle cacheably: hashed files immutable, shells revalidated', async () => {

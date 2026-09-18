@@ -10,13 +10,21 @@ import { basename, dirname, extname, join, normalize, resolve } from 'node:path'
 import { isIP } from 'node:net';
 import { pathToFileURL } from 'node:url';
 import { WebSocketServer, type WebSocket } from 'ws';
-import { createDeck, importAsset, importWebPage, loadTheme, resolveAsset } from '../main/deckStore.js';
+import {
+  createDeck, importAsset, importWebPage, loadDeck, loadTheme, resolveAsset, saveDeck,
+} from '../main/deckStore.js';
 import { exportDeck, webExportUnavailableReason } from '../main/exportDeck.js';
 import { capabilities } from '../shared/capabilities.js';
 import { probeMedia } from '../main/ffmpeg.js';
+import {
+  RenditionStore,
+  isVideoAsset,
+  pruneRenditions,
+  type RenditionOptions,
+} from './streamingRenditions.js';
 import { ClientMessageSchema, COLLAB_PROTOCOL_VERSION, type PresenceState, type ServerMessage } from '../shared/collab.js';
 import { CollabSession } from './collabSession.js';
-import { writeZip, type ZipFile } from './zip.js';
+import { readZip, writeZip, type ZipEntry, type ZipFile } from './zip.js';
 import {
   compileHtmlToSlides,
   measureBuiltTextOverflows,
@@ -50,6 +58,7 @@ import {
   UserDirectory,
   writeDeckAccess,
   writeFolderOwner,
+  ACCESS_FILE,
   FOLDER_FILE,
   type AccessControlConfig,
   type DeckAccess,
@@ -221,6 +230,13 @@ export interface CollabServerOptions {
    * endpoint itself only notifies peers.
    */
   onSessionEnd?: () => void;
+  /**
+   * Serve web-sized renditions of oversized video (streamingRenditions.ts).
+   * On by default; `false` turns it off for tests that assert on the exact
+   * bytes of a fixture asset, and for anyone who would rather spend bandwidth
+   * than CPU. An object configures the store (a test's own cache directory).
+   */
+  mediaRenditions?: boolean | RenditionOptions;
 }
 
 export interface RunningCollabServer {
@@ -240,6 +256,31 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
   const hostedDeckId = options.hostedDeckId;
   const agentMode = Boolean(options.agentMode);
   const localAgents = options.localAgents;
+  /**
+   * The wire copy of oversized video. Deck assets are whatever the author
+   * had — 26 Mbit/s screen recordings, 100 MB exports — and no amount of
+   * preloading makes those arrive in time over a remote link.
+   */
+  const renditions = options.mediaRenditions === false ? null : new RenditionStore({
+    ...(typeof options.mediaRenditions === 'object' ? options.mediaRenditions : {}),
+    onProgress: (event) => {
+      const name = basename(event.source);
+      if (event.status === 'started') console.log(`  preparing ${name} for streaming…`);
+      else if (event.status === 'done') {
+        console.log(`  prepared ${name} (${Math.round((event.savedBytes ?? 0) / 1048576)} MB smaller)`);
+      } else if (event.status === 'failed') {
+        console.warn(`  could not prepare ${name}: ${event.detail ?? ''}`);
+      }
+      if (typeof options.mediaRenditions === 'object') options.mediaRenditions.onProgress?.(event);
+    },
+  });
+  // Renditions of assets that have since been edited or deleted are dead
+  // weight on a server that hosts years of talks.
+  if (renditions) {
+    void pruneRenditions(
+      typeof options.mediaRenditions === 'object' ? options.mediaRenditions.cacheDir : undefined,
+    ).catch(() => 0);
+  }
   // Kept as a local alias while the private panel transport is renamed. This
   // is only connection/activity state; DeckWerk never owns or invokes an agent.
   const sharedAgent = localAgents;
@@ -455,6 +496,38 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
     return folders.sort((a, b) => a.path.localeCompare(b.path));
   }
 
+  /**
+   * Put a deck's folder at another id, or hold still and say why not.
+   *
+   * The deck id is the room key and the session's directory, so moving and
+   * renaming are the same act under the same rule: it is only safe while
+   * nobody is in the room. Anyone connected keeps the old path open in their
+   * editor, so ask for the room to be empty instead of renaming the ground
+   * out from under them. `toId === fromId` still drains the room — the caller
+   * is about to rewrite deck.json.
+   */
+  async function relocateDeck(
+    fromId: string,
+    toId: string,
+    verb: 'moving' | 'renaming',
+  ): Promise<{ status: number; error: string } | null> {
+    const room = rooms.get(fromId);
+    if (room && room.peers.size > 0) {
+      return {
+        status: 409,
+        error: `somebody has this presentation open — close it everywhere before ${verb} it`,
+      };
+    }
+    if (room) {
+      await room.session.flush();
+      await room.session.close();
+      rooms.delete(fromId);
+    }
+    forgetDeckState(fromId);
+    if (toId !== fromId) await rename(deckDirOf(fromId), deckDirOf(toId));
+    return null;
+  }
+
   /** Whether `folderPath` exists and this person is allowed to see it. */
   async function folderVisible(identity: Identity | null, folderPath: string): Promise<boolean> {
     if (folderPath === '') return true;
@@ -526,6 +599,11 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
       onExternalTheme: (css) => broadcast(room, { kind: 'theme', css, byClientId: '' }),
     });
     rooms.set(deckId, room);
+    // Opening a deck is the earliest honest signal that someone intends to
+    // present it, and preparing a talk's clips takes minutes of CPU. Queued in
+    // slide order so the front of the deck is ready first, one at a time so a
+    // presenting machine keeps its cores.
+    if (renditions) renditions.warm(deckVideoAssets(session.dir, session.deck));
     return room;
   }
 
@@ -783,6 +861,22 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
       });
     }
     if (identity && userDirectory) void userDirectory.note(identity);
+
+    /**
+     * The access sidecar for a freshly imported deck.
+     *
+     * Imported decks land private to whoever uploaded them, exactly like decks
+     * created here: accidental exposure should take an explicit act, not the
+     * absence of one. Publishing one is that explicit act, and it belongs in
+     * the Share… dialog — the single place that answers "who can open this",
+     * for every deck, however it arrived.
+     */
+    async function writeImportedDeckAccess(dir: string): Promise<void> {
+      if (!accessControl || !identity) return;
+      await writeDeckAccess(dir, {
+        owner: identity.login, visibility: 'private', sharedWith: [], publicRole: 'view',
+      });
+    }
     // A malformed deck id is answered once, here, rather than becoming a 500
     // in whichever route happened to open it.
     if (deckParam && !splitDeckPath(deckParam)) {
@@ -837,7 +931,34 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
         response.end('forbidden');
         return;
       }
-      await serveFileWithRanges(request, response, absolute);
+      // An oversized clip is served as its rendition once one exists, and as
+      // itself until then — a slide that waits for a transcode is worse than
+      // one that streams the original. The request is also what triggers the
+      // transcode for a deck nobody has warmed.
+      let served = absolute;
+      let revalidate = false;
+      if (renditions && isVideoAsset(absolute)) {
+        try {
+          const info = await stat(absolute);
+          const ready = renditions.ready(absolute, info.size, info.mtimeMs);
+          if (ready) {
+            served = ready;
+            revalidate = true;
+          } else if (renditions.pending(absolute, info.size, info.mtimeMs)) {
+            // The browser must not cache the original for a year: its
+            // replacement may land at any moment, and an immutable copy would
+            // never be asked about again.
+            revalidate = true;
+            void renditions.ensure(absolute).catch(() => null);
+          }
+        } catch {
+          // Unreadable here means unreadable below; let the normal path 404.
+        }
+      }
+      await serveFileWithRanges(request, response, served, undefined, {
+        revalidate,
+        etagSalt: served === absolute ? '' : 'rendition',
+      });
       return;
     }
 
@@ -1063,7 +1184,9 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
     }
 
     if (hostedDeckId && (path === '/api/decks' || path === '/api/folders'
-      || path === '/api/decks/move' || path === '/api/import-keynote' || path === '/api/import-pptx')
+      || path === '/api/decks/move' || path === '/api/decks/rename'
+      || path === '/api/folders/rename'
+      || path === '/api/import-keynote' || path === '/api/import-pptx')
       && request.method !== 'GET') {
       respondJson(response, 403, { error: 'this session hosts a single shared presentation' });
       return;
@@ -1103,6 +1226,53 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
         for (const step of created) await writeFolderOwner(folderDirOf(step), identity.login);
       }
       respondJson(response, 200, { path: target, created });
+      return;
+    }
+
+    // Rename a folder. Every deck inside it is filed under its path, so all
+    // of their ids change at once — which is why none of them may be open.
+    if (path === '/api/folders/rename' && request.method === 'POST') {
+      const target = sanitizeFolderPath(url.searchParams.get('path') ?? '');
+      if (!target) return respondJson(response, 400, { error: 'missing or invalid folder path' });
+      const name = sanitizeDeckId(url.searchParams.get('name') ?? '');
+      if (!name) return respondJson(response, 400, { error: 'missing or invalid name' });
+      const dir = folderDirOf(target);
+      if (!existsSync(dir) || isDeckDir(dir) || !(await folderVisible(identity, target))) {
+        return respondJson(response, 404, { error: 'no such folder' });
+      }
+      if (accessControl && identity) {
+        const owner = await readFolderOwner(dir, accessControl);
+        if (identity.login !== accessControl.admin && owner !== identity.login) {
+          return respondJson(response, 403, { error: 'only the folder owner or the admin can rename it' });
+        }
+      }
+      const parent = target.includes('/') ? target.slice(0, target.lastIndexOf('/')) : '';
+      const renamed = parent ? `${parent}/${name}` : name;
+      if (renamed === target) return respondJson(response, 200, { path: target });
+      let to: string;
+      try {
+        to = folderDirOf(renamed);
+      } catch {
+        return respondJson(response, 400, { error: 'missing or invalid name' });
+      }
+      if (existsSync(to)) return respondJson(response, 409, { error: `"${renamed}" already exists` });
+      const inside = [...rooms.keys()].filter((id) => id.startsWith(`${target}/`));
+      if (inside.some((id) => (rooms.get(id)?.peers.size ?? 0) > 0)) {
+        return respondJson(response, 409, {
+          error: 'somebody has a presentation in this folder open — close it everywhere before renaming it',
+        });
+      }
+      for (const id of inside) {
+        const room = rooms.get(id);
+        if (room) {
+          await room.session.flush();
+          await room.session.close();
+          rooms.delete(id);
+        }
+        forgetDeckState(id);
+      }
+      await rename(dir, to);
+      respondJson(response, 200, { path: renamed });
       return;
     }
 
@@ -1165,24 +1335,49 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
       if (existsSync(to)) {
         return respondJson(response, 409, { error: `"${id}" already exists` });
       }
-      // The deck id is the room key and the session's directory, so a move is
-      // only safe while nobody is in the room. Anyone connected keeps the old
-      // path open in their editor; ask for the room to be empty instead of
-      // renaming the ground out from under them.
-      const room = rooms.get(deckParam);
-      if (room && room.peers.size > 0) {
-        return respondJson(response, 409, {
-          error: 'somebody has this presentation open — close it everywhere before moving it',
-        });
-      }
-      if (room) {
-        await room.session.flush();
-        await room.session.close();
-        rooms.delete(deckParam);
-      }
-      forgetDeckState(deckParam);
-      await rename(from, to);
+      const busy = await relocateDeck(deckParam, id, 'moving');
+      if (busy) return respondJson(response, busy.status, { error: busy.error });
       respondJson(response, 200, { id });
+      return;
+    }
+
+    // Rename a presentation: its folder on disk and the title the picker
+    // shows are the same name, so both change together — a deck called one
+    // thing and filed under another is exactly the confusion this avoids.
+    if (path === '/api/decks/rename' && request.method === 'POST') {
+      if (!deckParam) return respondJson(response, 400, { error: 'missing deck' });
+      const name = sanitizeDeckId(url.searchParams.get('name') ?? '');
+      if (!name) return respondJson(response, 400, { error: 'missing or invalid name' });
+      let from: string;
+      try {
+        from = deckDirOf(deckParam);
+      } catch {
+        return respondJson(response, 400, { error: 'invalid deck id' });
+      }
+      if (!isDeckDir(from)) return respondJson(response, 404, { error: 'no such deck' });
+      if (accessControl && identity) {
+        const access = await readDeckAccess(from, accessControl);
+        if (!canManageDeck(identity.login, access, accessControl)) {
+          return respondJson(response, 403, { error: 'only the deck owner or the admin can rename it' });
+        }
+      }
+      const folder = deckParam.includes('/') ? deckParam.slice(0, deckParam.lastIndexOf('/')) : '';
+      const id = folder ? `${folder}/${name}` : name;
+      let to: string;
+      try {
+        to = deckDirOf(id);
+      } catch {
+        return respondJson(response, 400, { error: 'missing or invalid name' });
+      }
+      if (id !== deckParam && existsSync(to)) {
+        return respondJson(response, 409, { error: `"${id}" already exists` });
+      }
+      // Even a title-only change rewrites deck.json underneath a live
+      // session, so it waits for the room to empty just as a move does.
+      const busy = await relocateDeck(deckParam, id, 'renaming');
+      if (busy) return respondJson(response, busy.status, { error: busy.error });
+      await saveDeck(to, { ...await loadDeck(to), title: name });
+      respondJson(response, 200, { id, title: name });
       return;
     }
 
@@ -1241,17 +1436,51 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
         const sourceFile = join(tmp, `${name}${importRoute.extension}`);
         await writeFile(sourceFile, body);
         const report = await importRoute.run(sourceFile, dir);
-        if (accessControl && identity) {
-          await writeDeckAccess(dir, {
-            owner: identity.login, visibility: 'private', sharedWith: [], publicRole: 'edit',
-          });
-        }
+        await writeImportedDeckAccess(dir);
         respondJson(response, 200, { id, report });
       } catch (error) {
         await rm(dir, { recursive: true, force: true });
         respondJson(response, 400, { error: String(error instanceof Error ? error.message : error) });
       } finally {
         await rm(tmp, { recursive: true, force: true });
+      }
+      return;
+    }
+
+    // Import a deck archive — the zip that Save As → Deck archive produces,
+    // or any folder holding a deck.json zipped up. Unlike the Keynote and
+    // PowerPoint routes there is no importer sidecar to run: the archive is
+    // already a deck folder, so this unpacks it and checks that what came out
+    // is one.
+    if (path === '/api/import-deck' && request.method === 'POST') {
+      const name = sanitizeDeckId(url.searchParams.get('name') ?? '');
+      if (!name) return respondJson(response, 400, { error: 'missing or invalid name' });
+      const folder = sanitizeFolderPath(url.searchParams.get('folder') ?? '');
+      if (folder === null) return respondJson(response, 400, { error: 'invalid folder' });
+      if (folder !== '' && !(await folderVisible(identity, folder))) {
+        return respondJson(response, 404, { error: 'no such folder' });
+      }
+      const id = folder ? `${folder}/${name}` : name;
+      let dir: string;
+      try {
+        dir = deckDirOf(id);
+      } catch {
+        return respondJson(response, 400, { error: 'missing or invalid name' });
+      }
+      if (existsSync(dir)) return respondJson(response, 409, { error: `deck "${id}" already exists` });
+      try {
+        const files = deckArchiveEntries(readZip(await readBody(request)));
+        await mkdir(dir, { recursive: true });
+        for (const file of files) {
+          const target = join(dir, ...file.name.split('/'));
+          await mkdir(dirname(target), { recursive: true });
+          await writeFile(target, file.data);
+        }
+        await writeImportedDeckAccess(dir);
+        respondJson(response, 200, { id, report: { files: files.length } });
+      } catch (error) {
+        await rm(dir, { recursive: true, force: true });
+        respondJson(response, 400, { error: String(error instanceof Error ? error.message : error) });
       }
       return;
     }
@@ -3131,7 +3360,7 @@ function redirectToViewer(response: ServerResponse, url: URL): void {
 
 function sanitizeDeckId(name: string): string {
   return basename(name)
-    .replace(/\.(key|pptx)$/i, '')
+    .replace(/\.(key|pptx|zip)$/i, '')
     .replace(/[^a-zA-Z0-9._ -]+/g, '-')
     .replace(/^[.\s-]+|[\s-]+$/g, '')
     .slice(0, 80);
@@ -3325,6 +3554,57 @@ function mirrorPath(raw: string | null): string | null {
   return segments.join('/');
 }
 
+/**
+ * The deck files inside an uploaded archive, ready to write out.
+ *
+ * `Save As → Deck archive` zips the deck folder's contents, but an archive
+ * that has been unzipped and re-zipped (or produced by Finder's "Compress")
+ * wraps everything in one deck-named directory, so a single common prefix is
+ * stripped. Paths are checked rather than trusted: a zip is attacker-supplied
+ * input, and an entry called `../../.ssh/authorized_keys` must not escape the
+ * deck directory. The permission sidecars are dropped — access.json travels in
+ * the download, and honouring an uploaded one would let anybody hand
+ * themselves ownership of a deck by editing a file in a zip.
+ */
+function deckArchiveEntries(entries: ZipEntry[]): ZipEntry[] {
+  if (entries.length === 0) throw new Error('the archive is empty');
+  const prefix = commonArchivePrefix(entries);
+  const files = entries.map((entry) => ({ ...entry, name: entry.name.slice(prefix.length) }));
+
+  // Every path is checked before anything is filtered: a traversal attempt is
+  // an error, never something quietly dropped on the way past.
+  for (const file of files) {
+    const segments = file.name.split('/');
+    if (file.name === '' || file.name.includes('\\') || segments.some((part) => part === '..' || part === '')) {
+      throw new Error(`the archive holds an unsafe path: "${file.name}"`);
+    }
+    if (segments.length > MAX_PATH_SEGMENTS) throw new Error(`the archive nests too deeply: "${file.name}"`);
+  }
+
+  const deckFiles = files.filter((file) => {
+    const segments = file.name.split('/');
+    // Dotfiles and the resource forks macOS packs beside them are noise the
+    // download never contains; the permission sidecars are refused outright,
+    // since honouring an uploaded access.json would let anybody hand
+    // themselves ownership of a deck by editing a file in a zip.
+    if (segments.some((part) => part.startsWith('.'))) return false;
+    if (segments[0] === '__MACOSX') return false;
+    return file.name !== ACCESS_FILE && file.name !== FOLDER_FILE;
+  });
+  if (!deckFiles.some((file) => file.name === 'deck.json')) {
+    throw new Error('the archive holds no deck.json — is it a DeckWerk deck archive?');
+  }
+  return deckFiles;
+}
+
+/** The single top-level directory every entry shares, or '' if there is none. */
+function commonArchivePrefix(entries: ZipEntry[]): string {
+  const first = entries[0].name;
+  if (!first.includes('/')) return '';
+  const candidate = `${first.slice(0, first.indexOf('/'))}/`;
+  return entries.every((entry) => entry.name.startsWith(candidate)) ? candidate : '';
+}
+
 async function collectDeckFiles(deckDir: string): Promise<ZipFile[]> {
   const files: ZipFile[] = [];
   async function walk(relative: string): Promise<void> {
@@ -3350,6 +3630,30 @@ const CONTENT_HASHED_NAME = /\.[0-9a-f]{8}\.(?:[a-z0-9]+\.)?[a-z0-9]+$/i;
 const VITE_HASHED_NAME = /-[a-z0-9_-]{8}\.[a-z0-9]+$/i;
 
 /** Stream a file honouring HTTP Range requests, so <video> can seek. */
+/** Every video file a deck's slides reference, in the order a talk reaches them. */
+function deckVideoAssets(deckDir: string, deck: Deck): string[] {
+  const seen = new Set<string>();
+  for (const slide of deck.slides) {
+    for (const element of slide.elements) {
+      if (element.type !== 'video') continue;
+      try {
+        const absolute = resolveAsset(deckDir, element.src);
+        if (isVideoAsset(absolute) && existsSync(absolute)) seen.add(absolute);
+      } catch {
+        // A pending or malformed src is not an asset to prepare.
+      }
+    }
+  }
+  return [...seen];
+}
+
+interface ServeVariant {
+  /** Force revalidation: what this URL answers with may change. */
+  revalidate?: boolean;
+  /** Distinguishes the ETag of one variant of a URL from another's. */
+  etagSalt?: string;
+}
+
 async function serveFileWithRanges(
   request: IncomingMessage,
   response: ServerResponse,
@@ -3357,6 +3661,7 @@ async function serveFileWithRanges(
   // The vite hash spelling is only trusted for the built client bundle; a
   // user-named deck asset can end in "-something8.ext" without being hashed.
   hashedNames: RegExp[] = [CONTENT_HASHED_NAME],
+  variant: ServeVariant = {},
 ): Promise<void> {
   let info;
   try {
@@ -3377,9 +3682,9 @@ async function serveFileWithRanges(
   // bundle and WebSocket behind them — seconds of blank screen. Imported
   // assets carry a content hash in the filename, so those are immutable; for
   // anything else the validator makes revalidation a 304, not a re-download.
-  const etag = `"${info.size}-${Math.round(info.mtimeMs)}"`;
+  const etag = `"${variant.etagSalt ? `${variant.etagSalt}-` : ''}${info.size}-${Math.round(info.mtimeMs)}"`;
   const name = basename(absolute);
-  const cacheControl = hashedNames.some((pattern) => pattern.test(name))
+  const cacheControl = !variant.revalidate && hashedNames.some((pattern) => pattern.test(name))
     ? 'public, max-age=31536000, immutable'
     : 'public, no-cache';
   if (request.headers['if-none-match'] === etag) {
