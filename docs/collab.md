@@ -287,6 +287,11 @@ the participant id.
   have no publishing shortcut of their own — one deck, one place that answers
   who can open it.
 
+- **Preparing video** — the server keeps a streaming rendition of any clip too
+  big to send as-is (`docs/media-loading.md`, "Renditions"), built when a deck
+  is opened and cached outside the deck folder. `npm run prepare:media --
+  <deck-or-decks-root>` does a whole deck up front instead of letting the
+  first presentation pay for it.
 - **Save As… → Deck archive (.zip)…** — everyone, at any point, can save
   the whole deck folder (`deck.json`, `theme.css`, `assets/`). The server
   flushes the live session first, so the archive is exactly what everyone

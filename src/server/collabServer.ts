@@ -16,6 +16,7 @@ import {
 import { exportDeck, webExportUnavailableReason } from '../main/exportDeck.js';
 import { capabilities } from '../shared/capabilities.js';
 import { probeMedia } from '../main/ffmpeg.js';
+import { RenditionStore, isVideoAsset, type RenditionOptions } from './streamingRenditions.js';
 import { ClientMessageSchema, COLLAB_PROTOCOL_VERSION, type PresenceState, type ServerMessage } from '../shared/collab.js';
 import { CollabSession } from './collabSession.js';
 import { readZip, writeZip, type ZipEntry, type ZipFile } from './zip.js';
@@ -224,6 +225,13 @@ export interface CollabServerOptions {
    * endpoint itself only notifies peers.
    */
   onSessionEnd?: () => void;
+  /**
+   * Serve web-sized renditions of oversized video (streamingRenditions.ts).
+   * On by default; `false` turns it off for tests that assert on the exact
+   * bytes of a fixture asset, and for anyone who would rather spend bandwidth
+   * than CPU. An object configures the store (a test's own cache directory).
+   */
+  mediaRenditions?: boolean | RenditionOptions;
 }
 
 export interface RunningCollabServer {
@@ -243,6 +251,24 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
   const hostedDeckId = options.hostedDeckId;
   const agentMode = Boolean(options.agentMode);
   const localAgents = options.localAgents;
+  /**
+   * The wire copy of oversized video. Deck assets are whatever the author
+   * had — 26 Mbit/s screen recordings, 100 MB exports — and no amount of
+   * preloading makes those arrive in time over a remote link.
+   */
+  const renditions = options.mediaRenditions === false ? null : new RenditionStore({
+    ...(typeof options.mediaRenditions === 'object' ? options.mediaRenditions : {}),
+    onProgress: (event) => {
+      const name = basename(event.source);
+      if (event.status === 'started') console.log(`  preparing ${name} for streaming…`);
+      else if (event.status === 'done') {
+        console.log(`  prepared ${name} (${Math.round((event.savedBytes ?? 0) / 1048576)} MB smaller)`);
+      } else if (event.status === 'failed') {
+        console.warn(`  could not prepare ${name}: ${event.detail ?? ''}`);
+      }
+      if (typeof options.mediaRenditions === 'object') options.mediaRenditions.onProgress?.(event);
+    },
+  });
   // Kept as a local alias while the private panel transport is renamed. This
   // is only connection/activity state; DeckWerk never owns or invokes an agent.
   const sharedAgent = localAgents;
@@ -561,6 +587,11 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
       onExternalTheme: (css) => broadcast(room, { kind: 'theme', css, byClientId: '' }),
     });
     rooms.set(deckId, room);
+    // Opening a deck is the earliest honest signal that someone intends to
+    // present it, and preparing a talk's clips takes minutes of CPU. Queued in
+    // slide order so the front of the deck is ready first, one at a time so a
+    // presenting machine keeps its cores.
+    if (renditions) renditions.warm(deckVideoAssets(session.dir, session.deck));
     return room;
   }
 
@@ -888,7 +919,34 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
         response.end('forbidden');
         return;
       }
-      await serveFileWithRanges(request, response, absolute);
+      // An oversized clip is served as its rendition once one exists, and as
+      // itself until then — a slide that waits for a transcode is worse than
+      // one that streams the original. The request is also what triggers the
+      // transcode for a deck nobody has warmed.
+      let served = absolute;
+      let revalidate = false;
+      if (renditions && isVideoAsset(absolute)) {
+        try {
+          const info = await stat(absolute);
+          const ready = renditions.ready(absolute, info.size, info.mtimeMs);
+          if (ready) {
+            served = ready;
+            revalidate = true;
+          } else if (renditions.pending(absolute, info.size, info.mtimeMs)) {
+            // The browser must not cache the original for a year: its
+            // replacement may land at any moment, and an immutable copy would
+            // never be asked about again.
+            revalidate = true;
+            void renditions.ensure(absolute).catch(() => null);
+          }
+        } catch {
+          // Unreadable here means unreadable below; let the normal path 404.
+        }
+      }
+      await serveFileWithRanges(request, response, served, undefined, {
+        revalidate,
+        etagSalt: served === absolute ? '' : 'rendition',
+      });
       return;
     }
 
@@ -3560,6 +3618,30 @@ const CONTENT_HASHED_NAME = /\.[0-9a-f]{8}\.(?:[a-z0-9]+\.)?[a-z0-9]+$/i;
 const VITE_HASHED_NAME = /-[a-z0-9_-]{8}\.[a-z0-9]+$/i;
 
 /** Stream a file honouring HTTP Range requests, so <video> can seek. */
+/** Every video file a deck's slides reference, in the order a talk reaches them. */
+function deckVideoAssets(deckDir: string, deck: Deck): string[] {
+  const seen = new Set<string>();
+  for (const slide of deck.slides) {
+    for (const element of slide.elements) {
+      if (element.type !== 'video') continue;
+      try {
+        const absolute = resolveAsset(deckDir, element.src);
+        if (isVideoAsset(absolute) && existsSync(absolute)) seen.add(absolute);
+      } catch {
+        // A pending or malformed src is not an asset to prepare.
+      }
+    }
+  }
+  return [...seen];
+}
+
+interface ServeVariant {
+  /** Force revalidation: what this URL answers with may change. */
+  revalidate?: boolean;
+  /** Distinguishes the ETag of one variant of a URL from another's. */
+  etagSalt?: string;
+}
+
 async function serveFileWithRanges(
   request: IncomingMessage,
   response: ServerResponse,
@@ -3567,6 +3649,7 @@ async function serveFileWithRanges(
   // The vite hash spelling is only trusted for the built client bundle; a
   // user-named deck asset can end in "-something8.ext" without being hashed.
   hashedNames: RegExp[] = [CONTENT_HASHED_NAME],
+  variant: ServeVariant = {},
 ): Promise<void> {
   let info;
   try {
@@ -3587,9 +3670,9 @@ async function serveFileWithRanges(
   // bundle and WebSocket behind them — seconds of blank screen. Imported
   // assets carry a content hash in the filename, so those are immutable; for
   // anything else the validator makes revalidation a 304, not a re-download.
-  const etag = `"${info.size}-${Math.round(info.mtimeMs)}"`;
+  const etag = `"${variant.etagSalt ? `${variant.etagSalt}-` : ''}${info.size}-${Math.round(info.mtimeMs)}"`;
   const name = basename(absolute);
-  const cacheControl = hashedNames.some((pattern) => pattern.test(name))
+  const cacheControl = !variant.revalidate && hashedNames.some((pattern) => pattern.test(name))
     ? 'public, max-age=31536000, immutable'
     : 'public, no-cache';
   if (request.headers['if-none-match'] === etag) {
