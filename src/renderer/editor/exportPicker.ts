@@ -24,7 +24,7 @@ export interface ToolbarSplitButtonConfig {
 export function createToolbarPicker(
   label: string,
   entries: ToolbarPickerEntry[],
-  config: { deckOnly?: boolean } = {},
+  config: { deckOnly?: boolean; escapeClipping?: boolean } = {},
 ): HTMLElement {
   const wrap = document.createElement('span');
   wrap.className = `shape-menu-wrap${config.deckOnly ? ' deck-only' : ''}`;
@@ -46,16 +46,37 @@ export function createToolbarPicker(
     trigger.setAttribute('aria-expanded', 'false');
     document.removeEventListener('pointerdown', outside, true);
     document.removeEventListener('keydown', keys, true);
+    window.removeEventListener('resize', place);
+    window.removeEventListener('scroll', place, true);
   };
   const outside = (event: PointerEvent): void => {
     if (!wrap.contains(event.target as Node)) close();
+  };
+  /**
+   * Inside a dialog the menu's nearest scroll container clips it (every
+   * `.workflow-dialog` is `max-height` + `overflow: auto`), so there it is
+   * positioned in viewport coordinates instead, escaping the clip. It then
+   * has to follow the trigger when anything moves, hence the listeners.
+   */
+  const place = (): void => {
+    if (!menu || !config.escapeClipping) return;
+    const anchor = trigger.getBoundingClientRect();
+    const height = menu.offsetHeight;
+    const below = window.innerHeight - anchor.bottom - 8;
+    // Open downward when there is room, upward when there is not — and if
+    // neither fits, sit against the bottom edge rather than off-screen.
+    const top = below >= height || anchor.top - 8 < height
+      ? Math.min(anchor.bottom + 4, window.innerHeight - height - 8)
+      : anchor.top - 4 - height;
+    menu.style.top = `${Math.max(8, top)}px`;
+    menu.style.left = `${Math.max(8, Math.min(anchor.left, window.innerWidth - menu.offsetWidth - 8))}px`;
   };
   const keys = (event: KeyboardEvent): void => {
     if (event.key === 'Escape') close();
   };
   const open = (): void => {
     menu = document.createElement('div');
-    menu.className = 'shape-menu';
+    menu.className = `shape-menu${config.escapeClipping ? ' shape-menu-fixed' : ''}`;
     menu.setAttribute('role', 'menu');
     const appendOption = (option: ToolbarPickerOption, parent: HTMLElement): void => {
       const item = document.createElement('button');
@@ -87,9 +108,12 @@ export function createToolbarPicker(
       menu.appendChild(section);
     }
     wrap.appendChild(menu);
+    place();
     trigger.setAttribute('aria-expanded', 'true');
     document.addEventListener('pointerdown', outside, true);
     document.addEventListener('keydown', keys, true);
+    window.addEventListener('resize', place);
+    window.addEventListener('scroll', place, true);
     menu.querySelector<HTMLButtonElement>('button')?.focus();
   };
   trigger.addEventListener('click', () => (menu ? close() : open()));

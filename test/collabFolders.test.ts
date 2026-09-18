@@ -160,6 +160,57 @@ describe('collab server folders', () => {
       socket.terminate();
     });
 
+    it('renames a presentation, its folder on disk and its title together', async () => {
+      const renamed = await api('/api/decks/rename?deck=loose&name=Big%20Talk', { method: 'POST' });
+      expect(renamed.body).toEqual({ id: 'Big Talk', title: 'Big Talk' });
+      expect(existsSync(join(rootDir, 'loose'))).toBe(false);
+      expect(JSON.parse(await readFile(join(rootDir, 'Big Talk', 'deck.json'), 'utf8')).title)
+        .toBe('Big Talk');
+      expect((await api('/api/decks')).body).toContainEqual(
+        { id: 'Big Talk', title: 'Big Talk', slides: 1, folder: '' },
+      );
+
+      // A deck inside a folder keeps its folder, and a name already taken is
+      // refused rather than swallowing the deck that is there.
+      const nested = await api('/api/decks/rename?deck=clients%2Facme%2Fpitch&name=deck', { method: 'POST' });
+      expect(nested.body.id).toBe('clients/acme/deck');
+      await seedDeck('clients/acme/taken');
+      const clash = await api('/api/decks/rename?deck=clients%2Facme%2Fdeck&name=taken', { method: 'POST' });
+      expect(clash.status).toBe(409);
+      expect((await api('/api/decks/rename?deck=clients%2Facme%2Fdeck&name=%2F%2F', { method: 'POST' })).status)
+        .toBe(400);
+      expect((await api('/api/decks/rename?deck=nope&name=x', { method: 'POST' })).status).toBe(404);
+    });
+
+    it('refuses to rename a presentation somebody has open', async () => {
+      const socket = new WebSocket(`ws://127.0.0.1:${server.port}/ws?deck=loose`);
+      await new Promise<void>((done, fail) => {
+        socket.on('open', () => socket.send(JSON.stringify({ kind: 'hello', version: COLLAB_PROTOCOL_VERSION })));
+        socket.on('message', () => done());
+        socket.on('error', fail);
+        setTimeout(() => fail(new Error('ws timed out')), 4000);
+      });
+      const refused = await api('/api/decks/rename?deck=loose&name=other', { method: 'POST' });
+      expect(refused.status).toBe(409);
+      expect(refused.body.error).toMatch(/open/);
+      expect(existsSync(join(rootDir, 'loose', 'deck.json'))).toBe(true);
+      socket.terminate();
+    });
+
+    it('renames a folder, taking every presentation in it along', async () => {
+      const renamed = await api('/api/folders/rename?path=clients%2Facme&name=globex', { method: 'POST' });
+      expect(renamed.body).toEqual({ path: 'clients/globex' });
+      expect(existsSync(join(rootDir, 'clients', 'globex', 'pitch', 'deck.json'))).toBe(true);
+      expect(existsSync(join(rootDir, 'clients', 'acme'))).toBe(false);
+      expect((await api('/api/deck?deck=clients%2Fglobex%2Fpitch')).status).toBe(200);
+
+      // Not onto something that is already there, and not a presentation.
+      await api('/api/folders?path=clients%2Ftaken', { method: 'POST' });
+      expect((await api('/api/folders/rename?path=clients%2Fglobex&name=taken', { method: 'POST' })).status)
+        .toBe(409);
+      expect((await api('/api/folders/rename?path=loose&name=x', { method: 'POST' })).status).toBe(404);
+    });
+
     it('deletes an empty folder and only an empty folder', async () => {
       expect((await api('/api/folders?path=clients%2Facme', { method: 'DELETE' })).status).toBe(409);
       expect(existsSync(join(rootDir, 'clients', 'acme', 'pitch'))).toBe(true);
@@ -256,6 +307,31 @@ describe('collab server folders', () => {
       expect(aliceMove.body).toEqual({ id: 'shared-plan' });
       expect((await api('/api/decks', { headers: asUser(BOB) })).body[0])
         .toMatchObject({ id: 'shared-plan', folder: '' });
+    });
+
+    it('lets only the owner or the admin rename a deck or a folder', async () => {
+      const bobDeck = await api('/api/decks/rename?deck=alice-work%2Fshared-plan&name=bobs', {
+        method: 'POST', headers: asUser(BOB),
+      });
+      expect(bobDeck.status).toBe(403);
+      // Folders answer to the owner recorded when they were created; Bob can
+      // see this one only because a deck inside it is shared with him.
+      await writeFile(join(rootDir, 'alice-work', 'folder.json'), JSON.stringify({ owner: ALICE }), 'utf8');
+      const bobFolder = await api('/api/folders/rename?path=alice-work&name=bobs', {
+        method: 'POST', headers: asUser(BOB),
+      });
+      expect(bobFolder.status).toBe(403);
+
+      const aliceDeck = await api('/api/decks/rename?deck=alice-work%2Fshared-plan&name=Plan%20B', {
+        method: 'POST', headers: asUser(ALICE),
+      });
+      expect(aliceDeck.body).toEqual({ id: 'alice-work/Plan B', title: 'Plan B' });
+      const aliceFolder = await api('/api/folders/rename?path=alice-work&name=alice-plans', {
+        method: 'POST', headers: asUser(ALICE),
+      });
+      expect(aliceFolder.body).toEqual({ path: 'alice-plans' });
+      expect((await api('/api/decks', { headers: asUser(BOB) })).body)
+        .toEqual([expect.objectContaining({ id: 'alice-plans/Plan B', title: 'Plan B' })]);
     });
 
     it('refuses to reach a private deck by way of its own subdirectories', async () => {

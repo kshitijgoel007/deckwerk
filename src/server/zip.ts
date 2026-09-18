@@ -1,13 +1,26 @@
+import { inflateRawSync } from 'node:zlib';
 import type { Writable } from 'node:stream';
+import {
+  CENTRAL_HEADER_SIZE,
+  centralHeader,
+  crc32,
+  encodeName,
+  endOfCentralDirectory,
+  EOCD_SIZE,
+  LOCAL_HEADER_SIZE,
+  localHeader,
+  type ZipRecord,
+} from '../shared/zip.js';
 
 /**
- * Minimal ZIP writer (method 0, "store") for deck downloads.
- *
- * Deck folders are mostly already-compressed media (H.264, PNG, JPEG), so
- * deflate would buy little at real CPU cost; storing keeps this dependency-free
- * and streams one file at a time. No ZIP64 — a deck over 4GB is not a thing
- * this endpoint should serve anyway.
+ * Deck archives on the server: streamed out one file at a time for downloads,
+ * and read back in for imports. The format itself lives in `shared/zip.ts`,
+ * which the collab client uses to build an archive of a deck folder in the
+ * browser; this module is the Node half — streaming, and inflate for archives
+ * that reach us from other tools.
  */
+
+export { crc32 };
 
 export interface ZipFile {
   /** Forward-slash relative path inside the archive. */
@@ -16,29 +29,7 @@ export interface ZipFile {
   load: () => Promise<Buffer>;
 }
 
-const CRC_TABLE = (() => {
-  const table = new Uint32Array(256);
-  for (let n = 0; n < 256; n++) {
-    let c = n;
-    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-    table[n] = c >>> 0;
-  }
-  return table;
-})();
-
-export function crc32(buffer: Buffer): number {
-  let c = 0xffffffff;
-  for (let i = 0; i < buffer.length; i++) c = CRC_TABLE[(c ^ buffer[i]) & 0xff] ^ (c >>> 8);
-  return (c ^ 0xffffffff) >>> 0;
-}
-
-/** Fixed timestamp: archives are downloads, not backups; determinism beats mtimes. */
-const DOS_TIME = 0;
-const DOS_DATE = ((2026 - 1980) << 9) | (1 << 5) | 1; // 2026-01-01
-
-const UTF8_FLAG = 0x0800;
-
-function write(out: Writable, chunk: Buffer): Promise<void> {
+function write(out: Writable, chunk: Uint8Array): Promise<void> {
   return out.write(chunk)
     ? Promise.resolve()
     : new Promise((resolve) => out.once('drain', resolve));
@@ -46,63 +37,98 @@ function write(out: Writable, chunk: Buffer): Promise<void> {
 
 /** Stream `files` into `out` as a ZIP archive. Does not end the stream. */
 export async function writeZip(out: Writable, files: ZipFile[]): Promise<void> {
-  interface CentralRecord { name: Buffer; crc: number; size: number; offset: number }
-  const central: CentralRecord[] = [];
+  const records: ZipRecord[] = [];
   let offset = 0;
 
   for (const file of files) {
     const data = await file.load();
-    const name = Buffer.from(file.name, 'utf8');
+    const name = encodeName(file.name);
     const crc = crc32(data);
+    const header = localHeader(name, crc, data.length);
 
-    const local = Buffer.alloc(30);
-    local.writeUInt32LE(0x04034b50, 0);
-    local.writeUInt16LE(20, 4); // version needed
-    local.writeUInt16LE(UTF8_FLAG, 6);
-    local.writeUInt16LE(0, 8); // method: store
-    local.writeUInt16LE(DOS_TIME, 10);
-    local.writeUInt16LE(DOS_DATE, 12);
-    local.writeUInt32LE(crc, 14);
-    local.writeUInt32LE(data.length, 18); // compressed size
-    local.writeUInt32LE(data.length, 22); // uncompressed size
-    local.writeUInt16LE(name.length, 26);
-    local.writeUInt16LE(0, 28); // extra length
-
-    await write(out, local);
+    await write(out, header);
     await write(out, name);
     await write(out, data);
 
-    central.push({ name, crc, size: data.length, offset });
-    offset += local.length + name.length + data.length;
+    records.push({ name, crc, size: data.length, offset });
+    offset += header.length + name.length + data.length;
   }
 
   const centralStart = offset;
   let centralSize = 0;
-  for (const record of central) {
-    const header = Buffer.alloc(46);
-    header.writeUInt32LE(0x02014b50, 0);
-    header.writeUInt16LE(20, 4); // version made by
-    header.writeUInt16LE(20, 6); // version needed
-    header.writeUInt16LE(UTF8_FLAG, 8);
-    header.writeUInt16LE(0, 10); // method: store
-    header.writeUInt16LE(DOS_TIME, 12);
-    header.writeUInt16LE(DOS_DATE, 14);
-    header.writeUInt32LE(record.crc, 16);
-    header.writeUInt32LE(record.size, 20);
-    header.writeUInt32LE(record.size, 24);
-    header.writeUInt16LE(record.name.length, 28);
-    // extra, comment, disk start, internal attrs, external attrs: all zero.
-    header.writeUInt32LE(record.offset, 42);
+  for (const record of records) {
+    const header = centralHeader(record);
     await write(out, header);
     await write(out, record.name);
     centralSize += header.length + record.name.length;
   }
+  await write(out, endOfCentralDirectory(records.length, centralSize, centralStart));
+}
 
-  const eocd = Buffer.alloc(22);
-  eocd.writeUInt32LE(0x06054b50, 0);
-  eocd.writeUInt16LE(central.length, 8); // entries on this disk
-  eocd.writeUInt16LE(central.length, 10); // entries total
-  eocd.writeUInt32LE(centralSize, 12);
-  eocd.writeUInt32LE(centralStart, 16);
-  await write(out, eocd);
+/** One file recovered from an archive. */
+export interface ZipEntry {
+  /** Forward-slash relative path as it was stored. */
+  name: string;
+  data: Buffer;
+}
+
+/**
+ * Minimal ZIP reader, the counterpart of `writeZip`.
+ *
+ * Reads through the central directory rather than scanning for local headers,
+ * so an entry whose local header defers its sizes to a data descriptor still
+ * reads correctly. Our own archives are stored (method 0); deflate (method 8)
+ * is supported too because an archive that has been round-tripped through
+ * Finder, Explorer or `zip` arrives compressed. No ZIP64, matching the writer.
+ */
+export function readZip(archive: Buffer): ZipEntry[] {
+  const eocd = findEndOfCentralDirectory(archive);
+  const count = archive.readUInt16LE(eocd + 10);
+  let cursor = archive.readUInt32LE(eocd + 16);
+  const entries: ZipEntry[] = [];
+
+  for (let i = 0; i < count; i++) {
+    if (archive.readUInt32LE(cursor) !== 0x02014b50) throw new Error('damaged zip: bad central header');
+    const method = archive.readUInt16LE(cursor + 10);
+    const expectedCrc = archive.readUInt32LE(cursor + 16);
+    const compressedSize = archive.readUInt32LE(cursor + 20);
+    const uncompressedSize = archive.readUInt32LE(cursor + 24);
+    const nameLength = archive.readUInt16LE(cursor + 28);
+    const extraLength = archive.readUInt16LE(cursor + 30);
+    const commentLength = archive.readUInt16LE(cursor + 32);
+    const localOffset = archive.readUInt32LE(cursor + 42);
+    const name = archive.toString('utf8', cursor + CENTRAL_HEADER_SIZE, cursor + CENTRAL_HEADER_SIZE + nameLength);
+    cursor += CENTRAL_HEADER_SIZE + nameLength + extraLength + commentLength;
+
+    // Directory entries are recorded as zero-length names ending in '/'.
+    if (name.endsWith('/')) continue;
+
+    if (archive.readUInt32LE(localOffset) !== 0x04034b50) throw new Error('damaged zip: bad local header');
+    const localName = archive.readUInt16LE(localOffset + 26);
+    const localExtra = archive.readUInt16LE(localOffset + 28);
+    const start = localOffset + LOCAL_HEADER_SIZE + localName + localExtra;
+    const raw = archive.subarray(start, start + compressedSize);
+
+    let data: Buffer;
+    if (method === 0) data = Buffer.from(raw);
+    else if (method === 8) data = inflateRawSync(raw);
+    else throw new Error(`unsupported zip compression method ${method} for "${name}"`);
+
+    if (data.length !== uncompressedSize) throw new Error(`damaged zip: wrong size for "${name}"`);
+    if (crc32(data) !== expectedCrc) throw new Error(`damaged zip: checksum mismatch for "${name}"`);
+    entries.push({ name, data });
+  }
+  return entries;
+}
+
+/**
+ * The EOCD is the last 22 bytes unless the archive carries a trailing comment,
+ * so search backwards over the largest comment a 16-bit length allows.
+ */
+function findEndOfCentralDirectory(archive: Buffer): number {
+  const earliest = Math.max(0, archive.length - EOCD_SIZE - 0xffff);
+  for (let i = archive.length - EOCD_SIZE; i >= earliest; i--) {
+    if (archive.readUInt32LE(i) === 0x06054b50) return i;
+  }
+  throw new Error('not a zip archive');
 }
