@@ -9,9 +9,18 @@ import {
   resolveState,
   stepCount,
 } from '@shared/timeline.js';
-import { applyStageScale, fitAutoTextElement, renderSlide } from './render.js';
+import {
+  applyStageScale,
+  fitAutoTextElement,
+  renderSlide,
+  videoPresentationKey,
+} from './render.js';
 import { decodeImage, revealImagesWhenDecoded } from './imageDecode.js';
-import { DecodedVideoPool, releaseDecodedVideo } from './decodedVideoPool.js';
+import {
+  DecodedVideoPool,
+  decodeVideoFrame,
+  releaseDecodedVideo,
+} from './decodedVideoPool.js';
 import { applyStaticSlideState } from './staticState.js';
 import {
   essentialMorphPairs,
@@ -55,6 +64,19 @@ const WARM_AHEAD_SLIDES = 2;
 /** Two typical 24 MP images, with a count fallback when dimensions are unavailable. */
 const IMAGE_WARM_PIXEL_LIMIT = 48_000_000;
 const IMAGE_WARM_COUNT_LIMIT = 4;
+/** How many upcoming videos are decoded into ready-to-adopt elements. */
+const VIDEO_WARM_ELEMENT_LIMIT = 4;
+/** How long one lookahead decode may run before its element is given up on. */
+const VIDEO_WARM_TIMEOUT_MS = 20_000;
+/** How long the lookahead waits for the visible slide before starting anyway. */
+const LOOKAHEAD_HOLD_MS = 2_000;
+
+/** A video the lookahead wants decoded before its slide is reached. */
+interface VideoWarmTarget {
+  src: string;
+  key: string;
+  start: number;
+}
 
 export class Player {
   private deck: Deck;
@@ -93,6 +115,14 @@ export class Player {
   private warmedSrcs = new Set<string>();
   private warmQueue: string[] = [];
   private warmInFlight = false;
+  /**
+   * Lookahead videos being decoded into pool-ready elements: one in flight,
+   * the rest queued. See `warmUpcomingVideoElements`.
+   */
+  private videoWarmQueue: VideoWarmTarget[] = [];
+  private videoWarmInFlight: { key: string; video: HTMLVideoElement } | null = null;
+  /** Stops a lookahead that is still waiting for the visible slide to paint. */
+  private lookaheadHold: (() => void) | null = null;
   /** Fully decoded images for the next presentable slides, kept alive until use. */
   private warmedImages = new Map<string, HTMLImageElement>();
   private imageWarmGeneration = 0;
@@ -207,6 +237,12 @@ export class Player {
     // player must leave neither a voice nor an open connection behind.
     for (const video of this.stage.querySelectorAll('video')) {
       releaseDecodedVideo(video);
+    }
+    this.lookaheadHold?.();
+    this.videoWarmQueue = [];
+    if (this.videoWarmInFlight) {
+      releaseDecodedVideo(this.videoWarmInFlight.video);
+      this.videoWarmInFlight = null;
     }
     this.videoPool.clear();
     for (const image of this.warmedImages.values()) image.removeAttribute('src');
@@ -442,7 +478,7 @@ export class Player {
 
     this.applyState(slide, resolveState(slide, this.cursor.step));
     if (morph && previousSlide) this.runMorph(previousSlide, slide, previousNodes);
-    this.warmUpcomingMedia();
+    this.startLookaheadWhenVisibleSlideCanPaint();
     this.onCursor?.(this.getCursor(), steps);
   }
 
@@ -459,14 +495,59 @@ export class Player {
    * flooding the origin's six connections is the bug class this file is
    * defending against.
    */
+  /**
+   * Hold the lookahead until the slide on screen can actually paint.
+   *
+   * The lookahead competes with the visible slide for the origin's six
+   * connections. On a remote server that is the difference between clicking
+   * Present and seeing the opening clip, and clicking Present and watching a
+   * black rectangle while bytes for a slide nobody has reached yet come down
+   * the same pipe. The wait is capped: a clip that never loads must not
+   * disable the lookahead for the rest of the talk, and a slide whose videos
+   * are slow is exactly the deck that needs the next ones prepared.
+   */
+  private startLookaheadWhenVisibleSlideCanPaint(): void {
+    this.lookaheadHold?.();
+    const paints = (video: HTMLVideoElement): boolean =>
+      video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA || Boolean(video.error);
+    const waiting = [...this.stage.querySelectorAll('video')].filter((v) => !paints(v));
+    if (waiting.length === 0) {
+      this.lookaheadHold = null;
+      this.warmUpcomingMedia();
+      return;
+    }
+    const offs: Array<() => void> = [];
+    const release = (): void => {
+      clearTimeout(timer);
+      for (const off of offs) off();
+      this.lookaheadHold = null;
+    };
+    const timer = setTimeout(() => {
+      release();
+      this.warmUpcomingMedia();
+    }, LOOKAHEAD_HOLD_MS);
+    const check = (): void => {
+      if (!waiting.every(paints)) return;
+      release();
+      this.warmUpcomingMedia();
+    };
+    for (const video of waiting) {
+      for (const name of ['loadeddata', 'seeked', 'error'] as const) {
+        video.addEventListener(name, check);
+        offs.push(() => video.removeEventListener(name, check));
+      }
+    }
+    this.lookaheadHold = release;
+  }
+
   private warmUpcomingMedia(): void {
-    if (typeof fetch !== 'function') return;
     const onCurrentSlide = new Set<string>();
     for (const el of this.deck.slides[this.cursor.slide]?.elements ?? []) {
       if (el.type === 'video' && !isPendingSrc(el.src)) onCurrentSlide.add(this.resolveSrc(el.src));
     }
     this.warmQueue = [];
     const upcomingSlides: Slide[] = [];
+    const videoTargets: VideoWarmTarget[] = [];
     let slidesAhead = 0;
     for (let i = this.cursor.slide + 1;
       i < this.deck.slides.length && slidesAhead < WARM_AHEAD_SLIDES;
@@ -478,12 +559,84 @@ export class Player {
       for (const el of upcoming.elements) {
         if (el.type !== 'video' || isPendingSrc(el.src)) continue;
         const src = this.resolveSrc(el.src);
-        if (onCurrentSlide.has(src) || this.warmedSrcs.has(src)) continue;
+        if (onCurrentSlide.has(src)) continue;
+        // A decoded element is strictly better than cached bytes, so the
+        // first few videos ahead are warmed as elements and only the overflow
+        // falls back to a plain transfer.
+        const key = videoPresentationKey(el, src);
+        if (videoTargets.length < VIDEO_WARM_ELEMENT_LIMIT) {
+          if (!videoTargets.some((target) => target.key === key)) {
+            videoTargets.push({ src, key, start: el.start });
+          }
+          continue;
+        }
+        if (this.warmedSrcs.has(src)) continue;
         if (!this.warmQueue.includes(src)) this.warmQueue.push(src);
       }
     }
+    this.warmUpcomingVideoElements(videoTargets);
     this.warmUpcomingImages(upcomingSlides);
     this.pumpWarmQueue();
+  }
+
+  /**
+   * Decode the next slides' videos into real elements, parked in the pool.
+   *
+   * Byte-warming alone leaves exactly the gap this closes: a `<video>` paints
+   * nothing until its decoder produces a frame, so even with the file already
+   * in cache a slide change opens on a black box for a beat while the fresh
+   * element attaches, demuxes and decodes — the "videos take a second to show
+   * up on every slide" report. A lookahead element does that work while the
+   * previous slide is still on screen, and `goTo` already adopts pool entries
+   * into matching slots, so the picture is there in the frame the slide
+   * appears.
+   *
+   * One decode at a time (the connection budget in docs/media-loading.md is
+   * the whole reason this file meters anything), capped, and keyed by
+   * presentation so an entry is only adopted into a slot showing the same
+   * file, frame and geometry.
+   */
+  private warmUpcomingVideoElements(targets: VideoWarmTarget[]): void {
+    const inFlight = this.videoWarmInFlight;
+    // A decode nothing is walking towards any more is a connection held for a
+    // slide that left the lookahead: drop it rather than let it finish.
+    if (inFlight && !targets.some((target) => target.key === inFlight.key)) {
+      releaseDecodedVideo(inFlight.video);
+      this.videoWarmInFlight = null;
+    }
+    this.videoWarmQueue = targets.filter(
+      (target) => target.key !== this.videoWarmInFlight?.key,
+    );
+    this.pumpVideoWarmQueue();
+  }
+
+  private pumpVideoWarmQueue(): void {
+    if (this.videoWarmInFlight || typeof document === 'undefined') return;
+    let target = this.videoWarmQueue.shift();
+    while (target && this.videoPool.has(target.key)) target = this.videoWarmQueue.shift();
+    if (!target) return;
+    const video = document.createElement('video');
+    // Hint before src, like renderVideo: assigning src is what starts
+    // resource selection, and it reads the preload hint of that moment.
+    video.preload = 'auto';
+    video.playsInline = true;
+    video.muted = true;
+    video.dataset.mediaKey = target.key;
+    const entry = { key: target.key, video };
+    this.videoWarmInFlight = entry;
+    // Listeners first, then the source: assigning src is what starts the load,
+    // and its events are queued rather than fired synchronously.
+    const warming = decodeVideoFrame(video, target.start, VIDEO_WARM_TIMEOUT_MS);
+    video.src = target.src;
+    void warming.then((decoded) => {
+      // Superseded: warmUpcomingVideoElements already released this element.
+      if (this.videoWarmInFlight !== entry) return;
+      this.videoWarmInFlight = null;
+      // add() releases whatever it declines to keep.
+      if (decoded) this.videoPool.add(entry.key, video);
+      else releaseDecodedVideo(video);
+      this.pumpVideoWarmQueue();
+    });
   }
 
   /**
@@ -559,7 +712,7 @@ export class Player {
   }
 
   private pumpWarmQueue(): void {
-    if (this.warmInFlight) return;
+    if (this.warmInFlight || typeof fetch !== 'function') return;
     const src = this.warmQueue.shift();
     if (src === undefined) return;
     this.warmInFlight = true;

@@ -216,10 +216,30 @@ videos then sat on a loading spinner forever.
 
 The Player also **warms upcoming slides** (`warmUpcomingMedia`): while a slide
 is on screen it prepares media from the next two presentable slides (skipped
-slides do not consume the lookahead). Videos are fetched into the HTTP cache,
-strictly one transfer at a time and never a file the current slide is already
-fetching itself. Images are loaded and decoded as `<img>` elements, then the
-decoded element is adopted into the slide when it appears. This distinction
+slides do not consume the lookahead).
+
+Videos are warmed as whole *elements*, not just bytes: the lookahead opens a
+detached `<video>` (`preload="auto"`), seeks it to its in-point, waits for a
+decoded frame and parks it in the Player's pool under its presentation key,
+where `goTo` adopts it like any other pooled element. Cached bytes alone do
+not close the gap this exists for — a fresh `<video>` still paints nothing
+until it has attached, demuxed and decoded, which is the beat of black at
+every slide change that a remote session shows on every clip. Strictly one
+decode in flight, never a file the current slide is already fetching itself,
+and capped at four elements per lookahead (decoders and connections are both
+bounded); clips past that cap fall back to the old byte-only `fetch` warm,
+also one at a time.
+
+The lookahead does not start until the slide on screen can paint
+(`startLookaheadWhenVisibleSlideCanPaint`, capped at two seconds so a clip
+that never loads cannot disable it for the rest of the talk). It shares the
+origin's six connections with the visible slide, and on a remote server
+letting it start immediately is the difference between clicking Present and
+seeing the opening clip, and clicking Present and watching a black rectangle
+while bytes for a slide nobody has reached yet come down the same pipe.
+
+Images are loaded and decoded as `<img>` elements, then the decoded element
+is adopted into the slide when it appears. This distinction
 matters for large JPEGs: cached bytes can still paint as a thin band of decoded
 scanlines, while an adopted decoded bitmap appears atomically. Decodes run
 sequentially and stop after four images or 48 megapixels. Only the active
@@ -252,7 +272,11 @@ accumulates decoded bitmaps from the rest of the deck.
   visible, the poster seek is re-armed, and a gate-aborted source is restored.
 - `test/playerVideoReuse.test.ts` — element reuse across navigation: pooling,
   continuity, in-point reset, fetch abort, and that reuse never crosses
-  presentations.
+  presentations. Also the lookahead: it holds until the visible slide can
+  paint, decodes one upcoming clip at a time into an element the next slide
+  adopts, opens one element for a clip two slides share, respects skipped
+  slides and the decode budget, and gives up a decode the deck navigated away
+  from.
 - `test/editorImageWarmup.test.ts` — the editor decodes a next-slide image once
   and adopts that exact node on navigation.
 - `test/canvasVideoReuseBrowser.test.ts` — the same rule through the real rail
