@@ -144,6 +144,9 @@ The rules that keep it honest:
 - **Never bigger than the source.** A rendition that came out larger is
   discarded and the original served; failure of any kind falls back to the
   original.
+- **Pruned after 90 days.** Every edited or deleted asset leaves its rendition
+  behind, and a server hosting years of talks would keep all of them. Losing
+  one that is still wanted costs a background re-encode and nothing else.
 
 Renditions are built when a deck is opened (in slide order, so the front of
 the talk is ready first) and on demand when an asset is requested. Neither is

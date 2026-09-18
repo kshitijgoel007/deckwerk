@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdir, rename, rm, stat } from 'node:fs/promises';
+import { mkdir, readdir, rename, rm, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, extname, join } from 'node:path';
 import { probeMedia, transcodeVideoForWeb } from '../main/ffmpeg.js';
@@ -60,6 +60,41 @@ export interface RenditionEvent {
   /** Bytes saved, on 'done'. */
   savedBytes?: number;
   detail?: string;
+}
+
+/**
+ * Forget renditions nothing has needed for a season.
+ *
+ * The cache is keyed by the source's identity, so every edited, replaced or
+ * deleted asset leaves its rendition behind — on a server that hosts a
+ * person's whole talk history, that is unbounded growth for files nobody will
+ * ask for again. Losing one that is still wanted costs a background re-encode
+ * and nothing else, which is the right side of this trade.
+ */
+export async function pruneRenditions(
+  cacheDir = defaultRenditionCacheDir(),
+  maxAgeMs = 90 * 24 * 60 * 60 * 1000,
+): Promise<number> {
+  let removed = 0;
+  let entries: string[];
+  try {
+    entries = await readdir(cacheDir);
+  } catch {
+    return 0;
+  }
+  const cutoff = Date.now() - maxAgeMs;
+  for (const entry of entries) {
+    const path = join(cacheDir, entry);
+    try {
+      const info = await stat(path);
+      if (!info.isFile() || info.mtimeMs >= cutoff) continue;
+      await rm(path, { force: true });
+      removed += 1;
+    } catch {
+      // A rendition that vanished under us needs no help vanishing.
+    }
+  }
+  return removed;
 }
 
 export function defaultRenditionCacheDir(): string {

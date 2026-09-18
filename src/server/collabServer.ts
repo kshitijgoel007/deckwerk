@@ -16,7 +16,12 @@ import {
 import { exportDeck, webExportUnavailableReason } from '../main/exportDeck.js';
 import { capabilities } from '../shared/capabilities.js';
 import { probeMedia } from '../main/ffmpeg.js';
-import { RenditionStore, isVideoAsset, type RenditionOptions } from './streamingRenditions.js';
+import {
+  RenditionStore,
+  isVideoAsset,
+  pruneRenditions,
+  type RenditionOptions,
+} from './streamingRenditions.js';
 import { ClientMessageSchema, COLLAB_PROTOCOL_VERSION, type PresenceState, type ServerMessage } from '../shared/collab.js';
 import { CollabSession } from './collabSession.js';
 import { readZip, writeZip, type ZipEntry, type ZipFile } from './zip.js';
@@ -269,6 +274,13 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
       if (typeof options.mediaRenditions === 'object') options.mediaRenditions.onProgress?.(event);
     },
   });
+  // Renditions of assets that have since been edited or deleted are dead
+  // weight on a server that hosts years of talks.
+  if (renditions) {
+    void pruneRenditions(
+      typeof options.mediaRenditions === 'object' ? options.mediaRenditions.cacheDir : undefined,
+    ).catch(() => 0);
+  }
   // Kept as a local alias while the private panel transport is renamed. This
   // is only connection/activity state; DeckWerk never owns or invokes an agent.
   const sharedAgent = localAgents;

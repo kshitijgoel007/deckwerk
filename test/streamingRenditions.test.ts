@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { execFile } from 'node:child_process';
 import { mkdtemp, rm, stat, utimes } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -8,6 +9,7 @@ import { promisify } from 'node:util';
 import {
   RenditionStore,
   isVideoAsset,
+  pruneRenditions,
   renditionPath,
 } from '../src/server/streamingRenditions.js';
 import { probeMedia } from '../src/main/ffmpeg.js';
@@ -152,6 +154,21 @@ describe.skipIf(!ffmpeg)('streaming renditions', () => {
     expect(store.pending(source, info.size, info.mtimeMs)).toBe(false);
     expect(await store.ensure(source)).toBeNull();
   }, 60_000);
+
+  it('forgets renditions nothing has needed for a season', async () => {
+    const source = await clip('aged.mp4', ['-b:v', '40M']);
+    const store = new RenditionStore({ cacheDir });
+    const rendition = (await store.ensure(source))!;
+    expect(rendition).toBeTruthy();
+
+    // Fresh: kept. Every edited or deleted asset would otherwise leave its
+    // rendition behind forever.
+    expect(await pruneRenditions(cacheDir)).toBe(0);
+    const old = new Date(Date.now() - 200 * 24 * 60 * 60 * 1000);
+    await utimes(rendition, old, old);
+    expect(await pruneRenditions(cacheDir)).toBe(1);
+    expect(existsSync(rendition)).toBe(false);
+  }, 120_000);
 
   it('only claims video files', () => {
     expect(isVideoAsset('/x/a.mov')).toBe(true);
