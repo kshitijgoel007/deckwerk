@@ -360,6 +360,12 @@ explicitly, which does the identical thing:
 slide-agent apply . --html edit/work.html
 ```
 
+Every generated authoring page contains
+`<meta name="deckwerk-change-label" content="">`. Fill its `content` with a
+concise description of the intent before saving so History records the work,
+not the transport filename. When it is empty, DeckWerk derives a structural
+label such as `Added 2 slides`.
+
 Its JSON reply includes `overflows`: every text element in the applied slides
 whose content still spills past its box after auto-fit has settled, with how
 far (`beyond`, in canvas pixels) and the size auto-fit reached. A non-empty

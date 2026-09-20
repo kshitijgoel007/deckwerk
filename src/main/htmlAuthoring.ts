@@ -2,7 +2,13 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import { AGENT_PROTOCOL_VERSION, type AgentTransaction } from '@shared/agent.js';
 import type { Deck, Slide } from '@shared/deck.js';
-import { htmlSlideScope, htmlSyncOperations, slidesToHtml } from '@shared/htmlSlides.js';
+import {
+  htmlChangeLabel,
+  htmlSlideScope,
+  htmlSyncHistoryLabel,
+  htmlSyncOperations,
+  slidesToHtml,
+} from '@shared/htmlSlides.js';
 import { PLAYER_TYPE_CSS } from '@shared/playerTypeCss.js';
 import { compileHtmlToSlides } from '../cli/compileHtml.js';
 import { deckRevision } from './agentRuntime.js';
@@ -75,7 +81,7 @@ export async function htmlEditTransaction(
     transaction: {
       version: AGENT_PROTOCOL_VERSION,
       expectedRevision: deckRevision(deck),
-      label: options.label ?? `Update slides from ${basename(htmlPath)}`,
+      label: options.label ?? htmlChangeLabel(authored) ?? htmlSyncHistoryLabel(operations),
       operations,
     },
     slides,

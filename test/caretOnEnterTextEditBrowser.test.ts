@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
+import katex from 'katex';
 import { electronBinary } from './support/browserSession.js';
 import { launchDesktopEditor, type DesktopEditor } from './support/desktopEditorSession.js';
 
@@ -57,6 +58,34 @@ const CARET = `(() => {
 })()`;
 
 describe.skipIf(!electronBinary)('caret placement when a click opens a text edit', () => {
+  it('replaces rendered KaTeX with authored source on a real double-click', async () => {
+    const legacyGeneratedHtml = `<p>Energy: ${katex.renderToString('E=mc^2', {
+      displayMode: true,
+    })}</p>`;
+    desktop = await launchDesktopEditor(TEXT_ID, legacyGeneratedHtml);
+    const cdp = desktop.cdp;
+    const before = await cdp.evaluate<{ katex: number; source: boolean }>(`(() => {
+      const body = document.querySelector(${JSON.stringify(CONTENT)});
+      return { katex: body.querySelectorAll('.katex').length, source: body.innerHTML.includes('$$E=mc^2$$') };
+    })()`);
+    expect(before).toMatchObject({ katex: 1, source: false });
+
+    const point = await cdp.evaluate<{ x: number; y: number }>(`(() => {
+      const rect = document.querySelector(${JSON.stringify(`${CONTENT} .katex`)}).getBoundingClientRect();
+      return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+    })()`);
+    await cdp.doubleClickAt(point.x, point.y);
+
+    expect(await cdp.evaluate(`(() => {
+      const body = document.querySelector(${JSON.stringify(CONTENT)});
+      return {
+        editing: body.isContentEditable,
+        katex: body.querySelectorAll('.katex').length,
+        html: body.innerHTML,
+      };
+    })()`)).toEqual({ editing: true, katex: 0, html: '<p>Energy: $$E=mc^2$$</p>' });
+  });
+
   it('takes the clicked word, and never falls back to the start of the box', {
     timeout: 420_000,
   }, async () => {

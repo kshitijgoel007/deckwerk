@@ -73,6 +73,16 @@ describe('shared editor controls', () => {
     }
   });
 
+  it('hands the desktop Agent control the real deck folder without starting collaboration', () => {
+    const source = readFileSync(join(process.cwd(), 'src/renderer/editor/main.ts'), 'utf8');
+    const start = source.indexOf('async function toggleAgentPanel');
+    const end = source.indexOf('async function startSharing', start);
+    const handoff = source.slice(start, end);
+    expect(handoff).toContain('agentPanel.setConnectCommand(dir)');
+    expect(handoff).not.toContain('startAgentSession');
+    expect(handoff).not.toContain('startCollab');
+  });
+
   it('uses the shared dropdown for Import and Save As', () => {
     const actions: string[] = [];
     const importPicker = createToolbarPicker('Import…', [

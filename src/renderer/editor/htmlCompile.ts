@@ -3,7 +3,14 @@ import type { Deck, Slide } from '@shared/deck.js';
 import type { AuthoredHtmlFile } from '@shared/ipc.js';
 import renderMathInElement from 'katex/contrib/auto-render';
 import { authoringPageHtml, measureSlides } from '@shared/htmlMeasure.js';
-import { htmlSlideScope, htmlSyncOperations, renderAuthoredMath, slidesFromMeasured } from '@shared/htmlSlides.js';
+import {
+  htmlChangeLabel,
+  htmlSlideScope,
+  htmlSyncHistoryLabel,
+  htmlSyncOperations,
+  renderAuthoredMath,
+  slidesFromMeasured,
+} from '@shared/htmlSlides.js';
 import { PLAYER_TYPE_CSS } from '@shared/playerTypeCss.js';
 import { browserDeckRevision } from './agentBridge.js';
 import { sanitizeAuthoredHtml, type HtmlSanitizationReport } from '@shared/htmlSafety.js';
@@ -154,7 +161,7 @@ export async function authoredHtmlSync(
     transaction: {
       version: AGENT_PROTOCOL_VERSION,
       expectedRevision: await browserDeckRevision(deck),
-      label: options.label ?? `Update slides from ${fileName(file.path)}`,
+      label: options.label ?? htmlChangeLabel(file.contents) ?? htmlSyncHistoryLabel(operations),
       operations,
     },
     slides,

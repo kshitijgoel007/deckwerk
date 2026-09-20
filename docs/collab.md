@@ -60,9 +60,12 @@ After that small difference in setup, both surfaces use the same loop:
 
 Every accepted save is still compiled into native objects and applied as one
 named, revision-checked transaction. It remains visible to collaborators,
-appears in History, and can be undone normally. The panel's scratchpad shows
-the bridge's current activity and source/imported previews; it is a view of the
-filesystem workflow, not a second authoring interface.
+appears in History, and can be undone normally. In a browser collaboration
+session, the panel's scratchpad shows the remote bridge's current activity and
+source/imported previews; it is a view of the filesystem workflow, not a
+second authoring interface. The local desktop path needs neither that bridge
+nor a collaboration server: its existing editor watcher observes the real
+deck folder directly.
 
 ## Comments
 

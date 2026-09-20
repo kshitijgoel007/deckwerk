@@ -2878,6 +2878,19 @@ button.morph-object-hit.selected-source:hover:not(:disabled) {
 
 .agent-chat-panel[hidden] { display: none; }
 
+.agent-chat-panel-local {
+  height: auto;
+  min-height: 0;
+}
+
+.agent-chat-panel-local .agent-chat-connect {
+  border-bottom: 0;
+}
+
+.agent-chat-panel-local .agent-chat-connect-row {
+  margin-bottom: 0;
+}
+
 .agent-chat-header {
   display: flex;
   flex: none;
@@ -3120,7 +3133,6 @@ button.morph-object-hit.selected-source:hover:not(:disabled) {
 
 .agent-chat-connect[hidden] { display: none; }
 .agent-chat-connect p { margin: 0 0 8px; }
-.agent-chat-connect-detail { color: var(--muted); font-size: 11px; margin-bottom: 0 !important; }
 
 .agent-chat-connect-row {
   display: flex;

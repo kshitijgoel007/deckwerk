@@ -42,11 +42,11 @@
         "color": "#6b6862"
       },
       "base": {
-        "family": "\"Helvetica Neue\", Inter, system-ui, sans-serif",
-        "size": 48,
+        "family": "\"Avenir Next\", Avenir, \"Helvetica Neue\", Inter, system-ui, sans-serif",
+        "size": 42,
         "weight": 400,
-        "lineHeight": 1.28,
-        "letterSpacing": "normal"
+        "lineHeight": 1.34,
+        "letterSpacing": "0"
       }
     },
     "palette": [
@@ -61,7 +61,7 @@
     ],
     "colors": {
       "background": "#faf9f5",
-      "text": "#111111",
+      "text": "#191918",
       "muted": "#6b6862",
       "accent": "#c96442"
     }
@@ -213,15 +213,10 @@
             "role-title"
           ],
           "style": {
-            "font-family": "Charter, \"Iowan Old Style\", \"New York\", Palatino, Georgia, serif",
-            "font-weight": "700",
-            "font-size": "108px",
-            "line-height": "1",
-            "letter-spacing": "-0.03em",
             "color": "#191918"
           },
           "type": "text",
-          "html": "Videos: Drag-and-drop, crop, trim.",
+          "html": "<span style=\"American Typewriter&quot; , &quot; SF Mono&quot; , &quot; JetBrains Mono&quot; , ui-monospace, Menlo, monospace\">Videos: Drag-and-drop, crop, trim.</span>",
           "autoFit": true,
           "align": "left",
           "valign": "middle",
@@ -302,7 +297,7 @@
       "id": "slide-9lgicguo",
       "name": "",
       "background": {
-        "color": "#faf9f5",
+        "color": null,
         "image": null
       },
       "notes": "",
@@ -321,14 +316,7 @@
           "class": [
             "role-title"
           ],
-          "style": {
-            "font-family": "Charter, \"Iowan Old Style\", \"New York\", Palatino, Georgia, serif",
-            "font-weight": "700",
-            "font-size": "108px",
-            "line-height": "1",
-            "letter-spacing": "-0.03em",
-            "color": "#191918"
-          },
+          "style": {},
           "morphId": "morph-xu2ppdsk-62f4",
           "type": "text",
           "html": "Light &amp; Dark Themeing.",
@@ -349,17 +337,10 @@
           "class": [
             "role-body"
           ],
-          "style": {
-            "font-family": "\"Avenir Next\", Avenir, \"Helvetica Neue\", Inter, system-ui, sans-serif",
-            "font-weight": "400",
-            "font-size": "48px",
-            "line-height": "1.32",
-            "letter-spacing": "0",
-            "color": "#191918"
-          },
+          "style": {},
           "morphId": "morph-4tvk2bii-62f4",
           "type": "text",
-          "html": "<ul><li>Themes only control the slide's typefaces and color scheme.</li><li>They do <span style=\"font-style: italic;\">not</span><span style=\"font-style: normal;\"> control the slide's layout.</span></li></ul>",
+          "html": "<ul><li>Themes only control the slide's typefaces and color scheme.</li><li>They do <span style=\"font-style: italic\">not</span><span style=\"font-style: normal\"> control the slide's layout.</span></li></ul>",
           "autoFit": true,
           "align": "left",
           "valign": "top",
@@ -889,9 +870,6 @@
         "image": null
       },
       "notes": "",
-      "layout": "standard",
-      "layoutBackgroundInherited": false,
-      "morphFromPrevious": false,
       "elements": [
         {
           "id": "text-u1mhl8gq-a50e",
@@ -900,7 +878,7 @@
           "w": 1680,
           "h": 142,
           "rot": 0,
-          "z": 10,
+          "z": 1,
           "opacity": 1,
           "class": [
             "role-title"
@@ -919,17 +897,16 @@
           "html": "Math.",
           "autoFit": true,
           "align": "left",
-          "valign": "middle",
-          "layoutPlaceholder": "title"
+          "valign": "middle"
         },
         {
           "id": "text-ammdi6rl-a50e",
           "x": 120,
-          "y": 252,
+          "y": 387,
           "w": 1680,
           "h": 386,
           "rot": 0,
-          "z": 11,
+          "z": 2,
           "opacity": 1,
           "class": [
             "role-body"
@@ -945,11 +922,10 @@
           "morphId": null,
           "lineageId": "text-slide-ln6cror3-a50e-body",
           "type": "text",
-          "html": "<p>Native latex support:$$\\nabla_\\theta J(\\theta)\n= \\mathbb{E}_{\\tau \\sim \\pi_\\theta}\\!\\left[\n    \\sum_{t=0}^{T} \\nabla_\\theta \\log \\pi_\\theta(a_t \\mid s_t)\\, R_t\n  \\right]$$</p><p><br></p>",
+          "html": "<p>inline math such as $a^2+b^2=c^2$, or display math such as<span style=\"letter-spacing: 0px;\">$$\\nabla_\\theta J(\\theta) = \\mathbb{E}_{\\tau \\sim \\pi_\\theta}\\!\\left[ \\sum_{t=0}^{T} \\nabla_\\theta \\log \\pi_\\theta(a_t \\mid s_t)\\, R_t \\right]$$</span></p><p><br></p>",
           "autoFit": true,
           "align": "left",
-          "valign": "top",
-          "layoutPlaceholder": "body"
+          "valign": "top"
         }
       ],
       "timeline": []
@@ -962,9 +938,6 @@
         "image": null
       },
       "notes": "",
-      "layout": "standard",
-      "layoutBackgroundInherited": false,
-      "morphFromPrevious": false,
       "elements": [
         {
           "id": "text-kf6slh7w-a50e",
@@ -973,7 +946,7 @@
           "w": 1680,
           "h": 142,
           "rot": 0,
-          "z": 10,
+          "z": 1,
           "opacity": 1,
           "class": [
             "role-title"
@@ -992,17 +965,16 @@
           "html": "Agents.",
           "autoFit": true,
           "align": "left",
-          "valign": "middle",
-          "layoutPlaceholder": "title"
+          "valign": "middle"
         },
         {
           "id": "text-vzbv8cx2-a50e",
           "x": 120,
           "y": 252,
           "w": 1680,
-          "h": 386,
+          "h": 542,
           "rot": 0,
-          "z": 11,
+          "z": 2,
           "opacity": 1,
           "class": [
             "role-body"
@@ -1018,20 +990,19 @@
           "morphId": null,
           "lineageId": "text-slide-ln6cror3-a50e-body",
           "type": "text",
-          "html": "<ul><li>You can ask agents to edit existing slides or create completely new ones</li><li>Agents use native HTML to author slides that is then imported via DeckWerk's own HTML importer.</li><li>Priorities: (1) faithful to agent's HTML (2) editability.</li><li>Editability stays high, but most importantly, the agent can do what it does best: author HTML :)</li></ul>",
+          "html": "<ul><li><span style=\"letter-spacing: 0px;\">Launch an agent in the directory of the deck, it has an AGENTS.md file that describes how the agent can author &amp; edit content.</span></li><li><span style=\"letter-spacing: 0px;\">Agents use native HTML to author slides that is then imported via DeckWerk's own HTML importer.</span><br></li><li>Priorities: (1) faithful to agent's HTML (2) editability.</li><li>Editability stays high, but most importantly, the agent can do what it does best: author HTML :)</li></ul>",
           "autoFit": true,
           "align": "left",
-          "valign": "top",
-          "layoutPlaceholder": "body"
+          "valign": "top"
         },
         {
           "id": "text-f1bjolg8-a50e",
-          "x": 182,
-          "y": 724,
+          "x": 157,
+          "y": 822,
           "w": 1607,
           "h": 258,
           "rot": 0,
-          "z": 11,
+          "z": 3,
           "opacity": 1,
           "class": [
             "role-caption"
@@ -1047,11 +1018,10 @@
           "morphId": null,
           "lineageId": "text-slide-ln6cror3-a50e-body",
           "type": "text",
-          "html": "<p>Pls go to https://vsitzmann.github.io/plumage/, get images of 4 birds and their attribution, and build a slide with the same style as the existing slides with four round crops of the images (make sure that the crops are centered around the birds) as well as their scientific names and their attribution below. Insert after slide 8.\n</p><p><br></p>",
+          "html": "<p>Pls go to https://vsitzmann.github.io/plumage/, get images of 4 birds and their attribution, and build a slide with the same style as the existing slides with four round crops of the images (make sure that the crops are centered around the birds) as well as their scientific names and their attribution below. It should be interactive, the attribution and bird names should appear upon hover over the brid images. Insert after slide 8.</p><p><br></p>",
           "autoFit": true,
           "align": "left",
-          "valign": "top",
-          "layoutPlaceholder": "body"
+          "valign": "top"
         }
       ],
       "timeline": []
@@ -1064,9 +1034,6 @@
         "image": null
       },
       "notes": "",
-      "layout": "standard",
-      "layoutBackgroundInherited": false,
-      "morphFromPrevious": false,
       "elements": [
         {
           "id": "text-colt1c03-a50e",
@@ -1075,7 +1042,7 @@
           "w": 1680,
           "h": 142,
           "rot": 0,
-          "z": 10,
+          "z": 1,
           "opacity": 1,
           "class": [
             "role-title"
@@ -1094,8 +1061,7 @@
           "html": "Presenting and Presenter Mode.",
           "autoFit": true,
           "align": "left",
-          "valign": "middle",
-          "layoutPlaceholder": "title"
+          "valign": "middle"
         }
       ],
       "timeline": []
@@ -1108,9 +1074,6 @@
         "image": null
       },
       "notes": "",
-      "layout": "standard",
-      "layoutBackgroundInherited": false,
-      "morphFromPrevious": false,
       "elements": [
         {
           "id": "text-ntrjjg5l-a50e",
@@ -1119,7 +1082,7 @@
           "w": 1680,
           "h": 142,
           "rot": 0,
-          "z": 10,
+          "z": 1,
           "opacity": 1,
           "class": [
             "role-title"
@@ -1138,8 +1101,7 @@
           "html": "Collaborating.",
           "autoFit": true,
           "align": "left",
-          "valign": "middle",
-          "layoutPlaceholder": "title"
+          "valign": "middle"
         },
         {
           "id": "text-4eg3p2b9-a50e",
@@ -1148,7 +1110,7 @@
           "w": 1680,
           "h": 700,
           "rot": 0,
-          "z": 11,
+          "z": 2,
           "opacity": 1,
           "class": [
             "role-body"
@@ -1167,8 +1129,7 @@
           "html": "<ul><li>When you click \"Collaborate\" in the top right corner, DeckWerk starts a websocket and copies your laptop's IP address into the clipboard.</li><li>Anyone on your same network (or tailnet!) can immediately jump in and collaborate, you see their edits and selections in real-time.</li><li>Any participant can download a copy of the deck.</li><li>DeckWerk also ships with a headless server with rudimentary access controls, but we won't get into that right now!</li></ul>",
           "autoFit": true,
           "align": "left",
-          "valign": "top",
-          "layoutPlaceholder": "body"
+          "valign": "top"
         }
       ],
       "timeline": []
@@ -1181,9 +1142,6 @@
         "image": null
       },
       "notes": "",
-      "layout": "standard",
-      "layoutBackgroundInherited": false,
-      "morphFromPrevious": false,
       "elements": [
         {
           "id": "text-du4hx9bv-a50e",
@@ -1192,7 +1150,7 @@
           "w": 1680,
           "h": 142,
           "rot": 0,
-          "z": 10,
+          "z": 1,
           "opacity": 1,
           "class": [
             "role-title"
@@ -1211,8 +1169,7 @@
           "html": "Edit History.",
           "autoFit": true,
           "align": "left",
-          "valign": "middle",
-          "layoutPlaceholder": "title"
+          "valign": "middle"
         },
         {
           "id": "text-yn4zg0bg-a50e",
@@ -1221,7 +1178,7 @@
           "w": 1680,
           "h": 700,
           "rot": 0,
-          "z": 11,
+          "z": 2,
           "opacity": 1,
           "class": [
             "role-body"
@@ -1240,8 +1197,7 @@
           "html": "<ul><li>DeckWerk keeps a full edit history.</li><li>Agent edits and history undos themselves appear as undo operations.</li></ul>",
           "autoFit": true,
           "align": "left",
-          "valign": "top",
-          "layoutPlaceholder": "body"
+          "valign": "top"
         }
       ],
       "timeline": []
@@ -1254,9 +1210,6 @@
         "image": null
       },
       "notes": "",
-      "layout": "standard",
-      "layoutBackgroundInherited": false,
-      "morphFromPrevious": false,
       "elements": [
         {
           "id": "text-qmm5hqyz-a50e",
@@ -1265,7 +1218,7 @@
           "w": 1680,
           "h": 142,
           "rot": 0,
-          "z": 10,
+          "z": 1,
           "opacity": 1,
           "class": [
             "role-title"
@@ -1284,8 +1237,7 @@
           "html": "Saving and Exporting.",
           "autoFit": true,
           "align": "left",
-          "valign": "middle",
-          "layoutPlaceholder": "title"
+          "valign": "middle"
         },
         {
           "id": "text-4wqqdrtr-a50e",
@@ -1294,7 +1246,7 @@
           "w": 1680,
           "h": 700,
           "rot": 0,
-          "z": 11,
+          "z": 2,
           "opacity": 1,
           "class": [
             "role-body"
@@ -1313,8 +1265,7 @@
           "html": "<ul><li>DeckWerk stores presentations as directory that contains a JSON (the actual slide contents), a CSS style file, an asset directory, the edit history, and a json with the agent chats (if any). DeckWerk itself renders presentations via HTML.</li><li>DeckWerk presentations can be exported as HTML files and asset directories that will play on any computer just via a browser.</li><li>Decks can also be exported as PDF files.</li></ul>",
           "autoFit": true,
           "align": "left",
-          "valign": "top",
-          "layoutPlaceholder": "body"
+          "valign": "top"
         }
       ],
       "timeline": []
@@ -1327,8 +1278,6 @@
         "image": null
       },
       "notes": "",
-      "layout": "standard",
-      "layoutBackgroundInherited": false,
       "elements": [
         {
           "id": "text-slide-bjuw97zu-e65a-title",
@@ -1337,7 +1286,7 @@
           "w": 1680,
           "h": 142,
           "rot": 0,
-          "z": 10,
+          "z": 1,
           "opacity": 1,
           "class": [
             "role-title"
@@ -1354,8 +1303,7 @@
           "html": "Importing from Keynote.",
           "autoFit": true,
           "align": "left",
-          "valign": "middle",
-          "layoutPlaceholder": "title"
+          "valign": "middle"
         }
       ],
       "timeline": []
@@ -1368,9 +1316,6 @@
         "image": null
       },
       "notes": "",
-      "layout": "standard",
-      "layoutBackgroundInherited": false,
-      "morphFromPrevious": false,
       "elements": [
         {
           "id": "text-c3gak7gh",
@@ -1379,7 +1324,7 @@
           "w": 1680,
           "h": 142,
           "rot": 0,
-          "z": 10,
+          "z": 1,
           "opacity": 1,
           "class": [
             "role-title"
@@ -1398,8 +1343,7 @@
           "html": "Open Source - Vibecode away :)",
           "autoFit": true,
           "align": "left",
-          "valign": "middle",
-          "layoutPlaceholder": "title"
+          "valign": "middle"
         },
         {
           "id": "text-btfkon3h",
@@ -1408,7 +1352,7 @@
           "w": 1680,
           "h": 700,
           "rot": 0,
-          "z": 11,
+          "z": 2,
           "opacity": 1,
           "class": [
             "role-body"
@@ -1427,8 +1371,7 @@
           "html": "<ul><li>Though literally all of this is vibecoded, it took me many many hours to make DeckWerk actually <span style=\"font-style: italic;\">work</span><span style=\"font-style: normal;\"> for what I need.</span></li><li>But what <span style=\"font-style: italic;\">I</span><span style=\"font-weight: 700;\"> <span style=\"font-weight: 400;\">need may not be what <span style=\"font-style: italic;\">you</span></span><span style=\"font-weight: 400;\"> need.</span></span></li><li><span style=\"font-weight: 700;\"><span style=\"font-weight: 400;\">So, view this as your starting point to vibe-code away and change this into whatever you want it to be :) </span></span></li></ul><p><span style=\"font-weight: 700;\"><span style=\"font-weight: 400;\"><br></span></span></p><p><span style=\"font-weight: 700;\"><span style=\"font-weight: 400;\">I will maintain this repo such that is serves <span style=\"font-style: italic;\">my</span><span style=\"font-style: normal;\"> use case best, and alas, I don't have time to do maintain it for anyone but myself<span style=\"font-style: normal;\">. </span>This may deviate from your needs, in which case, please fork it and make it better!</span></span></span></p>",
           "autoFit": true,
           "align": "left",
-          "valign": "top",
-          "layoutPlaceholder": "body"
+          "valign": "top"
         }
       ],
       "timeline": []
@@ -1437,13 +1380,10 @@
       "id": "slide-1romucdo",
       "name": "",
       "background": {
-        "color": "#faf9f5",
+        "color": null,
         "image": null
       },
       "notes": "",
-      "layout": "standard",
-      "layoutBackgroundInherited": false,
-      "morphFromPrevious": false,
       "elements": [
         {
           "id": "text-prt198co",
@@ -1452,27 +1392,19 @@
           "w": 1680,
           "h": 142,
           "rot": 0,
-          "z": 10,
+          "z": 1,
           "opacity": 1,
           "class": [
             "role-title"
           ],
-          "style": {
-            "color": "#191918",
-            "font-family": "Charter, \"Iowan Old Style\", \"New York\", Palatino, Georgia, serif",
-            "font-size": "108px",
-            "font-weight": "700",
-            "line-height": "1",
-            "letter-spacing": "-0.03em"
-          },
+          "style": {},
           "morphId": null,
           "lineageId": "text-slide-bjuw97zu-e65a-title",
           "type": "text",
           "html": "Acknowledgments.",
           "autoFit": true,
           "align": "left",
-          "valign": "middle",
-          "layoutPlaceholder": "title"
+          "valign": "middle"
         },
         {
           "id": "text-gh40xher",
@@ -1481,27 +1413,19 @@
           "w": 1680,
           "h": 231,
           "rot": 0,
-          "z": 11,
+          "z": 2,
           "opacity": 1,
           "class": [
             "role-body"
           ],
-          "style": {
-            "font-family": "\"Avenir Next\", Avenir, \"Helvetica Neue\", Inter, system-ui, sans-serif",
-            "font-weight": "400",
-            "font-size": "48px",
-            "line-height": "1.32",
-            "letter-spacing": "0",
-            "color": "#191918"
-          },
+          "style": {},
           "morphId": null,
           "lineageId": "text-slide-bjuw97zu-e65a-body",
           "type": "text",
-          "html": "<p><span style=\"color: rgb(17, 17, 17);\">I thank Ludwig Schubert, Hikari Sorensen, Nitish Padmanaban, Helen Hoyt, Robert Konrad, and the folks from Rhoda: Weiyu Lin, Andy Liu, Shuming Hu, and Eric Ryan Chan for their feedback!</span><br></p>",
+          "html": "<p><span>I thank Ludwig Schubert, Hikari Sorensen, Nitish Padmanaban, Helen Hoyt, Robert Konrad, and the folks from Rhoda: Weiyu Lin, Andy Liu, Shuming Hu, and Eric Ryan Chan for their feedback!</span><br></p>",
           "autoFit": true,
           "align": "left",
-          "valign": "top",
-          "layoutPlaceholder": "body"
+          "valign": "top"
         },
         {
           "id": "text-4yvzhvas",
@@ -1510,27 +1434,19 @@
           "w": 1680,
           "h": 231,
           "rot": 0,
-          "z": 11,
+          "z": 3,
           "opacity": 1,
           "class": [
             "role-body"
           ],
-          "style": {
-            "font-family": "\"Avenir Next\", Avenir, \"Helvetica Neue\", Inter, system-ui, sans-serif",
-            "font-weight": "400",
-            "font-size": "48px",
-            "line-height": "1.32",
-            "letter-spacing": "0",
-            "color": "#191918"
-          },
+          "style": {},
           "morphId": null,
           "lineageId": "text-slide-bjuw97zu-e65a-body",
           "type": "text",
-          "html": "<p><span style=\"color: rgb(17, 17, 17);\">DHH and the Omarchy team for inspiration: with DeckWerk done, I can finally go back to Linux :) </span><br></p>",
+          "html": "<p><span>DHH and the Omarchy team for inspiration: with DeckWerk done, I can finally go back to Linux :) </span><br></p>",
           "autoFit": true,
           "align": "left",
-          "valign": "top",
-          "layoutPlaceholder": "body"
+          "valign": "top"
         }
       ],
       "timeline": []

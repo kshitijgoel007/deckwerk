@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { emptyDeck } from '../src/shared/deck.js';
-import { htmlSlideScope } from '../src/shared/htmlSlides.js';
+import { htmlChangeLabel, htmlSlideScope } from '../src/shared/htmlSlides.js';
 import { applyAgentTransaction } from '../src/shared/agent.js';
 import { htmlEditTransaction, writeHtmlScope } from '../src/main/htmlAuthoring.js';
 
@@ -58,6 +58,23 @@ describe('HTML authoring files', () => {
     expect(next.slides.map((slide) => slide.id))
       .toEqual(['new-slide', 'slide-1', 'closing']);
     expect(next.slides[0].elements[0]).toMatchObject({ type: 'text', html: 'Made in HTML' });
-    expect(transaction.label).toBe('Update slides from slide-1-middle.html');
+    expect(transaction.label).toBe('Added 1 slide · Updated 1 slide · Removed 1 slide · Reordered slides');
+  }, 60_000);
+
+  it('uses the document intent as the History label', async () => {
+    dir = await mkdtemp(join(tmpdir(), 'html-authoring-'));
+    await mkdir(join(dir, 'assets'));
+    await writeFile(join(dir, 'theme.css'), '.slide { background: #fff; }', 'utf8');
+    const deck = emptyDeck('HTML');
+    const exported = await writeHtmlScope(dir, deck, ['slide-1']);
+    const authored = (await readFile(exported.path, 'utf8'))
+      .replace('name="deckwerk-change-label" content=""',
+        'name="deckwerk-change-label" content="Tighten the opening argument"')
+      .replace('</section>', '<p class="role-body">A clearer claim</p></section>');
+    await writeFile(exported.path, authored, 'utf8');
+
+    expect(htmlChangeLabel(authored)).toBe('Tighten the opening argument');
+    expect((await htmlEditTransaction(dir, deck, exported.path)).transaction.label)
+      .toBe('Tighten the opening argument');
   }, 60_000);
 });

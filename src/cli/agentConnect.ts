@@ -647,7 +647,8 @@ export function connectAgentBridge(options: ConnectOptions): AgentBridge {
       return;
     }
     report(`compiling ${file}…`, { busy: true });
-    const params: Record<string, string> = { label: request?.label ?? `Update slides from ${basename(path)}` };
+    const params: Record<string, string> = {};
+    if (request?.label) params.label = request.label;
     if (request?.after) params.after = request.after;
     let result: SyncResponse;
     try {

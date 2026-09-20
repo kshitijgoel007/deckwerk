@@ -32,6 +32,8 @@ export interface ClipboardPayload {
   text: string;
   /** Visible words that must survive the paste. */
   expected: string[];
+  /** Authored equations that must survive a rendered KaTeX clipboard round trip. */
+  math?: Array<{ tex: string; display: boolean }>;
 }
 
 const NOTES_BULLETS = [
@@ -187,6 +189,23 @@ export const PASTE_CORPUS: ClipboardPayload[] = [
     html: '<p>   </p><p>&nbsp;</p>',
     text: '   \n \n',
     expected: [],
+  },
+  {
+    name: 'own-editor-rendered-katex',
+    html: '<p>Inline <span class="katex"><span class="katex-mathml"><math><semantics>'
+      + '<mrow><mi>E</mi><mo>=</mo><mi>m</mi><msup><mi>c</mi><mn>2</mn></msup></mrow>'
+      + '<annotation encoding="application/x-tex">E=mc^2</annotation>'
+      + '</semantics></math></span><span class="katex-html" aria-hidden="true">E=mc²</span>'
+      + '</span></p><p><span class="katex-display"><span class="katex">'
+      + '<span class="katex-mathml"><math><semantics><mrow><mi>x</mi><mo>+</mo><mi>y</mi></mrow>'
+      + '<annotation encoding="application/x-tex">x+y</annotation></semantics></math></span>'
+      + '<span class="katex-html" aria-hidden="true">x+y</span></span></span></p>',
+    text: 'Inline E=mc²\nx+y',
+    expected: ['E=mc^2', 'x+y'],
+    math: [
+      { tex: 'E=mc^2', display: false },
+      { tex: 'x+y', display: true },
+    ],
   },
 ];
 
@@ -415,6 +434,7 @@ export const MARKUP_INVARIANTS = `(root) => {
   check('p > p, p > div, li > li, p > table', 'a block is nested inside a block that cannot contain it');
   check('script, iframe, object, embed, style, link, meta, base, form, input', 'unsafe or document-level markup survived');
   check('font, marquee', 'legacy markup survived');
+  check('.katex, .katex-display, math, annotation', 'generated KaTeX markup survived');
   for (const node of root.querySelectorAll('li')) {
     const parent = node.parentElement;
     if (!parent || !/^(UL|OL)$/.test(parent.tagName)) problems.push('a list item is outside a list');
@@ -524,9 +544,16 @@ export function visibleText(value: string): string {
     .trim();
 }
 
+/**
+ * The box's text as a reader sees it: `innerText`, so a block boundary is a
+ * line break rather than nothing. `textContent` ran two items together
+ * ("0);if") unless stray whitespace happened to sit between them, so the
+ * words oracle blamed a list conversion for dropping a code block's trailing
+ * newline — a newline that had painted as a blank line and had to go.
+ */
 export async function contentText(cdp: Cdp, selector: string): Promise<string> {
   return normalizeText(await cdp.evaluate<string>(
-    `document.querySelector(${JSON.stringify(selector)})?.textContent ?? ''`,
+    `document.querySelector(${JSON.stringify(selector)})?.innerText ?? ''`,
   ));
 }
 

@@ -118,6 +118,17 @@ describe('sanitizeAuthoredHtml against smuggled URL schemes', () => {
 });
 
 describe('sanitizePastedTextHtml', () => {
+  it('turns copied KaTeX render trees back into authored delimiters', () => {
+    const annotation = '<annotation encoding="application/x-tex">E=mc^2</annotation>';
+    const inline = '<span class="katex"><span class="katex-mathml"><math><semantics>'
+      + `<mrow><mi>E</mi></mrow>${annotation}</semantics></math></span>`
+      + '<span class="katex-html" aria-hidden="true">painted inline copy</span></span>';
+    const display = `<span class="katex-display">${inline}</span>`;
+
+    expect(sanitizePastedTextHtml(`<p>Inline ${inline}; display ${display}</p>`))
+      .toBe('<p>Inline $E=mc^2$; display $$E=mc^2$$</p>');
+  });
+
   it('is idempotent and turns sup/sub into relative-size spans exactly once', () => {
     const once = sanitizePastedTextHtml(
       'E = mc<sup>2</sup> and H<sub>2</sub>O <b>bold <i>both</i></b>'

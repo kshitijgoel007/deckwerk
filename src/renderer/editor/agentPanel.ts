@@ -7,9 +7,11 @@ export interface AgentPanelApi {
 }
 
 export interface AgentPanelOptions {
-  api: AgentPanelApi;
+  /** Hosted decks report a connected mirror here. A local deck needs no transport. */
+  api?: AgentPanelApi;
   currentDeckPath: () => string | null;
   connectCommand: string;
+  mode?: 'local' | 'hosted';
   onClose?: () => void;
   title?: string;
   onScratchpadState?: (state: { available: boolean; visible: boolean }) => void;
@@ -47,7 +49,12 @@ export class AgentPanel {
     panel.hidden = true;
     panel.role = 'dialog';
     panel.setAttribute('aria-modal', 'false');
-    panel.setAttribute('aria-labelledby', 'agent-panel-title');
+    if (options.mode === 'local') {
+      panel.classList.add('agent-chat-panel-local');
+      panel.setAttribute('aria-label', 'Agent deck folder');
+    } else {
+      panel.setAttribute('aria-labelledby', 'agent-panel-title');
+    }
 
     const header = document.createElement('header');
     header.className = 'agent-chat-header';
@@ -57,7 +64,7 @@ export class AgentPanel {
     title.textContent = options.title ?? 'Your agent';
     this.status = document.createElement('span');
     this.status.className = 'agent-chat-status';
-    this.status.textContent = 'Waiting for your agent…';
+    this.status.textContent = options.mode === 'local' ? 'Deck folder' : 'Waiting for your agent…';
     titleWrap.append(title, this.status);
     const actions = document.createElement('div');
     actions.className = 'agent-chat-header-actions';
@@ -65,7 +72,11 @@ export class AgentPanel {
     if (options.onClose) actions.append(smallButton('End session', options.onClose));
     header.append(titleWrap, actions);
 
-    const connect = connectCard(options.connectCommand, () => this.connectCommand);
+    const connect = connectCard(
+      options.connectCommand,
+      () => this.connectCommand,
+      options.mode ?? 'hosted',
+    );
     this.connect = connect.card;
     this.connectCode = connect.code;
     this.scratchpadBar = document.createElement('div');
@@ -82,11 +93,12 @@ export class AgentPanel {
     const empty = document.createElement('div');
     empty.className = 'agent-chat-empty';
     empty.textContent = 'Connection and editing activity from your agent appears here.';
-    this.messages.append(empty);
+    if (options.mode !== 'local') this.messages.append(empty);
     this.error = document.createElement('div');
     this.error.className = 'agent-chat-error';
     this.error.hidden = true;
-    panel.append(header, this.connect, this.scratchpadBar, this.messages, this.error);
+    if (options.mode === 'local') panel.append(this.connect);
+    else panel.append(header, this.connect, this.scratchpadBar, this.messages, this.error);
 
     this.scratchpadPanel = document.createElement('aside');
     this.scratchpadPanel.className = 'agent-scratchpad-panel';
@@ -106,24 +118,27 @@ export class AgentPanel {
     this.scratchpadFrame.title = 'Agent HTML scratchpad';
     this.scratchpadFrame.setAttribute('sandbox', 'allow-same-origin allow-scripts');
     this.scratchpadPanel.append(scratchHeader, this.scratchpadFrame);
-    document.body.append(panel, this.scratchpadPanel);
+    document.body.append(panel);
+    if (options.mode !== 'local') document.body.append(this.scratchpadPanel);
 
-    makePanelResizable(panel, {
-      storageKey: 'deckwerk.editor.agent-panel-size', sizeTarget: document.documentElement,
-      width: { property: '--agent-chat-width', initial: 400, min: 320,
-        max: () => window.innerWidth <= 900 ? window.innerWidth - 24 : Math.min(720, window.innerWidth - 468), edge: 'left' },
-      height: { property: '--agent-chat-height', initial: 620, min: 360,
-        max: () => window.innerHeight - 88, edge: 'bottom' },
-    });
-    makePanelResizable(this.scratchpadPanel, {
-      storageKey: 'deckwerk.editor.agent-scratchpad-size', sizeTarget: document.documentElement,
-      width: { property: '--agent-scratchpad-width', initial: 760, min: 420,
-        max: () => window.innerWidth <= 900 ? window.innerWidth - 24 : window.innerWidth - 448, edge: 'left' },
-      height: { property: '--agent-scratchpad-height', initial: 620, min: 300,
-        max: () => window.innerHeight - 88, edge: 'bottom' },
-    });
+    if (options.mode !== 'local') {
+      makePanelResizable(panel, {
+        storageKey: 'deckwerk.editor.agent-panel-size', sizeTarget: document.documentElement,
+        width: { property: '--agent-chat-width', initial: 400, min: 320,
+          max: () => window.innerWidth <= 900 ? window.innerWidth - 24 : Math.min(720, window.innerWidth - 468), edge: 'left' },
+        height: { property: '--agent-chat-height', initial: 620, min: 360,
+          max: () => window.innerHeight - 88, edge: 'bottom' },
+      });
+      makePanelResizable(this.scratchpadPanel, {
+        storageKey: 'deckwerk.editor.agent-scratchpad-size', sizeTarget: document.documentElement,
+        width: { property: '--agent-scratchpad-width', initial: 760, min: 420,
+          max: () => window.innerWidth <= 900 ? window.innerWidth - 24 : window.innerWidth - 448, edge: 'left' },
+        height: { property: '--agent-scratchpad-height', initial: 620, min: 300,
+          max: () => window.innerHeight - 88, edge: 'bottom' },
+      });
+    }
     this.element = panel;
-    options.api.onState((state) => this.applyState(state));
+    options.api?.onState((state) => this.applyState(state));
   }
 
   toggle(): void { this.element.hidden ? this.show() : this.hide(); }
@@ -135,7 +150,9 @@ export class AgentPanel {
   show(): void {
     this.element.hidden = false;
     this.scratchpadPanel.classList.remove('agent-chat-closed');
-    void this.options.api.getState().then((state) => this.applyState(state)).catch((error) => this.showError(error));
+    if (this.options.api) {
+      void this.options.api.getState().then((state) => this.applyState(state)).catch((error) => this.showError(error));
+    }
   }
   hide(): void {
     this.element.hidden = true;
@@ -236,11 +253,17 @@ export class AgentPanel {
   }
 }
 
-function connectCard(command: string, currentCommand: () => string): { card: HTMLElement; code: HTMLElement } {
+function connectCard(
+  command: string,
+  currentCommand: () => string,
+  mode: 'local' | 'hosted',
+): { card: HTMLElement; code: HTMLElement } {
   const card = document.createElement('div');
   card.className = 'agent-chat-connect';
   const lead = document.createElement('p');
-  lead.textContent = 'Run this on the computer where your existing agent can access files:';
+  lead.textContent = mode === 'local'
+    ? 'Open your agent here:'
+    : 'Run this command:';
   const row = document.createElement('div');
   row.className = 'agent-chat-connect-row';
   const code = document.createElement('code');
@@ -252,12 +275,7 @@ function connectCard(command: string, currentCommand: () => string): { card: HTM
   ));
   copy.classList.add('agent-chat-connect-copy');
   row.append(code, copy);
-  const detail = document.createElement('p');
-  detail.className = 'agent-chat-connect-detail';
-  detail.textContent = 'This creates a normal deck folder and keeps it in sync. Open that folder with any '
-    + 'filesystem-based agent; AGENTS.md gives it the complete HTML authoring loop. Only interactive web regions '
-    + 'stay interactive—titles, captions, tables, and shapes remain native and editable.';
-  card.append(lead, row, detail);
+  card.append(lead, row);
   return { card, code };
 }
 

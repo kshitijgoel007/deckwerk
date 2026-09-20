@@ -1,23 +1,43 @@
 # Collaborating with agents
 
-DeckWerk is closely integrated with agents that can edit slides directly, see and resolve comments that you put on elements or slides, create whole presentations from scratch, and essentially can do ~anything that a coding agent can do today.
+DeckWerk presentations are ordinary folders, and that folder is the agent
+interface. DeckWerk does not run an agent, own an agent account, or require an
+agent-specific server for a presentation on your computer.
 
-Click **Agent…** to start a deck-scoped agent session. A compact chat panel drops down beneath the toolbar with the message box focused, while the ordinary editor remains visible. Type a request and press **Enter** to send it; use **Shift+Enter** for a new line.
+Open the presentation in DeckWerk, click **Agent…**, and copy the displayed
+deck-folder path. Open Codex, Claude Code, or another filesystem-based agent
+in that folder. Its `AGENTS.md` explains the complete authoring loop.
 
-When you send a prompt to the agent, the agent receives access to a specificially designed web API that gives the agent full affordance over the Deck. It can create slides from scratch in HTML and import them in DeckWerk, with no limits to its creativity or styling. Or it can execute surgical edits to styling and content of existing slides.
+The agent normally starts with `slide-agent context`, then either exports
+existing slides with `slide-agent inspect --html` or creates an add-only page
+with `slide-agent new`. It edits the resulting file beneath `edit/`. While
+DeckWerk is open, saving that HTML updates the presentation automatically as
+one undoable History entry. No mirrored folder or collaboration server sits
+between the agent and the editor.
 
-Sign in with ChatGPT if DeckWerk asks you to. The signed-in email appears at the top of the panel. Choose **Switch account** to use a different ChatGPT account; DeckWerk keeps this login isolated from other Codex clients on the computer.
+Each generated authoring page contains this metadata:
 
-Choose a model from the **Model** menu. DeckWerk starts with the default reported by Codex for the signed-in account, and a new choice takes effect with the next message.
+```html
+<meta name="deckwerk-change-label" content="">
+```
 
-You can keep typing while the agent works. Sending another message steers the active turn; use **Stop** separately when you want to interrupt it. The ⚡ button switches supported models between standard and Fast mode (lit means Fast).
+The agent should fill in a concise description of its intent, such as "Add the
+training-pipeline overview". DeckWerk uses that text in History. If it remains
+empty, DeckWerk writes an operation summary such as "Added 2 slides" or
+"Updated 3 slides" rather than exposing the authoring filename.
 
-> Screenshot placeholder: Asking the embedded HTTP agent to polish the presentation.
+Agents can read, reply to, and resolve comments, which makes comments a useful
+way to leave precise requests on a slide or object.
 
-The agent works through the revision-bound HTTP API while you watch changes appear live. Applied drafts become named changes in **History**. In the background, the editor is a peer of the same authoritative collaboration session, so local and agent edits stay synchronized.
+## Hosted presentations
 
-Choose **Stop** to interrupt a turn or **New chat** to discard the current conversation while keeping the same live session. Click **Agent…** or press Escape to tuck the panel away without stopping the session; choose **Close** in the panel to end it.
+A presentation open in browser collaboration is different: the real deck
+folder lives on the host, so a remote agent cannot edit it directly. In that
+case **Agent…** provides a `slide-agent connect` command. The command creates a
+local mirror and keeps it synchronized with the authoritative collaboration
+session. The agent sees the same files and commands, while the bridge provides
+remote transport, participant attribution, shared ordering, activity, and the
+source/imported scratchpad.
 
-Agents can also read and reply to comments. This makes a comment a useful way to leave a precise request on a slide or object before opening the chat.
-
-Keep DeckWerk open while the agent works so the loopback API and live player remain available.
+See [Running a headless collaboration server](06-headless-server.md) for that
+workflow.

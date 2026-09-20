@@ -1,0 +1,213 @@
+{"kind":"deck","id":"pr/mnv7xu","name":"Deck"}
+{"kind":"layout","layoutId":"7bc0e785-6d4b-42e3-a31d-2b20bad52d98","name":"Master","type":"master"}
+{"kind":"layout","layoutId":"62ccdb68-57bf-4e7a-a815-c6b97106967e","name":"Title Slide","type":"title"}
+{"kind":"layout","layoutId":"b634e736-8306-4c89-bdc1-cd97ae99ca7d","name":"Calibration Standard","placeholders":[{"name":"title","type":"title","textPreview":"Title"},{"name":"body","type":"body","textPreview":"Body"}]}
+{"kind":"layout","layoutId":"8dedcc93-718c-46c8-94dd-9e1fd319122e","name":"Calibration Alternate","placeholders":[{"name":"title","type":"title","textPreview":"Title"},{"name":"body","type":"body","textPreview":"Body"}]}
+{"kind":"slide","id":"sl/3y20nf","slide":1,"title":"Layout and placeholder inheritance","textShapes":3}
+{"kind":"textbox","id":"sh/0r25gza1","slide":1,"name":"placeholder_1","placeholder":"title","text":"Layout and placeholder inheritance","textPreview":"Layout and placeholder inheritance","textChars":34,"textLines":1,"bbox":[0,0,0,0]}
+{"kind":"textbox","id":"sh/z6tonutg","slide":1,"name":"placeholder_2","placeholder":"body","text":"This body text inherits its geometry and base style from the layout.","textPreview":"This body text inherits its geometry and base style from the layout.","textChars":68,"textLines":1,"bbox":[0,0,0,0]}
+{"kind":"textbox","id":"sh/e50nepsv","slide":1,"name":"CORE-01-label","text":"CORE-01","textPreview":"CORE-01","textChars":7,"textLines":1,"bbox":[1088,674,132,22]}
+{"kind":"shape","id":"sh/9wb6t4bi","slide":1,"name":"theme-accent1","bbox":[120,214,220,100]}
+{"kind":"shape","id":"sh/8v2pkzax","slide":1,"name":"theme-accent2","bbox":[530,214,220,100]}
+{"kind":"shape","id":"sh/nutorutc","slide":1,"name":"theme-accent3","bbox":[940,214,220,100]}
+{"kind":"notes","id":"nt/3y20nf","slide":1,"text":"REF-ID: CORE-01\nEXPECTED: native\nPURPOSE: Theme and layout placeholder inheritance\nOBJECTS: title placeholder; body placeholder; accent1/2/3 theme fills\nAUTHORING: Generated with @oai/artifact-tool. Slide size 1280x720 CSS px = 13.333x7.5 in."}
+{"kind":"slide","id":"sl/868tgf","slide":2,"title":"Canvas geometry and edge behavior","textShapes":7}
+{"kind":"textbox","id":"sh/jid8vex4","slide":2,"name":"placeholder_1","placeholder":"title","text":"Canvas geometry and edge behavior","textPreview":"Canvas geometry and edge behavior","textChars":33,"textLines":1,"bbox":[0,0,0,0]}
+{"kind":"shape","id":"sh/4jm9ozyp","slide":2,"name":"placeholder_2","placeholder":"body","bbox":[0,0,0,0]}
+{"kind":"textbox","id":"sh/5kvqx4fa","slide":2,"name":"CORE-02-label","text":"CORE-02","textPreview":"CORE-02","textChars":7,"textLines":1,"bbox":[1088,674,132,22]}
+{"kind":"shape","id":"sh/ql4rq9gv","slide":2,"name":"exact-a","bbox":[96,96,216,134]}
+{"kind":"textbox","id":"sh/rmd8jex0","slide":2,"name":"caption-exact-a 96,96 216x134","text":"exact-a 96,96 216x134","textPreview":"exact-a 96,96 216x134","textChars":21,"textLines":1,"bbox":[96,234,216,28]}
+{"kind":"shape","id":"sh/sn69sjyl","slide":2,"name":"exact-b","bbox":[437,154,183,271]}
+{"kind":"textbox","id":"sh/d8fqlof6","slide":2,"name":"caption-exact-b 437,154 183x271","text":"exact-b 437,154 183x271","textPreview":"exact-b 437,154 183x271","textChars":23,"textLines":1,"bbox":[437,429,183,28]}
+{"kind":"shape","id":"sh/e9orutgr","slide":2,"name":"exact-c","bbox":[770,113,327,177]}
+{"kind":"textbox","id":"sh/faxsnyxc","slide":2,"name":"caption-exact-c 770,113 327x177","text":"exact-c 770,113 327x177","textPreview":"exact-c 770,113 327x177","textChars":23,"textLines":1,"bbox":[770,294,327,28]}
+{"kind":"shape","id":"sh/bu9sra5k","slide":2,"name":"bottom-edge","bbox":[78,570,292,86]}
+{"kind":"textbox","id":"sh/atgri54z","slide":2,"name":"caption-bottom-edge 78,570 292x86","text":"bottom-edge 78,570 292x86","textPreview":"bottom-edge 78,570 292x86","textChars":25,"textLines":1,"bbox":[78,660,292,28]}
+{"kind":"shape","id":"sh/xwrat0nq","slide":2,"name":"right-edge","bbox":[1124,380,96,208]}
+{"kind":"textbox","id":"sh/wvitkfm5","slide":2,"name":"caption-right-edge 1124,380 96x208","text":"right-edge 1124,380 96x208","textPreview":"right-edge 1124,380 96x208","textChars":26,"textLines":1,"bbox":[1124,592,150,28]}
+{"kind":"notes","id":"nt/868tgf","slide":2,"text":"REF-ID: CORE-02\nEXPECTED: native\nPURPOSE: Exact geometry, canvas edges, and non-symmetric dimensions\nOBJECTS: exact-a x=96 y=96 w=216 h=134; exact-b x=437 y=154 w=183 h=271; exact-c x=770 y=113 w=327 h=177; bottom-edge x=78 y=570 w=292 h=86; right-edge x=1124 y=380 w=96 h=208\nAUTHORING: Generated with @oai/artifact-tool. Slide size 1280x720 CSS px = 13.333x7.5 in."}
+{"kind":"slide","id":"sl/5gkd13","slide":3,"title":"Rotation, flips, transparency, and stacking","textShapes":2}
+{"kind":"textbox","id":"sh/j2pknmpw","slide":3,"name":"placeholder_1","placeholder":"title","text":"Rotation, flips, transparency, and stacking","textPreview":"Rotation, flips, transparency, and stacking","textChars":43,"textLines":1,"bbox":[0,0,0,0]}
+{"kind":"shape","id":"sh/k3ylgrqh","slide":3,"name":"placeholder_2","placeholder":"body","bbox":[0,0,0,0]}
+{"kind":"textbox","id":"sh/5472pc72","slide":3,"name":"CORE-03-label","text":"CORE-03","textPreview":"CORE-03","textChars":7,"textLines":1,"bbox":[1088,674,132,22]}
+{"kind":"shape","id":"sh/axw3ax8f","slide":3,"name":"stack-back","bbox":[130,180,390,270]}
+{"kind":"shape","id":"sh/vypkj290","slide":3,"name":"stack-mid-rot17","bbox":[310,250,330,190]}
+{"kind":"shape","id":"sh/wzylc7q5","slide":3,"name":"stack-front-rot-31","bbox":[500,160,250,310]}
+{"kind":"shape","id":"sh/x072lcrq","slide":3,"name":"flip-horizontal","bbox":[830,170,280,110]}
+{"kind":"shape","id":"sh/ut03m18j","slide":3,"name":"flip-vertical","bbox":[865,380,190,180]}
+{"kind":"notes","id":"nt/5gkd13","slide":3,"text":"REF-ID: CORE-03\nEXPECTED: native\nPURPOSE: Object order, rotations, opacity, and shape flips\nOBJECTS: stack-back; stack-mid-rot17; stack-front-rot-31; flip-horizontal; flip-vertical\nAUTHORING: Generated with @oai/artifact-tool. Slide size 1280x720 CSS px = 13.333x7.5 in."}
+{"kind":"slide","id":"sl/y21x52","slide":4,"title":"Run-level text formatting","textShapes":4}
+{"kind":"textbox","id":"sh/98n2dsna","slide":4,"name":"placeholder_1","placeholder":"title","text":"Run-level text formatting","textPreview":"Run-level text formatting","textChars":25,"textLines":1,"bbox":[0,0,0,0]}
+{"kind":"shape","id":"sh/mlwj2d4z","slide":4,"name":"placeholder_2","placeholder":"body","bbox":[0,0,0,0]}
+{"kind":"textbox","id":"sh/n65kbi5k","slide":4,"name":"CORE-04-label","text":"CORE-04","textPreview":"CORE-04","textChars":7,"textLines":1,"bbox":[1088,674,132,22]}
+{"kind":"textbox","id":"sh/wbel87m1","slide":4,"name":"rich-runs","text":"Regular Bold Italic Underline \n18 pt 32 pt Theme accent\nAgj pqy 0123456789 AV WA fi fl αβγ","textPreview":"Regular Bold Italic Underline  | 18 pt 32 pt Theme accent | Agj pqy 0123456789 AV WA fi fl αβγ","textChars":90,"textLines":3,"bbox":[88,132,1104,230]}
+{"kind":"textbox","id":"sh/xc72hsnm","slide":4,"name":"gradient-text","text":"Gradient text fill","textPreview":"Gradient text fill","textChars":18,"textLines":1,"bbox":[190,430,900,90]}
+{"kind":"notes","id":"nt/y21x52","slide":4,"text":"REF-ID: CORE-04\nEXPECTED: native\nPURPOSE: Run-level text formatting and gradient text\nOBJECTS: rich-runs; gradient-text\nAUTHORING: Generated with @oai/artifact-tool. Slide size 1280x720 CSS px = 13.333x7.5 in."}
+{"kind":"slide","id":"sl/515qvl","slide":5,"title":"Text-box alignment, margins, and wrapping","textShapes":12}
+{"kind":"textbox","id":"sh/svqt4ri1","slide":5,"name":"placeholder_1","placeholder":"title","text":"Text-box alignment, margins, and wrapping","textPreview":"Text-box alignment, margins, and wrapping","textChars":41,"textLines":1,"bbox":[0,0,0,0]}
+{"kind":"shape","id":"sh/ruhsvm1g","slide":5,"name":"placeholder_2","placeholder":"body","bbox":[0,0,0,0]}
+{"kind":"textbox","id":"sh/qt8b210v","slide":5,"name":"CORE-05-label","text":"CORE-05","textPreview":"CORE-05","textChars":7,"textLines":1,"bbox":[1088,674,132,22]}
+{"kind":"textbox","id":"sh/1kju1gji","slide":5,"name":"top-left","text":"Line one wraps here\nLine two has gjpq","textPreview":"Line one wraps here | Line two has gjpq","textChars":37,"textLines":2,"bbox":[78,150,236,190]}
+{"kind":"textbox","id":"sh/0jat8bix","slide":5,"name":"caption-top-left","text":"top-left","textPreview":"top-left","textChars":8,"textLines":1,"bbox":[78,346,236,28]}
+{"kind":"textbox","id":"sh/fihcz61c","slide":5,"name":"middle-center","text":"Line one wraps here\nLine two has gjpq","textPreview":"Line one wraps here | Line two has gjpq","textChars":37,"textLines":2,"bbox":[352,150,236,190]}
+{"kind":"textbox","id":"sh/eh8b6107","slide":5,"name":"caption-middle-center","text":"middle-center","textPreview":"middle-center","textChars":13,"textLines":1,"bbox":[352,346,236,28]}
+{"kind":"textbox","id":"sh/poju5gzu","slide":5,"name":"bottom-right","text":"Line one wraps here\nLine two has gjpq","textPreview":"Line one wraps here | Line two has gjpq","textChars":37,"textLines":2,"bbox":[626,150,236,190]}
+{"kind":"textbox","id":"sh/onatcbi9","slide":5,"name":"caption-bottom-right","text":"bottom-right","textPreview":"bottom-right","textChars":12,"textLines":1,"bbox":[626,346,236,28]}
+{"kind":"textbox","id":"sh/ytsfep4n","slide":5,"name":"justify","text":"Line one wraps here\nLine two has gjpq","textPreview":"Line one wraps here | Line two has gjpq","textChars":37,"textLines":2,"bbox":[900,150,236,190]}
+{"kind":"textbox","id":"sh/zu1w7u58","slide":5,"name":"caption-justify","text":"justify","textPreview":"justify","textChars":7,"textLines":1,"bbox":[900,346,236,28]}
+{"kind":"textbox","id":"sh/0vuxgzmt","slide":5,"name":"no-wrap","text":"No wrap: 0123456789 ABCDEFGHIJKLMNOPQRSTUVWXYZ","textPreview":"No wrap: 0123456789 ABCDEFGHIJKLMNOPQRSTUVWXYZ","textChars":46,"textLines":1,"bbox":[78,410,430,64]}
+{"kind":"textbox","id":"sh/lg3e9kne","slide":5,"name":"rotated-text","text":"Rotated text box 17°","textPreview":"Rotated text box 17°","textChars":20,"textLines":1,"bbox":[720,410,360,80]}
+{"kind":"notes","id":"nt/515qvl","slide":5,"text":"REF-ID: CORE-05\nEXPECTED: native\nPURPOSE: Horizontal and vertical alignment, asymmetric insets, wrap none, rotated text\nOBJECTS: top-left; middle-center; bottom-right; justify; no-wrap; rotated-text\nAUTHORING: Generated with @oai/artifact-tool. Slide size 1280x720 CSS px = 13.333x7.5 in."}
+{"kind":"slide","id":"sl/oy9y3u","slide":6,"title":"PowerPoint autofit modes","textShapes":8}
+{"kind":"textbox","id":"sh/0zqhgnuh","slide":6,"name":"placeholder_1","placeholder":"title","text":"PowerPoint autofit modes","textPreview":"PowerPoint autofit modes","textChars":24,"textLines":1,"bbox":[0,0,0,0]}
+{"kind":"shape","id":"sh/zyx07idw","slide":6,"name":"placeholder_2","placeholder":"body","bbox":[0,0,0,0]}
+{"kind":"textbox","id":"sh/yxozexcb","slide":6,"name":"CORE-06-label","text":"CORE-06","textPreview":"CORE-06","textChars":7,"textLines":1,"bbox":[1088,674,132,22]}
+{"kind":"textbox","id":"sh/dwfy5svq","slide":6,"name":"no-autofit","text":"This deliberately long sentence fills a constrained box and exposes differences in PowerPoint text fitting, wrapping, and final font size.","textPreview":"This deliberately long sentence fills a constrained box and exposes differences in PowerPoint text fitting, wrapping, and final font size.","textChars":138,"textLines":1,"bbox":[80,166,300,160]}
+{"kind":"textbox","id":"sh/cv6hcnu5","slide":6,"name":"caption-no-autofit · 34 px","text":"no-autofit · 34 px","textPreview":"no-autofit · 34 px","textChars":18,"textLines":1,"bbox":[80,342,300,28]}
+{"kind":"textbox","id":"sh/buxg3id0","slide":6,"name":"shrink-text","text":"This deliberately long sentence fills a constrained box and exposes differences in PowerPoint text fitting, wrapping, and final font size.","textPreview":"This deliberately long sentence fills a constrained box and exposes differences in PowerPoint text fitting, wrapping, and final font size.","textChars":138,"textLines":1,"bbox":[456,166,300,160]}
+{"kind":"textbox","id":"sh/q9ozadcf","slide":6,"name":"caption-shrink-text · 34 px","text":"shrink-text · 34 px","textPreview":"shrink-text · 34 px","textChars":19,"textLines":1,"bbox":[456,342,300,28]}
+{"kind":"textbox","id":"sh/p8fy18vu","slide":6,"name":"resize-shape","text":"This deliberately long sentence fills a constrained box and exposes differences in PowerPoint text fitting, wrapping, and final font size.","textPreview":"This deliberately long sentence fills a constrained box and exposes differences in PowerPoint text fitting, wrapping, and final font size.","textChars":138,"textLines":1,"bbox":[832,166,300,338.4]}
+{"kind":"textbox","id":"sh/o76h83u9","slide":6,"name":"caption-resize-shape · 34 px","text":"resize-shape · 34 px","textPreview":"resize-shape · 34 px","textChars":20,"textLines":1,"bbox":[832,342,300,28]}
+{"kind":"notes","id":"nt/oy9y3u","slide":6,"text":"REF-ID: CORE-06\nEXPECTED: native\nPURPOSE: Do not autofit, shrink text, and resize shape to fit\nOBJECTS: no-autofit=none; shrink-text=shrinkText; resize-shape=resizeShapeToFitText\nAUTHORING: Generated with @oai/artifact-tool. Slide size 1280x720 CSS px = 13.333x7.5 in."}
+{"kind":"slide","id":"sl/sd1sdh","slide":7,"title":"Paragraph spacing and nested lists","textShapes":4}
+{"kind":"textbox","id":"sh/zaxo3ah8","slide":7,"name":"placeholder_1","placeholder":"title","text":"Paragraph spacing and nested lists","textPreview":"Paragraph spacing and nested lists","textChars":34,"textLines":1,"bbox":[0,0,0,0]}
+{"kind":"shape","id":"sh/0vqpcfit","slide":7,"name":"placeholder_2","placeholder":"body","bbox":[0,0,0,0]}
+{"kind":"textbox","id":"sh/lwz65kze","slide":7,"name":"CORE-07-label","text":"CORE-07","textPreview":"CORE-07","textChars":7,"textLines":1,"bbox":[1088,674,132,22]}
+{"kind":"textbox","id":"sh/mx87ep0z","slide":7,"name":"nested-list","text":"Level 0 with spacing after\nLevel 1 custom dash\nLevel 2 custom diamond\nBack to level 0","textPreview":"Level 0 with spacing after | Level 1 custom dash | Level 2 custom diamond | Back to level 0","textChars":85,"textLines":4,"bbox":[90,130,520,430]}
+{"kind":"textbox","id":"sh/nyho7uhk","slide":7,"name":"paragraph-alignment","text":"Left paragraph with 12 pt after\nCentered paragraph with explicit before and after spacing\nRight aligned final paragraph","textPreview":"Left paragraph with 12 pt after | Centered paragraph with explicit before and after spacing | Right aligned final paragraph","textChars":119,"textLines":3,"bbox":[690,130,500,430]}
+{"kind":"notes","id":"nt/sd1sdh","slide":7,"text":"REF-ID: CORE-07\nEXPECTED: native\nPURPOSE: Bullet characters, list indentation, paragraph spacing and alignment\nOBJECTS: nested-list; paragraph-alignment\nAUTHORING: Generated with @oai/artifact-tool. Slide size 1280x720 CSS px = 13.333x7.5 in."}
+{"kind":"slide","id":"sl/tapvgl","slide":8,"title":"Solid, transparent, gradient, and pattern fills","textShapes":8}
+{"kind":"textbox","id":"sh/8v6twba1","slide":8,"name":"placeholder_1","placeholder":"title","text":"Solid, transparent, gradient, and pattern fills","textPreview":"Solid, transparent, gradient, and pattern fills","textChars":47,"textLines":1,"bbox":[0,0,0,0]}
+{"kind":"shape","id":"sh/7axsn69g","slide":8,"name":"placeholder_2","placeholder":"body","bbox":[0,0,0,0]}
+{"kind":"textbox","id":"sh/m9obu1sv","slide":8,"name":"CORE-08-label","text":"CORE-08","textPreview":"CORE-08","textChars":7,"textLines":1,"bbox":[1088,674,132,22]}
+{"kind":"shape","id":"sh/l8falwrq","slide":8,"name":"solid","bbox":[94,140,300,150]}
+{"kind":"textbox","id":"sh/k76tsba5","slide":8,"name":"caption-solid","text":"solid","textPreview":"solid","textChars":5,"textLines":1,"bbox":[94,304,300,28]}
+{"kind":"shape","id":"sh/z6xsj69k","slide":8,"name":"transparent-50","bbox":[486,140,300,150]}
+{"kind":"textbox","id":"sh/y54rq1sz","slide":8,"name":"caption-transparent-50","text":"transparent-50","textPreview":"transparent-50","textChars":14,"textLines":1,"bbox":[486,304,300,28]}
+{"kind":"shape","id":"sh/d4vahwre","slide":8,"name":"theme-tint","bbox":[878,140,300,150]}
+{"kind":"textbox","id":"sh/c3m9orat","slide":8,"name":"caption-theme-tint","text":"theme-tint","textPreview":"theme-tint","textChars":10,"textLines":1,"bbox":[878,304,300,28]}
+{"kind":"shape","id":"sh/qp8b694f","slide":8,"name":"linear","bbox":[94,380,300,150]}
+{"kind":"textbox","id":"sh/bqhczelk","slide":8,"name":"caption-linear","text":"linear","textPreview":"linear","textChars":6,"textLines":1,"bbox":[94,544,300,28]}
+{"kind":"shape","id":"sh/crqt8jm5","slide":8,"name":"radial","bbox":[486,380,300,150]}
+{"kind":"textbox","id":"sh/dszu1o3q","slide":8,"name":"caption-radial","text":"radial","textPreview":"radial","textChars":6,"textLines":1,"bbox":[486,544,300,28]}
+{"kind":"shape","id":"sh/21ob2943","slide":8,"name":"pattern","bbox":[878,380,300,150]}
+{"kind":"textbox","id":"sh/32xcvulo","slide":8,"name":"caption-pattern","text":"pattern","textPreview":"pattern","textChars":7,"textLines":1,"bbox":[878,544,300,28]}
+{"kind":"notes","id":"nt/tapvgl","slide":8,"text":"REF-ID: CORE-08\nEXPECTED: native\nPURPOSE: Fill parsing, color transforms, gradients, transparency, and patterns\nOBJECTS: solid; transparent-50; theme-tint; linear; radial; pattern\nAUTHORING: Generated with @oai/artifact-tool. Slide size 1280x720 CSS px = 13.333x7.5 in."}
+{"kind":"slide","id":"sl/c1t9mc","slide":9,"title":"Line styles, arrowheads, and connectors","textShapes":9}
+{"kind":"textbox","id":"sh/n6pw3ylg","slide":9,"name":"placeholder_1","placeholder":"title","text":"Line styles, arrowheads, and connectors","textPreview":"Line styles, arrowheads, and connectors","textChars":39,"textLines":1,"bbox":[0,0,0,0]}
+{"kind":"shape","id":"sh/o7yxw321","slide":9,"name":"placeholder_2","placeholder":"body","bbox":[0,0,0,0]}
+{"kind":"textbox","id":"sh/987e583m","slide":9,"name":"CORE-09-label","text":"CORE-09","textPreview":"CORE-09","textChars":7,"textLines":1,"bbox":[1088,674,132,22]}
+{"kind":"shape","id":"sh/a90fydk7","slide":9,"name":"line-solid","bbox":[96,130,450,0]}
+{"kind":"textbox","id":"sh/va9w7ils","slide":9,"name":"line-label-solid","text":"solid · 1px","textPreview":"solid · 1px","textChars":11,"textLines":1,"bbox":[566,114,190,36]}
+{"kind":"shape","id":"sh/wbix032x","slide":9,"name":"line-dashed","bbox":[96,196,450,28]}
+{"kind":"textbox","id":"sh/xcre983i","slide":9,"name":"line-label-dashed","text":"dashed · 2px","textPreview":"dashed · 2px","textChars":12,"textLines":1,"bbox":[566,180,190,36]}
+{"kind":"shape","id":"sh/qdwvm9kn","slide":9,"name":"line-dotted","bbox":[96,262,450,0]}
+{"kind":"textbox","id":"sh/re5wvel8","slide":9,"name":"line-label-dotted","text":"dotted · 3px","textPreview":"dotted · 3px","textChars":12,"textLines":1,"bbox":[566,246,190,36]}
+{"kind":"shape","id":"sh/byxgne94","slide":9,"name":"line-dash-dot","bbox":[96,328,450,28]}
+{"kind":"textbox","id":"sh/axozu9sj","slide":9,"name":"line-label-dash-dot","text":"dash-dot · 4px","textPreview":"dash-dot · 4px","textChars":14,"textLines":1,"bbox":[566,312,190,36]}
+{"kind":"shape","id":"sh/x0zypora","slide":9,"name":"line-dash-dot-dot","bbox":[96,394,450,0]}
+{"kind":"textbox","id":"sh/wzqhwjap","slide":9,"name":"line-label-dash-dot-dot","text":"dash-dot-dot · 5px","textPreview":"dash-dot-dot · 5px","textChars":18,"textLines":1,"bbox":[566,378,190,36]}
+{"kind":"textbox","id":"sh/nuxgju9s","slide":9,"name":"connector-source","text":"FROM","textPreview":"FROM","textChars":4,"textLines":1,"bbox":[820,150,150,90]}
+{"kind":"textbox","id":"sh/mtofqpsn","slide":9,"name":"connector-target","text":"TO","textPreview":"TO","textChars":2,"textLines":1,"bbox":[1030,420,160,100]}
+{"kind":"shape","id":"sh/9wfyl4ry","slide":9,"bbox":[912.5,222.5,180,215]}
+{"kind":"notes","id":"nt/c1t9mc","slide":9,"text":"REF-ID: CORE-09\nEXPECTED: native\nPURPOSE: Line dash styles, weights, diagonal geometry, and connected arrowheads\nOBJECTS: line-solid; line-dashed; line-dotted; line-dash-dot; line-dash-dot-dot; curved connector\nAUTHORING: Generated with @oai/artifact-tool. Slide size 1280x720 CSS px = 13.333x7.5 in."}
+{"kind":"slide","id":"sl/8anosd","slide":10,"title":"Preset shapes and adjustment geometry","textShapes":20}
+{"kind":"textbox","id":"sh/rqp0but8","slide":10,"name":"placeholder_1","placeholder":"title","text":"Preset shapes and adjustment geometry","textPreview":"Preset shapes and adjustment geometry","textChars":37,"textLines":1,"bbox":[0,0,0,0]}
+{"kind":"shape","id":"sh/srihkfat","slide":10,"name":"placeholder_2","placeholder":"body","bbox":[0,0,0,0]}
+{"kind":"textbox","id":"sh/tsridkbe","slide":10,"name":"CORE-10-label","text":"CORE-10","textPreview":"CORE-10","textChars":7,"textLines":1,"bbox":[1088,674,132,22]}
+{"kind":"shape","id":"sh/et0zmpsz","slide":10,"name":"preset-rect","bbox":[72,116,138,106]}
+{"kind":"textbox","id":"sh/fu90fut4","slide":10,"name":"caption-rect","text":"rect","textPreview":"rect","textChars":4,"textLines":1,"bbox":[62,228,158,28]}
+{"kind":"shape","id":"sh/gvi1ozap","slide":10,"name":"preset-roundRect","bbox":[270,116,138,106]}
+{"kind":"textbox","id":"sh/1wrih4ba","slide":10,"name":"caption-roundRect","text":"roundRect","textPreview":"roundRect","textChars":9,"textLines":1,"bbox":[260,228,158,28]}
+{"kind":"shape","id":"sh/2x0jq9sv","slide":10,"name":"preset-ellipse","bbox":[468,116,138,106]}
+{"kind":"textbox","id":"sh/3i90jetg","slide":10,"name":"caption-ellipse","text":"ellipse","textPreview":"ellipse","textChars":7,"textLines":1,"bbox":[458,228,158,28]}
+{"kind":"shape","id":"sh/je5gn21o","slide":10,"name":"preset-triangle","bbox":[666,116,138,106]}
+{"kind":"textbox","id":"sh/idwzex03","slide":10,"name":"caption-triangle","text":"triangle","textPreview":"triangle","textChars":8,"textLines":1,"bbox":[656,228,158,28]}
+{"kind":"shape","id":"sh/5gnypsju","slide":10,"name":"preset-diamond","bbox":[864,116,138,106]}
+{"kind":"textbox","id":"sh/kfehg7i9","slide":10,"name":"caption-diamond","text":"diamond","textPreview":"diamond","textChars":7,"textLines":1,"bbox":[854,228,158,28]}
+{"kind":"shape","id":"sh/valgji1s","slide":10,"name":"preset-parallelogram","bbox":[1062,116,138,106]}
+{"kind":"textbox","id":"sh/a9cfad07","slide":10,"name":"caption-parallelogram","text":"parallelogram","textPreview":"parallelogram","textChars":13,"textLines":1,"bbox":[1052,228,158,28]}
+{"kind":"shape","id":"sh/xc3ylsji","slide":10,"name":"preset-trapezoid","bbox":[72,292,138,106]}
+{"kind":"textbox","id":"sh/wbuxcnix","slide":10,"name":"caption-trapezoid","text":"trapezoid","textPreview":"trapezoid","textChars":9,"textLines":1,"bbox":[62,404,158,28]}
+{"kind":"shape","id":"sh/f6pgvmhw","slide":10,"name":"preset-chevron","bbox":[270,292,138,106]}
+{"kind":"textbox","id":"sh/u5gzmh0b","slide":10,"name":"caption-chevron","text":"chevron","textPreview":"chevron","textChars":7,"textLines":1,"bbox":[260,404,158,28]}
+{"kind":"shape","id":"sh/q10jelkj","slide":10,"name":"preset-rightArrow","bbox":[468,292,138,106]}
+{"kind":"textbox","id":"sh/r29knq14","slide":10,"name":"caption-rightArrow","text":"rightArrow","textPreview":"rightArrow","textChars":10,"textLines":1,"bbox":[458,404,158,28]}
+{"kind":"shape","id":"sh/c3i1gv2p","slide":10,"name":"preset-leftRightArrow","bbox":[666,292,138,106]}
+{"kind":"textbox","id":"sh/d4b2pgja","slide":10,"name":"caption-leftRightArrow","text":"leftRightArrow","textPreview":"leftRightArrow","textChars":14,"textLines":1,"bbox":[656,404,158,28]}
+{"kind":"shape","id":"sh/e5kjilkf","slide":10,"name":"preset-star5","bbox":[864,292,138,106]}
+{"kind":"textbox","id":"sh/z6tkrq10","slide":10,"name":"caption-star5","text":"star5","textPreview":"star5","textChars":5,"textLines":1,"bbox":[854,404,158,28]}
+{"kind":"shape","id":"sh/0721kv2l","slide":10,"name":"preset-donut","bbox":[1062,292,138,106]}
+{"kind":"textbox","id":"sh/18b2t0j6","slide":10,"name":"caption-donut","text":"donut","textPreview":"donut","textChars":5,"textLines":1,"bbox":[1052,404,158,28]}
+{"kind":"shape","id":"sh/u9gj61kb","slide":10,"name":"preset-pie","bbox":[72,468,138,106]}
+{"kind":"textbox","id":"sh/fap0f6lw","slide":10,"name":"caption-pie","text":"pie","textPreview":"pie","textChars":3,"textLines":1,"bbox":[62,580,158,28]}
+{"kind":"shape","id":"sh/h0fe1o7q","slide":10,"name":"preset-heart","bbox":[270,468,138,106]}
+{"kind":"textbox","id":"sh/wz6d8jq5","slide":10,"name":"caption-heart","text":"heart","textPreview":"heart","textChars":5,"textLines":1,"bbox":[260,580,158,28]}
+{"kind":"shape","id":"sh/vexczypk","slide":10,"name":"preset-flowChartTerminator","bbox":[468,468,138,106]}
+{"kind":"textbox","id":"sh/udov6t8z","slide":10,"name":"caption-flowChartTerminator","text":"flowChartTerminator","textPreview":"flowChartTerminator","textChars":19,"textLines":1,"bbox":[458,580,158,28]}
+{"kind":"shape","id":"sh/54ze587m","slide":10,"name":"preset-flowChartDocument","bbox":[666,468,138,106]}
+{"kind":"textbox","id":"sh/43qdc3q1","slide":10,"name":"caption-flowChartDocument","text":"flowChartDocument","textPreview":"flowChartDocument","textChars":17,"textLines":1,"bbox":[656,580,158,28]}
+{"kind":"shape","id":"sh/j2hw3ypw","slide":10,"name":"preset-cube","bbox":[864,468,138,106]}
+{"kind":"textbox","id":"sh/i18vat8b","slide":10,"name":"caption-cube","text":"cube","textPreview":"cube","textChars":4,"textLines":1,"bbox":[854,580,158,28]}
+{"kind":"shape","id":"sh/l8vut4ri","slide":10,"name":"preset-can","bbox":[1062,468,138,106]}
+{"kind":"textbox","id":"sh/k7md0zqx","slide":10,"name":"caption-can","text":"can","textPreview":"can","textChars":3,"textLines":1,"bbox":[1052,580,158,28]}
+{"kind":"notes","id":"nt/8anosd","slide":10,"text":"REF-ID: CORE-10\nEXPECTED: native\nPURPOSE: PowerPoint preset geometry and non-default rounded-rectangle adjustment\nOBJECTS: preset-rect; preset-roundRect; preset-ellipse; preset-triangle; preset-diamond; preset-parallelogram; preset-trapezoid; preset-chevron; preset-rightArrow; preset-leftRightArrow; preset-star5; preset-donut; preset-pie; preset-heart; preset-flowChartTerminator; preset-flowChartDocument; preset-cube; preset-can\nAUTHORING: Generated with @oai/artifact-tool. Slide size 1280x720 CSS px = 13.333x7.5 in."}
+{"kind":"slide","id":"sl/26fl0k","slide":11,"title":"Custom freeform paths","textShapes":4}
+{"kind":"textbox","id":"sh/j2pw7elo","slide":11,"name":"placeholder_1","placeholder":"title","text":"Custom freeform paths","textPreview":"Custom freeform paths","textChars":21,"textLines":1,"bbox":[0,0,0,0]}
+{"kind":"shape","id":"sh/43ydgj2t","slide":11,"name":"placeholder_2","placeholder":"body","bbox":[0,0,0,0]}
+{"kind":"textbox","id":"sh/547e943e","slide":11,"name":"CORE-11-label","text":"CORE-11","textPreview":"CORE-11","textChars":7,"textLines":1,"bbox":[1088,674,132,22]}
+{"kind":"shape","id":"sh/650vi9kz","slide":11,"name":"custom-zigzag","bbox":[100,150,420,300]}
+{"kind":"shape","id":"sh/rq9wbelk","slide":11,"name":"custom-open-path","bbox":[690,150,420,300]}
+{"kind":"textbox","id":"sh/srixkj25","slide":11,"name":"caption-closed custom path","text":"closed custom path","textPreview":"closed custom path","textChars":18,"textLines":1,"bbox":[100,474,420,28]}
+{"kind":"textbox","id":"sh/tsredo3q","slide":11,"name":"caption-open custom path · 13°","text":"open custom path · 13°","textPreview":"open custom path · 13°","textChars":22,"textLines":1,"bbox":[690,474,420,28]}
+{"kind":"notes","id":"nt/26fl0k","slide":11,"text":"REF-ID: CORE-11\nEXPECTED: native\nPURPOSE: Custom DrawingML path conversion, open versus closed path, and rotation\nOBJECTS: custom-zigzag; custom-open-path\nAUTHORING: Generated with @oai/artifact-tool. Slide size 1280x720 CSS px = 13.333x7.5 in."}
+{"kind":"slide","id":"sl/5lq840","slide":12,"title":"Picture crops and masks","textShapes":7}
+{"kind":"textbox","id":"sh/6xc3yxcr","slide":12,"name":"placeholder_1","placeholder":"title","text":"Picture crops and masks","textPreview":"Picture crops and masks","textChars":23,"textLines":1,"bbox":[0,0,0,0]}
+{"kind":"shape","id":"sh/tk32tsbi","slide":12,"name":"placeholder_2","placeholder":"body","bbox":[0,0,0,0]}
+{"kind":"textbox","id":"sh/8jul0nux","slide":12,"name":"CORE-12-label","text":"CORE-12","textPreview":"CORE-12","textChars":7,"textLines":1,"bbox":[1088,674,132,22]}
+{"kind":"textbox","id":"sh/yts3udcv","slide":12,"name":"caption-plain","text":"plain","textPreview":"plain","textChars":5,"textLines":1,"bbox":[72,316,270,28]}
+{"kind":"textbox","id":"sh/kvalwnul","slide":12,"name":"caption-crop-left-right","text":"crop-left-right","textPreview":"crop-left-right","textChars":15,"textLines":1,"bbox":[373,316,210,28]}
+{"kind":"textbox","id":"sh/aps3qdcj","slide":12,"name":"caption-crop-asymmetric","text":"crop-asymmetric","textPreview":"crop-asymmetric","textChars":15,"textLines":1,"bbox":[614,316,240,28]}
+{"kind":"textbox","id":"sh/9grql8fi","slide":12,"name":"caption-circle","text":"circle","textPreview":"circle","textChars":6,"textLines":1,"bbox":[885,326,180,28]}
+{"kind":"textbox","id":"sh/nep8jyxs","slide":12,"name":"caption-both flips · contain","text":"both flips · contain","textPreview":"both flips · contain","textChars":20,"textLines":1,"bbox":[290,612,620,28]}
+{"kind":"image","id":"im/ydojih4b","slide":12,"name":"","geometry":"rect","alt":"plain TL TR BL BR crop calibration","bbox":[72,128,270,170]}
+{"kind":"image","id":"im/kf61krmh","slide":12,"name":"","geometry":"rect","alt":"crop-left-right TL TR BL BR crop calibration","bbox":[373,128,210,170]}
+{"kind":"image","id":"im/2983ul4v","slide":12,"name":"","geometry":"roundRect","alt":"crop-asymmetric TL TR BL BR crop calibration","bbox":[614,128,240,170]}
+{"kind":"image","id":"im/vexsjeh8","slide":12,"name":"","geometry":"ellipse","alt":"circle TL TR BL BR crop calibration","bbox":[885,128,180,180]}
+{"kind":"image","id":"im/hgfalozy","slide":12,"name":"","alt":"horizontal and vertical flip calibration","bbox":[290,410,620,190]}
+{"kind":"notes","id":"nt/5lq840","slide":12,"text":"REF-ID: CORE-12\nEXPECTED: native\nPURPOSE: SVG preference, crops, masks, rotation, fit, alt text, and picture flips\nOBJECTS: plain; crop-left-right; crop-asymmetric; circle; both flips\nAUTHORING: Generated with @oai/artifact-tool. Slide size 1280x720 CSS px = 13.333x7.5 in."}
+{"kind":"slide","id":"sl/z3l6dk","slide":13,"title":"Native table geometry and cell formatting","textShapes":2}
+{"kind":"textbox","id":"sh/adgnelwn","slide":13,"name":"placeholder_1","placeholder":"title","text":"Native table geometry and cell formatting","textPreview":"Native table geometry and cell formatting","textChars":41,"textLines":1,"bbox":[0,0,0,0]}
+{"kind":"shape","id":"sh/xgr690ve","slide":13,"name":"placeholder_2","placeholder":"body","bbox":[0,0,0,0]}
+{"kind":"textbox","id":"sh/wfy5gvet","slide":13,"name":"CORE-13-label","text":"CORE-13","textPreview":"CORE-13","textChars":7,"textLines":1,"bbox":[1088,674,132,22]}
+{"kind":"table","id":"tb/a1grulcf","slide":13,"name":"","rows":4,"cols":4,"preview":"Merged header | Status","bbox":[90,150,1100,420]}
+{"kind":"notes","id":"nt/z3l6dk","slide":13,"text":"REF-ID: CORE-13\nEXPECTED: native\nPURPOSE: Native table with unequal tracks, explicit row heights, merges, margins, fills, and borders\nOBJECTS: 4x4 table; header colspan=3; 2x2 merge\nAUTHORING: Generated with @oai/artifact-tool. Slide size 1280x720 CSS px = 13.333x7.5 in."}
+{"kind":"slide","id":"sl/w43p2f","slide":14,"title":"Integrated composition with inherited layout","textShapes":6}
+{"kind":"textbox","id":"sh/adsf2t8v","slide":14,"name":"placeholder_1","placeholder":"title","text":"Integrated composition with inherited layout","textPreview":"Integrated composition with inherited layout","textChars":44,"textLines":1,"bbox":[0,0,0,0]}
+{"kind":"shape","id":"sh/xgjyxo76","slide":14,"name":"placeholder_2","placeholder":"body","bbox":[0,0,0,0]}
+{"kind":"textbox","id":"sh/cfax43q1","slide":14,"name":"CORE-14-label","text":"CORE-14","textPreview":"CORE-14","textChars":7,"textLines":1,"bbox":[1088,674,132,22]}
+{"kind":"textbox","id":"sh/yhcf6t8r","slide":14,"name":"integrated-headline","text":"Inherited layout, native objects","textPreview":"Inherited layout, native objects","textChars":32,"textLines":1,"bbox":[622,188,500,76]}
+{"kind":"textbox","id":"sh/lk3y187i","slide":14,"name":"integrated-list","text":"Asymmetric picture crop\nTheme-colored native geometry\nMixed inherited and direct text","textPreview":"Asymmetric picture crop | Theme-colored native geometry | Mixed inherited and direct text","textChars":85,"textLines":3,"bbox":[622,292,500,190]}
+{"kind":"textbox","id":"sh/kjuh83qx","slide":14,"name":"integrated-start","text":"A","textPreview":"A","textChars":1,"textLines":1,"bbox":[656,520,110,64]}
+{"kind":"textbox","id":"sh/76lg3ipo","slide":14,"name":"integrated-end","text":"B","textPreview":"B","textChars":1,"textLines":1,"bbox":[964,510,150,80]}
+{"kind":"shape","id":"sh/m5czad83","slide":14,"bbox":[766,550,198,2]}
+{"kind":"image","id":"im/yl0rq1ob","slide":14,"name":"","geometry":"roundRect","alt":"Integrated crop calibration","bbox":[110,186,440,300]}
+{"kind":"notes","id":"nt/w43p2f","slide":14,"text":"REF-ID: CORE-14\nEXPECTED: native\nPURPOSE: Feature interaction on an alternate layout\nOBJECTS: alternate title/body placeholders; cropped SVG; rich list; elbow connector\nAUTHORING: Generated with @oai/artifact-tool. Slide size 1280x720 CSS px = 13.333x7.5 in."}
+{"kind":"slide","id":"sl/sy0wig","slide":15,"title":"Video crops, opacity, flips, and trimming","textShapes":11}
+{"kind":"textbox","id":"sh/9g72dszu","slide":15,"name":"placeholder_1","placeholder":"title","text":"Video crops, opacity, flips, and trimming","textPreview":"Video crops, opacity, flips, and trimming","textChars":41,"textLines":1,"bbox":[0,0,0,0]}
+{"kind":"shape","id":"sh/mdwj2d0j","slide":15,"name":"placeholder_2","placeholder":"body","bbox":[0,0,0,0]}
+{"kind":"textbox","id":"sh/7e5kbih4","slide":15,"name":"CORE-15-label","text":"CORE-15","textPreview":"CORE-15","textChars":7,"textLines":1,"bbox":[1088,674,132,22]}
+{"kind":"textbox","id":"sh/lcn298zy","slide":15,"name":"caption-crop","text":"crop","textPreview":"crop","textChars":4,"textLines":1,"bbox":[70,359,250,28]}
+{"kind":"textbox","id":"sh/ypwjyd07","slide":15,"name":"caption-trim 1.25s / 0.75s","text":"trim 1.25s / 0.75s","textPreview":"trim 1.25s / 0.75s","textChars":18,"textLines":1,"bbox":[70,385,250,28]}
+{"kind":"textbox","id":"sh/cnu1w3ih","slide":15,"name":"caption-circle","text":"circle","textPreview":"circle","textChars":6,"textLines":1,"bbox":[370,359,190,28]}
+{"kind":"textbox","id":"sh/xon258zm","slide":15,"name":"caption-trim 0.5s / 0.5s","text":"trim 0.5s / 0.5s","textPreview":"trim 0.5s / 0.5s","textChars":16,"textLines":1,"bbox":[370,385,190,28]}
+{"kind":"textbox","id":"sh/or6pwb6l","slide":15,"name":"caption-opacity","text":"opacity","textPreview":"opacity","textChars":7,"textLines":1,"bbox":[620,359,250,28]}
+{"kind":"textbox","id":"sh/3qx836p0","slide":15,"name":"caption-45% opacity · trim 0.25s","text":"45% opacity · trim 0.25s","textPreview":"45% opacity · trim 0.25s","textChars":24,"textLines":1,"bbox":[620,385,250,28]}
+{"kind":"textbox","id":"sh/14fq1w7u","slide":15,"name":"caption-flips","text":"flips","textPreview":"flips","textChars":5,"textLines":1,"bbox":[920,359,250,28]}
+{"kind":"textbox","id":"sh/g3mpsbq9","slide":15,"name":"caption-H+V flip · trim 1s","text":"H+V flip · trim 1s","textPreview":"H+V flip · trim 1s","textChars":18,"textLines":1,"bbox":[920,385,250,28]}
+{"kind":"textbox","id":"sh/f2d8z6p4","slide":15,"name":"video-source-note","text":"One embedded 6-second H.264 calibration clip; four independent native video shapes.","textPreview":"One embedded 6-second H.264 calibration clip; four independent native video shapes.","textChars":83,"textLines":1,"bbox":[180,510,920,54]}
+{"kind":"image","id":"im/h4jmdoji","slide":15,"name":"","geometry":"rect","alt":"VIDEOCASE crop embedded MP4 poster","bbox":[70,155,250,190]}
+{"kind":"image","id":"im/u1sn2t07","slide":15,"name":"","geometry":"ellipse","alt":"VIDEOCASE circle embedded MP4 poster","bbox":[370,155,190,190]}
+{"kind":"image","id":"im/uxkfe1kj","slide":15,"name":"","geometry":"rect","alt":"VIDEOCASE opacity embedded MP4 poster","bbox":[620,155,250,190]}
+{"kind":"image","id":"im/h0be9g3a","slide":15,"name":"","geometry":"rect","alt":"VIDEOCASE flips embedded MP4 poster","bbox":[920,155,250,190]}
+{"kind":"notes","id":"nt/sy0wig","slide":15,"text":"REF-ID: CORE-15\nEXPECTED: native\nPURPOSE: Embedded video crop, ellipse mask, opacity, flips, and p14 trim metadata\nOBJECTS: crop video st=1250 end=750; circle video st=500 end=500; opacity video alpha=45000 st=250 end=250; flipped video flipH+flipV st=1000 end=1000\nAUTHORING: Generated with @oai/artifact-tool. Slide size 1280x720 CSS px = 13.333x7.5 in."}

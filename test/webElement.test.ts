@@ -212,6 +212,27 @@ describe('slide-agent web import', { timeout: 30_000 }, () => {
     await writeFile(join(root, 'v2.html'), '<!doctype html><html><head><title>V2</title></head><body><script>document.body.textContent="two"</script></body></html>');
     const first = JSON.parse((await cli(root, 'web', 'import', dir, 'v1.html', '--no-poster')).stdout);
     const before = await loadDeck(dir);
+    const target = before.slides.find((slide) => slide.id === first.slideId)!.elements[0];
+    target.w = 1200;
+    target.h = 600;
+    await writeFile(join(dir, 'deck.json'), `${JSON.stringify(before, null, 2)}\n`, 'utf8');
+
+    const inspected = await cli(root, 'web', 'inspect', dir, first.slideId);
+    expect(inspected.code, inspected.stderr).toBe(EXIT_OK);
+    expect(JSON.parse(inspected.stdout)).toMatchObject({
+      slideId: first.slideId,
+      elementId: target.id,
+      src: first.src,
+      size: [1200, 600],
+      missingAssets: [],
+    });
+
+    const checked = await cli(root, 'web', 'check', 'v2.html', '--replace', first.slideId, '--deck', dir);
+    expect(checked.code, checked.stderr).toBe(EXIT_OK);
+    expect(JSON.parse(checked.stdout)).toMatchObject({
+      size: { w: 1200, h: 600 },
+      replaceTarget: { slideId: first.slideId, elementId: target.id },
+    });
 
     const result = await cli(root, 'web', 'replace', dir, first.slideId, 'v2.html');
     expect(result.code, result.stderr).toBe(EXIT_OK);
