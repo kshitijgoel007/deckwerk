@@ -160,6 +160,33 @@ const TAG_FORMAT_STYLES: Record<string, Array<[string, string]>> = {
   SUB: [['vertical-align', 'sub'], ['font-size', BASELINE_RUN_FONT_SIZE]],
 };
 
+/**
+ * Drop the box-level declarations (see PASTE_LAYOUT_PROPERTIES) from every
+ * styled node under `root`, and unwrap a span that has nothing left to say.
+ *
+ * Paste is not the only way they arrive. When a deletion joins two blocks —
+ * a cut or Backspace across a list item boundary — Chromium wraps the text it
+ * moves in a span wearing the removed block's computed style, so a bullet's
+ * hanging indent turns up as `text-indent: -1.4em` on an inline run. Node
+ * identity is preserved (styles are edited, wrappers replaced by their own
+ * children), so a live caret inside the text stays where it was.
+ */
+export function stripLayoutDeclarations(root: ParentNode): boolean {
+  let changed = false;
+  for (const node of [...root.querySelectorAll<HTMLElement>('[style]')]) {
+    if (node.matches(PASTE_LAYOUT_KEPT) || !node.style) continue;
+    for (const property of PASTE_LAYOUT_PROPERTIES) {
+      if (!node.style.getPropertyValue(property)) continue;
+      node.style.removeProperty(property);
+      changed = true;
+    }
+    if (node.getAttribute('style')?.trim()) continue;
+    node.removeAttribute('style');
+    if (node.tagName === 'SPAN' && node.attributes.length === 0) node.replaceWith(...node.childNodes);
+  }
+  return changed;
+}
+
 export function sanitizePastedTextHtml(html: string): string {
   const template = document.createElement('template');
   template.innerHTML = html;
@@ -220,11 +247,7 @@ export function sanitizePastedTextHtml(html: string): string {
     }
     if (!node.getAttribute('style')?.trim()) node.removeAttribute('style');
   }
-  for (const node of root.querySelectorAll<HTMLElement>('[style]')) {
-    if (node.matches(PASTE_LAYOUT_KEPT) || !node.style) continue;
-    for (const property of PASTE_LAYOUT_PROPERTIES) node.style.removeProperty(property);
-    if (!node.getAttribute('style')?.trim()) node.removeAttribute('style');
-  }
+  stripLayoutDeclarations(root);
   for (const node of root.querySelectorAll<HTMLElement>('*')) {
     for (const attribute of [...node.attributes]) {
       const name = attribute.name.toLowerCase();

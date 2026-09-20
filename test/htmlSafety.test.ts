@@ -1,6 +1,6 @@
 import { JSDOM } from 'jsdom';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { sanitizeAuthoredHtml } from '../src/shared/htmlSafety.js';
+import { sanitizeAuthoredHtml, stripLayoutDeclarations } from '../src/shared/htmlSafety.js';
 import { ElementSchema } from '../src/shared/deck.js';
 
 describe('HTML import safety and fallback compatibility', () => {
@@ -29,6 +29,23 @@ describe('HTML import safety and fallback compatibility', () => {
   it('reports data URLs for extraction into deck assets', () => {
     const result = sanitizeAuthoredHtml('<section class="slide"><img src="data:image/png;base64,AAAA"></section>');
     expect(result.report.dataUrls).toEqual([{ mime: 'image/png', value: 'data:image/png;base64,AAAA' }]);
+  });
+
+  it('strips block layout a deletion copied onto an inline run, keeping the caret\'s text node', () => {
+    // Chromium joins two list items by wrapping the moved text in a span that
+    // wears the removed item's computed style (seed 9012026, step 179 of the
+    // list fuzz). Character formatting stays; the box's layout goes; a span
+    // with nothing left to say is unwrapped around its own text node.
+    const { document } = new JSDOM('').window;
+    const box = document.createElement('div');
+    box.innerHTML = '<ol><li><span style="text-indent: -1.4em; line-height: 1.2;">71w174</span>'
+      + '<span style="font-weight: 700; margin-left: 4px;">bold</span><br></li></ol>';
+    const plainText = box.querySelector('span')!.firstChild;
+
+    expect(stripLayoutDeclarations(box)).toBe(true);
+    expect(box.innerHTML).toBe('<ol><li>71w174<span style="font-weight: 700;">bold</span><br></li></ol>');
+    expect(box.querySelector('li')!.firstChild).toBe(plainText);
+    expect(stripLayoutDeclarations(box)).toBe(false);
   });
 
   it('keeps old HTML elements unchanged and accepts isolated fallback fields', () => {

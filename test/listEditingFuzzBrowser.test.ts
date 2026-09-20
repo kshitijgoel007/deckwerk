@@ -145,6 +145,45 @@ describe.skipIf(!electronBinary)('list editing under a sweep of real edits', () 
     }
   });
 
+  // Minimised from the walk (seed 9012026, step 179). Chromium's deletion
+  // merges the two items and wraps the surviving text in a span carrying the
+  // removed item's computed layout — the hanging indent list items render
+  // with. Paste already strips such declarations; a cut has to as well.
+  it('cutting across two items leaves no layout declaration on the merged text', {
+    timeout: 120_000,
+  }, async () => {
+    await session.reset('<p>alpha</p><p>beta</p>');
+    await session.edit();
+    await session.cdp.chord('a', 'KeyA', 65, MOD, ['selectAll']);
+    expect(await session.chooseList('Numbered')).toEqual(['Numbered']);
+    await session.caretIn('alpha', 'start');
+    await session.cdp.chord('ArrowDown', 'ArrowDown', 40, 8);
+    await session.cdp.chord('x', 'KeyX', 88, MOD, ['cut']);
+    await wait(150);
+    const markup = await session.markup();
+    expect(markup, 'the cut left a layout declaration behind').not.toMatch(/text-indent|line-height:/);
+    await expectSound('after cutting across two numbered items');
+  });
+
+  // Minimised from the same walk (step 191): Return twice on the last item
+  // leaves the list, and Chromium hands the new paragraph the item's computed
+  // indent in pixels.
+  it('leaving a list with Return leaves no layout declaration on the new paragraph', {
+    timeout: 120_000,
+  }, async () => {
+    await session.reset('<p>alpha</p><p>beta</p>');
+    await session.edit();
+    await session.cdp.chord('a', 'KeyA', 65, MOD, ['selectAll']);
+    expect(await session.chooseList('Numbered')).toEqual(['Numbered']);
+    await session.caretIn('beta', 'end');
+    await session.cdp.key('Enter', 13);
+    await session.cdp.key('Enter', 13);
+    await wait(150);
+    const markup = await session.markup();
+    expect(markup, 'Return left a layout declaration behind').not.toMatch(/text-indent|line-height:/);
+    await expectSound('after leaving a numbered list with Return');
+  });
+
   for (const walkSeed of WALK_SEEDS) {
     it(`survives a seeded walk through the list vocabulary (seed ${walkSeed})`, {
       timeout: RUN_EXHAUSTIVE ? 60 * 60_000 : 600_000,
