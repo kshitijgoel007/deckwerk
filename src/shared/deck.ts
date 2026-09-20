@@ -22,7 +22,7 @@ const ThemeFontRoleSchema = z.object({
   color: z.string().optional(),
 });
 
-const ThemeStyleSchema = z.object({
+export const ThemeStyleSchema = z.object({
   fonts: z.object({
     title: ThemeFontRoleSchema,
     heading: ThemeFontRoleSchema,

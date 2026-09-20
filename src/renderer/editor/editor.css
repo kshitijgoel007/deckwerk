@@ -3311,6 +3311,11 @@ button.morph-object-hit.selected-source:hover:not(:disabled) {
   justify-content: flex-end;
 }
 
+.paste-theme-dialog { width: min(620px, calc(100vw - 48px)); }
+.paste-theme-description { margin: 0; color: var(--text); }
+.paste-theme-detail { margin: 0; color: var(--muted); line-height: 1.6; }
+.paste-theme-actions { flex-wrap: wrap; }
+
 /* Deck picker groups + sharing (collab client, --access servers). */
 .deck-picker-list { display: flex; flex-direction: column; gap: 4px; max-height: 52vh; overflow-y: auto; }
 .deck-picker-group {
