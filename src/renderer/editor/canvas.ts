@@ -28,6 +28,7 @@ import { isBaselineFormat, type BaselineFormat, type InlineTextFormat } from './
 import { classifyMediaName, isPendingSrc, makePendingSrc, pendingToken } from '@shared/media.js';
 import {
   normalizeParagraphHtml,
+  stripStructuralWhitespace,
   paragraphUnits,
   paragraphsToList,
   paragraphsToOrderedList,
@@ -5132,6 +5133,12 @@ export class EditorCanvas {
       span.appendChild(selected);
     });
     normalizeInlineStyleSpans(content);
+    // Chromium can move a selected trailing space out of its inline wrapper.
+    // When that wrapper sits beside a block (notably a paragraph pasted into a
+    // table cell), the now-bare space paints as structural whitespace. Apply
+    // the same boundary cleanup used by paste normalization before restoring
+    // the character-offset selection.
+    stripStructuralWhitespace(content);
     this.restoreTextRange(content, offsets);
     this.focusTextSurface(content);
     this.commitLiveTextDom(label);

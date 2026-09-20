@@ -270,6 +270,7 @@ export class UserDirectory {
   private users = new Map<string, KnownUser>();
   private loaded = false;
   private writing: Promise<void> = Promise.resolve();
+  private pending = new Set<Promise<void>>();
 
   constructor(private readonly file: string) {}
 
@@ -295,7 +296,17 @@ export class UserDirectory {
   }
 
   /** Record that this identity was seen just now; persists only on change. */
-  async note(identity: Identity): Promise<void> {
+  note(identity: Identity): Promise<void> {
+    // Register before the first await in noteNow. Request handlers deliberately
+    // fire-and-forget this work, so shutdown can otherwise call flush while a
+    // note is still loading users.json but has not joined `writing` yet.
+    const task = this.noteNow(identity);
+    this.pending.add(task);
+    void task.finally(() => this.pending.delete(task));
+    return task;
+  }
+
+  private async noteNow(identity: Identity): Promise<void> {
     await this.load();
     const existing = this.users.get(identity.login);
     const now = new Date();
@@ -334,8 +345,9 @@ export class UserDirectory {
    * the request path, so shutdown waits here rather than leaving a write to
    * land in a directory the caller is already deleting.
    */
-  flush(): Promise<void> {
-    return this.writing;
+  async flush(): Promise<void> {
+    await Promise.all([...this.pending]);
+    await this.writing;
   }
 
   async all(): Promise<KnownUser[]> {

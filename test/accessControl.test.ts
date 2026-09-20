@@ -316,6 +316,18 @@ describe('UserDirectory', () => {
     expect((await directory.all())[0].name).toBe('Alice Renamed');
   });
 
+  it('flushes a fire-and-forget note that has not reached its file write yet', async () => {
+    const file = join(dir, 'users.json');
+    const directory = new UserDirectory(file);
+    void directory.note({ login: ALICE, name: 'Alice A' });
+
+    await directory.flush();
+
+    expect(JSON.parse(await readFile(file, 'utf8'))).toEqual([
+      expect.objectContaining({ login: ALICE, name: 'Alice A' }),
+    ]);
+  });
+
   it('starts empty on a corrupt or missing file and repopulates', async () => {
     const file = join(dir, 'users.json');
     await writeFile(file, '{not json', 'utf8');

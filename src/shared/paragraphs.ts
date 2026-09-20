@@ -641,7 +641,7 @@ function isBlockNode(node: Node | null | undefined): boolean {
  * space inside a line, and the `<br>` a deliberate blank line is written as,
  * are content and stay.
  */
-function stripStructuralWhitespace(root: ParentNode & Node): void {
+export function stripStructuralWhitespace(root: ParentNode & Node): void {
   // Between blocks — at the top level, between items, and either side of a
   // nested list inside an item — whitespace-only text is formatting.
   const containers: (ParentNode & Node)[] = [root, ...root.querySelectorAll('*')];
