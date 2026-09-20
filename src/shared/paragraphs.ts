@@ -183,13 +183,35 @@ export function paragraphsToList(html: string, ordered = false): string {
     return out.innerHTML;
   }
   const items = paragraphUnits(template.content)
-    .map((unit) => `<li>${unit.innerHTML}</li>`)
+    .map((unit) => {
+      trimEdgeNewlines(unit);
+      return `<li>${unit.innerHTML}</li>`;
+    })
     .join('');
   const tag = ordered ? 'ol' : 'ul';
   // Nothing to list yet — a box just emptied, or a fresh one — gets a single
   // empty item to type into. It must not invent text: the paste fuzz's oracle
   // that formatting never rewrites the words found "Item" appearing here.
   return `<${tag}>${items || '<li><br></li>'}</${tag}>`;
+}
+
+/**
+ * Inside a `<pre>` a newline is a line break the author wrote; anywhere else
+ * a newline at the edge of a block paints as a blank line, because the box is
+ * white-space: pre-wrap. A pasted code block ends with one. Converting it to
+ * a list item leaves the `<pre>` behind but would keep that newline, so the
+ * item rendered with an empty line under it that nothing could select. The
+ * newlines between lines stay: they are the code's own breaks.
+ */
+function trimEdgeNewlines(unit: HTMLElement): void {
+  const walker = (unit.ownerDocument ?? document).createTreeWalker(unit, NodeFilter.SHOW_TEXT);
+  const texts: Text[] = [];
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) texts.push(node as Text);
+  const first = texts[0];
+  const last = texts[texts.length - 1];
+  if (first) first.data = first.data.replace(/^[ \t\r]*\n/, '');
+  if (last) last.data = last.data.replace(/\n[ \t\r]*$/, '');
+  for (const text of new Set([first, last])) if (text && !text.data) text.remove();
 }
 
 /** Convert paragraph markup to an ordered list. */
