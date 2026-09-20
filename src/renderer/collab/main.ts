@@ -376,6 +376,7 @@ const shellDeps: ShellDeps = {
   save: async () => setStatusMessage('Saved automatically — every edit syncs live.'),
   setStatusMessage,
   runOperation,
+  currentThemeCss: () => cssEditor.getValue(),
   undo: () => bridge.undo(store.get().deck),
   redo: () => bridge.redo(store.get().deck),
 };

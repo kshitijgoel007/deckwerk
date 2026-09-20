@@ -97,6 +97,65 @@ export function importPowerPointToServer(onStatus: (text: string) => void, folde
   importToServer('powerpoint', onStatus, folder);
 }
 
+/**
+ * A dialog for the part of an import nobody can see otherwise.
+ *
+ * The upload reports its bytes on the status line and in the picker's footer,
+ * but once they are out the server converts in silence for up to a minute.
+ * This puts that wait, and any failure, in a dialog above whichever menu or
+ * picker started it. Quick imports never show it: it appears after 500 ms.
+ */
+function importProgress(filename: string, label: string): {
+  update(text: string): void;
+  finish(): void;
+  fail(message: string): void;
+} {
+  const overlay = document.createElement('div');
+  overlay.className = 'workflow-overlay import-progress-overlay';
+  const box = document.createElement('div');
+  box.className = 'workflow-dialog import-progress-dialog';
+  const title = document.createElement('h2');
+  title.textContent = `Importing ${label}`;
+  const status = document.createElement('div');
+  status.className = 'import-progress-status';
+  status.setAttribute('role', 'status');
+  status.setAttribute('aria-live', 'polite');
+  status.setAttribute('aria-busy', 'true');
+  status.textContent = `Uploading “${filename}”…`;
+  box.append(title, status);
+  overlay.append(box);
+
+  let shown = false;
+  const timer = window.setTimeout(() => {
+    shown = true;
+    document.body.append(overlay);
+  }, 500);
+  return {
+    update: (text) => { status.textContent = text; },
+    finish: () => {
+      window.clearTimeout(timer);
+      overlay.remove();
+    },
+    fail: (message) => {
+      window.clearTimeout(timer);
+      if (!shown) document.body.append(overlay);
+      shown = true;
+      title.textContent = `${label} import failed`;
+      status.classList.add('failed');
+      status.setAttribute('aria-busy', 'false');
+      status.textContent = message;
+      const actions = document.createElement('div');
+      actions.className = 'workflow-actions';
+      const close = document.createElement('button');
+      close.textContent = 'Close';
+      close.addEventListener('click', () => overlay.remove());
+      actions.append(close);
+      box.append(actions);
+      close.focus();
+    },
+  };
+}
+
 /** Upload a file and open the deck the server makes of it. */
 export function importToServer(
   source: ImportSource,
@@ -109,24 +168,43 @@ export function importToServer(
   input.type = 'file';
   if (definition.accept) input.accept = definition.accept;
   if (pickFolder) input.webkitdirectory = true;
+  input.hidden = true;
+  // Keep the chooser's control in the document. Besides giving assistive and
+  // browser automation tooling a real upload target, this lets Chromium own
+  // the control for the whole native chooser lifetime instead of relying on a
+  // detached input surviving until the user has picked a file.
+  document.body.append(input);
+  input.addEventListener('cancel', () => input.remove(), { once: true });
   input.addEventListener('change', () => {
     const files = [...input.files ?? []];
+    input.remove();
     if (files.length === 0) return;
+    const label = definition.label.replace(/…$/, '');
+    const progress = importProgress(files[0].name, label);
+    const report = (text: string): void => {
+      onStatus(text);
+      progress.update(text);
+    };
     void (async () => {
       const upload = pickFolder
-        ? await zipPickedFolder(files, onStatus)
+        ? await zipPickedFolder(files, report)
         : { name: files[0].name, body: files[0] as Blob };
       const name = upload.name.replace(/\.(key|pptx|zip)$/i, '');
       const id = await postImport(
         `${definition.route}?name=${encodeURIComponent(name)}${folderQuery(folder)}`,
         upload.body,
-        (sent, total) => onStatus(total > 0
+        (sent, total) => report(total > 0
           ? `Uploading “${upload.name}”… ${Math.round((sent / total) * 100)}% of ${formatSize(total)}`
           : `Uploading “${upload.name}”…`),
-        () => onStatus(`Importing “${upload.name}”… this can take a minute for a large deck.`),
+        () => report(`Converting “${upload.name}”… this can take a minute for a large deck.`),
       );
+      progress.finish();
       goTo(id);
-    })().catch((error) => onStatus(`Import failed: ${error instanceof Error ? error.message : error}`));
+    })().catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      onStatus(`Import failed: ${message}`);
+      progress.fail(message);
+    });
   });
   input.click();
 }

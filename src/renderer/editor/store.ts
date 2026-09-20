@@ -6,9 +6,12 @@ import { applyOpsLenient } from '@shared/collabApply.js';
 import {
   type ClipboardReadResult,
   type ClipboardWriteRequest,
+  pinSlidesToTheme,
   remapElementIds,
   remapSlideIds,
+  slideThemeStylesDiffer,
 } from '@shared/clipboard.js';
+import { effectiveThemeStyle } from '@shared/themes.js';
 import { makeId } from '@shared/geometry.js';
 import { pastedTableData } from '@shared/paragraphs.js';
 import { classifyMediaName } from '@shared/media.js';
@@ -1006,12 +1009,29 @@ export async function cutSelectionToClipboard(store: EditorStore): Promise<numbe
 }
 
 /** Copy whole slides (the rail selection, in deck order). */
-export async function copySlidesToClipboard(store: EditorStore): Promise<number> {
+export async function copySlidesToClipboard(store: EditorStore, currentThemeCss?: string): Promise<number> {
   const slides = store.selectedSlides();
   if (slides.length === 0) return 0;
   pasteCascade = null;
-  await writeSystemClipboard({ kind: 'slides', slides: structuredClone(slides) });
+  const { deck, dir } = store.get();
+  await writeSystemClipboard({
+    kind: 'slides',
+    slides: structuredClone(slides),
+    sourceDeckId: dir,
+    sourceThemeStyle: structuredClone(effectiveThemeStyle(deck, currentThemeCss)),
+  });
   return slides.length;
+}
+
+export type SlidePasteThemeChoice = 'source' | 'destination';
+
+export interface PasteOptions {
+  destinationThemeCss?: string;
+  chooseSlideTheme?: (details: {
+    count: number;
+    source: ReturnType<typeof effectiveThemeStyle>;
+    destination: ReturnType<typeof effectiveThemeStyle>;
+  }) => Promise<SlidePasteThemeChoice | null>;
 }
 
 /**
@@ -1022,6 +1042,7 @@ export async function copySlidesToClipboard(store: EditorStore): Promise<number>
 export async function pasteFromClipboard(
   store: EditorStore,
   providedPayload?: ClipboardReadResult | ClipboardWriteRequest | null,
+  options: PasteOptions = {},
 ): Promise<{ kind: 'elements' | 'slides'; count: number } | null> {
   const payload = providedPayload ?? await readSystemClipboard();
   if (!payload) return null;
@@ -1070,6 +1091,18 @@ export async function pasteFromClipboard(
 
   if (payload.kind === 'slides') {
     const slides = structuredClone(payload.slides);
+    const destination = effectiveThemeStyle(store.get().deck, options.destinationThemeCss);
+    const source = payload.sourceThemeStyle;
+    const crossDeck = payload.sourceDeckId != null
+      && store.get().dir !== null
+      && payload.sourceDeckId !== store.get().dir;
+    if (crossDeck && source && slideThemeStylesDiffer(source, destination)) {
+      const choice = options.chooseSlideTheme
+        ? await options.chooseSlideTheme({ count: slides.length, source, destination })
+        : 'destination';
+      if (choice === null) return null;
+      if (choice === 'source') pinSlidesToTheme(slides, source);
+    }
     for (const slide of slides) remapSlideIds(slide);
     const at = store.get().slideIndex + 1;
     store.commit((deck) => {
@@ -1129,9 +1162,10 @@ export async function pasteFromClipboard(
  */
 export async function pasteInAppClipboard(
   store: EditorStore,
+  options: PasteOptions = {},
 ): Promise<{ kind: 'elements' | 'slides'; count: number } | null> {
   if (!fallbackClipboard) return null;
-  return pasteFromClipboard(store, fallbackClipboard);
+  return pasteFromClipboard(store, fallbackClipboard, options);
 }
 
 /** Native browser paste events expose image bytes even on plain HTTP origins,

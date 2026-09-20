@@ -35,6 +35,9 @@ release/
 
 # Local Keynote corpus used for import spot-checks.
 example-keynote-decks/
+!example-keynote-decks/
+example-keynote-decks/*
+!example-keynote-decks/empty_deck.key
 
 # Built website (npm run build:site).
 dist-site/

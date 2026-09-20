@@ -9,6 +9,7 @@ import {
 } from '../src/renderer/editor/exportPicker.js';
 import { showPdfExportDialog } from '../src/renderer/editor/pdfExportDialog.js';
 import { createDeckWerkButton } from '../src/renderer/editor/aboutDialog.js';
+import { showPasteThemeDialog } from '../src/renderer/editor/pasteThemeDialog.js';
 import { refreshResponsiveToolbar } from '../src/renderer/editor/responsiveToolbar.js';
 
 describe('shared editor controls', () => {
@@ -263,5 +264,19 @@ describe('shared editor controls', () => {
     const main = readFileSync(join(process.cwd(), 'src/main/index.ts'), 'utf8');
     expect(main).not.toContain('Choose which build states to export.');
     expect(main).not.toContain("buttons: ['Initial state', 'Final built state', 'Every build'");
+  });
+
+  it('asks whether cross-deck slides keep or adopt theme typography', async () => {
+    const result = showPasteThemeDialog(12);
+    const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!;
+    expect(dialog.getAttribute('aria-labelledby')).toBe('paste-theme-title');
+    expect(dialog.textContent).toContain('12 copied slides use different theme typography');
+    expect(dialog.textContent).toContain('Match destination');
+    const keep = [...dialog.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent === 'Keep source appearance')!;
+    expect(document.activeElement).toBe(keep);
+    keep.click();
+    await expect(result).resolves.toBe('source');
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
   });
 });
