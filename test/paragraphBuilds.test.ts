@@ -276,6 +276,15 @@ describe('bullet list conversion', () => {
     expect(paragraphsToList('Summary')).toBe('<ul><li>Summary</li></ul>');
   });
 
+  it('drops the newline a code block ends with, keeping the breaks between its lines', () => {
+    // Outside <pre> a newline at a block edge paints as a blank line (the box
+    // is pre-wrap); found by the paste fuzz converting pasted code to bullets.
+    expect(paragraphsToList('<pre><code>a = 1;\nb = 2;\n</code></pre>'))
+      .toBe('<ul><li><code>a = 1;\nb = 2;</code></li></ul>');
+    expect(paragraphsToList('<pre>\n  x\n</pre><p>y</p>'))
+      .toBe('<ul><li>  x</li><li>y</li></ul>');
+  });
+
   it('empty text yields one empty item to type into, never invented words', () => {
     expect(paragraphsToList('')).toBe('<ul><li><br></li></ul>');
     expect(paragraphsToList('<p><br></p>')).toBe('<ul><li><br></li></ul>');
