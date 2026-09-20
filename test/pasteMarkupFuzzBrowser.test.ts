@@ -61,6 +61,7 @@ import {
  * box that only looks right in the DOM cannot pass.
  */
 const RUN_EXHAUSTIVE = process.env.RUN_EXHAUSTIVE_PASTE_FUZZ === '1';
+const MAX_REPORTED_FAILURES = 10;
 const DECK_ID = 'paste-markup-fuzz';
 const EXTRA_SEEDS = extraFuzzSeeds();
 const CASES = [
@@ -173,9 +174,27 @@ describe.skipIf(!electronBinary)('pasted markup survives being edited', () => {
     // the cases whose "payload → target" label contains the text: the way to
     // replay one failing case from a CI log without the hour around it.
     const only = process.env.PASTE_FUZZ_ONLY ?? '';
+    // Every case runs, whatever the ones before it found. Stopping at the
+    // first failure made each night report one bug and hide the rest behind
+    // it until that one was fixed — a queue drained one nightly at a time.
+    // A fixture that has died fails every case the same way; the cap keeps
+    // that from being an hour of identical noise.
+    const failures: string[] = [];
     for (const testCase of CASES) {
       if (only && !`${testCase.payload.name} → ${testCase.target}`.includes(only)) continue;
-      await runPasteCase(editor, server.port, testCase);
+      try {
+        await runPasteCase(editor, server.port, testCase);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        failures.push(message);
+        console.error(`[paste-fuzz] failing case ${failures.length}: ${message}`);
+        if (failures.length >= MAX_REPORTED_FAILURES) break;
+      }
+    }
+    if (failures.length > 0) {
+      expect.fail(`${failures.length} paste case(s) failed`
+        + `${failures.length >= MAX_REPORTED_FAILURES ? ' (walk stopped at the cap)' : ''}:\n\n`
+        + failures.join('\n\n'));
     }
   });
 });
@@ -364,22 +383,16 @@ async function resetFixture(cdp: Cdp, target: PasteCase['target']): Promise<void
   if (await cdp.evaluate<boolean>(
     `document.querySelector('${PASTE_CONTENT}')?.isContentEditable === true`,
   )) {
-    // The previous operation may have left focus in the inspector, where
-    // Escape means something else; click back into the text first.
-    await cdp.click(PASTE_CONTENT, 'the text box before leaving editing');
-    // Keep asking rather than pressing once and waiting it out. The click that
-    // just restored focus can itself re-enter editing, and on a loaded machine
-    // the first Escape can arrive before the box is focused at all — in which
-    // case no amount of waiting ends a session nobody told to end.
-    let leftEditing = false;
-    for (let attempt = 0; attempt < 20 && !leftEditing; attempt += 1) {
-      await cdp.key('Escape', 27);
-      await wait(150);
-      leftEditing = await cdp.evaluate<boolean>(
-        `document.querySelector('${PASTE_CONTENT}')?.isContentEditable !== true`,
-      );
-    }
-    if (!leftEditing) throw new Error('Escape did not leave text editing');
+    // This is fixture setup, so the edit ends through the canvas rather than
+    // by keystroke. Escape only works with the box focused, and after the
+    // previous case focus can sit anywhere — a panel select, a menu — where
+    // twenty Escapes ended nothing ("Escape did not leave text editing" was a
+    // nightly's whole result). The real Escape path is covered by the
+    // escape-reenter operation, which is under test.
+    await cdp.evaluate(`window.canvas.endTextEditing(true)`);
+    await eventually(async () => cdp.evaluate<boolean>(
+      `document.querySelector('${PASTE_CONTENT}')?.isContentEditable !== true`,
+    ), 'the canvas did not leave text editing');
   }
   await cdp.evaluate(`(() => {
     const store = window.store;

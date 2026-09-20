@@ -2842,6 +2842,7 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
       });
       for (const room of rooms.values()) await room.session.close();
       sharedAgent?.close();
+      await userDirectory?.flush();
     },
   };
 }

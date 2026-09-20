@@ -29,7 +29,7 @@
  * otherwise entirely derived: see `folderVisibleTo`.
  */
 
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { IncomingMessage } from 'node:http';
 
@@ -314,14 +314,28 @@ export class UserDirectory {
       lastSeen: now.toISOString(),
     });
     const snapshot = this.list();
-    this.writing = this.writing.then(() =>
-      writeFile(this.file, `${JSON.stringify(snapshot, null, 2)}\n`, 'utf8'),
-    ).catch(() => {});
+    // Written beside and renamed into place: a reader — the next server
+    // start, or a test looking at the file — never sees a half-written
+    // directory. writeFile alone truncates first and fills in after.
+    this.writing = this.writing.then(async () => {
+      const partial = `${this.file}.${process.pid}.tmp`;
+      await writeFile(partial, `${JSON.stringify(snapshot, null, 2)}\n`, 'utf8');
+      await rename(partial, this.file);
+    }).catch(() => {});
     await this.writing;
   }
 
   list(): KnownUser[] {
     return [...this.users.values()].sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  /**
+   * Resolve once every write so far is on disk. `note` is fire-and-forget on
+   * the request path, so shutdown waits here rather than leaving a write to
+   * land in a directory the caller is already deleting.
+   */
+  flush(): Promise<void> {
+    return this.writing;
   }
 
   async all(): Promise<KnownUser[]> {

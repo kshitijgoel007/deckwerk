@@ -15,6 +15,7 @@ import {
   paragraphTexts,
   paragraphUnits,
   paragraphsToList,
+  paragraphsToOrderedList,
 } from '../src/shared/paragraphs.js';
 import { EditorStore } from '../src/renderer/editor/store.js';
 import { TimelinePanel } from '../src/renderer/editor/timelinePanel.js';
@@ -275,8 +276,10 @@ describe('bullet list conversion', () => {
     expect(paragraphsToList('Summary')).toBe('<ul><li>Summary</li></ul>');
   });
 
-  it('empty text yields a placeholder item', () => {
-    expect(paragraphsToList('')).toBe('<ul><li>Item</li></ul>');
+  it('empty text yields one empty item to type into, never invented words', () => {
+    expect(paragraphsToList('')).toBe('<ul><li><br></li></ul>');
+    expect(paragraphsToList('<p><br></p>')).toBe('<ul><li><br></li></ul>');
+    expect(paragraphsToOrderedList('')).toBe('<ol><li><br></li></ol>');
   });
 
   it('converts a list back to one paragraph per item', () => {
