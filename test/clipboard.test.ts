@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it } from 'vitest';
-import { parseDeck, type Deck } from '../src/shared/deck.js';
+import { parseDeck, type Deck, type ThemeStyle } from '../src/shared/deck.js';
 import {
   CLIPBOARD_FORMAT,
   type ClipboardReadResult,
@@ -57,6 +57,19 @@ function sampleDeck(): Deck {
   });
 }
 
+function themeStyle(family: string): ThemeStyle {
+  const role = (size: number) => ({
+    family, size, weight: 400, lineHeight: 1.2, letterSpacing: 'normal',
+  });
+  return {
+    fonts: {
+      title: role(96), heading: role(64), body: role(44), caption: role(28), base: role(44),
+    },
+    palette: ['#336699'],
+    colors: { background: '#ffffff', text: '#111111', muted: '#666666', accent: '#336699' },
+  };
+}
+
 /** In-memory stand-in for the OS pasteboard, shared by every "instance". */
 let pasteboard: ClipboardReadResult | null = null;
 
@@ -83,6 +96,20 @@ describe('clipboard payload', () => {
     expect(parseClipboardPayload({ format: CLIPBOARD_FORMAT, version: 1, kind: 'elements', elements: [] })).toBeNull();
   });
 
+  it('accepts slide payloads from builds before theme-aware paste', () => {
+    const parsed = parseClipboardPayload({
+      format: CLIPBOARD_FORMAT,
+      version: 1,
+      kind: 'slides',
+      slides: sampleDeck().slides,
+      assets: [],
+    });
+    expect(parsed?.kind).toBe('slides');
+    if (parsed?.kind !== 'slides') throw new Error('expected slides');
+    expect(parsed.sourceDeckId).toBeNull();
+    expect(parsed.sourceThemeStyle).toBeNull();
+  });
+
   it('collects every referenced asset once', () => {
     const deck = sampleDeck();
     expect(collectAssetSrcs({ kind: 'slides', slides: deck.slides }).sort()).toEqual([
@@ -92,7 +119,10 @@ describe('clipboard payload', () => {
 
   it('rewrites srcs to the destination deck, leaving unmapped ones visible', () => {
     const deck = sampleDeck();
-    const payload = { kind: 'slides', slides: deck.slides, format: CLIPBOARD_FORMAT, version: 1, assets: [] } as ClipboardPayload;
+    const payload = {
+      kind: 'slides', slides: deck.slides, format: CLIPBOARD_FORMAT, version: 1, assets: [],
+      sourceDeckId: null, sourceThemeStyle: null,
+    } as ClipboardPayload;
     rewriteAssetSrcs(payload, new Map([
       ['assets/fig.png', 'assets/fig.abcd1234.png'],
       ['assets/bg.png', 'assets/bg.abcd1234.png'],
@@ -162,6 +192,94 @@ describe('cross-instance copy/paste', () => {
     const image = pasted.elements.find((el) => el.lineageId === 'image-1')!;
     expect(pasted.timeline[0].action.target).toBe(image.id);
     expect(pasted.morphFromPrevious).toBe(false);
+  });
+
+  it('offers to pin source typography when whole slides cross deck themes', async () => {
+    const sourceDeck = sampleDeck();
+    sourceDeck.themeStyle = themeStyle('Charter, Georgia, serif');
+    sourceDeck.slides[0].background = { color: null, image: null };
+    const title = sourceDeck.slides[0].elements[0];
+    title.class = ['role-title'];
+    const source = new EditorStore(sourceDeck, '/src-deck');
+    source.selectSlide(0);
+    await copySlidesToClipboard(source);
+
+    const destDeck = sampleDeck();
+    destDeck.themeStyle = themeStyle('Inter, sans-serif');
+    const dest = new EditorStore(destDeck, '/dest-deck');
+    let prompts = 0;
+    const result = await pasteFromClipboard(dest, undefined, {
+      chooseSlideTheme: async ({ count }) => {
+        prompts += 1;
+        expect(count).toBe(1);
+        return 'source';
+      },
+    });
+
+    expect(result).toEqual({ kind: 'slides', count: 1 });
+    expect(prompts).toBe(1);
+    const pasted = dest.get().deck.slides[1];
+    expect(pasted.background).toEqual({ color: '#ffffff', image: null });
+    expect(pasted.elements[0].style).toMatchObject({
+      'font-family': 'Charter, Georgia, serif',
+      'font-size': '96px',
+      color: '#111111',
+    });
+  });
+
+  it('cancels a cross-theme slide paste without changing the deck', async () => {
+    const sourceDeck = sampleDeck();
+    sourceDeck.themeStyle = themeStyle('Charter, Georgia, serif');
+    const source = new EditorStore(sourceDeck, '/src-deck');
+    source.selectSlide(0);
+    await copySlidesToClipboard(source);
+
+    const destDeck = sampleDeck();
+    destDeck.themeStyle = themeStyle('Inter, sans-serif');
+    const dest = new EditorStore(destDeck, '/dest-deck');
+    const result = await pasteFromClipboard(dest, undefined, {
+      chooseSlideTheme: async () => null,
+    });
+
+    expect(result).toBeNull();
+    expect(dest.get().deck.slides).toHaveLength(2);
+  });
+
+  it('leaves semantic roles connected when matching the destination theme', async () => {
+    const sourceDeck = sampleDeck();
+    sourceDeck.themeStyle = themeStyle('Charter, Georgia, serif');
+    sourceDeck.slides[0].elements[0].class = ['role-title'];
+    const source = new EditorStore(sourceDeck, '/src-deck');
+    source.selectSlide(0);
+    await copySlidesToClipboard(source);
+
+    const destDeck = sampleDeck();
+    destDeck.themeStyle = themeStyle('Inter, sans-serif');
+    const dest = new EditorStore(destDeck, '/dest-deck');
+    await pasteFromClipboard(dest, undefined, {
+      chooseSlideTheme: async () => 'destination',
+    });
+
+    expect(dest.get().deck.slides[1].elements[0].style['font-family']).toBeUndefined();
+  });
+
+  it('does not interrupt same-theme slide paste', async () => {
+    const sourceDeck = sampleDeck();
+    sourceDeck.themeStyle = themeStyle('Inter, sans-serif');
+    const source = new EditorStore(sourceDeck, '/src-deck');
+    source.selectSlide(0);
+    await copySlidesToClipboard(source);
+
+    const destDeck = sampleDeck();
+    destDeck.themeStyle = themeStyle('Inter, sans-serif');
+    const dest = new EditorStore(destDeck, '/dest-deck');
+    await pasteFromClipboard(dest, undefined, {
+      chooseSlideTheme: async () => {
+        throw new Error('same-theme paste should not prompt');
+      },
+    });
+
+    expect(dest.get().deck.slides).toHaveLength(3);
   });
 
   it('pasting twice mints distinct ids each time', async () => {

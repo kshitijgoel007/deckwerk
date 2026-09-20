@@ -3311,6 +3311,11 @@ button.morph-object-hit.selected-source:hover:not(:disabled) {
   justify-content: flex-end;
 }
 
+.paste-theme-dialog { width: min(620px, calc(100vw - 48px)); }
+.paste-theme-description { margin: 0; color: var(--text); }
+.paste-theme-detail { margin: 0; color: var(--muted); line-height: 1.6; }
+.paste-theme-actions { flex-wrap: wrap; }
+
 /* Every dialog is a scroll container (max-height + overflow: auto in
    appChrome.css), which clips an absolutely positioned menu inside it. A menu
    opened in a dialog is therefore placed in viewport coordinates instead; the

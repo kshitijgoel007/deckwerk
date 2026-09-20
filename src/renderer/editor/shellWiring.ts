@@ -19,6 +19,7 @@ import {
   wholeTextFormatState,
   type TextFormat,
 } from './textFormatting.js';
+import { showPasteThemeDialog } from './pasteThemeDialog.js';
 
 /**
  * Shell-independent wiring shared by the Electron editor and the browser
@@ -39,6 +40,8 @@ export interface ShellDeps {
   setStatusMessage: (text: string) => void;
   /** Delayed shared activity chrome for work that may cross the 500 ms mark. */
   runOperation?: <T>(message: string, action: () => Promise<T>) => Promise<T>;
+  /** The stylesheet currently resolving semantic theme roles. */
+  currentThemeCss?: () => string;
   /** Desktop only: open the destructive ffmpeg trim/crop window. */
   openTrim?: (element: VideoElement) => void;
   /** Desktop only: open the destructive raster paint window. */
@@ -164,7 +167,7 @@ export function createClipboardActions(deps: ShellDeps): ClipboardActions {
       if (n) setStatusMessage(`${verb} ${n} element${n > 1 ? 's' : ''}.`);
       return n ? ('elements' as const) : null;
     }
-    const n = await copySlidesToClipboard(store);
+    const n = await copySlidesToClipboard(store, deps.currentThemeCss?.());
     if (n) setStatusMessage(`${verb} ${n} slide${n > 1 ? 's' : ''}.`);
     return n ? ('slides' as const) : null;
   };
@@ -184,8 +187,12 @@ export function createClipboardActions(deps: ShellDeps): ClipboardActions {
       setStatusMessage(`Pasted ${pasted.count} ${noun}${pasted.count > 1 ? 's' : ''}.`);
     }
   };
-  const pasteClipboard = () => pasteAndReport(() => pasteFromClipboard(store));
-  const pasteInApp = () => pasteAndReport(() => pasteInAppClipboard(store));
+  const pasteOptions = () => ({
+    destinationThemeCss: deps.currentThemeCss?.(),
+    chooseSlideTheme: ({ count }: { count: number }) => showPasteThemeDialog(count),
+  });
+  const pasteClipboard = () => pasteAndReport(() => pasteFromClipboard(store, undefined, pasteOptions()));
+  const pasteInApp = () => pasteAndReport(() => pasteInAppClipboard(store, pasteOptions()));
   const pasteClipboardData = (html: string, text: string) =>
     pasteAndReport(() => pasteFromClipboard(store, { kind: 'external-html', html, text }));
 
@@ -266,6 +273,9 @@ export function bindEditorKeys(deps: ShellDeps, clipboard: ClipboardActions): vo
     // `window` and `document` are event targets too, and neither answers the
     // element questions below.
     const t = e.target instanceof HTMLElement ? e.target : null;
+    // Modal workflows own their keyboard input; a second Cmd+V must not start
+    // another paste behind the theme-choice dialog.
+    if (document.querySelector('[aria-modal="true"]')) return;
     const typing =
       t &&
       (t.isContentEditable ||

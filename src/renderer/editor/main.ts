@@ -1092,6 +1092,7 @@ const shellDeps: ShellDeps = {
   save,
   setStatusMessage,
   runOperation: (message, action) => runOperation(message, async () => action()),
+  currentThemeCss: () => cssEditor.getValue(),
   openTrim,
   openRaster,
   undo: () => {

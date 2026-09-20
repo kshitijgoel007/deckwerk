@@ -2,9 +2,11 @@ import { z } from 'zod';
 import {
   ElementSchema,
   SlideSchema,
+  ThemeStyleSchema,
   TimelineEntrySchema,
   type Slide,
   type SlideElement,
+  type ThemeStyle,
   type TimelineEntry,
 } from './deck.js';
 import { renameRetiredFields } from './fieldAliases.js';
@@ -61,6 +63,10 @@ export const ClipboardPayloadSchema = z.discriminatedUnion('kind', [
     ...envelopeBase,
     kind: z.literal('slides'),
     slides: z.array(SlideSchema).min(1),
+    /** Identifies a paste back into the same presentation without exposing it to other apps. */
+    sourceDeckId: z.string().nullable().default(null),
+    /** The values semantic role classes resolved to when the slides were copied. */
+    sourceThemeStyle: ThemeStyleSchema.nullable().default(null),
   }),
 ]);
 
@@ -82,7 +88,12 @@ export type ClipboardWriteRequest =
     timeline: TimelineEntry[];
     sourceSlideId: string | null;
   }
-  | { kind: 'slides'; slides: Slide[] };
+  | {
+    kind: 'slides';
+    slides: Slide[];
+    sourceDeckId?: string | null;
+    sourceThemeStyle?: ThemeStyle | null;
+  };
 
 /** Parse untrusted clipboard bytes. Null rather than a throw: foreign or stale
  *  content on the pasteboard is normal, not an error. */
@@ -178,4 +189,57 @@ export function remapSlideIds(slide: Slide): void {
   slide.id = makeId('slide');
   slide.morphFromPrevious = false;
   remapElementIds(slide.elements, slide.timeline);
+}
+
+type ThemeTextRole = keyof ThemeStyle['fonts'];
+
+function textRole(element: SlideElement): ThemeTextRole {
+  const role = element.class.find((name) => /^role-(title|heading|body|caption|base)$/.test(name));
+  return (role?.slice(5) as ThemeTextRole | undefined) ?? 'base';
+}
+
+/** Whether adopting the destination theme can visibly change pasted slides. */
+export function slideThemeStylesDiffer(source: ThemeStyle, destination: ThemeStyle): boolean {
+  return JSON.stringify(source.fonts) !== JSON.stringify(destination.fonts)
+    || source.colors.background !== destination.colors.background
+    || source.colors.text !== destination.colors.text
+    || source.colors.muted !== destination.colors.muted;
+}
+
+/**
+ * Freeze theme-derived slide typography before it enters a differently themed
+ * deck. Existing inline declarations win: they are authored formatting, not
+ * values inferred from the source theme.
+ */
+export function pinSlidesToTheme(slides: Slide[], theme: ThemeStyle): void {
+  for (const slide of slides) {
+    if (
+      slide.background.color === null
+      && slide.background.image === null
+      && !slide.layoutBackgroundInherited
+    ) {
+      slide.background = { color: theme.colors.background, image: null };
+      slide.layoutBackgroundInherited = false;
+    }
+    for (const element of slide.elements) {
+      if (element.type !== 'text') continue;
+      const role = textRole(element);
+      const font = theme.fonts[role];
+      const color = font.color ?? (role === 'caption' ? theme.colors.muted : theme.colors.text);
+      const declarations: Record<string, string> = {
+        'font-family': font.family,
+        'font-size': `${font.size}px`,
+        'font-weight': String(font.weight),
+        'line-height': String(font.lineHeight),
+        'letter-spacing': font.letterSpacing,
+        color,
+      };
+      const style = { ...element.style };
+      for (const [property, value] of Object.entries(declarations)) {
+        if (style[property] !== undefined || element.contentStyle?.[property] !== undefined) continue;
+        style[property] = value;
+      }
+      element.style = style;
+    }
+  }
 }

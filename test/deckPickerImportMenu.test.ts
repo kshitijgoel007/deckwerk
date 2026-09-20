@@ -211,7 +211,7 @@ describe('deck picker import menu', () => {
     uploads[0].progress(2048, 2048);
     // Once the bytes are out, the wait is the server's; say so rather than
     // leaving "100%" up for a minute while it unpacks.
-    expect(line()!.textContent).toContain('Importing');
+    expect(line()!.textContent).toContain('Converting');
   });
 
   it('shows why an import failed, where the dialog can be seen', async () => {
