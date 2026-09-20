@@ -8,7 +8,7 @@
  * headers. A bare loopback request without headers is the machine owner and
  * counts as the admin.
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -221,8 +221,13 @@ describe('collab server access control', () => {
     expect(users.map((user: any) => [user.login, user.name])).toEqual([
       [ALICE, 'Alice A'], [BOB, 'Bob B'], [ADMIN, ADMIN],
     ]);
-    // Persisted beside the decks so a restart keeps the directory.
-    const onDisk = JSON.parse(await readFile(join(rootDir, 'users.json'), 'utf8'));
+    // Persisted beside the decks so a restart keeps the directory. The write
+    // happens after the response goes out, so wait for it rather than race it.
+    const onDisk = await vi.waitFor(async () => {
+      const users = JSON.parse(await readFile(join(rootDir, 'users.json'), 'utf8')) as any[];
+      expect(users).toHaveLength(3);
+      return users;
+    });
     expect(onDisk.map((user: any) => user.login).sort()).toEqual([ALICE, BOB, ADMIN].sort());
     // A users.json in the root must never be listed as a deck.
     const rows = (await api('/api/decks')).body as any[];

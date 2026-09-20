@@ -21,7 +21,7 @@ import { ungateVideoLoad } from '../player/mediaLoadGate.js';
 import { openSlideLinkInNewTab, slideLinkFromEvent } from '../player/links.js';
 import { expandTimeline } from '@shared/timeline.js';
 import {
-  BASELINE_RUN_FONT_SIZE, isRelativeFontSize, sanitizePastedTextHtml,
+  BASELINE_RUN_FONT_SIZE, isRelativeFontSize, sanitizePastedTextHtml, stripLayoutDeclarations,
 } from '@shared/htmlSafety.js';
 import { isBaselineFormat, type BaselineFormat, type InlineTextFormat } from './textFormatting.js';
 import { classifyMediaName, isPendingSrc, makePendingSrc, pendingToken } from '@shared/media.js';
@@ -3471,6 +3471,17 @@ export class EditorCanvas {
     };
     const onInput = (event?: Event) => {
       const typed = event instanceof InputEvent ? event : null;
+      if (typed && typed.inputType !== 'insertText' && !typed.inputType.endsWith('CompositionText')) {
+        // Whenever Chromium restructures blocks it copies the computed layout
+        // of the block it took apart onto what it made: a cut or Backspace
+        // across a list item boundary wraps the moved text in a span wearing
+        // the item's hanging indent, and Return on an empty item turns it
+        // into a paragraph carrying that indent in pixels. Paste strips those
+        // declarations on the way in; every other structural input has to as
+        // well, or the box saves an indent no control can reach. Plain typing
+        // is left alone: it never restructures anything, and it is hot.
+        stripLayoutDeclarations(body);
+      }
       if (typed?.inputType.startsWith('delete')) {
         repairEmptiedBox();
         // Deleting a selection that spans a whole cell's text can take the

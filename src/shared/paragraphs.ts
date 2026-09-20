@@ -186,7 +186,10 @@ export function paragraphsToList(html: string, ordered = false): string {
     .map((unit) => `<li>${unit.innerHTML}</li>`)
     .join('');
   const tag = ordered ? 'ol' : 'ul';
-  return `<${tag}>${items || '<li>Item</li>'}</${tag}>`;
+  // Nothing to list yet — a box just emptied, or a fresh one — gets a single
+  // empty item to type into. It must not invent text: the paste fuzz's oracle
+  // that formatting never rewrites the words found "Item" appearing here.
+  return `<${tag}>${items || '<li><br></li>'}</${tag}>`;
 }
 
 /** Convert paragraph markup to an ordered list. */
