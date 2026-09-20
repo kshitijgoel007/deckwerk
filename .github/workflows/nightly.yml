@@ -45,9 +45,9 @@ jobs:
           # looking like coverage; it comes back with a window manager in the
           # Xvfb session. test:lists:exhaustive (whose LIST_FUZZ_SEED this
           # workflow rotated without ever running it) fails deterministically
-          # at seed 9012026, step 123: typing into a box that has just become
-          # three empty paragraphs inserts nothing. It joins the matrix once
-          # that is fixed, so that its first night here is a green one.
+          # at seed 9012026, step 179: cutting a bullet leaves a span carrying
+          # a text-indent layout declaration. It joins the matrix once that is
+          # fixed, so that its first night here is a green one.
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

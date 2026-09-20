@@ -363,7 +363,13 @@ describe.skipIf(electronBinary)('list editing under a sweep of real edits (skipp
 async function moveCaret(next: () => number, where: 'start' | 'end' | 'middle' = 'middle') {
   const length = await session.cdp.evaluate<number>(
     `(document.querySelector('${CONTENT}')?.textContent ?? '').length`);
-  if (length === 0) return;
+  if (length === 0) {
+    // No glyph to click, but the caret still has to be in the box: the last
+    // list choice left focus in the inspector's select, and the next typed
+    // word would land there rather than in the text (seed 9012026, step 123).
+    await session.cdp.click(CONTENT, 'the empty text box');
+    return;
+  }
   const offset = Math.min(length - 1, Math.floor(next() * length));
   await session.caretAt(offset);
   if (where === 'start') await session.cdp.key('Home', 36);
