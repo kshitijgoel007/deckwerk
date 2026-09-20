@@ -317,6 +317,43 @@ describe('inline text editing', () => {
     expect(bodyOf(host, 'text-1').innerHTML).toBe('Energy: $E=mc^2$');
   });
 
+  it('restores authored TeX when rendered KaTeX is copied and pasted', () => {
+    const { store, canvas, host } = setup();
+    store.select(['text-1']);
+    store.updateSelected((el) => {
+      if (el.type === 'text') el.html = '<p>$$E=mc^2$$</p>';
+    });
+    const renderedMath = bodyOf(host, 'text-1').querySelector('.katex-display')!.outerHTML;
+
+    canvas.beginTextEdit('text-1');
+    const body = bodyOf(host, 'text-1');
+    body.innerHTML = `<p>${renderedMath}</p>`;
+    body.dispatchEvent(new InputEvent('input', {
+      inputType: 'insertFromPaste', bubbles: true,
+    }));
+    body.dispatchEvent(new FocusEvent('blur'));
+
+    const saved = store.slide!.elements.find((element) => element.id === 'text-1')!;
+    expect(saved.type === 'text' && saved.html).toBe('<p>$$E=mc^2$$</p>');
+    expect(bodyOf(host, 'text-1').querySelector('.katex-display')).not.toBeNull();
+  });
+
+  it('heals generated KaTeX already persisted by an old paste on edit entry', () => {
+    const { store, canvas, host } = setup();
+    store.select(['text-1']);
+    store.updateSelected((el) => {
+      if (el.type === 'text') el.html = '<p>$$E=mc^2$$</p>';
+    });
+    const generated = bodyOf(host, 'text-1').innerHTML;
+    store.updateSelected((el) => {
+      if (el.type === 'text') el.html = generated;
+    });
+
+    canvas.beginTextEdit('text-1');
+
+    expect(bodyOf(host, 'text-1').innerHTML).toBe('<p>$$E=mc^2$$</p>');
+  });
+
   it('restores rendered TeX after live inline formatting was already committed', () => {
     const { store, canvas, host } = setup();
     store.select(['text-1']);

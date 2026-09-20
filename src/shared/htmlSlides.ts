@@ -82,6 +82,7 @@ export interface MeasuredSlide {
 }
 
 const SCOPE_MARKER = 'slide-editor-scope:';
+export const HTML_CHANGE_LABEL_META = 'deckwerk-change-label';
 
 /** A section an author fills in — no id, so it can only ever become a new slide. */
 const BLANK_SECTION = `<section class="slide" data-placeholder="true">
@@ -141,6 +142,11 @@ const SCOPE_RULES = `<!--
     * editing inside a section that has a data-slide-id - REPLACES that slide
     * adding a section with class "slide" and no data-slide-id - ADDS a slide
     * removing a section that was exported here - DELETES that slide
+    * reordering exported sections - MOVES those slides in the deck
+
+  This section list is the structural editing API. Do not search for delete,
+  move or reorder commands or transaction operations; edit this file and save
+  it (or apply this same file with slide-agent apply).
 
   To add slides, do not copy this file: the copy inherits the scope above and
   saving it would delete these slides. Run \`slide-agent new\` for a blank
@@ -198,6 +204,8 @@ export function slidesToHtml(
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<!-- Describe the intent of this save for DeckWerk History; leave empty for an automatic change summary. -->
+<meta name="${HTML_CHANGE_LABEL_META}" content="">
 ${blank > 0 ? BLANK_RULES : `<!-- ${SCOPE_MARKER}${scope} -->\n${SCOPE_RULES}`}
 <title>${escape(title)}</title>
 <base href="${escape(options.base ?? '../')}">
@@ -374,6 +382,35 @@ export function htmlSlideScope(html: string): string[] | null {
 }
 
 /**
+ * The human-readable intent carried by an authoring document.
+ *
+ * A filename such as add.html is transport trivia, not useful History. Keeping
+ * the intent in the document makes watched saves, explicit offline applies and
+ * hosted mirrors agree without a race between the watcher and `apply --label`.
+ */
+export function htmlChangeLabel(html: string): string | null {
+  for (const tag of html.match(/<meta\b[^>]*>/gi) ?? []) {
+    const attributes = new Map<string, string>();
+    for (const match of tag.matchAll(/([^\s=/>]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/g)) {
+      attributes.set(match[1].toLowerCase(), match[2] ?? match[3] ?? match[4] ?? '');
+    }
+    if (attributes.get('name')?.toLowerCase() !== HTML_CHANGE_LABEL_META) continue;
+    const label = decodeHtmlAttribute(attributes.get('content') ?? '').trim();
+    return label ? label.slice(0, 200) : null;
+  }
+  return null;
+}
+
+function decodeHtmlAttribute(value: string): string {
+  return value
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&amp;/gi, '&');
+}
+
+/**
  * Write the ids a compile assigned back into the authored document.
  *
  * A section without a `data-slide-id` is minted a fresh id on *every* compile,
@@ -538,6 +575,22 @@ export function describeHtmlSync(summary: ReturnType<typeof htmlSyncSummary>): s
   ].filter(Boolean);
   if (parts.length === 0) return summary.moved > 0 ? 'reordered' : 'no change';
   return parts.join(', ') + (summary.moved > 0 ? ', reordered' : '');
+}
+
+/** A useful History title when the author did not supply semantic intent. */
+export function htmlSyncHistoryLabel(operations: AgentOperation[]): string {
+  const summary = htmlSyncSummary(operations);
+  const parts = [
+    summary.inserted.length > 0 ? `Added ${countSlides(summary.inserted.length)}` : '',
+    summary.replaced.length > 0 ? `Updated ${countSlides(summary.replaced.length)}` : '',
+    summary.deleted.length > 0 ? `Removed ${countSlides(summary.deleted.length)}` : '',
+    summary.moved > 0 ? 'Reordered slides' : '',
+  ].filter(Boolean);
+  return parts.join(' · ') || 'Updated presentation';
+}
+
+function countSlides(count: number): string {
+  return `${count} slide${count === 1 ? '' : 's'}`;
 }
 
 /**

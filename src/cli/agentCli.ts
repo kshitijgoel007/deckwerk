@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   AGENT_PROTOCOL_VERSION,
@@ -16,7 +16,7 @@ import { deckOutline, deckStyleDigest } from '@shared/deckDigest.js';
 import { slidesToHtml } from '@shared/htmlSlides.js';
 import { capabilities } from '@shared/capabilities.js';
 import { PLAYER_TYPE_CSS } from '@shared/playerTypeCss.js';
-import { CustomThemeSchema, parseDeck, type Comment, type Deck } from '@shared/deck.js';
+import { CustomThemeSchema, parseDeck, type Comment, type Deck, type SlideElement } from '@shared/deck.js';
 import { diffDecks } from '@shared/deckDiff.js';
 import { renameRetiredFields } from '@shared/fieldAliases.js';
 import {
@@ -88,14 +88,18 @@ const USAGE = `usage: slide-agent <command> [options]
 
 The loop — edit HTML, the editor syncs it back:
 
-  context   [deck]                        the outline, and is the editor live
+  context   [deck] [--around <slide>]     the outline, optionally target ±1
   new       [deck] [--count <n>]          a blank authoring page: the same
                                           skeleton, with no slide ids and no
                                           scope, so saving it only ADDS slides
   inspect   [deck] --html [--selected|--slide id|number|--all]
-                                          export slides as an editable page —
+                                          create a scoped authoring page —
                                           editing a section replaces its slide,
                                           removing one deletes it
+  inspect   [deck] --html-body [--slide id|number]
+                                          compact read-only section markup
+  inspect   [deck] --elements-only [--slide id|number]
+                                          compact object inventory
   # then edit edit/<file>.html and save it; with the editor open the deck
   # follows within ~200ms. With it closed, apply the same file explicitly:
   apply     [deck] --html <file> [--after <slideId>] [--label <text>]
@@ -112,7 +116,8 @@ Working on a deck someone hosts on a collaboration server:
 
 Everything else:
 
-  docs                                    the full agent guide, as markdown
+  docs [authoring|web|themes|internals]   focused guides; bare docs is the
+                                          full repository reference
   capabilities                            every feature, with copyable JSON
   validate  [deck] [--slide id|number|--selected]
                                           schema, ids, references, assets, and
@@ -134,10 +139,13 @@ Everything else:
                                           slide (or the first web box on it)
                                           for a new version: new asset, new
                                           poster, old files removed
+  web inspect <deck> <slide>              web element source, box and missing
+                                          local assets; does not export HTML
   web check <page.html> [--screenshot <file.png>] [--size 1920x1080]
+            [--replace <slide>] [--deck <folder>]
                                           run the page headlessly the way the
-                                          frame will: script errors, overflow,
-                                          network it would need, bridge use
+                                          frame will; --replace infers the
+                                          existing element's exact box size
   inspect   [deck] [--dom]                computed scenes, for questions
   render    [deck] [--selected|--slide id|number|--all] --output <dir>
             [--annotate] [--built]
@@ -173,9 +181,13 @@ Everything else:
                                           browser — not how slides are authored
 
 Adding slides vs. changing them: 'new' writes a page that can only add, while
-'inspect --html' exports a page that governs the slides it names — do not copy
-an export to author new slides, the copy inherits its scope and saving it
-would delete them. Every apply reports what it did under 'changes'.
+'inspect --html' creates authoring HTML that governs the slides it names — do
+not copy that scoped page to author new slides; the copy inherits its scope and
+saving it would delete them. Every apply reports what it did under 'changes'.
+
+There are no delete, move, or reorder commands to discover: inspect the slides
+with '--html', then remove or reorder their complete <section> elements and
+save/apply that file. Slides outside its recorded scope stay untouched.
 
 Anywhere a slide is named, --slide takes its id or its 1-based number — the
 number the rail shows and the number 'context' and 'comments' print. So
@@ -189,11 +201,7 @@ export async function runAgentCli(argv: string[], io: CliIo): Promise<number> {
   try {
     switch (command) {
       case 'docs':
-        // Markdown, not JSON: this one is for an agent to read, and it is how
-        // an agent working in a deck folder finds the format documentation
-        // without knowing where the editor is installed.
-        io.out(await readFile(agentGuidePath(), 'utf8'));
-        return EXIT_OK;
+        return docsCommand(rest, io);
       case 'capabilities':
         // Bare, it is the whole cookbook; named, just the features asked for,
         // for when an agent only needs to check how cropping works.
@@ -244,6 +252,27 @@ export async function runAgentCli(argv: string[], io: CliIo): Promise<number> {
   }
 }
 
+async function docsCommand(argv: string[], io: CliIo): Promise<number> {
+  const { flags, positional } = parseFlags(argv);
+  ensureKnownFlags('docs', flags, []);
+  ensurePositionals('docs', positional, 1);
+  const topic = positional[0];
+  if (!topic) {
+    io.out(await readFile(agentGuidePath(), 'utf8'));
+    return EXIT_OK;
+  }
+  const topics: Record<string, string> = {
+    authoring: 'agent-authoring.md',
+    web: 'agent-web.md',
+    themes: 'agent-themes.md',
+    internals: 'agent-internals.md',
+  };
+  const file = topics[topic];
+  if (!file) throw new UsageError(`Unknown docs topic: ${topic}. Choose authoring, web, themes or internals.`);
+  io.out(await readFile(fileURLToPath(new URL(`../../docs/${file}`, import.meta.url)), 'utf8'));
+  return EXIT_OK;
+}
+
 /* --- commands --- */
 
 /**
@@ -269,17 +298,35 @@ async function connectCommand(argv: string[], io: CliIo): Promise<number> {
 }
 
 async function contextCommand(argv: string[], io: CliIo): Promise<number> {
-  const { flags, positional } = parseFlags(argv);
+  const { flags, options, positional } = parseFlags(argv, ['around']);
   ensureKnownFlags('context', flags, []);
   ensurePositionals('context', positional, 1);
   const deckDir = resolveDeckDir(positional[0], io);
+  const deck = await loadDeck(deckDir);
   const context = await currentContext(deckDir, { scenes: false, digest: true });
-  const outline = (context as { outline?: unknown[] }).outline ?? [];
+  const completeOutline = (context as { outline?: Array<{ id: string; index: number }> }).outline ?? [];
+  const around = options.get('around');
+  let outline = completeOutline;
+  let outlineWindow: { center: string; from: number; to: number } | undefined;
+  if (around !== undefined) {
+    const center = slideIdForRef(deck, around);
+    if (!center) throw new UsageError(`No such slide: ${around}. This deck has ${deck.slides.length} slides.`);
+    const at = deck.slides.findIndex((slide) => slide.id === center);
+    const from = Math.max(0, at - 1);
+    const to = Math.min(deck.slides.length - 1, at + 1);
+    outline = completeOutline.filter((entry) => entry.index >= from && entry.index <= to);
+    outlineWindow = { center, from: from + 1, to: to + 1 };
+  }
   // The count first, before hundreds of outline entries: an agent that pipes
   // this through `head` must not mistake the visible outline for the deck.
   // Outline entries are one line each — pretty-printing them tripled the size
   // of the output an agent reads on every task, for no information at all.
-  io.out(jsonCompactArrays({ slideCount: outline.length, ...context }, ['outline']));
+  io.out(jsonCompactArrays({
+    slideCount: completeOutline.length,
+    ...context,
+    ...(outlineWindow ? { outlineWindow } : {}),
+    outline,
+  }, ['outline']));
   return EXIT_OK;
 }
 
@@ -419,11 +466,15 @@ async function newCommand(argv: string[], io: CliIo): Promise<number> {
 
 async function inspectCommand(argv: string[], io: CliIo): Promise<number> {
   const { flags, positional } = parseFlags(argv);
-  ensureKnownFlags('inspect', flags, ['html', 'dom', 'selected', 'slide', 'all']);
+  ensureKnownFlags('inspect', flags, [
+    'html', 'html-body', 'elements-only', 'dom', 'selected', 'slide', 'all',
+  ]);
   ensurePositionals('inspect', positional, 1);
   const deckDir = resolveDeckDir(positional[0], io);
+  const modes = ['html', 'html-body', 'elements-only', 'dom'].filter((mode) => flags.has(mode));
+  if (modes.length > 1) throw new UsageError(`inspect modes cannot be combined: ${modes.map((mode) => `--${mode}`).join(', ')}`);
 
-  if (flags.has('html')) {
+  if (flags.has('html') || flags.has('html-body') || flags.has('elements-only')) {
     const deck = await loadDeck(deckDir);
     resolveRequestedSlides(flags, deck);
     const context = await currentContext(deckDir, { scenes: false });
@@ -434,14 +485,34 @@ async function inspectCommand(argv: string[], io: CliIo): Promise<number> {
       selected: context.selectedSlideIds.includes(slide.id),
       active: slide.id === context.activeSlideId,
     }));
-    // Written to a file the agent opens in a browser, so it has to be a page
-    // and not a fragment: the deck's stylesheet, the type rules, and a base
-    // that assumes the conventional home of `edit/` inside the deck.
-    io.out(slidesToHtml(chosen, deck.canvas, {
+    if (flags.has('elements-only')) {
+      io.out(json({
+        slides: chosen.map((slide) => ({
+          slide: deck.slides.findIndex((candidate) => candidate.id === slide.id) + 1,
+          id: slide.id,
+          name: slide.name,
+          elements: slide.elements
+            .slice()
+            .sort((a, b) => a.z - b.z)
+            .map(compactElement),
+        })),
+      }));
+      return EXIT_OK;
+    }
+    const page = slidesToHtml(chosen, deck.canvas, {
       typeCss: PLAYER_TYPE_CSS,
       base: '../',
       theme: deck.theme,
-    }));
+    });
+    if (flags.has('html-body')) {
+      const body = /<body\b[^>]*>([\s\S]*?)<\/body>/i.exec(page)?.[1].trim() ?? '';
+      io.out(`<!-- Read-only compact inspection. This fragment has no scope marker; do not apply it. -->\n${body}\n`);
+      return EXIT_OK;
+    }
+    // Written to a file the agent opens in a browser, so it has to be a page
+    // and not a fragment: the deck's stylesheet, the type rules, and a base
+    // that assumes the conventional home of `edit/` inside the deck.
+    io.out(page);
     return EXIT_OK;
   }
 
@@ -477,6 +548,24 @@ async function inspectCommand(argv: string[], io: CliIo): Promise<number> {
     scenes: wanted ? context.scenes.filter((scene) => wanted(scene)) : context.scenes,
   }));
   return EXIT_OK;
+}
+
+function compactElement(element: SlideElement): Record<string, unknown> {
+  const common = {
+    id: element.id,
+    type: element.type,
+    box: [element.x, element.y, element.w, element.h],
+    ...(element.class.length > 0 ? { class: element.class } : {}),
+  };
+  if (element.type === 'text') {
+    return { ...common, text: element.html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 240) };
+  }
+  if (element.type === 'image' || element.type === 'video') return { ...common, src: element.src };
+  if (element.type === 'web') {
+    return { ...common, src: element.src, poster: element.poster, interactive: element.interactive };
+  }
+  if (element.type === 'shape') return { ...common, shape: element.shape };
+  return common;
 }
 
 
@@ -677,6 +766,7 @@ async function assetCommand(argv: string[], io: CliIo): Promise<number> {
 async function webCommand(argv: string[], io: CliIo): Promise<number> {
   const [sub, ...rest] = argv;
   if (sub === 'check') return webCheckCommand(rest, io);
+  if (sub === 'inspect') return webInspectCommand(rest, io);
   if (sub === 'add') return webAddCommand(rest, io);
   if (sub === 'replace') return webReplaceCommand(rest, io);
   if (sub !== 'import') {
@@ -772,8 +862,69 @@ async function webCommand(argv: string[], io: CliIo): Promise<number> {
     poster,
     bytes: page.bytes,
     title,
-    hint: 'The page fills the canvas. To place it in a smaller box, export the slide with `inspect --html` and resize the data-element="web" div like any other element.',
+    hint: 'The page fills the canvas. To place it in a smaller box, create authoring HTML with `inspect --html` and resize the data-element="web" div like any other element.',
   });
+}
+
+/** A compact answer for the common "what page is already in this box?" question. */
+async function webInspectCommand(argv: string[], io: CliIo): Promise<number> {
+  const { flags, positional } = parseFlags(argv);
+  ensureKnownFlags('web inspect', flags, []);
+  ensurePositionals('web inspect', positional, 2);
+  if (positional.length < 2) throw new UsageError('web inspect needs a deck folder and a slide (id or number)');
+  const deckDir = resolveDeckDir(positional[0], io);
+  const deck = await loadDeck(deckDir);
+  const slideId = slideIdForRef(deck, positional[1]);
+  const slide = deck.slides.find((candidate) => candidate.id === slideId);
+  if (!slide) throw new UsageError(`No such slide: ${positional[1]}. This deck has ${deck.slides.length} slides.`);
+  const elements = slide.elements.filter((element) => element.type === 'web');
+  if (elements.length === 0) {
+    io.err(`Slide ${slide.id} has no web element`);
+    return EXIT_ERROR;
+  }
+  const summaries = elements.map((element) => ({
+    elementId: element.id,
+    src: element.src,
+    poster: element.poster,
+    size: [Math.round(element.w), Math.round(element.h)],
+    missingAssets: missingWebAssets(deckDir, element.src, element.poster),
+  }));
+  io.out(json({
+    slide: deck.slides.indexOf(slide) + 1,
+    slideId: slide.id,
+    ...(summaries.length === 1 ? summaries[0] : { elements: summaries }),
+  }));
+  return EXIT_OK;
+}
+
+function missingWebAssets(deckDir: string, src: string, poster: string | null): string[] {
+  const missing = new Set<string>();
+  const pagePath = resolve(deckDir, src);
+  if (!existsSync(pagePath)) missing.add(src);
+  if (poster && !existsSync(resolve(deckDir, poster))) missing.add(poster);
+  if (!existsSync(pagePath)) return [...missing];
+  let html = '';
+  try {
+    // This command is intentionally static and compact. Dynamic fetch/import
+    // remains the job of `web check`, which observes the running page.
+    html = readFileSync(pagePath, 'utf8');
+  } catch {
+    return [...missing];
+  }
+  const attributeRefs = [...html.matchAll(/<[^>]+>/g)].flatMap((tag) =>
+    [...tag[0].matchAll(/\b(?:src|href|poster)\s*=\s*["']([^"']+)["']/gi)]);
+  const refs = [
+    ...attributeRefs,
+    ...html.matchAll(/\burl\(\s*["']?([^"')]+)["']?\s*\)/gi),
+  ].map((match) => match[1]);
+  for (const ref of refs) {
+    if (!ref || /^(?:[a-z][a-z0-9+.-]*:|#|\/)/i.test(ref)) continue;
+    let clean = ref.split(/[?#]/, 1)[0];
+    try { clean = decodeURIComponent(clean); } catch { /* report the unresolved literal below */ }
+    if (!clean) continue;
+    if (!existsSync(resolve(dirname(pagePath), clean))) missing.add(ref);
+  }
+  return [...missing];
 }
 
 /**
@@ -904,6 +1055,7 @@ async function webReplaceCommand(argv: string[], io: CliIo): Promise<number> {
     src: page.src,
     poster: check ? posterRel : null,
     title,
+    size: { w: Math.round(element.w), h: Math.round(element.h) },
     ...(check ? { ok: check.ok, problems: check.problems } : {}),
     removed: [] as string[],
   });
@@ -931,7 +1083,7 @@ async function webReplaceCommand(argv: string[], io: CliIo): Promise<number> {
  * fix the page before importing it.
  */
 async function webCheckCommand(argv: string[], io: CliIo): Promise<number> {
-  const { flags, options, positional } = parseFlags(argv, ['screenshot', 'size']);
+  const { flags, options, positional } = parseFlags(argv, ['screenshot', 'size', 'replace', 'deck']);
   ensureKnownFlags('web check', flags, []);
   ensurePositionals('web check', positional, 1);
   if (positional.length < 1) {
@@ -943,7 +1095,24 @@ async function webCheckCommand(argv: string[], io: CliIo): Promise<number> {
     io.err(`No such file: ${pagePath}`);
     return EXIT_ERROR;
   }
-  const size = /^(\d+)x(\d+)$/.exec(options.get('size') ?? '1920x1080');
+  if (options.has('replace') && options.has('size')) {
+    throw new UsageError('web check takes either --size or --replace, not both');
+  }
+  let inferred: { deckDir: string; slideId: string; elementId: string } | null = null;
+  let sizeValue = options.get('size') ?? '1920x1080';
+  if (options.has('replace')) {
+    const deckDir = resolveDeckDir(options.get('deck'), io);
+    const deck = await loadDeck(deckDir);
+    const ref = options.get('replace')!;
+    const slideId = slideIdForRef(deck, ref);
+    const slide = deck.slides.find((candidate) => candidate.id === slideId);
+    if (!slide) throw new UsageError(`No such slide: ${ref}. This deck has ${deck.slides.length} slides.`);
+    const element = slide.elements.find((candidate) => candidate.type === 'web');
+    if (!element || element.type !== 'web') throw new UsageError(`Slide ${slide.id} has no web element to replace`);
+    sizeValue = `${Math.round(element.w)}x${Math.round(element.h)}`;
+    inferred = { deckDir, slideId: slide.id, elementId: element.id };
+  }
+  const size = /^(\d+)x(\d+)$/.exec(sizeValue);
   if (!size) throw new UsageError(`--size takes WIDTHxHEIGHT, not "${options.get('size')}".`);
   // Checked with the bridge in place, as it will run once imported, so a page
   // that calls `deckwerk.onActive` does not fail here for a missing global.
@@ -956,7 +1125,12 @@ async function webCheckCommand(argv: string[], io: CliIo): Promise<number> {
     height: Number(size[2]),
     screenshot: screenshot ? resolve(io.cwd, screenshot) : null,
   });
-  io.out(json({ ...result, checked: pagePath }));
+  io.out(json({
+    ...result,
+    checked: pagePath,
+    size: { w: Number(size[1]), h: Number(size[2]) },
+    ...(inferred ? { replaceTarget: { slideId: inferred.slideId, elementId: inferred.elementId } } : {}),
+  }));
   return result.ok ? EXIT_OK : EXIT_ERROR;
 }
 

@@ -37,7 +37,7 @@ DeckWerk auto-transcodes videos and images into compatible formats.
 
 ### Native agent integration
 
-DeckWerk is designed so that AI agents can create and edit presentations directly. It does not run or own an agent account: the **Agent…** button tells you how to point the filesystem-based agent you already use at the deck. In a browser collaboration session, the same button gives you one command that mirrors the live deck folder onto your machine and keeps it in sync. Only Node is needed for the remote bridge.
+DeckWerk is designed so that AI agents can create and edit presentations directly. It does not run or own an agent account: for a local presentation, the **Agent…** button gives you its real deck folder and no server is involved. In a browser collaboration session, the same button gives you one command that mirrors the remote live deck folder onto your machine and keeps it in sync. Only Node is needed for that remote bridge.
 
 In both cases the authoring loop is the same: run `slide-agent context`, export or create an HTML file under `edit/`, then edit and save it. DeckWerk compiles that HTML into ordinary editable slide objects, applies the save as one named undoable change, and shows it in History. JavaScript-driven content is explicitly staged as a web element; titles, captions, and other non-interactive content remain normal editable objects.
 
@@ -61,37 +61,22 @@ DeckWerk is particularly suited to:
 
 ## Installing
 
-Builds are not yet code-signed, so both macOS and Windows will warn about them.
-A Flathub package is planned but not published yet.
-
-**macOS** — via [Homebrew](https://brew.sh):
-
-```bash
-brew install --cask --no-quarantine vsitzmann/tap/deckwerk
-```
-
-`--no-quarantine` is required while the app is unsigned; without it Gatekeeper
-refuses to open it. If you already installed without the flag, clear it with
-`xattr -dr com.apple.quarantine /Applications/DeckWerk.app`.
-
-**Windows** — download the installer from the
-[latest release](https://github.com/vsitzmann/deckwerk/releases/latest).
-SmartScreen will warn about the unsigned installer: choose *More info → Run
-anyway*.
-
-**Linux** — an `.AppImage` and a `.deb` are attached to every
-[release](https://github.com/vsitzmann/deckwerk/releases).
-
-**Any platform** — build it yourself. Three commands, no cross-compilation
-tricks, and it works on distributions the packages above do not cover:
+DeckWerk is currently installed by building it from source. You will need
+[Node.js](https://nodejs.org/) 22 or newer, Python 3.10 or newer, and Git:
 
 ```bash
 git clone https://github.com/vsitzmann/deckwerk.git
-cd deckwerk && npm ci && npm run dist
+cd deckwerk
+npm ci
+npm run dist
 ```
 
-See [docs/BUILDING.md](docs/BUILDING.md) for prerequisites and the
-Python-free variant.
+The platform-specific installer lands in `release/`: a `.dmg` on macOS, an
+`.exe` on Windows, and an `.AppImage`, `.deb`, and `.tar.gz` on Linux. Open the
+generated installer to install DeckWerk normally.
+
+See [docs/BUILDING.md](docs/BUILDING.md) for platform-specific details and for
+running DeckWerk directly without packaging it first.
 
 ## File format
 

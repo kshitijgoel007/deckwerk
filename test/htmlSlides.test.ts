@@ -3,6 +3,7 @@ import { emptyDeck, parseDeck, type SlideElement } from '../src/shared/deck.js';
 import {
   buildFromNode,
   elementFromNode,
+  htmlChangeLabel,
   htmlSlideScope,
   slideFromMeasured,
   slideToHtml,
@@ -421,7 +422,12 @@ describe('deck objects become authored HTML', () => {
 
     expect(htmlSlideScope(html)).toEqual(['slide-1', 'résults / 2']);
     expect(html.match(/slide-editor-scope:/g)).toHaveLength(1);
+    expect(html).toContain('This section list is the structural editing API');
+    expect(html).toContain('reordering exported sections - MOVES those slides');
     expect(htmlSlideScope('<section class="slide"></section>')).toBeNull();
+    expect(htmlChangeLabel(html)).toBeNull();
+    expect(htmlChangeLabel(html.replace('content=""', 'content="Add &amp; explain results"')))
+      .toBe('Add & explain results');
   });
 
   it('renders exported object dimensions as the measured border box', () => {

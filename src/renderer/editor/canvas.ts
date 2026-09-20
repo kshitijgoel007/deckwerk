@@ -21,7 +21,8 @@ import { ungateVideoLoad } from '../player/mediaLoadGate.js';
 import { openSlideLinkInNewTab, slideLinkFromEvent } from '../player/links.js';
 import { expandTimeline } from '@shared/timeline.js';
 import {
-  BASELINE_RUN_FONT_SIZE, isRelativeFontSize, sanitizePastedTextHtml, stripLayoutDeclarations,
+  BASELINE_RUN_FONT_SIZE, isRelativeFontSize, restoreKatexSourceHtml,
+  sanitizePastedTextHtml, stripLayoutDeclarations,
 } from '@shared/htmlSafety.js';
 import { isBaselineFormat, type BaselineFormat, type InlineTextFormat } from './textFormatting.js';
 import { classifyMediaName, isPendingSrc, makePendingSrc, pendingToken } from '@shared/media.js';
@@ -1112,7 +1113,9 @@ export class EditorCanvas {
     }
     const range = this.activeTextRange(body);
     const offsets = range ? this.textOffsetsForRange(body, range) : null;
-    body.innerHTML = normalizeParagraphHtml(el.html, true);
+    // A peer can send legacy generated KaTeX just as the session can start
+    // with it; keep the live editing surface in authored delimiter form.
+    body.innerHTML = normalizeParagraphHtml(restoreKatexSourceHtml(el.html), true);
     if (offsets) this.restoreTextRange(body, offsets);
     this.textEditStoreBase = el.html;
     this.textEditDomBase = authoredTextHtml(body);
@@ -2864,7 +2867,11 @@ export class EditorCanvas {
     // paragraph but the first is buried a level down, out of reach of both
     // `--paragraph-spacing` and the by-paragraph builds. Blocks in, blocks
     // out: `defaultParagraphSeparator` then keeps return producing `<p>`.
-    body.innerHTML = normalizeParagraphHtml(el.html, true);
+    // Old decks can contain KaTeX's generated DOM from a copy/paste performed
+    // before paste sanitization recovered its embedded TeX source. Heal that
+    // legacy form on entry too: otherwise edit mode reloads the generated tree
+    // as if it were authored HTML and the equation never collapses to `$...$`.
+    body.innerHTML = normalizeParagraphHtml(restoreKatexSourceHtml(el.html), true);
     // jsdom has no execCommand; the editing command is a browser-only nicety.
     document.execCommand?.('defaultParagraphSeparator', false, 'p');
     body.contentEditable = 'true';

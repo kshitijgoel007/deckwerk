@@ -30,7 +30,14 @@ import {
   measureBuiltTextOverflows,
   renderHtmlDraftPng,
 } from '../cli/compileHtml.js';
-import { htmlSlideScope, htmlSyncOperations, htmlSyncSummary, slidesToHtml } from '../shared/htmlSlides.js';
+import {
+  htmlChangeLabel,
+  htmlSlideScope,
+  htmlSyncHistoryLabel,
+  htmlSyncOperations,
+  htmlSyncSummary,
+  slidesToHtml,
+} from '../shared/htmlSlides.js';
 import { PLAYER_TYPE_CSS } from '../shared/playerTypeCss.js';
 import { authoringPageHtml, type TextOverflow } from '../shared/htmlMeasure.js';
 import { deckRevision } from '../main/agentRuntime.js';
@@ -1859,7 +1866,9 @@ export async function startCollabServer(options: CollabServerOptions): Promise<R
       const current = new Map(room.session.deck.slides.map((slide) => [slide.id, JSON.stringify(SlideSchema.parse(slide))]));
       operations = operations.filter((op) => !(op.op === 'replaceSlide'
         && current.get(op.slideId) === JSON.stringify(SlideSchema.parse(op.slide))));
-      const label = url.searchParams.get('label')?.trim().slice(0, 200) || 'Update slides from an authoring page';
+      const label = url.searchParams.get('label')?.trim().slice(0, 200)
+        || htmlChangeLabel(html)
+        || htmlSyncHistoryLabel(operations);
       const changes = htmlSyncSummary(operations);
       let revision = compiledDraft.draft.revision;
       if (operations.length > 0) {

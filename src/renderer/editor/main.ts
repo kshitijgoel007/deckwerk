@@ -230,13 +230,9 @@ const welcome = new WelcomeScreen(el('canvas'), {
   importPowerPoint: importPowerPointPresentation,
 });
 const agentPanel = new AgentPanel({
-  api: {
-    getState: () => window.api.getAgentPanelState(),
-    onState: (listener) => window.api.onAgentPanelState(listener),
-  },
   currentDeckPath: () => store.get().dir,
-  connectCommand: 'Starting a filesystem agent session…',
-  onClose: () => void endAgentSession(),
+  connectCommand: 'Open a presentation first',
+  mode: 'local',
 });
 
 /**
@@ -575,33 +571,17 @@ async function toggleAgentPanel(): Promise<void> {
     agentPanel.hide();
     return;
   }
-  setStatusMessage('Preparing a filesystem agent handoff…');
+  setStatusMessage('Preparing the deck folder for an agent…');
   try {
     await cssEditor.flush();
     await save();
-    if (!agentSessionBridge) {
-      const connection = await window.api.startAgentSession({
-        agent: true,
-        ...captureEditorView(store),
-      });
-      connectAgentSession(connection);
-      if (connection.agentCommand) agentPanel.setConnectCommand(connection.agentCommand);
-    }
+    const dir = store.get().dir;
+    if (!dir) throw new Error('Open a presentation first');
+    agentPanel.setConnectCommand(dir);
     agentPanel.show();
-    setStatusMessage('Agent handoff ready; the connect command was copied to the clipboard.');
+    setStatusMessage('Deck folder ready for a filesystem agent.');
   } catch (err) {
-    setStatusMessage(`Agent session failed: ${err instanceof Error ? err.message : err}`);
-  }
-}
-
-async function endAgentSession(): Promise<void> {
-  agentPanel.hide();
-  if (!agentSessionBridge) return;
-  setStatusMessage('Closing agent session…');
-  try {
-    await window.api.endAgentSession();
-  } catch (err) {
-    setStatusMessage(`Could not close agent session: ${err instanceof Error ? err.message : err}`);
+    setStatusMessage(`Could not prepare the agent handoff: ${err instanceof Error ? err.message : err}`);
   }
 }
 

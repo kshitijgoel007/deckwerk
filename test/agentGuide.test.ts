@@ -9,6 +9,7 @@ import {
   renderAgentGuide,
   writeAgentGuide,
 } from '../src/main/agentGuide.js';
+import { capabilities } from '../src/shared/capabilities.js';
 
 describe('the per-deck agent brief', () => {
   const cleanup: string[] = [];
@@ -29,8 +30,12 @@ describe('the per-deck agent brief', () => {
     expect(text).toContain('# Working on this deck');
     expect(text).toContain('/opt/deckwerk/bin/slide-agent');
     expect(text).toContain('slide-agent new');
-    expect(text).toContain('newly created deck already has one empty slide');
-    expect(text).toContain('data-arrow-end');
+    expect(text).toContain('“Authoring HTML” is the editable interface, not a presentation export');
+    expect(text).toContain('Single-slide fast path');
+    expect(text).toContain('There is no');
+    expect(text).toContain('slide-agent inspect . --html --slide 12,44');
+    expect(text).toContain('slide-agent web check source.html --replace 9');
+    expect(text).toContain('slide-agent docs themes');
     expect(text).not.toContain('{{LAUNCHER_HINT}}');
   });
 
@@ -38,6 +43,14 @@ describe('the per-deck agent brief', () => {
     const text = renderAgentGuide({ launcher: null });
     expect(text).toContain('does not bundle it');
     expect(text).not.toContain('~/bin/slide-agent`.');
+  });
+
+  it('routes every specialized authoring capability from the generated brief', () => {
+    const brief = renderAgentGuide({ launcher: '/opt/deckwerk/bin/slide-agent' });
+    const authoring = readFile(join(process.cwd(), 'docs', 'agent-authoring.md'), 'utf8');
+    return authoring.then((detail) => {
+      for (const capability of capabilities()) expect(`${brief}\n${detail}`).toContain(capability.id);
+    });
   });
 
   it('finds this checkout\'s launcher when running from source', () => {

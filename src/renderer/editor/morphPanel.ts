@@ -459,6 +459,7 @@ export class MorphPanel {
       hit.style.top = `${element.y / canvas.h * 100}%`;
       hit.style.width = `${element.w / canvas.w * 100}%`;
       hit.style.height = `${element.h / canvas.h * 100}%`;
+      hit.style.transform = element.rot ? `rotate(${element.rot}deg)` : '';
       const pair = pairNumbers.get(element.id);
       if (pair) {
         hit.classList.add('paired');

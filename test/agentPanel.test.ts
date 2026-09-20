@@ -27,11 +27,28 @@ describe('filesystem agent panel', () => {
     });
     panel.show();
     await Promise.resolve();
-    expect(panel.element.textContent).toContain('filesystem-based agent');
+    expect(panel.element.textContent).toContain('Run this command');
     expect(panel.element.textContent).toContain('slide-agent connect');
     expect(panel.element.querySelector('textarea')).toBeNull();
     expect(panel.element.textContent).not.toContain('Sign in');
     expect(panel.element.textContent).not.toContain('Model');
+  });
+
+  it('hands a local deck root directly to an agent without a connection API', () => {
+    const panel = new AgentPanel({
+      currentDeckPath: () => '/talk', connectCommand: '/talk', mode: 'local',
+    });
+    panel.show();
+    expect(panel.element.textContent).toContain('/talk');
+    expect(panel.element.textContent).toContain('Open your agent here');
+    expect(panel.element.textContent).not.toContain('AGENTS.md');
+    expect(panel.element.textContent).not.toContain('server');
+    expect(panel.element.textContent).not.toContain('mirror');
+    expect(panel.element.textContent).not.toContain('Waiting for your agent');
+    expect(panel.element.textContent).not.toContain('Connection and editing activity');
+    expect(panel.element.children).toHaveLength(1);
+    expect(panel.element.firstElementChild?.className).toBe('agent-chat-connect');
+    expect(panel.element.querySelector('.panel-resize-handle')).toBeNull();
   });
 
   it('shows bridge activity and opens the latest source/import scratchpad', () => {

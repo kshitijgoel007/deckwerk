@@ -187,9 +187,44 @@ export function stripLayoutDeclarations(root: ParentNode): boolean {
   return changed;
 }
 
-export function sanitizePastedTextHtml(html: string): string {
+/** Recover authored delimiters from KaTeX's generated HTML/MathML render tree. */
+export function restoreKatexSourceHtml(html: string): string {
   const template = document.createElement('template');
   template.innerHTML = html;
+  const root = template.content;
+  // KaTeX embeds the exact authored TeX in an application/x-tex annotation.
+  // Display wrappers must go first or their inner `.katex` node would be
+  // mistaken for inline maths.
+  const authoredTex = (node: Element): string | null =>
+    node.querySelector('annotation[encoding="application/x-tex"]')?.textContent ?? null;
+  for (const display of [...root.querySelectorAll<HTMLElement>('.katex-display')]) {
+    const tex = authoredTex(display);
+    if (tex === null) continue;
+    // auto-render wraps display output in one otherwise empty span so it can
+    // replace a text-node slice. That wrapper is generated too; retaining it
+    // makes a healed equation differ from its original authored source.
+    const wrapper = display.parentElement;
+    const generatedWrapper = wrapper?.tagName === 'SPAN'
+      && wrapper.attributes.length === 0
+      && wrapper.childNodes.length === 1;
+    display.replaceWith(document.createTextNode(`$$${tex}$$`));
+    if (generatedWrapper) wrapper.replaceWith(...wrapper.childNodes);
+  }
+  for (const inline of [...root.querySelectorAll<HTMLElement>('.katex')]) {
+    const tex = authoredTex(inline);
+    if (tex !== null) inline.replaceWith(document.createTextNode(`$${tex}$`));
+  }
+  return template.innerHTML;
+}
+
+export function sanitizePastedTextHtml(html: string): string {
+  const template = document.createElement('template');
+  // Copying rendered maths from the canvas puts KaTeX's generated render tree
+  // on the clipboard, not the `$...$` source stored in the text element. That
+  // tree contains both an accessible MathML copy and a painted HTML copy; if
+  // it is persisted verbatim, the next render sees no delimiters and can only
+  // display the stale generated markup. Recover it before generic cleanup.
+  template.innerHTML = restoreKatexSourceHtml(html);
   const root = template.content;
   root.querySelectorAll(PASTE_REMOVED).forEach((node) => node.remove());
   // Innermost first, so nested wrappers all collapse in one pass.

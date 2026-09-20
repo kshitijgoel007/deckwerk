@@ -1,0 +1,63 @@
+{"kind":"deck","id":"pr/htj45e","name":"Deck"}
+{"kind":"layout","layoutId":"ec77e3ae-4756-4127-a40b-2b95b4be32ef","name":"Master","type":"master"}
+{"kind":"layout","layoutId":"fea83a4c-ea24-41b8-84ca-a63294827bec","name":"Title Slide","type":"title"}
+{"kind":"layout","layoutId":"f1caa8aa-e541-4cd8-bcab-bb66d3ac934c","name":"Calibration Standard","placeholders":[{"name":"title","type":"title","textPreview":"Title"},{"name":"body","type":"body","textPreview":"Body"}]}
+{"kind":"layout","layoutId":"c9e9785c-dbfe-4723-ac50-bf25136482e8","name":"Calibration Alternate","placeholders":[{"name":"title","type":"title","textPreview":"Title"},{"name":"body","type":"body","textPreview":"Body"}]}
+{"kind":"slide","id":"sl/agz7o0","slide":1,"title":"Native column chart — expected fallback","textShapes":2}
+{"kind":"textbox","id":"sh/a98be94z","slide":1,"name":"placeholder_1","placeholder":"title","text":"Native column chart — expected fallback","textPreview":"Native column chart — expected fallback","textChars":39,"textLines":1,"bbox":[0,0,0,0]}
+{"kind":"shape","id":"sh/xczu943q","slide":1,"name":"placeholder_2","placeholder":"body","bbox":[0,0,0,0]}
+{"kind":"textbox","id":"sh/cbqtgjm5","slide":1,"name":"EDGE-01-label","text":"EDGE-01","textPreview":"EDGE-01","textChars":7,"textLines":1,"bbox":[1088,674,132,22]}
+{"kind":"chart","id":"ch/fa5wn6t0","slide":1,"name":"","chartType":"bar","title":"Editable native PowerPoint chart","bbox":[120,165,1040,425]}
+{"kind":"notes","id":"nt/agz7o0","slide":1,"text":"REF-ID: EDGE-01\nEXPECTED: unsupported placeholder or future native chart\nPURPOSE: Chart graphicFrame fallback behavior\nOBJECTS: editable clustered column chart; legend; data labels\nAUTHORING: Generated with @oai/artifact-tool. Slide size 1280x720 CSS px = 13.333x7.5 in."}
+{"kind":"slide","id":"sl/f2dle7","slide":2,"title":"Line + doughnut charts — expected fallback","textShapes":2}
+{"kind":"textbox","id":"sh/29oj2l83","slide":2,"name":"placeholder_1","placeholder":"title","text":"Line + doughnut charts — expected fallback","textPreview":"Line + doughnut charts — expected fallback","textChars":42,"textLines":1,"bbox":[0,0,0,0]}
+{"kind":"shape","id":"sh/pcfixg7u","slide":2,"name":"placeholder_2","placeholder":"body","bbox":[0,0,0,0]}
+{"kind":"textbox","id":"sh/ob614bq9","slide":2,"name":"EDGE-02-label","text":"EDGE-02","textPreview":"EDGE-02","textChars":7,"textLines":1,"bbox":[1088,674,132,22]}
+{"kind":"chart","id":"ch/j690j2d0","slide":2,"name":"","chartType":"line","bbox":[60,165,710,395]}
+{"kind":"chart","id":"ch/y50zqxcf","slide":2,"name":"","chartType":"doughnut","bbox":[830,180,350,330]}
+{"kind":"notes","id":"nt/f2dle7","slide":2,"text":"REF-ID: EDGE-02\nEXPECTED: unsupported placeholders or future native charts\nPURPOSE: Multiple chart families and paint order\nOBJECTS: line chart; doughnut chart\nAUTHORING: Generated with @oai/artifact-tool. Slide size 1280x720 CSS px = 13.333x7.5 in."}
+{"kind":"slide","id":"sl/bg4tm2","slide":3,"title":"Effects, outlines, and advanced paint","textShapes":6}
+{"kind":"textbox","id":"sh/25ozetkb","slide":3,"name":"placeholder_1","placeholder":"title","text":"Effects, outlines, and advanced paint","textPreview":"Effects, outlines, and advanced paint","textChars":37,"textLines":1,"bbox":[0,0,0,0]}
+{"kind":"shape","id":"sh/p8zy9oj2","slide":3,"name":"placeholder_2","placeholder":"body","bbox":[0,0,0,0]}
+{"kind":"textbox","id":"sh/47qhg32h","slide":3,"name":"EDGE-03-label","text":"EDGE-03","textPreview":"EDGE-03","textChars":7,"textLines":1,"bbox":[1088,674,132,22]}
+{"kind":"textbox","id":"sh/rahgby1s","slide":3,"name":"effect-shadow-sm","text":"shadow-sm","textPreview":"shadow-sm","textChars":9,"textLines":1,"bbox":[100,170,280,180]}
+{"kind":"textbox","id":"sh/q98zitk7","slide":3,"name":"effect-shadow-md","text":"shadow-md","textPreview":"shadow-md","textChars":9,"textLines":1,"bbox":[490,170,280,180]}
+{"kind":"textbox","id":"sh/dwzyd8jy","slide":3,"name":"effect-shadow-xl","text":"shadow-xl","textPreview":"shadow-xl","textChars":9,"textLines":1,"bbox":[880,170,280,180]}
+{"kind":"textbox","id":"sh/cbqhk32d","slide":3,"name":"outlined-text","text":"Outlined text","textPreview":"Outlined text","textChars":13,"textLines":1,"bbox":[140,440,1000,100]}
+{"kind":"notes","id":"nt/bg4tm2","slide":3,"text":"REF-ID: EDGE-03\nEXPECTED: approximation expected\nPURPOSE: Shadow effects and text fill/outline simplification\nOBJECTS: shadow-sm; shadow-md; shadow-xl; gradient outlined text\nAUTHORING: Generated with @oai/artifact-tool. Slide size 1280x720 CSS px = 13.333x7.5 in."}
+{"kind":"slide","id":"sl/kgdwhe","slide":4,"title":"Hyperlinks and action-like text runs","textShapes":4}
+{"kind":"textbox","id":"sh/ylw7mlcn","slide":4,"name":"placeholder_1","placeholder":"title","text":"Hyperlinks and action-like text runs","textPreview":"Hyperlinks and action-like text runs","textChars":36,"textLines":1,"bbox":[0,0,0,0]}
+{"kind":"shape","id":"sh/lon6xgvy","slide":4,"name":"placeholder_2","placeholder":"body","bbox":[0,0,0,0]}
+{"kind":"textbox","id":"sh/0nepobud","slide":4,"name":"EDGE-04-label","text":"EDGE-04","textPreview":"EDGE-04","textChars":7,"textLines":1,"bbox":[1088,674,132,22]}
+{"kind":"textbox","id":"sh/nqpozqd4","slide":4,"name":"hyperlink-runs","text":"Plain text before external hyperlink\nVisited-theme color sample","textPreview":"Plain text before external hyperlink | Visited-theme color sample","textChars":63,"textLines":2,"bbox":[120,150,1040,260]}
+{"kind":"textbox","id":"sh/mpw7qlcj","slide":4,"name":"plain-control","text":"Control: no link metadata","textPreview":"Control: no link metadata","textChars":25,"textLines":1,"bbox":[290,470,700,72]}
+{"kind":"notes","id":"nt/kgdwhe","slide":4,"text":"REF-ID: EDGE-04\nEXPECTED: text preserved; link metadata may be dropped\nPURPOSE: External hyperlink metadata versus visually identical text\nOBJECTS: hyperlink-runs; plain-control\nAUTHORING: Generated with @oai/artifact-tool. Slide size 1280x720 CSS px = 13.333x7.5 in."}
+{"kind":"slide","id":"sl/f0c37z","slide":5,"title":"Unsupported and approximated preset shapes","textShapes":14}
+{"kind":"textbox","id":"sh/t4fe107m","slide":5,"name":"placeholder_1","placeholder":"title","text":"Unsupported and approximated preset shapes","textPreview":"Unsupported and approximated preset shapes","textChars":42,"textLines":1,"bbox":[0,0,0,0]}
+{"kind":"shape","id":"sh/614v6lov","slide":5,"name":"placeholder_2","placeholder":"body","bbox":[0,0,0,0]}
+{"kind":"textbox","id":"sh/72xwzqpg","slide":5,"name":"EDGE-05-label","text":"EDGE-05","textPreview":"EDGE-05","textChars":7,"textLines":1,"bbox":[1088,674,132,22]}
+{"kind":"shape","id":"sh/kzmd4b6p","slide":5,"name":"edge-preset-cloud","bbox":[82,120,205,115]}
+{"kind":"textbox","id":"sh/l0vexg7a","slide":5,"name":"caption-cloud","text":"cloud","textPreview":"cloud","textChars":5,"textLines":1,"bbox":[64,242,240,28]}
+{"kind":"shape","id":"sh/yx4v2loz","slide":5,"name":"edge-preset-sun","bbox":[382,120,205,115]}
+{"kind":"textbox","id":"sh/zydwvqpk","slide":5,"name":"caption-sun","text":"sun","textPreview":"sun","textChars":3,"textLines":1,"bbox":[364,242,240,28]}
+{"kind":"shape","id":"sh/cvmd0b6t","slide":5,"name":"edge-preset-moon","bbox":[682,120,205,115]}
+{"kind":"textbox","id":"sh/xwvetg7e","slide":5,"name":"caption-moon","text":"moon","textPreview":"moon","textChars":4,"textLines":1,"bbox":[664,242,240,28]}
+{"kind":"shape","id":"sh/pgj2hwzy","slide":5,"name":"edge-preset-smileyFace","bbox":[982,120,205,115]}
+{"kind":"textbox","id":"sh/ofal8rid","slide":5,"name":"caption-smileyFace","text":"smileyFace","textPreview":"smileyFace","textChars":10,"textLines":1,"bbox":[964,242,240,28]}
+{"kind":"shape","id":"sh/ne1kfmhs","slide":5,"name":"edge-preset-curvedDownArrow","bbox":[82,300,205,115]}
+{"kind":"textbox","id":"sh/2dsj6h07","slide":5,"name":"caption-curvedDownArrow","text":"curvedDownArrow","textPreview":"curvedDownArrow","textChars":15,"textLines":1,"bbox":[64,422,240,28]}
+{"kind":"shape","id":"sh/1cz2dcz2","slide":5,"name":"edge-preset-leftCircularArrow","bbox":[382,300,205,115]}
+{"kind":"textbox","id":"sh/0bq147ih","slide":5,"name":"caption-leftCircularArrow","text":"leftCircularArrow","textPreview":"leftCircularArrow","textChars":17,"textLines":1,"bbox":[364,422,240,28]}
+{"kind":"shape","id":"sh/fahkb2hw","slide":5,"name":"edge-preset-wedgeRoundRectCallout","bbox":[682,300,205,115]}
+{"kind":"textbox","id":"sh/e98j2x0b","slide":5,"name":"caption-wedgeRoundRectCallout","text":"wedgeRoundRectCallout","textPreview":"wedgeRoundRectCallout","textChars":21,"textLines":1,"bbox":[664,422,240,28]}
+{"kind":"shape","id":"sh/doz29czq","slide":5,"name":"edge-preset-cloudCallout","bbox":[982,300,205,115]}
+{"kind":"textbox","id":"sh/snq107i5","slide":5,"name":"caption-cloudCallout","text":"cloudCallout","textPreview":"cloudCallout","textChars":12,"textLines":1,"bbox":[964,422,240,28]}
+{"kind":"shape","id":"sh/4rulw7q1","slide":5,"name":"edge-preset-ribbon","bbox":[82,480,205,115]}
+{"kind":"textbox","id":"sh/5s32pc7m","slide":5,"name":"caption-ribbon","text":"ribbon","textPreview":"ribbon","textChars":6,"textLines":1,"bbox":[64,602,240,28]}
+{"kind":"shape","id":"sh/ips3ux8v","slide":5,"name":"edge-preset-irregularSeal1","bbox":[382,480,205,115]}
+{"kind":"textbox","id":"sh/jqlkn2pg","slide":5,"name":"caption-irregularSeal1","text":"irregularSeal1","textPreview":"irregularSeal1","textChars":14,"textLines":1,"bbox":[364,602,240,28]}
+{"kind":"shape","id":"sh/w3a1snq5","slide":5,"name":"edge-preset-flowChartMagneticDisk","bbox":[682,480,205,115]}
+{"kind":"textbox","id":"sh/hoj2ls7q","slide":5,"name":"caption-flowChartMagneticDisk","text":"flowChartMagneticDisk","textPreview":"flowChartMagneticDisk","textChars":21,"textLines":1,"bbox":[664,602,240,28]}
+{"kind":"shape","id":"sh/u1sjqx8z","slide":5,"name":"edge-preset-actionButtonHome","bbox":[982,480,205,115]}
+{"kind":"textbox","id":"sh/v21kjipk","slide":5,"name":"caption-actionButtonHome","text":"actionButtonHome","textPreview":"actionButtonHome","textChars":16,"textLines":1,"bbox":[964,602,240,28]}
+{"kind":"notes","id":"nt/f0c37z","slide":5,"text":"REF-ID: EDGE-05\nEXPECTED: native if supported; otherwise explicit approximation warning\nPURPOSE: Preset geometries likely to exercise rectangle approximation and warnings\nOBJECTS: edge-preset-cloud; edge-preset-sun; edge-preset-moon; edge-preset-smileyFace; edge-preset-curvedDownArrow; edge-preset-leftCircularArrow; edge-preset-wedgeRoundRectCallout; edge-preset-cloudCallout; edge-preset-ribbon; edge-preset-irregularSeal1; edge-preset-flowChartMagneticDisk; edge-preset-actionButtonHome\nAUTHORING: Generated with @oai/artifact-tool. Slide size 1280x720 CSS px = 13.333x7.5 in."}

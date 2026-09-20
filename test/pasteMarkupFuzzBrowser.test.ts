@@ -324,6 +324,7 @@ async function runPasteCase(cdp: Cdp, port: number, testCase: PasteCase): Promis
   }
   expect(beforePaste, `${where}: paste did nothing`).not.toBe(undefined);
   await checkBox(cdp, port, `${where}: after the paste`);
+  if (payload.math) await assertPastedMathRenders(cdp, payload, where);
 
   for (const operation of operations) {
     const label = `${where}: after ${describeOperation(operation)}`;
@@ -372,6 +373,31 @@ async function runPasteCase(cdp: Cdp, port: number, testCase: PasteCase): Promis
       expect(after.length, `${label}: deletion removed nothing`)
         .toBeLessThanOrEqual(before.length);
     }
+  }
+}
+
+/** A copied equation must persist as TeX source and become KaTeX again on exit. */
+async function assertPastedMathRenders(
+  cdp: Cdp,
+  payload: PasteCase['payload'],
+  label: string,
+): Promise<void> {
+  const equations = payload.math ?? [];
+  await cdp.evaluate('window.canvas.endTextEditing(true)');
+  await eventually(async () => cdp.evaluate<number>(
+    `document.querySelectorAll('${PASTE_CONTENT} .katex').length`,
+  ), `${label}: pasted equations did not render`, (count) => count >= equations.length);
+  const displays = equations.filter((equation) => equation.display).length;
+  expect(await cdp.evaluate<number>(
+    `document.querySelectorAll('${PASTE_CONTENT} .katex-display').length`,
+  ), `${label}: display equation did not stay display math`).toBe(displays);
+  await enterEditing(cdp, PASTE_CONTENT);
+  const source = await cdp.evaluate<string>(
+    `document.querySelector('${PASTE_CONTENT}')?.innerHTML ?? ''`,
+  );
+  for (const equation of equations) {
+    const delimiter = equation.display ? `$$${equation.tex}$$` : `$${equation.tex}$`;
+    expect(source, `${label}: authored TeX source survived`).toContain(delimiter);
   }
 }
 

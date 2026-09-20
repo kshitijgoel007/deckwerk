@@ -272,6 +272,85 @@ describe('Morph matching', () => {
     document.querySelector<HTMLButtonElement>('.morph-modal-close')!.click();
   });
 
+  it('matches every element kind with a rotated Morph selection box', () => {
+    HTMLMediaElement.prototype.pause = function () {};
+    HTMLMediaElement.prototype.load = function () {};
+    const deck = twoSlideDeck();
+    const common = {
+      x: 192, y: 108, w: 384, h: 216, z: 1, opacity: 1, class: [], style: {},
+    };
+    const elements: SlideElement[] = [
+      { ...common, id: 'text-hit', type: 'text', rot: -47, html: 'Text', align: 'left', valign: 'top' },
+      { ...common, id: 'image-hit', type: 'image', rot: -33, src: 'assets/image.png', fit: 'contain', alt: '', sourceBox: null },
+      {
+        ...common, id: 'video-hit', type: 'video', rot: -19, src: 'assets/video.mp4', fit: 'cover',
+        autoplay: false, loop: false, muted: true, controls: false, start: 0, end: null,
+        poster: null, sourceBox: null,
+      },
+      {
+        ...common, id: 'rect-hit', type: 'shape', rot: -5, shape: 'rect', fill: '#fff',
+        stroke: '#000', strokeWidth: 2, radius: 0, path: null, pathSize: null,
+        arrowStart: false, arrowEnd: false,
+      },
+      {
+        ...common, id: 'ellipse-hit', type: 'shape', rot: 9, shape: 'ellipse', fill: '#fff',
+        stroke: '#000', strokeWidth: 2, radius: 0, path: null, pathSize: null,
+        arrowStart: false, arrowEnd: false,
+      },
+      {
+        ...common, id: 'line-hit', type: 'shape', rot: 23, shape: 'line', fill: null,
+        stroke: '#000', strokeWidth: 2, radius: 0, path: null, pathSize: null,
+        arrowStart: false, arrowEnd: false,
+      },
+      {
+        ...common, id: 'arrow-hit', type: 'shape', rot: 37, shape: 'arrow', fill: null,
+        stroke: '#000', strokeWidth: 2, radius: 0, path: null, pathSize: null,
+        arrowStart: false, arrowEnd: true,
+      },
+      {
+        ...common, id: 'path-hit', type: 'shape', rot: 51, shape: 'path', fill: null,
+        stroke: '#000', strokeWidth: 2, radius: 0, path: 'M 0 0 L 10 10',
+        pathSize: { w: 10, h: 10 }, arrowStart: false, arrowEnd: false,
+      },
+      { ...common, id: 'html-hit', type: 'html', rot: 65, html: '<b>HTML</b>' },
+      {
+        ...common, id: 'web-hit', type: 'web', rot: 79, src: 'assets/web/chart.html',
+        poster: 'assets/web/chart.png', interactive: true, title: 'Chart',
+      },
+      {
+        ...common, id: 'unsupported-hit', type: 'unsupported', rot: 93,
+        originalType: 'TSD.ChartArchive', note: 'Unsupported chart',
+      },
+    ];
+    deck.slides[0].elements = elements;
+    const store = new EditorStore(deck, '/tmp/morph');
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    new MorphPanel(host, store);
+    host.querySelector<HTMLButtonElement>('.morph-open')!.click();
+
+    const sourcePreview = document.querySelector<HTMLElement>(
+      '.morph-modal .morph-preview-wrap:first-child .morph-preview',
+    )!;
+    for (const element of elements) {
+      const rendered = sourcePreview.querySelector<HTMLElement>(
+        `.morph-preview-surface [data-element-id="${element.id}"]`,
+      )!;
+      const hit = sourcePreview.querySelector<HTMLElement>(
+        `.morph-object-hit[data-element-id="${element.id}"]`,
+      )!;
+      expect(hit.style.left, element.id).toBe('10%');
+      expect(hit.style.top, element.id).toBe('10%');
+      expect(hit.style.width, element.id).toBe('20%');
+      expect(hit.style.height, element.id).toBe('20%');
+      expect(hit.style.transform, element.id).toBe(rendered.style.transform);
+      expect(hit.style.transform, element.id).toBe(`rotate(${element.rot}deg)`);
+    }
+
+    document.querySelector<HTMLButtonElement>('.morph-modal-close')!.click();
+    host.remove();
+  });
+
   it('pairs objects by clicking the element lists below the previews', () => {
     const store = new EditorStore(twoSlideDeck(), '/tmp/morph');
     const host = document.createElement('div');

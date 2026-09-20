@@ -430,6 +430,30 @@ describe('slide-agent CLI', { timeout: 60_000 }, () => {
     expect(Object.keys(json)[0]).toBe('slideCount');
   });
 
+  it('limits context to a target and its immediate neighbours', async () => {
+    const deck = await onDisk();
+    deck.slides.push(slideOf('slide-3', [text('title-3', 'Third')]));
+    await writeDeck(deck);
+    const { json } = await parsed('context', '--around', '2');
+    expect(json.slideCount).toBe(3);
+    expect(json.outlineWindow).toEqual({ center: 'slide-2', from: 1, to: 3 });
+    expect((json.outline as Array<{ id: string }>).map((entry) => entry.id))
+      .toEqual(['slide-1', 'slide-2', 'slide-3']);
+  });
+
+  it('offers compact read-only slide inspection without a full authoring page', async () => {
+    const elements = await parsed('inspect', '--slide', '1', '--elements-only');
+    expect(elements.json.slides[0]).toMatchObject({ slide: 1, id: 'slide-1' });
+    expect(elements.json.slides[0].elements[0]).toMatchObject({ type: 'text' });
+
+    const body = await cli('inspect', '--slide', '1', '--html-body');
+    expect(body.code).toBe(EXIT_OK);
+    expect(body.stdout).toContain('Read-only compact inspection');
+    expect(body.stdout).toContain('data-slide-id="slide-1"');
+    expect(body.stdout).not.toContain('<!doctype html>');
+    expect(body.stdout).not.toContain('slide-editor-scope:');
+  });
+
   it('fails a render before launching anything when the request cannot be met', async () => {
     const missingOutput = await cli('render', '--all');
     expect(missingOutput.code).toBe(EXIT_USAGE);
@@ -449,6 +473,11 @@ describe('slide-agent CLI', { timeout: 60_000 }, () => {
     expect(stdout).toContain('# Working on a deck as an agent');
     expect(stdout).toContain('transaction apply');
     expect(stdout).toBe(await readFile(agentGuidePath(), 'utf8'));
+
+    const focused = await cli('docs', 'web');
+    expect(focused.code).toBe(EXIT_OK);
+    expect(focused.stdout).toContain('# Web elements');
+    expect(focused.stdout).toContain('web check source.html --replace 9');
   });
 
   it('rejects a deck folder that is not one, and unknown commands', async () => {

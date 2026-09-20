@@ -379,7 +379,7 @@ describe('compiling a saved authoring file in the editor', () => {
         <section class="slide" data-slide-id="slide-1"></section>`),
     }, theme);
 
-    expect(transaction?.label).toBe('Update slides from slide-1-middle.html');
+    expect(transaction?.label).toBe('Added 1 slide · Updated 1 slide · Removed 1 slide · Reordered slides');
     const ops = transaction!.operations.map((operation) => operation.op);
     expect(ops).toContain('insertSlides');
     expect(ops).toContain('deleteSlide');
