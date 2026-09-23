@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { emptyDeck, type Deck, type TextEl } from '../src/shared/deck.js';
 import {
   defaultLayoutMasters,
+  layoutSlotOf,
   syncDeckWithLayoutMasters,
   syncSlideWithLayoutMaster,
 } from '../src/shared/layoutMasters.js';
@@ -127,6 +128,31 @@ describe('authored placeholder content and layout changes', () => {
 
     expect(slotOf(deck, 'title').class).not.toContain('placeholder');
     expect(slotOf(deck, 'title').html).toBe('Real title');
+  });
+
+  // Reported: make a new slideshow, switch the slide to Title slide, and an
+  // empty box sits on top of the title box — the standard layout's body
+  // prompt, which the title layout has no slot for.
+  it('removes an unfilled prompt the new layout has no slot for', () => {
+    const deck = emptyDeck('Fresh');
+    deck.layoutMasters = defaultLayoutMasters();
+    applySlideLayout(deck.slides[0], 'standard', deck.layoutMasters);
+    expect(deck.slides[0].elements.map((element) => layoutSlotOf(element))).toEqual(['title', 'body']);
+
+    applySlideLayout(deck.slides[0], 'title', deck.layoutMasters);
+    expect(deck.slides[0].elements.map((element) => layoutSlotOf(element))).toEqual(['title']);
+    expect(slotOf(deck, 'title').class).toContain('placeholder');
+
+    // And back: the body prompt is offered again, once.
+    applySlideLayout(deck.slides[0], 'standard', deck.layoutMasters);
+    expect(deck.slides[0].elements.map((element) => layoutSlotOf(element))).toEqual(['title', 'body']);
+  });
+
+  it('keeps a body the author has written when the new layout has no body slot', () => {
+    const deck = authoredDeck();
+    applySlideLayout(deck.slides[0], 'title', deck.layoutMasters);
+    expect(slotOf(deck, 'body').html).toBe('Real body');
+    expect(slotOf(deck, 'body').class).not.toContain('placeholder');
   });
 
   it('leaves an unfilled prompt marked, so the projector still hides it', () => {

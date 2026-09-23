@@ -133,7 +133,12 @@ describe('shared editor controls', () => {
   it('progressively compacts the toolbar before controls can overlap', () => {
     const styles = readFileSync(join(process.cwd(), 'src/renderer/editor/editor.css'), 'utf8');
     expect(styles).toContain('#toolbar.toolbar-hide-deck-name .bar-deck-name');
-    expect(styles).toContain('#toolbar.toolbar-compact-file .toolbar-expanded-file-actions');
+    // The File menu is the default with a deck open; the expanded New / Open
+    // / Import buttons appear only on the welcome screen.
+    expect(styles).toMatch(/\.toolbar-expanded-file-actions \{ display: none; \}/);
+    expect(styles).toContain('body.welcome-mode .toolbar-expanded-file-actions { display: inline-flex; }');
+    expect(styles).toContain('.toolbar-compact-file-action { display: inline-block; }');
+    expect(styles).not.toContain('#toolbar.toolbar-compact-file .toolbar-expanded-file-actions');
     expect(styles).toContain('#toolbar.toolbar-compact-secondary .toolbar-expanded-secondary-actions');
     expect(styles).toMatch(/#toolbar\.toolbar-compact-file \.bar-center\s*\{[\s\S]*?position:\s*static;[\s\S]*?transform:\s*none;/);
     expect(styles).not.toContain('@media (max-width: 1100px) {\n  #app { grid-template-rows: auto');

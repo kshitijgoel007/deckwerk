@@ -113,7 +113,7 @@ describe.skipIf(!electronBinary)('standalone collaboration browser', () => {
       panels: [...document.querySelectorAll('#side-tabs button')].map((button) => button.textContent?.trim() ?? '')
     }))()`), 'browser editor did not finish connecting', (value) => value.connected);
     expect(opened.title).toBe('Browser collaboration smoke');
-    expect(opened.controls).toEqual(expect.arrayContaining(['Text', 'Table', 'Present', 'Save As…']));
+    expect(opened.controls).toEqual(expect.arrayContaining(['Text', 'Table', 'Present', 'File']));
     expect(opened.panels).toEqual(['Props', 'Design', 'Build', 'History']);
 
     const peerProfileDir = join(workDir, 'peer-electron-profile');

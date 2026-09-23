@@ -12,6 +12,8 @@ import {
   cutSelectionToClipboard,
   pasteImageFilesFromClipboard,
   pasteFromClipboard,
+  inAppClipboardToken,
+  isInAppClipboardToken,
   pasteInAppClipboard,
 } from './store.js';
 import {
@@ -237,6 +239,20 @@ export function bindEditorKeys(deps: ShellDeps, clipboard: ClipboardActions): vo
     if (redo) (deps.redo ?? (() => store.redo()))();
     else (deps.undo ?? (() => store.undo()))();
   };
+  window.addEventListener('copy', (event) => {
+    // The Web UI's in-app copy (Cmd/Ctrl+C below leaves the key to Chromium
+    // so this event fires) stamps the OS clipboard with its token, so the
+    // paste handler can tell a slide copied just now from an image copied an
+    // hour ago. See writeSystemClipboard.
+    const nativeClipboard = (window.api as Partial<Window['api']>).readClipboard;
+    if (nativeClipboard || canvas.isEditing() || hasNativeCopySelection()) return;
+    const target = event.target instanceof HTMLElement ? event.target : null;
+    if (target?.isContentEditable || target?.matches('input, textarea, select')) return;
+    const token = inAppClipboardToken();
+    if (!token || !event.clipboardData) return;
+    event.preventDefault();
+    event.clipboardData.setData('text/plain', token);
+  });
   window.addEventListener('paste', (event) => {
     // Desktop Electron has a richer native-image bridge and intercepts the
     // shortcut below. The Web UI relies on this native event, which works on
@@ -247,6 +263,13 @@ export function bindEditorKeys(deps: ShellDeps, clipboard: ClipboardActions): vo
     if (target?.isContentEditable || target?.matches('input, textarea, select')) return;
     const html = event.clipboardData?.getData('text/html') ?? '';
     const text = event.clipboardData?.getData('text/plain') ?? '';
+    // The newest copy was made in the app: paste that, whatever else (an
+    // older screenshot, say) is still on the OS clipboard beside it.
+    if (isInAppClipboardToken(text) && clipboard.pasteInAppClipboard) {
+      event.preventDefault();
+      void clipboard.pasteInAppClipboard();
+      return;
+    }
     if (/<table\b/i.test(html) || text.includes('\t')) {
       event.preventDefault();
       void clipboard.pasteClipboardData?.(html, text);
@@ -358,7 +381,10 @@ export function bindEditorKeys(deps: ShellDeps, clipboard: ClipboardActions): vo
     }
     if (mod && e.key.toLowerCase() === 'c') {
       if (hasNativeCopySelection()) return;
-      e.preventDefault();
+      // In the Web UI the key is left to Chromium so that its `copy` event
+      // fires and stamps the OS clipboard (above); the in-app payload is
+      // recorded synchronously before that event arrives.
+      if ((window.api as Partial<Window['api']>).readClipboard) e.preventDefault();
       void clipboard.copyToClipboard('Copied');
       return;
     }

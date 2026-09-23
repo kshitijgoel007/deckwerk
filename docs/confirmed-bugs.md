@@ -303,3 +303,81 @@ Covered by `test/historyPanel.test.ts` (grouping, expansion, restoring a single
 step, no cross-element or cross-label merging, persistence across reopen) and
 end to end in `test/textUndoStepsBrowser.test.ts`, which types real words and
 requires the panel to show one row while Ctrl/Cmd+Z still steps word by word.
+
+## Why the fuzzers missed a batch of editing bugs (2026-09-22)
+
+Eight reported defects — an underline that came back after Return, a `- ` line
+that lost its underline as it became a bullet, a Tab over two items that
+invented a third, a phantom box on a fresh Title slide, a context menu cut off
+at the bottom of the screen, an image pasted instead of the copied slide, a
+rail row left dimmed by an abandoned drag, and a bullet that only appeared on
+Return — all survived suites that were supposed to be looking for exactly this
+kind of thing. The gap was not "not enough seeds". It was four structural
+things, each worth stating because each one had to be closed separately.
+
+**1. The two halves of the problem were never in the same fuzzer.** Every one
+of the text bugs is a *Chromium editing behaviour with a semantic
+consequence*: Chromium's `insertParagraph` clones the inline wrapper the caret
+sits in, and the consequence is that the author's next line is underlined when
+they had just switched underline off. Catching it needs real Chromium *and* an
+oracle that reads formatting. We had each, never together:
+
+- `test/textFormattingToggleFuzz.test.ts` has a proper semantic oracle
+  (`effectiveFormat`), but it runs in jsdom and types by inserting a text node
+  by hand — Chromium's own splitting never happens there, and Return is not in
+  its vocabulary at all.
+- `test/listEditingFuzzBrowser.test.ts` drives real Chromium, but its oracle
+  was purely structural: markup invariants and character counts. Markup can be
+  perfectly well-formed and still not be what the author typed.
+
+So the bug lived in the one place neither could see. The fix is
+`session.runs()` — every text run with the formatting an author actually sees
+on it — plus the browser walk's new `format and type` action, which toggles a
+format, types, toggles it back off, presses Return and checks what the next
+line carries.
+
+**2. The vocabulary was missing ordinary gestures.** No inline format toggles,
+no typed `- ` marker, and — the sharpest one — no multi-line selection at all:
+the walk re-clicked a collapsed caret before every action, so `Tab` had
+literally never been pressed over a range. The invented-bullet bug lived in a
+code path the fuzzer could not reach by construction, not by chance. Added:
+`dash bullet`, `indent selection`, `outdent selection`.
+
+**3. The reporting layer hid the evidence.** `OUTLINE` printed a sub-list that
+Chromium had written as a *sibling* of its item as an opaque `?ul` and did not
+descend into it — so an empty bullet invented inside one was unprintable, and
+even a correct assertion would have had nothing to compare. The persisted
+oracle masked the same thing from the other end: it reads markup that has been
+through normalisation, which adopts the stray list and tidies the evidence
+away. `OUTLINE` now walks `?ul` like any other list.
+
+**4. Some surfaces have no fuzzer at all, and the missing invariant is usually
+a visual one.** The non-text bugs are all of this kind:
+
+- *Phantom box.* `test/operationFuzz.test.ts` already had `switch slide layout`
+  in its vocabulary and ran it thousands of times. It never complained because
+  every invariant was about *validity* — ids unique, geometry finite, one node
+  per element — and a body prompt standing on top of a title is perfectly
+  valid. The missing rule was about what the author can see. It is now
+  invariant 10: no unwritten prompt for a slot the slide's layout does not
+  have. Reverting the fix makes the fuzzer fail on its own seeds.
+- *Context menu off-screen.* Nothing fuzzed viewport-edge placement of menus
+  and popovers. `contextMenuPlacement` is now a pure function with its own
+  unit tests at all four edges, which is the cheap half of that gap;
+  systematically opening every popover near every edge is still uncovered.
+- *Clipboard precedence.* No fuzzer models the OS clipboard holding foreign
+  content copied at a different time. Covered now by directed tests only
+  (`test/webClipboardPrecedence.test.ts`).
+- *Abandoned drag.* No fuzzer models a gesture that *starts and does not
+  finish*. The rail row stayed dimmed because the drag changed nothing, so
+  every slide object was identical and the row cache handed the same DOM node
+  back — the re-render meant to clear the mark never rebuilt the row carrying
+  it. Aborted gestures are a whole unfuzzed class: begin-and-abandon for drag,
+  resize, crop, marquee and text editing.
+
+The transferable rule: **an oracle that only asks "is this well-formed?" will
+never find a bug whose output is well-formed**, and most of the bugs an author
+actually reports are of that kind. Every fuzzer here should be able to answer
+"and is it what the author asked for?" — in the text fuzzers that means
+formatting and list level, and in the operation fuzzer it means rules about
+what is visible on the slide.

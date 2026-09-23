@@ -7,6 +7,7 @@ import {
   OTHER_CONTENT,
   startListEditingSession,
   type ListEditingSession,
+  type TextRun,
 } from './support/listEditingSession.js';
 import {
   deckSnapshotEventually,
@@ -33,6 +34,18 @@ import {
  * delete backwards, indent, outdent, type, undo. After every single step the
  * markup must still be something the editor and the exporters can work with,
  * on screen and as stored by the collaboration server.
+ *
+ * Soundness alone let a whole class of bugs through: markup can be perfectly
+ * well-formed and still not be what the author typed. Underline switched off
+ * and coming back after Return, a "- " line losing its underline as it became
+ * a bullet, Tab over two items inventing an empty third — all of them sound,
+ * all of them wrong. So the walk also speaks the vocabulary those bugs live
+ * in (inline format toggles, Return with a format pending, typing "- " to
+ * start a bullet, Tab and shift-Tab over a multi-line selection) and checks
+ * *meaning*: text typed after a toggle carries exactly the formats in force,
+ * on the line it was typed on and on the line Return opens after it; a typed
+ * "- " becomes one bullet holding the text; indenting a selection moves the
+ * items it covers and nothing else.
  *
  * `RUN_EXHAUSTIVE_LIST_FUZZ=1` runs every sweep case and a much longer walk,
  * `LIST_FUZZ_SEED=<n>` walks a different order, and `LIST_FUZZ_TRACE=1` prints
@@ -75,6 +88,14 @@ function random(seed: number): () => number {
 }
 
 type Kind = 'Bulleted' | 'Numbered';
+type FormatName = 'bold' | 'italic' | 'underline';
+const FORMAT_KEYS: Record<FormatName, { key: string; code: string; keyCode: number }> = {
+  bold: { key: 'b', code: 'KeyB', keyCode: 66 },
+  italic: { key: 'i', code: 'KeyI', keyCode: 73 },
+  underline: { key: 'u', code: 'KeyU', keyCode: 85 },
+};
+const FORMAT_NAMES: FormatName[] = ['bold', 'italic', 'underline'];
+const SHIFT = 8;
 type Route = 'return' | 'backspace';
 interface SweepCase { kind: Kind; length: number; at: number; route: Route }
 
@@ -97,31 +118,12 @@ function sweepCases(): SweepCase[] {
 }
 
 /**
- * Structural problems that matter in the live contenteditable surface.
- *
- * Chromium writes sub-lists as *siblings* of the item they belong to, and its
- * Return inside such an item can leave an item nested in an item. Those are
- * the browser's own shapes, not the editor's, and normalisation repairs them
- * on the way to the deck — where they are checked with no exception at all.
- * So they are tolerated here, and only while the box actually has a sub-list:
- * a flat list must be sound on screen too.
+ * Sound on screen and sound as stored. The live surface tolerates Chromium's
+ * own sub-list shapes (see `CHROMIUM_NESTING_QUIRKS` in the session); what
+ * reaches the deck is checked with no exception at all.
  */
-const CHROMIUM_NESTING_QUIRKS = [
-  'a list is nested directly inside a list',
-  'a block is nested inside a block that cannot contain it',
-  'a list item is outside a list',
-];
-
-async function liveProblems(): Promise<string[]> {
-  const problems = await session.problems();
-  const nested = await session.cdp.evaluate<boolean>(
-    `Boolean(document.querySelector('${CONTENT} :is(ul, ol) :is(ul, ol, li li)'))`);
-  return nested ? problems.filter((problem) => !CHROMIUM_NESTING_QUIRKS.includes(problem))
-    : problems;
-}
-
 async function expectSound(label: string): Promise<void> {
-  const live = await liveProblems();
+  const live = await session.liveProblems();
   expect(live, `${label}: live markup ${live.length > 0 ? await session.markup() : ''}`)
     .toEqual([]);
   const stored = await session.persistedProblems();
@@ -201,6 +203,7 @@ async function runWalk(seed: number): Promise<void> {
     'bullet all', 'number all', 'free all', 'caret', 'return', 'empty bullet',
     'backspace at start', 'type', 'indent', 'outdent', 'undo',
     'other box', 'escape and re-enter', 'cut words', 'cut bullet', 'paste',
+    'format and type', 'format and type', 'dash bullet', 'indent selection', 'outdent selection',
   ] as const;
   // The clipboard holds whatever the last cut put there; a paste before any
   // cut would paste another test's leftovers, which reproduces nothing.
@@ -258,6 +261,17 @@ async function runWalk(seed: number): Promise<void> {
       case 'indent':
         await moveCaret(next);
         await session.cdp.key('Tab', 9);
+        break;
+      case 'format and type':
+        await formatAndType(next, step, label);
+        typed += 1;
+        break;
+      case 'dash bullet':
+        await dashBullet(next, step, label);
+        break;
+      case 'indent selection':
+      case 'outdent selection':
+        await shiftSelection(next, action === 'indent selection' ? 'in' : 'out', label);
         break;
       case 'outdent':
         await moveCaret(next);
@@ -349,6 +363,184 @@ async function runWalk(seed: number): Promise<void> {
     }
   }
   expect(typed, 'the walk typed at least once').toBeGreaterThan(0);
+}
+
+/** The formats a run carries, as a comparable picture: `b i u` flags. */
+function flags(run: Pick<TextRun, 'bold' | 'italic' | 'underline'>): string {
+  return FORMAT_NAMES.map((name) => (run[name] ? name[0] : '-')).join('');
+}
+
+/** The run holding `word`, or a failure naming what is there instead. */
+function runHolding(runs: TextRun[], word: string, label: string): TextRun {
+  const run = runs.find((candidate) => candidate.text.includes(word));
+  if (!run) {
+    expect.fail(`${label}: no run holds ${JSON.stringify(word)}; runs: `
+      + runs.map((candidate) => `${JSON.stringify(candidate.text)}[${flags(candidate)}]@${candidate.blockTag}${candidate.block}`).join(' '));
+  }
+  return run!;
+}
+
+/**
+ * The semantic oracle for inline formatting. Put the caret at the end of a
+ * line, toggle one or two formats, type a word: the word must carry the
+ * formats of the character before it with exactly those toggles flipped.
+ * Then Return and another word: what was in force carries onto the new line,
+ * and the first word keeps what it had. Toggling a format *off* before
+ * Return is the reported case — the new line came back underlined.
+ */
+/** Which block the caret is in, as an index into the box's blocks; -1 if none. */
+function caretBlockIndex(): Promise<number> {
+  return session.cdp.evaluate<number>(`(() => {
+    const root = document.querySelector('${CONTENT}');
+    const selection = window.getSelection();
+    if (!root || !selection || selection.rangeCount === 0) return -1;
+    const node = selection.getRangeAt(0).startContainer;
+    const holder = node.nodeType === Node.TEXT_NODE ? node.parentElement : node;
+    const block = holder && holder.closest('li, p, div, td, th');
+    return block ? [...root.querySelectorAll('li, p, div, td, th')].indexOf(block) : -1;
+  })()`);
+}
+
+/**
+ * The formats in force where the caret stands: those of the character before
+ * it, which is the last run of its block. An empty line has none; its
+ * baseline is "nothing on", which is what the box's plain style gives (the
+ * fixture's role sets no bold, italic or underline).
+ */
+async function baseFormatsAtCaret(): Promise<Record<FormatName, boolean> | null> {
+  const block = await caretBlockIndex();
+  if (block < 0) return null;
+  const lineRuns = (await session.runs()).filter((run) => run.block === block);
+  const last = lineRuns[lineRuns.length - 1];
+  return last
+    ? { bold: last.bold, italic: last.italic, underline: last.underline }
+    : { bold: false, italic: false, underline: false };
+}
+
+async function formatAndType(next: () => number, step: number, label: string): Promise<void> {
+  await moveCaret(next, 'end');
+  const before = await session.runs();
+  const caretBlock = await caretBlockIndex();
+  if (caretBlock < 0) return;
+  const lineRuns = before.filter((run) => run.block === caretBlock);
+  const last = lineRuns[lineRuns.length - 1];
+  const base: Record<FormatName, boolean> = last
+    ? { bold: last.bold, italic: last.italic, underline: last.underline }
+    : { bold: false, italic: false, underline: false };
+  const expected = { ...base };
+  const toggles = 1 + (next() < 0.4 ? 1 : 0);
+  const chosen: FormatName[] = [];
+  for (let index = 0; index < toggles; index += 1) {
+    const format = FORMAT_NAMES[Math.floor(next() * FORMAT_NAMES.length)];
+    if (chosen.includes(format)) continue;
+    chosen.push(format);
+    const { key, code, keyCode } = FORMAT_KEYS[format];
+    await session.cdp.chord(key, code, keyCode, MOD);
+    expected[format] = !expected[format];
+  }
+  const first = `f${step}a`;
+  await session.cdp.typeKeys(first);
+  let runs = await session.runs();
+  expect(flags(runHolding(runs, first, label)), `${label}: ${JSON.stringify(first)} typed after `
+    + `toggling ${chosen.join('+')} on a line ending [${flags(base)}]`).toBe(flags(expected));
+
+  // The reported shape: switch the format back off, then break the line.
+  const switchOff = next() < 0.5 && chosen.length > 0;
+  if (switchOff) {
+    const format = chosen[0];
+    const { key, code, keyCode } = FORMAT_KEYS[format];
+    await session.cdp.chord(key, code, keyCode, MOD);
+    expected[format] = !expected[format];
+  }
+  await session.cdp.key('Enter', 13);
+  const second = `f${step}b`;
+  await session.cdp.typeKeys(second);
+  runs = await session.runs();
+  const firstRun = runHolding(runs, first, label);
+  const secondRun = runHolding(runs, second, label);
+  const firstExpected = { ...expected };
+  if (switchOff) firstExpected[chosen[0]] = !firstExpected[chosen[0]];
+  expect(flags(firstRun), `${label}: the word before Return changed its formatting`)
+    .toBe(flags(firstExpected));
+  expect(secondRun.block, `${label}: Return did not open a new line`).toBe(firstRun.block + 1);
+  expect(flags(secondRun), `${label}: ${JSON.stringify(second)} typed on the line Return opened `
+    + `${switchOff ? `after switching ${chosen[0]} off` : ''}`).toBe(flags(expected));
+}
+
+/**
+ * Typing "- " (or "* ") at the start of a line opens a bullet at once, and
+ * the words typed into it keep whatever format is pending — the reported
+ * case being an underline lost as the line became a bullet.
+ */
+async function dashBullet(next: () => number, step: number, label: string): Promise<void> {
+  // A fresh plain line: Return at the end of a paragraph. Inside a list the
+  // browser continues the list instead, and "- " there is just text.
+  await moveCaret(next, 'end');
+  const inList = await session.cdp.evaluate<boolean>(`(() => {
+    const node = window.getSelection()?.getRangeAt(0)?.startContainer;
+    const holder = node && (node.nodeType === Node.TEXT_NODE ? node.parentElement : node);
+    return Boolean(holder && holder.closest('li'));
+  })()`);
+  if (inList) return;
+  // Return carries the formats in force at the end of the line onto the line
+  // it opens -- deliberately, and checked by `formatAndType`. So the fresh
+  // line's baseline is that line's, not "nothing on", and the toggle below
+  // flips it from there. Reading it as "nothing on" is what made this step
+  // report an underline "invented by" a "- " that had merely inherited one.
+  const base = await baseFormatsAtCaret();
+  await session.cdp.key('Enter', 13);
+  const itemsBefore = (await session.blocksOf('li')).length;
+  const toggled = next() < 0.5;
+  if (toggled) await session.cdp.chord('u', 'KeyU', 85, MOD);
+  const underline = (base?.underline ?? false) !== toggled;
+  await session.cdp.typeKeys(next() < 0.5 ? '- ' : '* ');
+  expect((await session.blocksOf('li')).length, `${label}: "- " did not open exactly one bullet`)
+    .toBe(itemsBefore + 1);
+  const word = `d${step}`;
+  await session.cdp.typeKeys(word);
+  const runs = await session.runs();
+  const run = runHolding(runs, word, label);
+  expect(run.blockTag, `${label}: the typed word is not in the bullet`).toBe('li');
+  expect(run.text, `${label}: the marker stayed in the bullet's text`).not.toMatch(/^[-*]\s/);
+  expect(run.underline, `${label}: the bullet's underline is wrong -- the line before it `
+    + `ended ${base?.underline ? 'underlined' : 'plain'} and Cmd+U was ${toggled ? '' : 'not '}pressed, `
+    + `so "- " should have ${underline ? 'kept' : 'left off'} the underline`)
+    .toBe(underline);
+  expect((await session.blocksOf('li')).length, `${label}: typing into the bullet changed the item count`)
+    .toBe(itemsBefore + 1);
+}
+
+/**
+ * Tab and shift-Tab over a selection spanning two lines. Whatever the levels,
+ * the items are the same items afterwards: same count, same texts in order,
+ * and no empty item that was not there before — the reported invention.
+ */
+async function shiftSelection(next: () => number, direction: 'in' | 'out', label: string): Promise<void> {
+  const before = await session.outline();
+  const itemsBefore = await session.blocksOf('li');
+  if (itemsBefore.length < 2) return;
+  await moveCaret(next, 'start');
+  await session.cdp.chord('ArrowDown', 'ArrowDown', 40, SHIFT);
+  await session.cdp.chord('End', 'End', 35, SHIFT);
+  if (direction === 'in') await session.cdp.key('Tab', 9);
+  else await session.cdp.chord('Tab', 'Tab', 9, SHIFT);
+  const after = await session.blocksOf('li');
+  const emptyBefore = itemsBefore.filter((text) => text === '').length;
+  const emptyAfter = after.filter((text) => text === '').length;
+  const picture = `before ${JSON.stringify(before)} after ${JSON.stringify(await session.outline())}`;
+  expect(emptyAfter, `${label}: ${direction === 'in' ? 'indenting' : 'outdenting'} a selection `
+    + `invented an empty bullet; ${picture}`).toBeLessThanOrEqual(emptyBefore);
+  // Outdenting an outer item frees it into a paragraph; indenting never
+  // changes what is an item.
+  if (direction === 'in') {
+    expect(after, `${label}: indenting a selection changed the items; ${picture}`).toEqual(itemsBefore);
+  } else {
+    expect(after.length, `${label}: outdenting a selection added items; ${picture}`)
+      .toBeLessThanOrEqual(itemsBefore.length);
+  }
+  expect(compact(await session.text()), `${label}: the selection's text changed; ${picture}`)
+    .toBe(compact(before.filter((line) => !/^\s*(\?)?(ul|ol)(@\d+)?$/.test(line))
+      .map((line) => line.replace(/^\s*(- |p: |div: )/, '')).join('')));
 }
 
 /** A nonce no other step has typed anywhere, so "landed only there" is exact. */

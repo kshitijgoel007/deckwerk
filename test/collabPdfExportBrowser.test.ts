@@ -104,32 +104,33 @@ describe.skipIf(!electronBinary)('collaboration PDF export', () => {
       'Boolean(window.store?.get().deck.slides.length)'),
       'the browser editor did not finish connecting');
 
-    // Real clicks, all the way from the toolbar: Save As… → PDF… → the export
-    // dialog's build checkbox → Export.
+    // Real clicks, all the way from the toolbar: File → Export PDF… → the
+    // export dialog's build checkbox → Export. File is the one file control
+    // at every width now, so this is the route an author actually takes.
     // The toolbar's dropdowns are not distinguishable by CSS alone, so mark the
     // one under test and then click it for real.
     // The toolbar is drawn after the store has its deck; wait for it rather
     // than reading it in the same tick.
     await eventually(async () => editor!.evaluate<boolean>(`(() => {
       const trigger = [...document.querySelectorAll('#toolbar .shape-menu-trigger')]
-        .find((candidate) => candidate.textContent?.trim() === 'Save As…');
-      trigger?.setAttribute('data-test', 'save-as');
+        .find((candidate) => candidate.textContent?.trim() === 'File');
+      trigger?.setAttribute('data-test', 'file-menu');
       return Boolean(trigger);
-    })()`), 'the toolbar never offered Save As…');
-    await editor.click('#toolbar [data-test="save-as"]', 'Save As… menu');
+    })()`), 'the toolbar never offered the File menu');
+    await editor.click('#toolbar [data-test="file-menu"]', 'File menu');
     const menu = await editor.evaluate<string[]>(
       `[...document.querySelectorAll('#toolbar .shape-menu-item')].map((item) => item.textContent)`);
-    expect(menu).toContain('PDF…');
-    // Lossy exports sit in a labelled group, so the item is not a positional
+    expect(menu).toContain('Export PDF…');
+    // Save and export sits in a labelled group, so the item is not a positional
     // child of the menu. Tag it the same way the trigger was tagged.
     const taggedPdf = await editor.evaluate<boolean>(`(() => {
       const item = [...document.querySelectorAll('#toolbar .shape-menu-item')]
-        .find((candidate) => candidate.textContent?.trim() === 'PDF…');
+        .find((candidate) => candidate.textContent?.trim() === 'Export PDF…');
       item?.setAttribute('data-test', 'export-pdf');
       return Boolean(item);
     })()`);
     expect(taggedPdf).toBe(true);
-    await editor.click('#toolbar [data-test="export-pdf"]', 'PDF… menu item');
+    await editor.click('#toolbar [data-test="export-pdf"]', 'Export PDF… menu item');
     await editor.click('.pdf-export-dialog input[type="checkbox"]', 'include-builds checkbox');
 
     // Capture the URL the real export action asks the browser to open. Letting

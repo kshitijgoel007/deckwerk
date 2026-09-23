@@ -1,3 +1,4 @@
+import { openContextMenu } from './contextMenuPlacement.js';
 import type { Deck, Slide, SlideElement } from '@shared/deck.js';
 import { type Rect, fitScale, makeId } from '@shared/geometry.js';
 
@@ -42,11 +43,13 @@ import {
 import {
   caretAtBlockStart,
   flattenListToParagraphs,
+  indentListItem,
   isEmptyListItem,
   isTopLevelListItem,
   liftItemOutOfItem,
   outdentListItem,
   mergeParagraphIntoList,
+  parentListItem,
   unbulletListItems,
 } from './listEditing.js';
 import {
@@ -149,47 +152,150 @@ function convertTypedArrow(body: HTMLElement, selection: Selection | null): bool
   return true;
 }
 
-/** Turn a Keynote-style marker paragraph into a real continuing HTML list. */
-function convertTypedListMarker(body: HTMLElement, selection: Selection | null): boolean {
-  if (!selection?.isCollapsed || selection.rangeCount === 0) return false;
+/** A list marker an author typed at the start of a paragraph: `- `, `* `, `1. `, `2) `. */
+interface TypedListMarker {
+  /** The paragraph holding the marker — or the box itself, for bare text. */
+  block: HTMLElement;
+  ordered: boolean;
+  /** The typed number, for a numbered list that does not start at 1. */
+  start: string | null;
+  /** How many visible characters the marker and its trailing space take. */
+  markerLength: number;
+}
+
+/** Text as the author sees it: no pending-style sentinels, spaces as spaces. */
+function visibleText(value: string): string {
+  return value.replaceAll(TYPING_STYLE_SENTINEL, '').replace(/ /g, ' ');
+}
+
+/**
+ * The list marker the caret has just typed, if the paragraph starts with one.
+ *
+ * Two moments ask: the space that follows `-`, `*` or `1.` (`space`: the text
+ * before the caret is exactly the marker, and the space itself has not been
+ * inserted yet), and Return at the end of a `- text` line (`return`: marker,
+ * space and text, with the caret after all of it). Both leave real lists
+ * alone — the browser already continues those.
+ */
+function typedListMarkerAtCaret(
+  body: HTMLElement,
+  selection: Selection | null,
+  mode: 'space' | 'return',
+): TypedListMarker | null {
+  if (!selection?.isCollapsed || selection.rangeCount === 0) return null;
   const range = selection.getRangeAt(0);
-  if (!body.contains(range.startContainer)) return false;
+  if (!body.contains(range.startContainer)) return null;
   const parent = range.startContainer instanceof Element
     ? range.startContainer
     : range.startContainer.parentElement;
-  if (parent?.closest('li')) return false; // the browser already continues real lists
+  if (parent?.closest('li')) return null;
   const block = parent?.closest('p, div') as HTMLElement | null;
-  const source = block && body.contains(block) ? block : body;
-  const text = (source.textContent ?? '')
-    .replaceAll(TYPING_STYLE_SENTINEL, '')
-    .replace(/\u00a0/g, ' ');
+  const source = block && body.contains(block) && block !== body ? block : body;
+  const text = visibleText(source.textContent ?? '');
   const beforeCaret = range.cloneRange();
   beforeCaret.selectNodeContents(source);
   beforeCaret.setEnd(range.startContainer, range.startOffset);
-  if (beforeCaret.toString()
-    .replaceAll(TYPING_STYLE_SENTINEL, '')
-    .replace(/\u00a0/g, ' ').length !== text.length) return false;
-  const bullet = /^\s*[*-]\s+(.+)$/.exec(text);
-  const numbered = /^\s*(\d+)[.)]\s+(.+)$/.exec(text);
-  if (!bullet && !numbered) return false;
+  const before = visibleText(beforeCaret.toString());
+  const match = mode === 'return'
+    ? (before.length === text.length ? /^(\s*(?:[*-]|(\d+)[.)])\s+)(?=\S)/.exec(text) : null)
+    : /^(\s*(?:[*-]|(\d+)[.)]))$/.exec(before);
+  if (!match) return null;
+  return {
+    block: source,
+    ordered: match[2] !== undefined,
+    start: match[2] ?? null,
+    markerLength: match[1].length,
+  };
+}
 
-  const list = document.createElement(numbered ? 'ol' : 'ul');
-  if (numbered && numbered[1] !== '1') list.setAttribute('start', numbered[1]);
-  const first = document.createElement('li');
-  first.textContent = (bullet?.[1] ?? numbered?.[2] ?? '').trim();
-  const next = document.createElement('li');
-  next.appendChild(document.createElement('br'));
-  list.append(first, next);
-  if (source === body) body.replaceChildren(list);
-  else source.replaceWith(list);
+/**
+ * Turn the marker paragraph into a real list item, keeping the markup the
+ * text was typed in — a pending underline, a bold word — and taking only the
+ * marker's own characters off the front. With `openNextItem` (Return at the
+ * end of `- text`) an empty item follows and takes the caret, the way a list
+ * continues; without it (the space after `-`) the caret stays where the
+ * marker was, at the start of the new item, ready for its text.
+ */
+function convertTypedListMarker(
+  body: HTMLElement,
+  marker: TypedListMarker,
+  openNextItem: boolean,
+): Range {
+  const { block, ordered, start, markerLength } = marker;
+  const list = document.createElement(ordered ? 'ol' : 'ul');
+  if (ordered && start && start !== '1') list.setAttribute('start', start);
+  const item = document.createElement('li');
+  if (block !== body) {
+    for (const attr of [...block.attributes]) item.setAttribute(attr.name, attr.value);
+  }
+  item.append(...block.childNodes);
+
+  // The marker's characters come off the front of the text, wherever inline
+  // markup put them; the sentinel of a pending style is not a character the
+  // author typed and stays, so the style it holds still governs what comes.
+  let remaining = markerLength;
+  const walker = document.createTreeWalker(item, NodeFilter.SHOW_TEXT);
+  const texts: Text[] = [];
+  for (let current = walker.nextNode(); current; current = walker.nextNode()) {
+    texts.push(current as Text);
+  }
+  for (const text of texts) {
+    if (remaining <= 0) break;
+    let kept = '';
+    for (const character of text.data) {
+      if (character === TYPING_STYLE_SENTINEL || remaining <= 0) kept += character;
+      else remaining -= 1;
+    }
+    text.data = kept;
+    if (kept === '') {
+      // An inline wrapper emptied by the strip (a `<b>` around the dash) has
+      // nothing left to wrap.
+      let hollow: Node = text;
+      while (hollow.parentNode && hollow.parentNode !== item
+        && hollow.parentNode.childNodes.length === 1) {
+        hollow = hollow.parentNode;
+      }
+      hollow.parentNode?.removeChild(hollow);
+    }
+  }
+  const visible = visibleText(item.textContent ?? '').replace(/\s+/g, '');
+  if (visible === '' && !item.querySelector('br, img, video, svg')) {
+    item.appendChild(document.createElement('br'));
+  }
+
+  if (block === body) body.replaceChildren(list);
+  else block.replaceWith(list);
+  list.appendChild(item);
 
   const caret = document.createRange();
-  caret.selectNodeContents(next);
+  if (openNextItem) {
+    // The caret leaves this item, so a style run still pending in it is
+    // sealed here: it keeps the style typed into it and loses its sentinel.
+    for (const pending of [...item.querySelectorAll<HTMLElement>('[data-editor-typing-style]')]) {
+      for (const text of [...pending.childNodes]) {
+        if (text instanceof Text) text.data = text.data.replaceAll(TYPING_STYLE_SENTINEL, '');
+      }
+      pending.removeAttribute('data-editor-typing-style');
+      if (!(pending.textContent ?? '')) pending.remove();
+    }
+    const next = document.createElement('li');
+    next.appendChild(document.createElement('br'));
+    list.appendChild(next);
+    caret.setStart(next, 0);
+  } else {
+    const firstText = document.createTreeWalker(item, NodeFilter.SHOW_TEXT).nextNode();
+    if (firstText) caret.setStart(firstText, 0);
+    else caret.setStart(item, 0);
+  }
   caret.collapse(true);
-  selection.removeAllRanges();
-  selection.addRange(caret);
-  return true;
+  const selection = window.getSelection();
+  selection?.removeAllRanges();
+  selection?.addRange(caret);
+  return caret;
 }
+
+/** Whether each inline format is in force for what the caret types next. */
+type TypingFormats = Record<InlineTextFormat, boolean>;
 
 /** The blocks a word can never span: paragraphs, list items, table cells. */
 /**
@@ -2576,8 +2682,6 @@ export class EditorCanvas {
 
     const menu = document.createElement('div');
     menu.id = 'ctx-menu';
-    menu.style.left = `${ev.clientX}px`;
-    menu.style.top = `${ev.clientY}px`;
     for (const item of items) {
       if (item === 'separator') {
         const hr = document.createElement('div');
@@ -2593,7 +2697,7 @@ export class EditorCanvas {
       });
       menu.appendChild(row);
     }
-    document.body.appendChild(menu);
+    openContextMenu(menu, { x: ev.clientX, y: ev.clientY });
     // A document-level pointerdown used to remove the menu *before* its row
     // could receive click, making actions such as Edit mask appear inert.
     menu.addEventListener('pointerdown', (event) => event.stopPropagation());
@@ -3477,8 +3581,18 @@ export class EditorCanvas {
       selection?.addRange(caret);
       this.textSelectionRange = caret.cloneRange();
     };
+    /**
+     * The formats in force at the caret when Return was pressed, read before
+     * Chromium splits the paragraph and re-established on the line it opens.
+     */
+    let breakFormats: TypingFormats | null = null;
     const onInput = (event?: Event) => {
       const typed = event instanceof InputEvent ? event : null;
+      if (typed?.inputType === 'insertParagraph') {
+        const formats = breakFormats;
+        breakFormats = null;
+        this.carryTypingFormatsOntoLine(body, formats);
+      }
       if (typed && typed.inputType !== 'insertText' && !typed.inputType.endsWith('CompositionText')) {
         // Whenever Chromium restructures blocks it copies the computed layout
         // of the block it took apart onto what it made: a cut or Backspace
@@ -3553,6 +3667,12 @@ export class EditorCanvas {
     };
     const onBeforeInput = (event: InputEvent) => {
       if (event.inputType === 'insertParagraph' || event.inputType === 'insertLineBreak') {
+        // What the author has switched on or off at the caret is what the
+        // next line starts with — including a format switched *off* whose
+        // pending run holds nothing yet and is about to be sealed away.
+        // Chromium's split clones whatever inline wrapper the caret ends up
+        // in, so this is read now and re-established once the split is done.
+        if (event.inputType === 'insertParagraph') breakFormats = this.typingFormatsAtCaret();
         // A pending collapsed-caret style marker is an inline span containing
         // an invisible sentinel. Letting Chromium split a paragraph while the
         // caret is still inside that editor-only run can either swallow Enter
@@ -3593,6 +3713,18 @@ export class EditorCanvas {
         || event.data === null
         || event.isComposing
       ) return;
+      if (event.data === ' ') {
+        // The space after a typed `-`, `*` or `1.` at the start of a line is
+        // the moment it becomes a bullet — not the Return at the end of it.
+        const typedMarker = typedListMarkerAtCaret(body, window.getSelection(), 'space');
+        if (typedMarker) {
+          event.preventDefault();
+          this.textSelectionRange = convertTypedListMarker(body, typedMarker, false).cloneRange();
+          onInput();
+          pushLive();
+          return;
+        }
+      }
       const range = this.activeTextRange(body);
       if (!range || !range.collapsed) return;
       const container = range.startContainer instanceof Element
@@ -3703,12 +3835,20 @@ export class EditorCanvas {
           // with no undo entry of its own — the next typed run would then
           // absorb it, and one Ctrl/Cmd+Z would take back both.
           this.commitLiveTextDom('Edit list');
-        } else if (convertTypedListMarker(body, window.getSelection())) {
-          e.preventDefault();
-          onInput();
-          // The Props checkboxes should reflect the conversion immediately,
-          // even in the desktop shell where ordinary typing syncs on blur.
-          pushLive();
+        } else {
+          const typedMarker = typedListMarkerAtCaret(body, window.getSelection(), 'return');
+          if (typedMarker) {
+            e.preventDefault();
+            // The new item continues with the formats in force at the caret,
+            // exactly as a native Return would (see carryTypingFormatsOntoLine).
+            const formats = this.typingFormatsAtCaret();
+            this.textSelectionRange = convertTypedListMarker(body, typedMarker, true).cloneRange();
+            this.carryTypingFormatsOntoLine(body, formats);
+            onInput();
+            // The Props checkboxes should reflect the conversion immediately,
+            // even in the desktop shell where ordinary typing syncs on blur.
+            pushLive();
+          }
         }
       } else if (e.key === 'Backspace' && !e.metaKey && !e.ctrlKey && !e.altKey) {
         // Backspace at the start of an item removes its bullet rather than
@@ -3737,17 +3877,8 @@ export class EditorCanvas {
           this.commitLiveTextDom('Edit list');
           return;
         }
-        const anchor = window.getSelection()?.anchorNode;
-        const inItem = anchor instanceof Element
-          ? anchor.closest('li')
-          : anchor?.parentElement?.closest('li');
-        if (inItem && body.contains(inItem)) {
-          // Chromium writes the sub-list as a *sibling* of the item it belongs
-          // to. Normalisation repairs that when the markup is saved, and the
-          // list operations here handle the shape in the meantime: rewriting
-          // the live surface would cost the caret, which an offset bookmark
-          // cannot place inside a line that holds no text yet.
-          document.execCommand?.(e.shiftKey ? 'outdent' : 'indent');
+        if (this.shiftListItems(body, e.shiftKey ? 'out' : 'in', sealTextChunk)) {
+          this.commitLiveTextDom(e.shiftKey ? 'Outdent list items' : 'Indent list items');
         }
       }
     };
@@ -4074,7 +4205,7 @@ export class EditorCanvas {
   private clearTypingStyleMarker(
     marker: HTMLElement,
     caret?: Range | null,
-  ): { node: Text; offset: number } | null {
+  ): { node: Node; offset: number } | null {
     // The caret's visible-character position inside the marker, before the
     // sentinel is stripped (the sentinel sits after the typed text, so it
     // never precedes the caret — but count defensively).
@@ -4098,11 +4229,15 @@ export class EditorCanvas {
     marker.removeAttribute('data-editor-typing-style');
     const survivors = texts.filter((text) => text.data.length > 0);
     if (!(marker.textContent ?? '')) {
+      // Nothing was typed into the run: the caret belongs exactly where the
+      // run stood. Restoring it by flat text offset instead lands it inside
+      // the styled span before (or, at a block's end, in the next block).
       const previous = marker.previousSibling;
+      const parent = marker.parentNode;
+      const index = parent ? [...parent.childNodes].indexOf(marker) : -1;
       marker.remove();
-      return previous instanceof Text
-        ? { node: previous, offset: previous.data.length }
-        : null;
+      if (previous instanceof Text) return { node: previous, offset: previous.data.length };
+      return parent && index >= 0 ? { node: parent, offset: index } : null;
     }
     if (survivors.length === 0) return null;
     let remaining = within ?? survivors.reduce((sum, text) => sum + text.data.length, 0);
@@ -4117,9 +4252,10 @@ export class EditorCanvas {
   }
 
   /** Put the live caret (and the session bookmark) at an exact text anchor. */
-  private placeCaretAtAnchor(anchor: { node: Text; offset: number }): void {
+  private placeCaretAtAnchor(anchor: { node: Node; offset: number }): void {
     const range = document.createRange();
-    range.setStart(anchor.node, Math.min(anchor.offset, anchor.node.data.length));
+    const limit = anchor.node instanceof Text ? anchor.node.data.length : anchor.node.childNodes.length;
+    range.setStart(anchor.node, Math.min(anchor.offset, limit));
     range.collapse(true);
     const selection = window.getSelection();
     selection?.removeAllRanges();
@@ -4136,7 +4272,7 @@ export class EditorCanvas {
    */
   private placeCaretAfterSealedRun(
     sealed: HTMLElement,
-    anchor: { node: Text; offset: number },
+    anchor: { node: Node; offset: number },
   ): void {
     if (sealed.isConnected && sealed.contains(anchor.node)) {
       const boundary = (edge: 'head' | 'tail'): boolean => {
@@ -4180,7 +4316,14 @@ export class EditorCanvas {
       ? range.startContainer
       : range.startContainer.parentElement;
     const existing = container?.closest<HTMLElement>('[data-editor-typing-style]') ?? null;
+    // The style the new run starts from. A run that replaces a sealed one
+    // continues everything the sealed one had, with only the asked-for
+    // change: bold on, underline on, type, underline off must leave bold on.
+    // Starting the new run bare dropped every other pending format (found by
+    // the list fuzz once it read formatting rather than structure).
+    let inherited = '';
     if (existing && content.contains(existing)) {
+      inherited = existing.getAttribute('style') ?? '';
       if ((existing.textContent ?? '') === TYPING_STYLE_SENTINEL) {
         for (const [property, value] of declarations) existing.style[property] = value;
         const text = existing.firstChild;
@@ -4207,6 +4350,7 @@ export class EditorCanvas {
 
     const marker = document.createElement('span');
     marker.dataset.editorTypingStyle = 'true';
+    if (inherited) marker.setAttribute('style', inherited);
     for (const [property, value] of declarations) marker.style[property] = value;
     const sentinel = document.createTextNode(TYPING_STYLE_SENTINEL);
     marker.appendChild(sentinel);
@@ -4220,6 +4364,139 @@ export class EditorCanvas {
     this.textSelectionRange = caret.cloneRange();
     this.focusTextSurface(content);
     this.onTextFormatStateChange?.();
+    return true;
+  }
+
+  /** The inline formats in force for what the caret types next. */
+  private typingFormatsAtCaret(): TypingFormats {
+    return {
+      bold: this.textSelectionFormatState('bold'),
+      italic: this.textSelectionFormatState('italic'),
+      underline: this.textSelectionFormatState('underline'),
+      superscript: this.textSelectionFormatState('superscript'),
+      subscript: this.textSelectionFormatState('subscript'),
+    };
+  }
+
+  /**
+   * Start the empty line a Return has just opened with the formats that were
+   * in force at the caret when Return was pressed.
+   *
+   * Chromium's split clones the inline wrappers around the caret into the new
+   * line, whatever the author had switched on or off there: underline on,
+   * type, underline off, Return gave an underlined line, because the "off"
+   * run held nothing but its sentinel and the caret it left sat in the
+   * underlined span. So the new line is cleared of what the split cloned,
+   * and the difference between the formats asked for and what the bare line
+   * now has becomes one pending typing run — the same run Cmd+U on an empty
+   * line creates. A line that received text in the split (Return inside a
+   * word) keeps that text's own formatting and is left alone.
+   */
+  private carryTypingFormatsOntoLine(body: HTMLElement, formats: TypingFormats | null): void {
+    if (!formats) return;
+    const range = this.activeTextRange(body);
+    if (!range?.collapsed) return;
+    const container = range.startContainer instanceof Element
+      ? range.startContainer
+      : range.startContainer.parentElement;
+    const block = container?.closest<HTMLElement>(TEXT_BLOCKS) ?? null;
+    if (!block || block === body || !body.contains(block)) return;
+    if (block.querySelector('img, video, svg, embed, table, li, ul, ol')) return;
+    if ((block.textContent ?? '').replace(/[\s\u00a0\u200b\u2060]+/g, '') !== '') return;
+
+    block.replaceChildren(document.createElement('br'));
+    const caret = document.createRange();
+    caret.setStart(block, 0);
+    caret.collapse(true);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(caret);
+    this.textSelectionRange = caret.cloneRange();
+
+    const declarations: Array<readonly [TextRunStyleProperty, string]> = [];
+    const has = (format: InlineTextFormat) => this.elementFormatState(block, body, format);
+    if (formats.bold !== has('bold')) declarations.push(['fontWeight', formats.bold ? '700' : '400']);
+    if (formats.italic !== has('italic')) {
+      declarations.push(['fontStyle', formats.italic ? 'italic' : 'normal']);
+    }
+    if (formats.underline !== has('underline')) {
+      declarations.push(['textDecorationLine', formats.underline ? 'underline' : 'none']);
+    }
+    if (formats.superscript !== has('superscript') || formats.subscript !== has('subscript')) {
+      declarations.push(...BASELINE_DECLARATIONS[
+        formats.superscript ? 'superscript' : formats.subscript ? 'subscript' : 'none']);
+    }
+    if (declarations.length > 0) this.applyCollapsedTypingStyle(body, caret, declarations);
+  }
+
+  /**
+   * Tab and shift-Tab over the items the caret or the selection touches.
+   *
+   * Every touched item moves one level, except an item that already moves
+   * with a touched item above it — a sub-item travels with its parent, so
+   * indenting a parent and its child together deepens both by one level, not
+   * the child by two. Outward, an item already at the outer level has only
+   * its bullet left to give up. The nodes are moved rather than handed to
+   * `execCommand`, whose indent over a selection spanning two levels put an
+   * empty first-level bullet between the two items.
+   */
+  private shiftListItems(
+    body: HTMLElement,
+    direction: 'in' | 'out',
+    beforeChange?: () => void,
+  ): boolean {
+    const live = window.getSelection();
+    const range = live && live.rangeCount > 0 ? live.getRangeAt(0) : null;
+    if (!range || !body.contains(range.commonAncestorContainer)) return false;
+    const touched = this.listItemsForRange(body, range).filter((item) => body.contains(item));
+    if (touched.length === 0) return false;
+    const selected = new Set(touched);
+    const carried = (item: HTMLElement): boolean => {
+      for (let owner = parentListItem(item); owner; owner = parentListItem(owner)) {
+        if (selected.has(owner)) return true;
+      }
+      return false;
+    };
+    const items = touched.filter((item) => !carried(item));
+    beforeChange?.();
+    // The moves take whole nodes with them, so the selection's own anchors
+    // stay valid — and unlike a text-offset bookmark they survive an item
+    // that holds no text yet.
+    const anchors = {
+      start: { node: range.startContainer, offset: range.startOffset },
+      end: { node: range.endContainer, offset: range.endOffset },
+    };
+    let changed = false;
+    if (direction === 'in') {
+      for (const item of items) changed = indentListItem(item) || changed;
+    } else {
+      const outer = items.filter((item) => isTopLevelListItem(body, item));
+      for (const item of items) {
+        if (outer.includes(item)) continue;
+        const moved = item.parentElement?.tagName === 'LI'
+          ? liftItemOutOfItem(item)
+          : outdentListItem(item);
+        changed = moved || changed;
+      }
+      if (outer.length > 0) {
+        changed = unbulletListItems(outer.filter((item) => item.isConnected)).length > 0 || changed;
+      }
+    }
+    if (!changed) return false;
+    const next = document.createRange();
+    try {
+      next.setStart(anchors.start.node, anchors.start.offset);
+      next.setEnd(anchors.end.node, anchors.end.offset);
+    } catch {
+      next.selectNodeContents(items[0]);
+      next.collapse(true);
+    }
+    live?.removeAllRanges();
+    live?.addRange(next);
+    this.textSelectionRange = next.cloneRange();
+    body.focus();
+    const node = body.closest<HTMLElement>('.element');
+    if (node) scheduleAutoFit(node);
     return true;
   }
 
@@ -5030,8 +5307,21 @@ export class EditorCanvas {
     root: HTMLElement,
     format: InlineTextFormat,
   ): boolean {
+    return this.elementFormatState(text.parentElement, root, format);
+  }
+
+  /**
+   * The toggle state text typed directly inside `start` would have: the
+   * nearest authored declaration or tag on the way up decides, else the
+   * computed style does.
+   */
+  private elementFormatState(
+    start: Element | null,
+    root: HTMLElement,
+    format: InlineTextFormat,
+  ): boolean {
     const baseline = format === 'superscript' ? 'super' : format === 'subscript' ? 'sub' : null;
-    for (let node = text.parentElement; node && node !== root; node = node.parentElement) {
+    for (let node = start as HTMLElement | null; node && node !== root; node = node.parentElement) {
       if (baseline) {
         // Any authored baseline decides the answer, including the other one:
         // a run inside a subscript is not a superscript.
@@ -5053,7 +5343,7 @@ export class EditorCanvas {
       if (format === 'italic' && node.matches('i, em')) return true;
       if (format === 'underline' && node.matches('u')) return true;
     }
-    const computed = text.parentElement ? getComputedStyle(text.parentElement) : null;
+    const computed = start ? getComputedStyle(start) : null;
     if (baseline) return computed?.verticalAlign === baseline;
     if (format === 'bold') {
       const weight = Number.parseInt(computed?.fontWeight ?? '', 10);

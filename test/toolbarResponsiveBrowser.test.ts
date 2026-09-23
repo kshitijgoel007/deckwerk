@@ -22,7 +22,18 @@ afterEach(async () => {
   editor = null;
 });
 
-async function toolbarAt(width: number, expectMore = false): Promise<ToolbarLayout> {
+/**
+ * Resize the toolbar and wait for the responsive pass to settle on `settled`.
+ *
+ * What "settled" means is per width, because the File menu is now the only
+ * file control at every width: the left group is small enough that a medium
+ * window no longer has to give up strict centring, so `toolbar-compact-file`
+ * (the grid fallback) appears only once the window really is narrow.
+ */
+async function toolbarAt(
+  width: number,
+  settled: (layout: ToolbarLayout) => boolean,
+): Promise<ToolbarLayout> {
   await editor!.cdp.evaluate(`(() => {
     const toolbar = document.getElementById('toolbar');
     toolbar.style.width = '${width}px';
@@ -54,8 +65,7 @@ async function toolbarAt(width: number, expectMore = false): Promise<ToolbarLayo
       };
     })()`),
     `toolbar did not settle at ${width}px`,
-    (layout) => layout.classes.includes('toolbar-compact-file')
-      && (!expectMore || layout.classes.includes('toolbar-compact-secondary')),
+    settled,
   ))!;
 }
 
@@ -65,20 +75,26 @@ describe.skipIf(!electronBinary)('responsive desktop toolbar', () => {
   }, async () => {
     editor = await launchDesktopEditor('toolbar-fixture', 'Toolbar fixture');
 
-    const medium = await toolbarAt(900);
+    // The File menu carries New / Open / Import / Save As at every width, so
+    // a medium window keeps Insert centred and simply drops the deck name.
+    const medium = await toolbarAt(900, (layout) => layout.fileVisible
+      && layout.classes.includes('toolbar-hide-deck-name'));
     expect(medium.height).toBe(44);
     expect(medium.fileVisible).toBe(true);
+    expect(medium.moreVisible).toBe(false);
     expect(medium.leftRight).toBeLessThanOrEqual(medium.centerLeft);
     expect(medium.centerRight).toBeLessThanOrEqual(medium.rightLeft);
     expect(medium.insertLabels).toEqual(expect.arrayContaining(['Text', 'Shape', 'Table']));
     expect(medium.presentVisible).toBe(true);
 
-    const narrow = await toolbarAt(500, true);
+    const narrow = await toolbarAt(500, (layout) => layout.classes.includes('toolbar-compact-file')
+      && layout.classes.includes('toolbar-compact-secondary'));
     expect(narrow.height).toBe(44);
     expect(narrow.moreVisible).toBe(true);
     expect(narrow.leftRight).toBeLessThanOrEqual(narrow.centerLeft);
     expect(narrow.centerRight).toBeLessThanOrEqual(narrow.rightLeft);
     expect(narrow.insertLabels).toEqual(expect.arrayContaining(['Text', 'Shape', 'Table']));
     expect(narrow.presentVisible).toBe(true);
+    expect(narrow.fileVisible).toBe(true);
   });
 });
