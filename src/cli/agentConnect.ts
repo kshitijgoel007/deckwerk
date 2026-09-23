@@ -1000,8 +1000,6 @@ function waitForStop(signal?: AbortSignal): Promise<void> {
  */
 export function mirrorAgentGuide(target: SessionTarget): string {
   const hint = `
-## Finding the CLI
-
 The command here is \`./deck\`, in this folder — run it as \`./deck <command>\`.
 It takes the same commands and flags as \`slide-agent\` and talks to the
 collaboration server this folder mirrors; \`./deck help\` lists them. Nothing
@@ -1022,8 +1020,8 @@ The editor is live: saving a file in \`edit/\` updates the shared deck for
 everyone within a second or two, and every change collaborators make arrives
 here in \`deck.json\`, the theme, \`notes.md\` and \`assets/\` as it happens.
 Work exactly as this brief describes. There is nothing to upload and no URL to
-drive — this folder *is* the session, so the section about being given a URL
-does not apply to you. \`./deck preview\` prints where people watch the deck.
+drive — this folder *is* the session. \`./deck preview\` prints where people
+watch the deck.
 `;
 }
 

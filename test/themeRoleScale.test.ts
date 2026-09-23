@@ -88,6 +88,24 @@ describe('stripStyleProperties', () => {
       .toBe('<span style="font-size: 80%">a</span>');
   });
 
+  it('reads a quoted font stack as one declaration, not as its entities', () => {
+    // A serialized style writes the stack's quotes as `&quot;`, each ending in
+    // a `;`. Splitting on those left the intro deck with
+    // style="American Typewriter&quot; , &quot; SF Mono…" after a theme apply.
+    const stack = 'font-family: &quot;American Typewriter&quot;, &quot;SF Mono&quot;, monospace';
+    expect(stripStyleProperties(`<span style="${stack};">a</span>`, ['font-family']))
+      .toBe('<span>a</span>');
+    expect(stripStyleProperties(`<span style="${stack}; color: red">a</span>`, ['color']))
+      .toBe(`<span style="${stack}">a</span>`);
+    // Neither may a `;` inside a url() or a string end the declaration.
+    expect(stripStyleProperties(
+      '<span style="background-image: url(data:image/png;base64,AA); color: red">a</span>', ['color'],
+    )).toBe('<span style="background-image: url(data:image/png;base64,AA)">a</span>');
+    expect(stripStyleProperties(
+      "<span style='font-family: \"A;B\"; color: red'>a</span>", ['color'],
+    )).toBe("<span style='font-family: \"A;B\"'>a</span>");
+  });
+
   it('handles single and double quoted attributes alike', () => {
     expect(stripStyleProperties("<b style='font-weight: 700; color: #123456'>a</b>", ['font-weight']))
       .toBe("<b style='color: #123456'>a</b>");

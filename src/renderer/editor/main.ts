@@ -351,7 +351,11 @@ function applyHtmlEdit(
           const adopted = adoptAuthoredIds(file.contents, slides);
           if (adopted) {
             operation.update(`Writing assigned slide ids to ${name}`);
-            await window.api.htmlAdopt?.(file.path, adopted, file.contents);
+            // Main only writes inside edit/; a file elsewhere (an agent's
+            // drafts/ page applied through the CLI) is stamped by the CLI from
+            // the ids in this outcome. Failing here would report an error for
+            // a change that already landed, and the retry would insert again.
+            await window.api.htmlAdopt?.(file.path, adopted, file.contents).catch(() => undefined);
             // The stamped document is what the file now holds; a save of it
             // (the watcher echo, or the agent re-saving unchanged) is the same
             // request again.
