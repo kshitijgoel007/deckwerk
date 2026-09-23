@@ -45,10 +45,27 @@ export function browserParticipantId(): string {
   try {
     const existing = localStorage.getItem(storageKey);
     if (existing && /^[a-zA-Z0-9_-]{8,80}$/.test(existing)) return existing;
-    const created = `participant-${crypto.randomUUID()}`;
+    const created = newParticipantId();
     localStorage.setItem(storageKey, created);
     return created;
   } catch {
-    return `participant-${crypto.randomUUID()}`;
+    return newParticipantId();
   }
+}
+
+/**
+ * A fresh participant id, without `crypto.randomUUID`.
+ *
+ * The invite the desktop app hands out is a LAN or tailscale address over
+ * plain HTTP, and only `localhost` counts as a secure context: everywhere the
+ * link is actually used, `crypto.randomUUID` is undefined. Calling it threw
+ * inside the /api/config handler, which is the one that opens the session's
+ * WebSocket — so the deck never arrived and the visitor sat in front of one
+ * blank slide. `crypto.getRandomValues` is available on any origin.
+ */
+function newParticipantId(): string {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  const hex = [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+  return `participant-${hex}`;
 }

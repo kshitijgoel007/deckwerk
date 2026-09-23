@@ -77,15 +77,42 @@ function userName(): string {
     localStorage.setItem('collab-name', fromQuery);
     return fromQuery;
   }
-  const stored = localStorage.getItem('collab-name');
-  if (stored) return stored;
-  try {
-    const answer = (prompt('Your name for this session?') ?? '').trim();
-    if (answer) localStorage.setItem('collab-name', answer);
-    return answer;
-  } catch {
-    return ''; // Embedded browsers may block prompt(); the server assigns Guest N.
-  }
+  return localStorage.getItem('collab-name') ?? '';
+}
+
+/**
+ * Ask a first-time visitor for their name — over the deck, never in front of
+ * it. This used to be a `prompt()`, which is synchronous: it froze the page
+ * before the WebSocket had been opened, so nothing was ever asked for and
+ * nothing arrived. A browser that suppresses the dialog — Chromium does for
+ * one raised during load, without a user gesture, or in a background tab —
+ * left the visitor looking at an empty presentation for as long as they cared
+ * to wait. The session now connects first (the server names an unintroduced
+ * peer "Guest N") and the answer renames them in place.
+ */
+function askUserName(onName: (name: string) => void): void {
+  const form = document.createElement('form');
+  form.id = 'collab-name-prompt';
+  form.innerHTML = '<label for="collab-name-input">Your name for this session</label>';
+  const input = document.createElement('input');
+  input.id = 'collab-name-input';
+  input.autocomplete = 'name';
+  input.maxLength = 80;
+  input.placeholder = 'Name';
+  const join = document.createElement('button');
+  join.type = 'submit';
+  join.textContent = 'Join';
+  form.append(input, join);
+  form.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const name = input.value.trim();
+    form.remove();
+    if (name) onName(name);
+  });
+  // A bar of its own above the toolbar, not a floating panel: anything that
+  // hovers over the deck sits on top of the buttons underneath it.
+  el('app').prepend(form);
+  input.focus();
 }
 
 /* --- server session config --------------------------------------------------- */
@@ -865,7 +892,16 @@ void fetchServerConfig().then((config) => {
   renderStatus();
   // Connect only after the config answers whether the server assigns names
   // (access control) or the client supplies one (possibly via a prompt).
-  if (!config.access) bridge.setName(userName() || undefined);
+  if (!config.access) {
+    const name = userName();
+    if (name) bridge.setName(name);
+    else {
+      askUserName((chosen) => {
+        localStorage.setItem('collab-name', chosen);
+        bridge.rename(chosen);
+      });
+    }
+  }
   bridge.connect();
 });
 buildTabs();
