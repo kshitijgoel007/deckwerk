@@ -34,6 +34,7 @@
     "pretest:performance": "node scripts/check-test-environment.cjs",
     "test:performance": "RUN_PERFORMANCE_STRESS=1 vitest run --config vitest.long.config.ts test/performanceStressBrowser.test.ts",
     "test:formatting:exhaustive": "RUN_EXHAUSTIVE_FORMAT_FUZZ=1 vitest run --config vitest.browser.config.ts test/textFormattingExhaustiveBrowser.test.ts",
+    "test:formatting:deep": "RUN_DEEP_FORMAT_TOGGLE=1 vitest run --config vitest.browser.config.ts test/textFormattingToggleBrowser.test.ts",
     "test:interactions:exhaustive": "RUN_EXHAUSTIVE_TEXT_BOX_FUZZ=1 vitest run --config vitest.browser.config.ts test/textBoxInteractionExhaustiveBrowser.test.ts",
     "test:paste:exhaustive": "RUN_EXHAUSTIVE_PASTE_FUZZ=1 vitest run --config vitest.serial.config.ts test/pasteMarkupFuzzBrowser.test.ts",
     "test:lists:exhaustive": "RUN_EXHAUSTIVE_LIST_FUZZ=1 vitest run --config vitest.serial.config.ts test/listEditingFuzzBrowser.test.ts",

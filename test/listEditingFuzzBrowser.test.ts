@@ -515,13 +515,89 @@ async function dashBullet(next: () => number, step: number, label: string): Prom
  * the items are the same items afterwards: same count, same texts in order,
  * and no empty item that was not there before — the reported invention.
  */
+/**
+ * Put the selection across two neighbouring items that sit at *different*
+ * nesting levels, and say whether there was such a pair.
+ *
+ * This is the shape the reported Tab bug needs, and aiming a random caret at
+ * it does not work: the walk's lists are flat most of the time, so in 40
+ * steps the straddle essentially never happened and a deliberately reverted
+ * fix still passed. Reaching a bug by chance is not coverage; the interesting
+ * shape has to be aimed at when the box happens to contain one.
+ */
+async function selectAcrossLevelBoundary(): Promise<boolean> {
+  return session.cdp.evaluate<boolean>(`(() => {
+    const root = document.querySelector('${CONTENT}');
+    if (!root) return false;
+    const items = [...root.querySelectorAll('li')];
+    const depth = (item) => {
+      let levels = 0;
+      for (let node = item.parentElement; node && node !== root; node = node.parentElement) {
+        if (/^(?:UL|OL)$/.test(node.tagName)) levels += 1;
+      }
+      return levels;
+    };
+    const edge = (item, last) => {
+      const walker = document.createTreeWalker(item, NodeFilter.SHOW_TEXT);
+      let found = null;
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        found = node;
+        if (!last) break;
+      }
+      return found;
+    };
+    for (let index = 0; index + 1 < items.length; index += 1) {
+      const a = items[index];
+      const b = items[index + 1];
+      if (depth(a) === depth(b)) continue;
+      // b must not be inside a: indenting a parent and its own child is a
+      // different case (the child travels with the parent) and is covered by
+      // the ordinary random straddle below.
+      if (a.contains(b)) continue;
+      const head = edge(a, false);
+      const tail = edge(b, true);
+      if (!head || !tail) continue;
+      const range = document.createRange();
+      range.setStart(head, 0);
+      range.setEnd(tail, tail.data.length);
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      document.dispatchEvent(new Event('selectionchange'));
+      return true;
+    }
+    return false;
+  })()`);
+}
+
 async function shiftSelection(next: () => number, direction: 'in' | 'out', label: string): Promise<void> {
-  const before = await session.outline();
-  const itemsBefore = await session.blocksOf('li');
+  let before = await session.outline();
+  let itemsBefore = await session.blocksOf('li');
   if (itemsBefore.length < 2) return;
-  await moveCaret(next, 'start');
-  await session.cdp.chord('ArrowDown', 'ArrowDown', 40, SHIFT);
-  await session.cdp.chord('End', 'End', 35, SHIFT);
+  // Aim at a level boundary, building one first if the box has none.
+  //
+  // Instrumenting the walk showed why aiming alone was not enough: in 40
+  // steps this action ran *once*, on a flat two-item list, so there was no
+  // boundary to aim at and a deliberately reverted fix passed clean. A
+  // vocabulary entry that can only fire in a state the walk hardly ever
+  // reaches is not coverage. So when the shape is absent it is constructed --
+  // indent the second item, which is the gesture an author uses to make a
+  // sub-bullet -- and only then is the pair selected and shifted.
+  if (!(await selectAcrossLevelBoundary())) {
+    await session.caretIn(itemsBefore[1], 'end');
+    await session.cdp.key('Tab', 9);
+    await wait(60);
+    if (!(await selectAcrossLevelBoundary())) {
+      // Still flat (the item refused to indent): straddle two ordinary lines.
+      await moveCaret(next, 'start');
+      await session.cdp.chord('ArrowDown', 'ArrowDown', 40, SHIFT);
+      await session.cdp.chord('End', 'End', 35, SHIFT);
+    }
+  }
+  // Whatever was needed to reach the shape is setup, not the thing under
+  // test: the baseline is the box as it stands now, immediately before Tab.
+  before = await session.outline();
+  itemsBefore = await session.blocksOf('li');
   if (direction === 'in') await session.cdp.key('Tab', 9);
   else await session.cdp.chord('Tab', 'Tab', 9, SHIFT);
   const after = await session.blocksOf('li');

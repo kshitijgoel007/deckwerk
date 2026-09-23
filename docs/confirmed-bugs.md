@@ -336,12 +336,50 @@ on it — plus the browser walk's new `format and type` action, which toggles a
 format, types, toggles it back off, presses Return and checks what the next
 line carries.
 
-**2. The vocabulary was missing ordinary gestures.** No inline format toggles,
-no typed `- ` marker, and — the sharpest one — no multi-line selection at all:
-the walk re-clicked a collapsed caret before every action, so `Tab` had
-literally never been pressed over a range. The invented-bullet bug lived in a
-code path the fuzzer could not reach by construction, not by chance. Added:
-`dash bullet`, `indent selection`, `outdent selection`.
+**2. The vocabulary was missing ordinary gestures — and adding them back was
+not enough.** No inline format toggles, no typed `- ` marker, and no
+multi-line selection at all: the walk re-clicked a collapsed caret before
+every action, so `Tab` had literally never been pressed over a range. Added:
+`format and type`, `dash bullet`, `indent selection`, `outdent selection`.
+
+Two of those worked immediately. The Tab one did not, and the way it failed
+is the more useful lesson, so it is recorded rather than tidied away. Each
+fix was reverted in turn to see whether the walk would catch it:
+
+| Fix reverted | Caught? | Where |
+| --- | --- | --- |
+| layout prompt retirement | yes | `operationFuzz`, its own fixed seeds |
+| formats carried across Return | yes | walk seed 9012026, step 2 of 40 |
+| typed marker keeps its markup | yes | walk seed 9012026, step 3 of 40 |
+| Tab over a selection | only on the third attempt | walk seed 9012026, step 14 of 40 |
+
+Attempt one: add the action. The reverted fix still passed. Attempt two: aim
+the selection at a level boundary instead of hoping a random caret landed on
+one. Still passed. Instrumenting the walk said why, and the number is the
+whole story — in forty steps the action ran **once**, on a flat two-item
+list. There was no boundary to aim at, because the walk hardly ever builds a
+nested list in the first place.
+
+That is a different failure from a missing oracle. A uniform random walk over
+a twenty-entry vocabulary in forty steps lives in *shallow* states; the
+reported bug lives in a compound one — a list that already has a sub-bullet,
+selected across the level boundary, then Tab. Chance will not assemble that,
+and enlarging the alphabet does not help when the precondition is the rare
+part. Attempt three has the action *construct* the shape (indent the second
+item, the gesture an author uses to make a sub-bullet) and only then select
+across it and shift. The reverted fix now fails at step 14.
+
+One more thing worth recording: the assertion that caught it was not the one
+written for the bug. `invented an empty bullet` never fired. The pre-existing
+structural soundness check did, on `execCommand('outdent')` leaving text
+loose outside any block. So the structural oracle was not the problem here at
+all — the problem was that the walk never reached a state it had anything to
+say about.
+
+**The rule this batch actually earned: revert the fix and watch the fuzzer
+fail, before believing a new action covers anything.** An action nobody has
+ever seen fail is indistinguishable from an action that cannot fail, and both
+look identical in a green run.
 
 **3. The reporting layer hid the evidence.** `OUTLINE` printed a sub-list that
 Chromium had written as a *sibling* of its item as an opaque `?ul` and did not
@@ -381,3 +419,46 @@ actually reports are of that kind. Every fuzzer here should be able to answer
 "and is it what the author asked for?" — in the text fuzzers that means
 formatting and list level, and in the operation fuzzer it means rules about
 what is visible on the slide.
+
+### The plainer reason: some of these fuzzers were not running
+
+Everything above is about oracles and vocabulary, and all of it is true. But
+the cheaper explanation came first, and this repository has now hit it four
+times. A fuzzer stops running for a reason that is invisible in a green
+dashboard, and nothing about the report says "0 cases executed":
+
+- **An env gate nothing sets.** `test/textBoxInteractionExhaustiveBrowser.ts`
+  needs `RUN_EXHAUSTIVE_TEXT_BOX_FUZZ=1` *and* no `CI_NO_WINDOW_MANAGER`. The
+  push gate sets that variable on every job, and the nightly matrix leaves the
+  suite out on purpose because of it. It therefore runs nowhere — still true
+  as of this commit. Fixing it needs a window manager in the Xvfb session, not
+  another matrix entry.
+- **A suite listed but never invoked.** `LIST_FUZZ_SEED` was rotated nightly
+  for weeks while the suite it feeds was not in the matrix at all.
+- **A red step hiding every step after it.** The nightly was one chain of
+  steps, so a night reported at most one suite's first finding; the workflow
+  was red for a month without saying how much was wrong. Now one job per
+  suite, `fail-fast: false`.
+- **A timeout sized for a smaller workload than the default.**
+  `textFormattingToggleBrowser` ran two seeds under CI and five everywhere
+  else, against a budget measured on the two. It passed in CI at 80 rounds and
+  timed out locally at 200, on any checkout, including a pristine one. So the
+  one real-Chromium stateful formatting fuzzer ran at 40% strength in CI and
+  never once finished on the machine where someone might have watched it.
+  Fixed here: the same two seeds everywhere by default, all five behind
+  `npm run test:formatting:deep`, which the nightly now runs with a budget
+  that fits it.
+
+  The re-measurement is worth keeping. With the seed list fixed, the default
+  pass took 227.8s against the old 240s budget -- green, with 5% to spare, on
+  an otherwise idle machine. The browser tier never runs a suite on an idle
+  machine. So the budget was not merely wrong for the old workload, it was
+  *fitted* to a measurement, and a fitted budget is how a suite arrives back
+  in this list. Both budgets are now several times the measured cost. A
+  fuzzer that flakes gets muted, and a muted fuzzer finds nothing -- which is
+  the same ending as the three bullets above, reached by a different road.
+
+Three of those four make a suite look like coverage while executing nothing,
+and the fourth silently halves it. Before reasoning about why a fuzzer did not
+find a bug, check that it ran, and how much of it ran: `Tests N passed` with N
+smaller than you expected is the whole story.
