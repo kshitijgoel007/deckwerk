@@ -1,3 +1,4 @@
+import { openContextMenu } from './contextMenuPlacement.js';
 import { makeId } from '@shared/geometry.js';
 import { recoverPreviewFrames } from '../player/previewFrameRecovery.js';
 import { freezePreviewVideos, releasePreviewVideos } from '../player/previewPoster.js';
@@ -749,8 +750,6 @@ export class SlideRail {
 
     const menu = document.createElement('div');
     menu.id = 'ctx-menu';
-    menu.style.left = `${ev.clientX}px`;
-    menu.style.top = `${ev.clientY}px`;
     for (const item of items) {
       if (item === 'separator') {
         const hr = document.createElement('div');
@@ -766,7 +765,7 @@ export class SlideRail {
       });
       menu.appendChild(row);
     }
-    document.body.appendChild(menu);
+    openContextMenu(menu, { x: ev.clientX, y: ev.clientY });
     // Same ordering fix as the canvas menu: a document-level pointerdown must
     // not tear the menu down before its row can receive the click.
     menu.addEventListener('pointerdown', (event) => event.stopPropagation());
@@ -852,6 +851,16 @@ export class SlideRail {
     item.addEventListener('dragend', () => {
       this.dragFrom = null;
       this.clearDragImage();
+      // The row's own marks come off here rather than being left to the
+      // re-render: a drag that reordered nothing leaves every slide object
+      // identical, so `render` reuses this very node from the row cache and
+      // the dimming stayed on it for good. `dragend` fires however the drag
+      // ended -- dropped, released over nothing, or cancelled with Escape.
+      // The insertion marks belong to whichever row the pointer was last
+      // over, which is not necessarily this one when a drag is cancelled.
+      for (const row of this.host.querySelectorAll('.rail-item')) {
+        row.classList.remove('dragging', 'drop-before', 'drop-after');
+      }
       this.render();
     });
 

@@ -332,3 +332,68 @@ export function mergeParagraphIntoList(
   }
   return caret;
 }
+
+/**
+ * Move an item in one level, the way Tab means it.
+ *
+ * The item hangs under the item before it: into that item's own sub-list
+ * (created if it has none), or into the sub-list Chromium's indent left as
+ * the item's *sibling*. A sub-list that followed the item in that sibling
+ * shape belongs to it and moves with it, one level deeper and still beside
+ * it. The first item of a list has nothing to hang under; it is wrapped in a
+ * sub-list of its own, the shape Chromium writes for the same gesture, which
+ * normalisation repairs on the way to the deck.
+ *
+ * This replaces `execCommand('indent')`, whose handling of a *selection* was
+ * Chromium's own: two items at different levels indented together came back
+ * with an empty first-level bullet between them. Moving the nodes ourselves
+ * keeps the caret and the selection in the items they were in.
+ */
+export function indentListItem(item: HTMLElement): boolean {
+  if (item.tagName !== 'LI') return false;
+  const list = item.parentElement;
+  if (!list || !LIST_TAGS.test(list.tagName)) return false;
+  const doc = item.ownerDocument ?? document;
+  const trailing = item.nextElementSibling;
+  const carried = trailing && LIST_TAGS.test(trailing.tagName) ? trailing : null;
+  const newList = (): HTMLElement => {
+    const created = doc.createElement(list.tagName.toLowerCase());
+    for (const attr of [...list.attributes]) {
+      if (attr.name !== 'start') created.setAttribute(attr.name, attr.value);
+    }
+    return created;
+  };
+  const previous = item.previousElementSibling;
+  let target: HTMLElement;
+  if (!previous) {
+    target = newList();
+    list.insertBefore(target, item);
+  } else if (LIST_TAGS.test(previous.tagName)) {
+    target = previous as HTMLElement;
+  } else if (previous.tagName === 'LI') {
+    const own = [...previous.children].reverse()
+      .find((child) => LIST_TAGS.test(child.tagName)) as HTMLElement | undefined;
+    target = own ?? newList();
+    if (!own) previous.appendChild(target);
+  } else {
+    return false;
+  }
+  target.appendChild(item);
+  if (carried) target.appendChild(carried);
+  return true;
+}
+
+/**
+ * The item this item hangs under, in either shape an indented item takes:
+ * the saved one (`li > ul > li`, the parent item) and the one Chromium's
+ * indent writes while editing (`li, ul > li`, the item before the sub-list).
+ * Null for an item of the outermost list.
+ */
+export function parentListItem(item: HTMLElement): HTMLElement | null {
+  const list = item.parentElement;
+  if (!list || !LIST_TAGS.test(list.tagName)) return null;
+  const host = list.parentElement;
+  if (host?.tagName === 'LI') return host;
+  const before = list.previousElementSibling;
+  return before?.tagName === 'LI' ? before as HTMLElement : null;
+}

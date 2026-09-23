@@ -303,3 +303,162 @@ Covered by `test/historyPanel.test.ts` (grouping, expansion, restoring a single
 step, no cross-element or cross-label merging, persistence across reopen) and
 end to end in `test/textUndoStepsBrowser.test.ts`, which types real words and
 requires the panel to show one row while Ctrl/Cmd+Z still steps word by word.
+
+## Why the fuzzers missed a batch of editing bugs (2026-09-22)
+
+Eight reported defects — an underline that came back after Return, a `- ` line
+that lost its underline as it became a bullet, a Tab over two items that
+invented a third, a phantom box on a fresh Title slide, a context menu cut off
+at the bottom of the screen, an image pasted instead of the copied slide, a
+rail row left dimmed by an abandoned drag, and a bullet that only appeared on
+Return — all survived suites that were supposed to be looking for exactly this
+kind of thing. The gap was not "not enough seeds". It was four structural
+things, each worth stating because each one had to be closed separately.
+
+**1. The two halves of the problem were never in the same fuzzer.** Every one
+of the text bugs is a *Chromium editing behaviour with a semantic
+consequence*: Chromium's `insertParagraph` clones the inline wrapper the caret
+sits in, and the consequence is that the author's next line is underlined when
+they had just switched underline off. Catching it needs real Chromium *and* an
+oracle that reads formatting. We had each, never together:
+
+- `test/textFormattingToggleFuzz.test.ts` has a proper semantic oracle
+  (`effectiveFormat`), but it runs in jsdom and types by inserting a text node
+  by hand — Chromium's own splitting never happens there, and Return is not in
+  its vocabulary at all.
+- `test/listEditingFuzzBrowser.test.ts` drives real Chromium, but its oracle
+  was purely structural: markup invariants and character counts. Markup can be
+  perfectly well-formed and still not be what the author typed.
+
+So the bug lived in the one place neither could see. The fix is
+`session.runs()` — every text run with the formatting an author actually sees
+on it — plus the browser walk's new `format and type` action, which toggles a
+format, types, toggles it back off, presses Return and checks what the next
+line carries.
+
+**2. The vocabulary was missing ordinary gestures — and adding them back was
+not enough.** No inline format toggles, no typed `- ` marker, and no
+multi-line selection at all: the walk re-clicked a collapsed caret before
+every action, so `Tab` had literally never been pressed over a range. Added:
+`format and type`, `dash bullet`, `indent selection`, `outdent selection`.
+
+Two of those worked immediately. The Tab one did not, and the way it failed
+is the more useful lesson, so it is recorded rather than tidied away. Each
+fix was reverted in turn to see whether the walk would catch it:
+
+| Fix reverted | Caught? | Where |
+| --- | --- | --- |
+| layout prompt retirement | yes | `operationFuzz`, its own fixed seeds |
+| formats carried across Return | yes | walk seed 9012026, step 2 of 40 |
+| typed marker keeps its markup | yes | walk seed 9012026, step 3 of 40 |
+| Tab over a selection | only on the third attempt | walk seed 9012026, step 14 of 40 |
+
+Attempt one: add the action. The reverted fix still passed. Attempt two: aim
+the selection at a level boundary instead of hoping a random caret landed on
+one. Still passed. Instrumenting the walk said why, and the number is the
+whole story — in forty steps the action ran **once**, on a flat two-item
+list. There was no boundary to aim at, because the walk hardly ever builds a
+nested list in the first place.
+
+That is a different failure from a missing oracle. A uniform random walk over
+a twenty-entry vocabulary in forty steps lives in *shallow* states; the
+reported bug lives in a compound one — a list that already has a sub-bullet,
+selected across the level boundary, then Tab. Chance will not assemble that,
+and enlarging the alphabet does not help when the precondition is the rare
+part. Attempt three has the action *construct* the shape (indent the second
+item, the gesture an author uses to make a sub-bullet) and only then select
+across it and shift. The reverted fix now fails at step 14.
+
+One more thing worth recording: the assertion that caught it was not the one
+written for the bug. `invented an empty bullet` never fired. The pre-existing
+structural soundness check did, on `execCommand('outdent')` leaving text
+loose outside any block. So the structural oracle was not the problem here at
+all — the problem was that the walk never reached a state it had anything to
+say about.
+
+**The rule this batch actually earned: revert the fix and watch the fuzzer
+fail, before believing a new action covers anything.** An action nobody has
+ever seen fail is indistinguishable from an action that cannot fail, and both
+look identical in a green run.
+
+**3. The reporting layer hid the evidence.** `OUTLINE` printed a sub-list that
+Chromium had written as a *sibling* of its item as an opaque `?ul` and did not
+descend into it — so an empty bullet invented inside one was unprintable, and
+even a correct assertion would have had nothing to compare. The persisted
+oracle masked the same thing from the other end: it reads markup that has been
+through normalisation, which adopts the stray list and tidies the evidence
+away. `OUTLINE` now walks `?ul` like any other list.
+
+**4. Some surfaces have no fuzzer at all, and the missing invariant is usually
+a visual one.** The non-text bugs are all of this kind:
+
+- *Phantom box.* `test/operationFuzz.test.ts` already had `switch slide layout`
+  in its vocabulary and ran it thousands of times. It never complained because
+  every invariant was about *validity* — ids unique, geometry finite, one node
+  per element — and a body prompt standing on top of a title is perfectly
+  valid. The missing rule was about what the author can see. It is now
+  invariant 10: no unwritten prompt for a slot the slide's layout does not
+  have. Reverting the fix makes the fuzzer fail on its own seeds.
+- *Context menu off-screen.* Nothing fuzzed viewport-edge placement of menus
+  and popovers. `contextMenuPlacement` is now a pure function with its own
+  unit tests at all four edges, which is the cheap half of that gap;
+  systematically opening every popover near every edge is still uncovered.
+- *Clipboard precedence.* No fuzzer models the OS clipboard holding foreign
+  content copied at a different time. Covered now by directed tests only
+  (`test/webClipboardPrecedence.test.ts`).
+- *Abandoned drag.* No fuzzer models a gesture that *starts and does not
+  finish*. The rail row stayed dimmed because the drag changed nothing, so
+  every slide object was identical and the row cache handed the same DOM node
+  back — the re-render meant to clear the mark never rebuilt the row carrying
+  it. Aborted gestures are a whole unfuzzed class: begin-and-abandon for drag,
+  resize, crop, marquee and text editing.
+
+The transferable rule: **an oracle that only asks "is this well-formed?" will
+never find a bug whose output is well-formed**, and most of the bugs an author
+actually reports are of that kind. Every fuzzer here should be able to answer
+"and is it what the author asked for?" — in the text fuzzers that means
+formatting and list level, and in the operation fuzzer it means rules about
+what is visible on the slide.
+
+### The plainer reason: some of these fuzzers were not running
+
+Everything above is about oracles and vocabulary, and all of it is true. But
+the cheaper explanation came first, and this repository has now hit it four
+times. A fuzzer stops running for a reason that is invisible in a green
+dashboard, and nothing about the report says "0 cases executed":
+
+- **An env gate nothing sets.** `test/textBoxInteractionExhaustiveBrowser.ts`
+  needs `RUN_EXHAUSTIVE_TEXT_BOX_FUZZ=1` *and* no `CI_NO_WINDOW_MANAGER`. The
+  push gate sets that variable on every job, and the nightly matrix leaves the
+  suite out on purpose because of it. It therefore runs nowhere — still true
+  as of this commit. Fixing it needs a window manager in the Xvfb session, not
+  another matrix entry.
+- **A suite listed but never invoked.** `LIST_FUZZ_SEED` was rotated nightly
+  for weeks while the suite it feeds was not in the matrix at all.
+- **A red step hiding every step after it.** The nightly was one chain of
+  steps, so a night reported at most one suite's first finding; the workflow
+  was red for a month without saying how much was wrong. Now one job per
+  suite, `fail-fast: false`.
+- **A timeout sized for a smaller workload than the default.**
+  `textFormattingToggleBrowser` ran two seeds under CI and five everywhere
+  else, against a budget measured on the two. It passed in CI at 80 rounds and
+  timed out locally at 200, on any checkout, including a pristine one. So the
+  one real-Chromium stateful formatting fuzzer ran at 40% strength in CI and
+  never once finished on the machine where someone might have watched it.
+  Fixed here: the same two seeds everywhere by default, all five behind
+  `npm run test:formatting:deep`, which the nightly now runs with a budget
+  that fits it.
+
+  The re-measurement is worth keeping. With the seed list fixed, the default
+  pass took 227.8s against the old 240s budget -- green, with 5% to spare, on
+  an otherwise idle machine. The browser tier never runs a suite on an idle
+  machine. So the budget was not merely wrong for the old workload, it was
+  *fitted* to a measurement, and a fitted budget is how a suite arrives back
+  in this list. Both budgets are now several times the measured cost. A
+  fuzzer that flakes gets muted, and a muted fuzzer finds nothing -- which is
+  the same ending as the three bullets above, reached by a different road.
+
+Three of those four make a suite look like coverage while executing nothing,
+and the fourth silently halves it. Before reasoning about why a fuzzer did not
+find a bug, check that it ran, and how much of it ran: `Tests N passed` with N
+smaller than you expected is the whole story.

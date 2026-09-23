@@ -39,6 +39,11 @@ jobs:
             script: test:formatting:exhaustive
           - name: Exhaustive paste fuzz
             script: test:paste:exhaustive
+          # The per-push gate runs this suite's first two seeds; the remaining
+          # three only ever ran on a developer's machine, where the suite
+          # could not finish inside its budget and so ran nowhere at all.
+          - name: Deep stateful formatting toggles
+            script: test:formatting:deep
           # Its LIST_FUZZ_SEED was rotated below for weeks without the suite
           # ever being run; the two bugs its fixed seed finds are fixed.
           - name: Exhaustive list-editing fuzz

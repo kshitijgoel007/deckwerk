@@ -414,8 +414,10 @@ describe.skipIf(!runnable)('presenting with several presentations open', () => {
       { canceled: false, filePaths: [keyFile] },
       { canceled: false, filePath: charlieDir },
     );
-    await alpha.cdp.clickByText('.shape-menu-trigger', 'Import…', 'Import…');
-    await alpha.cdp.clickByText('.shape-menu-item', 'Keynote…', 'Keynote…');
+    // With a deck open, New / Open / Import / Save As all live in the one
+    // File menu; the expanded buttons are the welcome screen's only.
+    await alpha.cdp.clickByText('.shape-menu-trigger', 'File', 'File');
+    await alpha.cdp.clickByText('.shape-menu-item', 'Keynote…', 'File → Keynote…');
 
     const charlie = await editorShowing(charlieDir, 'the import did not open in a window');
     await markerOf(alpha, 'ALPHA DECK', 'the import replaced the deck the author was working on');
@@ -575,8 +577,8 @@ describe.skipIf(!runnable)('presenting with several presentations open', () => {
         'the audience window never rendered a slide',
       );
       await scriptDialogs({ canceled: false, filePath: savedDir });
-      await bravo.cdp.clickByText('.shape-menu-trigger', 'Save As…', 'Save As…');
-      await bravo.cdp.clickByText('.shape-menu-item', 'Deck…', 'Deck…');
+      await bravo.cdp.clickByText('.shape-menu-trigger', 'File', 'File');
+      await bravo.cdp.clickByText('.shape-menu-item', 'Save As…', 'File → Save As…');
       await eventually(
         async () => bravo.cdp.evaluate<string | null>(
           'window.api.getDeck().then((session) => session?.dir ?? null)',

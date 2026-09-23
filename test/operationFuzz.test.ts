@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest';
 import { DeckSchema, emptyDeck, type Deck, type SlideElement } from '../src/shared/deck.js';
 import {
   defaultLayoutMasters,
+  layoutMaster,
+  layoutSlotOf,
   syncDeckWithLayoutMasters,
   type FixedLayout,
 } from '../src/shared/layoutMasters.js';
@@ -482,6 +484,29 @@ function checkInvariants(
   const copiedFrom = copied.map((element) => element.layoutMasterId);
   if (new Set(copiedFrom).size !== copiedFrom.length) {
     problems.push(`duplicate master copies: ${copiedFrom.join(', ')}`);
+  }
+
+  // 10. No unwritten prompt for a slot the slide's layout does not have.
+  //     Reported: a new deck switched to Title slide showed a phantom box on
+  //     top of the title -- the standard layout's body prompt, still on the
+  //     slide with nowhere to stand, so it kept the geometry it had and
+  //     landed over the title. The markup was perfectly valid; what was wrong
+  //     was that the author could see a box they had never asked for. That is
+  //     why this is an invariant and not a case: it is true after *every*
+  //     operation, and only a rule stated that way catches it in a sequence.
+  // `layoutMaster` falls back to the built-in masters exactly as
+  // `applySlideLayout` does; reading `deck.layoutMasters` directly would call
+  // every slot missing until a deck has installed its own masters.
+  const layoutSlots = new Set((layoutMaster(
+    state.deck, (slide.layout ?? 'freeform') as FixedLayout,
+  ).elements as SlideElement[])
+    .map((element) => (element.type === 'text' ? element.layoutPlaceholder : undefined))
+    .filter((slot): slot is 'title' | 'body' => slot !== undefined));
+  for (const element of slide.elements) {
+    const slot = layoutSlotOf(element);
+    if (slot === null || layoutSlots.has(slot) || !element.class.includes('placeholder')) continue;
+    problems.push(`${element.id} is an unwritten ${slot} prompt, but the `
+      + `${slide.layout ?? 'freeform'} layout has no ${slot} slot`);
   }
   return problems;
 }

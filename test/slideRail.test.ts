@@ -880,3 +880,52 @@ describe('rebuilding the rail without detaching untouched rows', () => {
     expect(rows[1].getAttribute('aria-selected')).toBe('true');
   });
 });
+
+describe('a drag that reorders nothing', () => {
+  beforeEach(() => document.body.replaceChildren());
+
+  /** The native drag events a row sees, with a DataTransfer stub. */
+  function drag(row: HTMLElement, type: 'dragstart' | 'dragend'): void {
+    const event = new Event(type, { bubbles: true, cancelable: true });
+    Object.defineProperty(event, 'dataTransfer', {
+      value: {
+        effectAllowed: '',
+        dropEffect: '',
+        setData: () => {},
+        getData: () => '',
+        setDragImage: () => {},
+      },
+    });
+    row.dispatchEvent(event);
+  }
+
+  // Reported: start dragging a slide, abandon the drag, and the row stays
+  // dimmed. Nothing moved, so every slide object is identical and the rail's
+  // row cache hands the very same node back -- the re-render that was meant
+  // to clear the mark never rebuilt the row carrying it.
+  it('leaves no row dimmed after the drag is abandoned', () => {
+    const { host } = setup();
+    const row = host.querySelector<HTMLElement>('.rail-item')!;
+
+    drag(row, 'dragstart');
+    expect(row.classList.contains('dragging')).toBe(true);
+    drag(row, 'dragend');
+
+    expect(row.classList.contains('dragging')).toBe(false);
+    expect(host.querySelectorAll('.rail-item.dragging')).toHaveLength(0);
+    // The same node really is still the one on screen: without the explicit
+    // strip this test would pass on a rebuild that never happened.
+    expect(host.querySelector('.rail-item')).toBe(row);
+  });
+
+  it('clears the insertion marks a cancelled drag left on another row', () => {
+    const { host } = setup();
+    const [first, second] = [...host.querySelectorAll<HTMLElement>('.rail-item')];
+
+    drag(first, 'dragstart');
+    second.classList.add('drop-after');
+    drag(first, 'dragend');
+
+    expect(host.querySelectorAll('.drop-before, .drop-after')).toHaveLength(0);
+  });
+});

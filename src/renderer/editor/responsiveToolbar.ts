@@ -45,6 +45,9 @@ export function refreshResponsiveToolbar(toolbar: HTMLElement): void {
   toolbar.classList.add('toolbar-hide-deck-name');
   if (centeredGroupsFit(toolbar)) return;
 
+  // The File menu is the only file control at any width (editor.css); this
+  // stage only trades the centred Insert group for a grid that keeps the
+  // three groups from touching.
   toolbar.classList.add('toolbar-compact-file');
   if (flowingGroupsFit(toolbar)) return;
 
