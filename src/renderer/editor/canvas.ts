@@ -109,6 +109,37 @@ export type TableBorderSettings = { color: string; width: number; drawing: boole
  * sibling layer, never mixed into the slide itself.
  */
 
+/**
+ * The "Command" modifier for canvas gestures: rotation on a handle, and
+ * suspended snapping during a move.
+ *
+ * Only macOS has a Command key, and elsewhere Super belongs to the desktop —
+ * Hyprland on Omarchy, for one, eats Super+drag to move the window, so the
+ * canvas never sees the press. Off macOS the gesture therefore also answers to
+ * Control, which no canvas pointer gesture otherwise claims.
+ */
+const USES_META_MODIFIER = /mac/i.test(
+  (navigator as Navigator & { userAgentData?: { platform?: string } }).userAgentData?.platform
+    ?? navigator.platform,
+);
+
+/**
+ * True when this event carries the platform's canvas gesture modifier.
+ *
+ * Off macOS both Control and Super count: Super is what a Mac-trained hand
+ * reaches for, and Control is what still arrives when the compositor keeps
+ * Super for itself. On macOS only Command counts, since Control-click there
+ * is the context menu.
+ */
+function commandModifier(ev: { metaKey: boolean; ctrlKey: boolean }): boolean {
+  return USES_META_MODIFIER ? ev.metaKey : ev.ctrlKey || ev.metaKey;
+}
+
+/** True when `key` names a key the gesture modifier accepts on this platform. */
+function isCommandModifierKey(key: string): boolean {
+  return key === 'Meta' || (!USES_META_MODIFIER && key === 'Control');
+}
+
 const SNAP_SCREEN_PX = 6;
 /** Forgiving screen-space target around a visible line or arrow. */
 const LINE_HIT_SCREEN_PX = 8;
@@ -1753,7 +1784,7 @@ export class EditorCanvas {
     this.host.addEventListener('pointermove', (ev) => {
       // Covers entering the canvas with Command already held, when this window
       // did not receive the original keydown.
-      if (this.drag.kind === 'none') this.setRotationModifier(ev.metaKey);
+      if (this.drag.kind === 'none') this.setRotationModifier(commandModifier(ev));
       this.onPointerMove(ev);
     });
     // Safari can deliver compatibility mouse motion without a corresponding
@@ -1769,10 +1800,11 @@ export class EditorCanvas {
     this.host.addEventListener('dblclick', (ev) => this.onDoubleClick(ev));
     this.host.addEventListener('contextmenu', (ev) => this.onContextMenu(ev));
 
-    // Modifier state changes do not cause pointermove, so mirror Command onto
-    // the canvas host to let CSS swap the handle cursor while it is hovered.
+    // Modifier state changes do not cause pointermove, so mirror the gesture
+    // modifier onto the canvas host to let CSS swap the handle cursor while it
+    // is hovered.
     window.addEventListener('keydown', (ev) => {
-      if (ev.key === 'Meta' || ev.metaKey) this.setRotationModifier(true);
+      if (isCommandModifierKey(ev.key) || commandModifier(ev)) this.setRotationModifier(true);
       if (ev.key === 'Escape' && this.liveWebIds.size > 0 && !this.editingId) this.endWebLive();
     });
     // A live page holds the keyboard; its runtime forwards the keys it does
@@ -1783,7 +1815,7 @@ export class EditorCanvas {
       if ([...frames].some((frame) => frame.contentWindow === ev.source)) this.endWebLive();
     });
     window.addEventListener('keyup', (ev) => {
-      if (ev.key === 'Meta' || !ev.metaKey) this.setRotationModifier(false);
+      if (isCommandModifierKey(ev.key) || !commandModifier(ev)) this.setRotationModifier(false);
     });
     window.addEventListener('blur', () => this.setRotationModifier(false));
   }
@@ -1874,12 +1906,13 @@ export class EditorCanvas {
       }
     }
 
-    // Like Keynote, Command turns any ordinary object handle into a rotation
-    // handle. Curve controls remain dedicated to bending the curve.
+    // Like Keynote, the gesture modifier (Command on macOS, Control elsewhere)
+    // turns any ordinary object handle into a rotation handle. Curve controls
+    // remain dedicated to bending the curve.
     const rotationHandle = target.closest<HTMLElement>(
       '.handle:not(.handle-curve-control)[data-element-id]',
     );
-    if (ev.metaKey && rotationHandle?.dataset.elementId) {
+    if (commandModifier(ev) && rotationHandle?.dataset.elementId) {
       const el = slide.elements.find(
         (candidate) => candidate.id === rotationHandle.dataset.elementId,
       );
@@ -2127,8 +2160,8 @@ export class EditorCanvas {
           return rot ? rotatedBounds({ ...origin, rot } as SlideElement) : origin;
         }));
         const moved = { ...bounds, x: bounds.x + dx, y: bounds.y + dy };
-        const snapped = ev.metaKey
-          // Command suspends snapping for fine placement.
+        const snapped = commandModifier(ev)
+          // The gesture modifier suspends snapping for fine placement.
           ? { rect: moved, guides: [], spacing: [], sizes: [] }
           : snapMove(moved, deck.canvas, others, threshold);
         this.guides = snapped.guides;
@@ -2401,8 +2434,8 @@ export class EditorCanvas {
         if (ev.shiftKey) {
           dragged = snapToAngleStep(anchor, point, 45);
           this.guides = [];
-        } else if (ev.metaKey) {
-          // Command suspends snapping for fine placement, as for moves.
+        } else if (commandModifier(ev)) {
+          // The gesture modifier suspends snapping for fine placement, as for moves.
           this.guides = [];
         } else {
           // Otherwise the dragged end snaps to the same alignment guides as a

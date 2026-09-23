@@ -3056,6 +3056,53 @@ describe('object creation and manipulation', () => {
     styles.remove();
   });
 
+  // A compositor can keep Super for itself — Hyprland moves the window on
+  // Super+drag — so off macOS Control drives the same rotation gesture.
+  it('rotates on Control-drag when the desktop has taken Super', () => {
+    const { store, host } = setup();
+    stageAtOne(host);
+    const ellipse = insertShape(store, 'ellipse');
+    const handle = host.querySelector<HTMLElement>(
+      `.handle-e[data-element-id="${ellipse.id}"]`,
+    )!;
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Control', ctrlKey: true }));
+    expect(host.classList.contains('command-rotate')).toBe(true);
+
+    const center = { x: ellipse.x + ellipse.w / 2, y: ellipse.y + ellipse.h / 2 };
+    handle.dispatchEvent(new PointerEvent('pointerdown', {
+      clientX: ellipse.x + ellipse.w,
+      clientY: center.y,
+      bubbles: true,
+      pointerId: 1,
+      button: 0,
+      ctrlKey: true,
+    }));
+    host.dispatchEvent(new PointerEvent('pointermove', {
+      clientX: center.x,
+      clientY: ellipse.y + ellipse.h,
+      bubbles: true,
+      pointerId: 1,
+      button: 0,
+      ctrlKey: true,
+    }));
+
+    expect(host.classList.contains('is-rotating')).toBe(true);
+    expect(store.slide!.elements.find((el) => el.id === ellipse.id)!.rot).toBe(90);
+
+    host.dispatchEvent(new PointerEvent('pointerup', {
+      clientX: center.x,
+      clientY: ellipse.y + ellipse.h,
+      bubbles: true,
+      pointerId: 1,
+      button: 0,
+      ctrlKey: true,
+    }));
+    expect(host.classList.contains('is-rotating')).toBe(false);
+    window.dispatchEvent(new KeyboardEvent('keyup', { key: 'Control' }));
+    expect(host.classList.contains('command-rotate')).toBe(false);
+  });
+
   it('drags a line endpoint and keeps the handle centred on the new endpoint', () => {
     const { store, host } = setup();
     stageAtOne(host);
