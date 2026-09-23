@@ -21,7 +21,6 @@
     <nav>
       <a href="#why">Why</a>
       <a href="#features">Features</a>
-      <a href="/manual/">Manual</a>
       <a href="https://github.com/vsitzmann/deckwerk">GitHub</a>
       <a class="cta" href="#install">Install</a>
     </nav>
@@ -37,7 +36,7 @@
       <p class="sub">Drop a clip on a slide and it plays. Crop it, trim it, morph it into the next slide, present it. <b>Linux is a first-class platform.</b> Agents edit the same deck you do. Collaborators join from a link on your network, no accounts.</p>
       <div class="actions">
         <a class="btn primary" href="#install">Install DeckWerk</a>
-        <a class="btn ghost" href="/manual/">Read the manual</a>
+        <a class="btn ghost" href="https://github.com/vsitzmann/deckwerk">View on GitHub</a>
       </div>
       <p class="footnote"><sup>1</sup> <i>Deck</i> as in slide deck, and <i>Werk</i> as in the German word that means &ldquo;a work (of art, literature, etc)&rdquo;, a factory, or a structure.</p>
     </div>
@@ -68,7 +67,7 @@
       <div class="section-head">
         <p class="eyebrow">What you get</p>
         <h2>The features a visual talk needs. Not many more.</h2>
-        <p class="lede">Each of these is covered in the <a href="/manual/">manual</a>. Everything else works the way you would expect from a slide editor.</p>
+        <p class="lede">Everything else works the way you would expect from a slide editor.</p>
       </div>
       <div class="grid">
         <div class="card dark"><span class="n">01</span><h3>Video</h3><p>Drag and drop, then crop, trim and mask non-destructively. Clips stay ordinary video files.</p></div>
@@ -95,39 +94,18 @@
     <div class="wrap">
       <div class="section-head">
         <p class="eyebrow">Install</p>
-        <h2>One command on most systems.</h2>
+        <h2>One command, everywhere.</h2>
         <p class="lede">DeckWerk is in alpha and under active development. It already authors and delivers real talks, but interfaces and the file format may still change.</p>
       </div>
-      <div class="grid">
-        <!-- Not on Flathub yet; re-enable this card once the Flathub submission lands.
-        <div class="pkg">
-          <h3>Linux</h3>
-          <p>From Flathub, on any distribution with Flatpak.</p>
-          <pre class="cmd"><span class="p">$ </span>flatpak install flathub org.deckwerk.DeckWerk</pre>
-          <p class="alt">Prefer no Flatpak? An <code>.AppImage</code> and a <code>.deb</code> are attached to every <a href="https://github.com/vsitzmann/deckwerk/releases">release</a>.</p>
-        </div>
-        -->
-        <div class="pkg">
-          <h3>Linux</h3>
-          <p>An <code>.AppImage</code> and a <code>.deb</code> are attached to every <a href="https://github.com/vsitzmann/deckwerk/releases">release</a>.</p>
-          <p class="alt">A Flathub package is planned but not published yet.</p>
-        </div>
-        <div class="pkg">
-          <h3>macOS</h3>
-          <p>Via Homebrew. Apple silicon and Intel.</p>
-          <pre class="cmd"><span class="p">$ </span>brew install --cask --no-quarantine vsitzmann/tap/deckwerk</pre>
-          <p class="alt">The build is <strong>not yet signed or notarized</strong>, so macOS will refuse to open it unless you pass <code>--no-quarantine</code> (or clear the flag afterwards with <code>xattr -dr com.apple.quarantine /Applications/DeckWerk.app</code>). Or download the <code>.dmg</code> from the <a href="https://github.com/vsitzmann/deckwerk/releases/latest">latest release</a>.</p>
-        </div>
-        <div class="pkg">
-          <h3>Windows</h3>
-          <p>An installer, from the latest release.</p>
-          <p><a class="btn ghost" href="https://github.com/vsitzmann/deckwerk/releases/latest">Download for Windows</a></p>
-          <p class="alt">Windows 10 and 11, x64. Unsigned, so SmartScreen will warn: choose <em>More info → Run anyway</em>.</p>
-        </div>
+      <div class="pkg">
+        <h3>Every platform</h3>
+        <p>One command, from npm. Linux, macOS and Windows, from the same package.</p>
+        <pre class="cmd"><span class="p">$ </span>npm install -g deckwerk</pre>
+        <p class="alt">Needs <a href="https://nodejs.org/">Node.js</a>. Then run <code>deckwerk</code>.</p>
       </div>
       <div class="pkg source">
-        <h3>Any platform: build it yourself</h3>
-        <p>Three commands, no cross-compilation tricks. Works on distributions the packages above don't cover. Prerequisites are in <a href="https://github.com/vsitzmann/deckwerk/blob/main/docs/BUILDING.md">docs/BUILDING.md</a>.</p>
+        <h3>Or build it yourself</h3>
+        <p>Three commands, no cross-compilation tricks. Prerequisites are in <a href="https://github.com/vsitzmann/deckwerk/blob/main/docs/BUILDING.md">docs/BUILDING.md</a>.</p>
         <pre class="cmd"><span class="p">$ </span>git clone https://github.com/vsitzmann/deckwerk.git
 <span class="p">$ </span>cd deckwerk &amp;&amp; npm ci &amp;&amp; npm run dist</pre>
       </div>
@@ -175,7 +153,6 @@
     <span>© Vincent Sitzmann</span>
     <a href="https://github.com/vsitzmann/deckwerk">github.com/vsitzmann/deckwerk</a>
     <a href="https://github.com/vsitzmann/deckwerk/releases">Releases</a>
-    <a href="/manual/">Manual</a>
     <span class="spacer"></span>
     <span>MIT License</span>
   </div>

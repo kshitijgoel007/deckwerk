@@ -35,7 +35,7 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 a { color: inherit; text-decoration: none; }
-p a, li a, .prose a { color: var(--accent-ink); text-decoration: underline; text-underline-offset: 0.15em; text-decoration-thickness: 1px; }
+p a, li a { color: var(--accent-ink); text-decoration: underline; text-underline-offset: 0.15em; text-decoration-thickness: 1px; }
 p a:hover, li a:hover { color: var(--accent); }
 img { max-width: 100%; display: block; }
 code, pre, kbd { font-family: var(--mono); }
@@ -220,38 +220,10 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 8px 28px; align-items: cente
 footer a:hover { color: var(--ink); }
 footer .spacer { flex: 1; }
 
-/* ---- manual ---------------------------------------------------------- */
-.manual { display: grid; grid-template-columns: 240px 1fr; gap: 64px; padding: 56px 0 96px; align-items: start; }
-.manual aside { position: sticky; top: 84px; }
-.manual aside ul { list-style: none; margin: 10px 0 0; padding: 0; }
-.manual aside li a { display: grid; grid-template-columns: 30px 1fr; padding: 8px 0; font-size: 15px; color: var(--ink-2); border-bottom: 1px solid var(--rule); }
-.manual aside li a:hover { color: var(--ink); }
-.manual aside li.current a { color: var(--accent-ink); font-weight: 600; }
-.manual aside .n { font-family: var(--mono); font-size: 11.5px; color: var(--muted); padding-top: 3px; }
-.prose { max-width: 68ch; }
-.prose h1 { font-size: clamp(38px, 5vw, 56px); margin-bottom: 22px; }
-.prose h2 { font-size: 30px; margin: 44px 0 12px; }
-.prose h3 { font-size: 22px; margin: 34px 0 8px; font-family: var(--serif); }
-.prose p, .prose li { color: var(--ink-2); }
-.prose strong { color: var(--ink); font-weight: 600; }
-.prose code { background: var(--paper-2); border: 1px solid var(--rule); border-radius: 4px; padding: 1px 5px; font-size: 0.86em; }
-.prose pre { background: var(--editor); color: var(--editor-ink); border-radius: 8px; padding: 16px 18px; overflow-x: auto; font-size: 13.5px; line-height: 1.55; }
-.prose pre code { background: none; border: 0; padding: 0; font-size: inherit; }
-.prose blockquote { margin: 18px 0; padding: 4px 0 4px 18px; border-left: 3px solid var(--accent); color: var(--muted); }
-.prose ol.toc { padding-left: 1.4em; font-family: var(--serif); font-size: 22px; }
-.prose ol.toc li { margin: 10px 0; }
-.prose ol.toc a { color: var(--ink); text-decoration: none; }
-.prose ol.toc a:hover { color: var(--accent-ink); }
-.prose table { border-collapse: collapse; width: 100%; font-size: 15.5px; }
-.prose th, .prose td { border-bottom: 1px solid var(--rule); padding: 8px 10px; text-align: left; vertical-align: top; }
-.pager { display: flex; justify-content: space-between; gap: 20px; margin-top: 56px; padding-top: 22px; border-top: 1px solid var(--rule); font-family: var(--mono); font-size: 13.5px; }
-.pager a { color: var(--ink-2); } .pager a:hover { color: var(--accent-ink); }
-
 /* ---- responsive ----------------------------------------------------- */
 @media (max-width: 900px) {
-  .cols, .two, .shots, .manual { grid-template-columns: 1fr; }
+  .cols, .two, .shots { grid-template-columns: 1fr; }
   .grid, .install .grid { grid-template-columns: 1fr 1fr; }
-  .manual aside { position: static; }
   .top nav a:not(.cta) { display: none; }
 }
 @media (max-width: 600px) {
@@ -263,5 +235,5 @@ footer .spacer { flex: 1; }
 
 /* Grid and flex children must be allowed to shrink below the width of the
    widest <pre> they contain, or install commands push the page sideways. */
-.grid > *, .cols > *, .two > *, .shots > *, .manual > * { min-width: 0; }
+.grid > *, .cols > *, .two > *, .shots > * { min-width: 0; }
 pre { max-width: 100%; overflow-x: auto; }
