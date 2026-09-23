@@ -1025,18 +1025,9 @@ async function readSystemClipboard(): Promise<ClipboardReadResult | ClipboardWri
  */
 const PASTE_OFFSET = 24;
 
-/**
- * Where the last paste of the current clipboard content put things, so that
- * pasting repeatedly cascades instead of stacking every copy in one spot.
- * Cleared by the next copy; keyed by destination slide so a paste onto a new
- * slide starts its own cascade.
- */
-let pasteCascade: { key: string; steps: number } | null = null;
-
 export async function copySelectionToClipboard(store: EditorStore): Promise<number> {
   const els = store.selectedElements();
   if (els.length === 0) return 0;
-  pasteCascade = null;
   const ids = new Set(els.map((e) => e.id));
   // Builds ride along: an element that appears on click should still appear
   // on click after the paste. Entries triggered by elements staying behind
@@ -1061,7 +1052,6 @@ export async function cutSelectionToClipboard(store: EditorStore): Promise<numbe
 export async function copySlidesToClipboard(store: EditorStore, currentThemeCss?: string): Promise<number> {
   const slides = store.selectedSlides();
   if (slides.length === 0) return 0;
-  pasteCascade = null;
   const { deck, dir } = store.get();
   await writeSystemClipboard({
     kind: 'slides',
@@ -1165,20 +1155,18 @@ export async function pasteFromClipboard(
   const timeline = structuredClone(payload.timeline);
 
   /*
-   * Position: a paste onto a *different* slide keeps the layout the author
-   * composed — that is the whole point of copying a title or a figure across
-   * slides, and nudging it means realigning it by hand every time. Only a
-   * paste back onto the slide the elements came from is offset, because there
-   * the copy would sit invisibly on top of its original. Pasting the same
-   * clipboard again onto the same slide cascades from the previous paste
-   * rather than repeating it in place.
+   * Position, as in Figma: a paste lands exactly where the elements were
+   * copied from unless that spot is taken. Onto another slide, or after the
+   * original was deleted or cut, it keeps the layout the author composed;
+   * over the original (or an earlier paste) it steps down and right until it
+   * reaches a free spot, so repeated pastes cascade instead of stacking.
    */
-  const targetSlideId = store.slide?.id ?? null;
-  const sameSlide = targetSlideId !== null && payload.sourceSlideId === targetSlideId;
-  const key = `${targetSlideId ?? ''}\u0000${payload.elements.map((el) => el.id).join(',')}`;
-  const repeats = pasteCascade?.key === key ? pasteCascade.steps + 1 : 0;
-  pasteCascade = { key, steps: repeats };
-  const nudge = (repeats + (sameSlide ? 1 : 0)) * PASTE_OFFSET;
+  const occupied = (store.slide?.elements ?? []).map((el) => `${el.type}:${el.x},${el.y},${el.w},${el.h}`);
+  const taken = new Set(occupied);
+  const collides = (offset: number) => elements.some((el) =>
+    taken.has(`${el.type}:${el.x + offset},${el.y + offset},${el.w},${el.h}`));
+  let nudge = 0;
+  for (let step = 0; step < 100 && collides(nudge); step++) nudge += PASTE_OFFSET;
 
   remapElementIds(elements, timeline);
   const created = elements.map((el) => el.id);

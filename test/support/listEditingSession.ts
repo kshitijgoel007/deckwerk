@@ -102,6 +102,12 @@ export interface TextRun {
   bold: boolean;
   italic: boolean;
   underline: boolean;
+  /** Computed, so an inherited size and an authored one read the same. */
+  fontSize: string;
+  fontFamily: string;
+  color: string;
+  /** `super`, `sub` or `baseline`, from the nearest ancestor that shifts it. */
+  baseline: string;
 }
 
 /**
@@ -130,7 +136,18 @@ export const RUN_FORMATS = `((text, root) => {
     if (format === 'italic') return computed.fontStyle === 'italic';
     return computed.textDecorationLine.includes('underline');
   };
-  return { bold: state('bold'), italic: state('italic'), underline: state('underline') };
+  const computed = getComputedStyle(text.parentElement);
+  let baseline = 'baseline';
+  for (let node = text.parentElement; node && node !== root; node = node.parentElement) {
+    const shift = getComputedStyle(node).verticalAlign;
+    if (shift === 'super' || shift === 'sub') { baseline = shift; break; }
+    if (node.matches('sup')) { baseline = 'super'; break; }
+    if (node.matches('sub')) { baseline = 'sub'; break; }
+  }
+  return {
+    bold: state('bold'), italic: state('italic'), underline: state('underline'),
+    fontSize: computed.fontSize, fontFamily: computed.fontFamily, color: computed.color, baseline,
+  };
 })`;
 
 export interface ListEditingSession {

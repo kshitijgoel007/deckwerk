@@ -14,6 +14,7 @@ import {
 import {
   EditorStore,
   copySelectionToClipboard,
+  cutSelectionToClipboard,
   copySlidesToClipboard,
   IN_APP_CLIPBOARD_TOKEN_PREFIX,
   inAppClipboardToken,
@@ -321,6 +322,26 @@ describe('cross-instance copy/paste', () => {
     await pasteFromClipboard(store);
     const second = store.slide!.elements.at(-1)!;
     expect([second.x, second.y]).toEqual([58, 58]);
+  });
+
+  it('pastes in place once the original is deleted, and after a cut', async () => {
+    const store = new EditorStore(sampleDeck(), '/src-deck');
+    store.select(['image-1']);
+    await copySelectionToClipboard(store);
+    store.deleteSelection();
+    await pasteFromClipboard(store);
+    const restored = store.slide!.elements.at(-1)!;
+    expect([restored.x, restored.y]).toEqual([10, 10]);
+
+    // Cut, then paste: the spot is free again, so no nudge.
+    await cutSelectionToClipboard(store);
+    await pasteFromClipboard(store);
+    const pasted = store.slide!.elements.at(-1)!;
+    expect([pasted.x, pasted.y]).toEqual([10, 10]);
+    // A second paste of the cut is over the first, so it cascades.
+    await pasteFromClipboard(store);
+    const again = store.slide!.elements.at(-1)!;
+    expect([again.x, again.y]).toEqual([34, 34]);
   });
 
   it('cascades repeated pastes onto another slide so copies do not stack', async () => {

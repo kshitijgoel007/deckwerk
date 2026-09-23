@@ -326,7 +326,11 @@ function convertTypedListMarker(
 }
 
 /** Whether each inline format is in force for what the caret types next. */
-type TypingFormats = Record<InlineTextFormat, boolean>;
+type CarriedRunStyle = 'fontFamily' | 'fontSize' | 'color';
+type TypingFormats = Record<InlineTextFormat, boolean> & {
+  /** Run styles authored inline between the caret and its block. */
+  runStyles: Partial<Record<CarriedRunStyle, string>>;
+};
 
 /** The blocks a word can never span: paragraphs, list items, table cells. */
 /**
@@ -4408,7 +4412,41 @@ export class EditorCanvas {
       underline: this.textSelectionFormatState('underline'),
       superscript: this.textSelectionFormatState('superscript'),
       subscript: this.textSelectionFormatState('subscript'),
+      runStyles: this.runStylesAtCaret(),
     };
+  }
+
+  /**
+   * The font, size and colour authored on the runs around the caret, below
+   * its block. The block itself survives a split (Chromium clones it), so
+   * only what inline spans supplied needs carrying. A relative size nested in
+   * relative sizes compounds, so it is carried as the resulting ratio.
+   */
+  private runStylesAtCaret(): Partial<Record<CarriedRunStyle, string>> {
+    const out: Partial<Record<CarriedRunStyle, string>> = {};
+    const range = window.getSelection()?.rangeCount ? window.getSelection()!.getRangeAt(0) : null;
+    if (!range) return out;
+    const start = range.startContainer instanceof Element
+      ? range.startContainer
+      : range.startContainer.parentElement;
+    const block = start?.closest<HTMLElement>(TEXT_BLOCKS) ?? null;
+    if (!start || !block) return out;
+    let relativeSize = false;
+    for (let node: Element | null = start; node && node !== block; node = node.parentElement) {
+      if (!(node instanceof HTMLElement)) continue;
+      for (const property of ['fontFamily', 'fontSize', 'color'] as const) {
+        const value = node.style[property];
+        if (!value || out[property] !== undefined) continue;
+        out[property] = value;
+        if (property === 'fontSize') relativeSize = /(em|%)$/.test(value) && !/rem$/.test(value);
+      }
+    }
+    if (out.fontSize && relativeSize) {
+      const inner = Number.parseFloat(getComputedStyle(start).fontSize);
+      const outer = Number.parseFloat(getComputedStyle(block).fontSize);
+      if (inner > 0 && outer > 0) out.fontSize = `${Number((inner / outer).toFixed(4))}em`;
+    }
+    return out;
   }
 
   /**
@@ -4458,6 +4496,9 @@ export class EditorCanvas {
     if (formats.superscript !== has('superscript') || formats.subscript !== has('subscript')) {
       declarations.push(...BASELINE_DECLARATIONS[
         formats.superscript ? 'superscript' : formats.subscript ? 'subscript' : 'none']);
+    }
+    for (const [property, value] of Object.entries(formats.runStyles) as Array<[CarriedRunStyle, string]>) {
+      declarations.push([property, value]);
     }
     if (declarations.length > 0) this.applyCollapsedTypingStyle(body, caret, declarations);
   }
