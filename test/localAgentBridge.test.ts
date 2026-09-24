@@ -414,8 +414,9 @@ describe('slide-agent connect', { timeout: 120_000 }, () => {
     };
     // The mirror's brief names ./deck, not a CLI nobody installed.
     const guide = await readFile(join(mirrorDir, 'AGENTS.md'), 'utf8');
-    expect(guide).toContain('./deck context');
-    expect(guide).not.toMatch(/slide-agent (context|inspect|comments)/);
+    expect(guide).toContain('./deck render');
+    expect(guide).toContain('./deck apply');
+    expect(guide).not.toMatch(/slide-agent (context|inspect|comments|render|apply)/);
 
     await until(async () => JSON.parse(await deck('context')).selectedSlideIds.includes('s2'), 'the selection to reach ./deck');
     const context = JSON.parse(await deck('context')) as { slideCount: number; live: boolean };

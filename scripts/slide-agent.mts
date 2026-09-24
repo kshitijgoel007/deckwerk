@@ -12,4 +12,10 @@ const code = await runAgentCli(process.argv.slice(2), {
   err: (text) => process.stderr.write(text.endsWith('\n') ? text : `${text}\n`),
   cwd: process.cwd(),
 });
+// Writes to a pipe are asynchronous, and `process.exit` discards whatever is
+// still queued: `slide-agent inspect --html | …` was cut off at 128 KB. An
+// empty write's callback runs once everything before it has been handed off.
+const flushed = (stream: NodeJS.WriteStream) =>
+  new Promise<void>((resolve) => { stream.write('', () => resolve()); });
+await Promise.all([flushed(process.stdout), flushed(process.stderr)]);
 process.exit(code);

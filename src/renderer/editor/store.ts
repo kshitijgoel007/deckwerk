@@ -386,7 +386,17 @@ export class EditorStore {
     if (opts.history !== false && !this.txnBase && !opts.transient) {
       this.pushUndo(previous, next, opts.label ?? 'Edit slide', forward);
     }
-    this.state = { ...this.state, deck: next, dirty: true };
+    // Selection is by stable id, and a commit is free to remove objects — the
+    // layout switch that retires a prompt nobody wrote into does exactly
+    // that. An id left behind points at nothing: the inspector, the align
+    // tools and every `selectedElements()` caller would then be working from
+    // an object that is no longer on the slide.
+    this.state = {
+      ...this.state,
+      deck: next,
+      dirty: true,
+      selection: this.selectionWithin(next),
+    };
     if (!this.txnBase) {
       if (!opts.transient && opts.history !== false) {
         this.recordHistory(opts.label ?? 'Edit slide', { group: opts.historyGroup });
@@ -762,6 +772,15 @@ export class EditorStore {
     this.clearSelection();
   }
 
+  /** The current selection, minus ids `deck` no longer has anywhere. */
+  private selectionWithin(deck: Deck): Set<string> {
+    const selection = this.state.selection;
+    if (selection.size === 0) return selection;
+    const live = new Set(deck.slides.flatMap((slide) => slide.elements.map((e) => e.id)));
+    const kept = [...selection].filter((id) => live.has(id));
+    return kept.length === selection.size ? selection : new Set(kept);
+  }
+
   /** Keep the slide index and selection valid after history moves. */
   private clampCursor(): void {
     const count = this.state.deck.slides.length;
@@ -921,10 +940,39 @@ export function shareUnchangedSlides(previous: Deck, next: Deck): void {
  */
 let fallbackClipboard: ClipboardWriteRequest | null = null;
 
+/**
+ * Without a pasteboard bridge (the browser client), the in-app payload never
+ * reaches the OS clipboard — so on paste there was no telling whether the
+ * image sitting there was copied after the slide or long before it, and the
+ * image always won. Each in-app copy therefore leaves a token as the OS
+ * clipboard's plain text: while that text is still there, nothing newer was
+ * copied and the in-app payload is what the author means to paste. Anything
+ * copied later replaces the text, and the OS content wins again.
+ */
+export const IN_APP_CLIPBOARD_TOKEN_PREFIX = 'deckwerk-clipboard:';
+let fallbackClipboardToken: string | null = null;
+
+/** The token the last in-app copy wrote, or null if nothing was copied. */
+export function inAppClipboardToken(): string | null {
+  return fallbackClipboardToken;
+}
+
+/** Does this clipboard text say the in-app payload is the newest copy? */
+export function isInAppClipboardToken(text: string | null | undefined): boolean {
+  return Boolean(fallbackClipboardToken && fallbackClipboard && text?.trim() === fallbackClipboardToken);
+}
+
 async function writeSystemClipboard(request: ClipboardWriteRequest): Promise<void> {
   fallbackClipboard = request;
+  fallbackClipboardToken = `${IN_APP_CLIPBOARD_TOKEN_PREFIX}${Math.random().toString(36).slice(2)}`;
   try {
-    if (typeof window !== 'undefined') await window.api?.writeClipboard?.(request);
+    if (typeof window !== 'undefined' && window.api?.writeClipboard) {
+      await window.api.writeClipboard(request);
+    } else if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+      // Secure origins only; on plain HTTP the `copy` event in shellWiring
+      // writes the same token.
+      await navigator.clipboard.writeText(fallbackClipboardToken);
+    }
   } catch (err) {
     console.error('Could not write the system clipboard:', err);
   }
@@ -954,6 +1002,7 @@ async function readSystemClipboard(): Promise<ClipboardReadResult | ClipboardWri
           image = await item.getType('image/png');
         }
       }
+      if (isInAppClipboardToken(text)) return fallbackClipboard;
       if (/<table\b/i.test(html) || text.includes('\t')) {
         return { kind: 'external-html', html, text };
       }
@@ -976,18 +1025,9 @@ async function readSystemClipboard(): Promise<ClipboardReadResult | ClipboardWri
  */
 const PASTE_OFFSET = 24;
 
-/**
- * Where the last paste of the current clipboard content put things, so that
- * pasting repeatedly cascades instead of stacking every copy in one spot.
- * Cleared by the next copy; keyed by destination slide so a paste onto a new
- * slide starts its own cascade.
- */
-let pasteCascade: { key: string; steps: number } | null = null;
-
 export async function copySelectionToClipboard(store: EditorStore): Promise<number> {
   const els = store.selectedElements();
   if (els.length === 0) return 0;
-  pasteCascade = null;
   const ids = new Set(els.map((e) => e.id));
   // Builds ride along: an element that appears on click should still appear
   // on click after the paste. Entries triggered by elements staying behind
@@ -1012,7 +1052,6 @@ export async function cutSelectionToClipboard(store: EditorStore): Promise<numbe
 export async function copySlidesToClipboard(store: EditorStore, currentThemeCss?: string): Promise<number> {
   const slides = store.selectedSlides();
   if (slides.length === 0) return 0;
-  pasteCascade = null;
   const { deck, dir } = store.get();
   await writeSystemClipboard({
     kind: 'slides',
@@ -1116,20 +1155,18 @@ export async function pasteFromClipboard(
   const timeline = structuredClone(payload.timeline);
 
   /*
-   * Position: a paste onto a *different* slide keeps the layout the author
-   * composed — that is the whole point of copying a title or a figure across
-   * slides, and nudging it means realigning it by hand every time. Only a
-   * paste back onto the slide the elements came from is offset, because there
-   * the copy would sit invisibly on top of its original. Pasting the same
-   * clipboard again onto the same slide cascades from the previous paste
-   * rather than repeating it in place.
+   * Position, as in Figma: a paste lands exactly where the elements were
+   * copied from unless that spot is taken. Onto another slide, or after the
+   * original was deleted or cut, it keeps the layout the author composed;
+   * over the original (or an earlier paste) it steps down and right until it
+   * reaches a free spot, so repeated pastes cascade instead of stacking.
    */
-  const targetSlideId = store.slide?.id ?? null;
-  const sameSlide = targetSlideId !== null && payload.sourceSlideId === targetSlideId;
-  const key = `${targetSlideId ?? ''}\u0000${payload.elements.map((el) => el.id).join(',')}`;
-  const repeats = pasteCascade?.key === key ? pasteCascade.steps + 1 : 0;
-  pasteCascade = { key, steps: repeats };
-  const nudge = (repeats + (sameSlide ? 1 : 0)) * PASTE_OFFSET;
+  const occupied = (store.slide?.elements ?? []).map((el) => `${el.type}:${el.x},${el.y},${el.w},${el.h}`);
+  const taken = new Set(occupied);
+  const collides = (offset: number) => elements.some((el) =>
+    taken.has(`${el.type}:${el.x + offset},${el.y + offset},${el.w},${el.h}`));
+  let nudge = 0;
+  for (let step = 0; step < 100 && collides(nudge); step++) nudge += PASTE_OFFSET;
 
   remapElementIds(elements, timeline);
   const created = elements.map((el) => el.id);

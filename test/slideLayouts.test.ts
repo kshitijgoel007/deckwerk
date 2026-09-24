@@ -34,14 +34,30 @@ describe('slide layouts', () => {
     );
   });
 
-  it('switches to title-only non-destructively', () => {
+  it('switches to title-only without carrying an unwritten body prompt along', () => {
+    // Reported: a new slideshow switched to Title slide showed a phantom box
+    // on top of the title. It was the standard layout's body prompt, which
+    // the title layout has no slot for and nobody had typed into.
     const slide = emptyDeck().slides[0];
     applySlideLayout(slide, 'standard');
-    const bodyId = slide.elements.find((el) => el.class.includes('role-body'))!.id;
+    expect(slide.elements.some((el) => el.class.includes('role-body'))).toBe(true);
     applySlideLayout(slide, 'title');
-    expect(slide.elements.some((el) => el.id === bodyId)).toBe(true);
+    expect(slide.elements.some((el) => el.class.includes('role-body'))).toBe(false);
     const rendered = renderSlide(slide, { resolveSrc: (src) => src });
     expect(rendered.classList).toContain('layout-title');
+  });
+
+  it('switches to title-only non-destructively once the body has been written', () => {
+    const slide = emptyDeck().slides[0];
+    applySlideLayout(slide, 'standard');
+    const body = slide.elements.find((el) => el.class.includes('role-body'))!;
+    if (body.type === 'text') body.html = 'Words the author typed';
+    body.class = body.class.filter((name) => name !== 'placeholder');
+
+    applySlideLayout(slide, 'title');
+    const kept = slide.elements.find((el) => el.id === body.id)!;
+    expect(kept).toBeDefined();
+    expect(kept.type === 'text' && kept.html).toBe('Words the author typed');
   });
 
   it('does not let a theme move the layout geometry', () => {

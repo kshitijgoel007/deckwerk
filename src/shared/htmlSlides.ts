@@ -213,7 +213,7 @@ ${blank > 0 ? BLANK_RULES : `<!-- ${SCOPE_MARKER}${scope} -->\n${SCOPE_RULES}`}
 <style>${options.typeCss ?? ''}</style>
 <link rel="stylesheet" href="${escape(options.theme ?? 'theme.css')}">
 <style>${PREVIEW_CSS}</style>
-${KATEX_PAGE_HTML}
+${usesMath(body) ? KATEX_PAGE_HTML : ''}
 <script>${AUTO_FIT_SCRIPT}</script>
 </head>
 <body>
@@ -292,6 +292,19 @@ export function renderAuthoredMath(
       text.data = text.data.replaceAll(escapedDollar, '$');
     }
   }
+}
+
+/**
+ * Whether markup holds `$…$` maths for KaTeX to render — two unescaped
+ * dollars, the delimiters `renderAuthoredMath` looks for.
+ *
+ * KaTeX is ~640 KB inlined, and only a page someone *opens in a browser* with
+ * maths on it needs its own copy: the compiler adds it to any page that lacks
+ * it before measuring. Carried on every export, it made a blank `new` page
+ * 660 KB, which is what an agent's terminal then truncated.
+ */
+function usesMath(markup: string): boolean {
+  return (markup.replace(/\\\$/g, '').match(/\$/g) ?? []).length >= 2;
 }
 
 /** A closing script tag inside an inlined library would end the tag early. */

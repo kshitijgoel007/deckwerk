@@ -182,3 +182,29 @@ button.danger:hover:not(:disabled) {
   }
   #agent-workspace.collapsed .agent-head-actions > :last-child { writing-mode: horizontal-tb; }
 }
+
+/* First visit asks for a name beside the deck, not in a modal that would
+   block the page before the session's WebSocket is even open. */
+#app:has(#collab-name-prompt) {
+  grid-template-rows: auto 44px 1fr 24px;
+}
+#collab-name-prompt {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  box-sizing: border-box;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--ui-border);
+  background: var(--ui-surface-raised);
+  font-size: 12px;
+}
+#collab-name-prompt input {
+  min-width: 0;
+  width: 150px;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-sm);
+  background: var(--ui-surface);
+  color: var(--ui-text);
+  padding: 5px 7px;
+  font: inherit;
+}

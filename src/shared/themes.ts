@@ -701,13 +701,21 @@ export function clearTextProperties(el: Extract<SlideElement, { type: 'text' }>,
  * Strip CSS declarations from every `style="…"` attribute in authored markup,
  * without a DOM: the CLI runs this too. A `font-size` in a relative unit is
  * kept -- it describes the run against its box, not a fixed size.
+ *
+ * The attribute is serialized markup, so a quoted font stack arrives as
+ * `&quot;SF Mono&quot;` -- and every one of those entities ends in the `;`
+ * that separates declarations. Splitting the raw text therefore cut
+ * `font-family: &quot;American Typewriter&quot;, …` into fragments, dropped
+ * the first as `font-family` and wrote the rest back as a style with no
+ * property at all. The value is decoded first, split only where a `;` really
+ * ends a declaration, and encoded again for the attribute it goes back into.
  */
 export function stripStyleProperties(html: string, properties: string[]): string {
   if (properties.length === 0 || !/style\s*=/.test(html)) return html;
   const wanted = new Set(properties.map((property) => property.toLowerCase()));
-  return html.replace(/\sstyle\s*=\s*("([^"]*)"|'([^']*)')/gi, (match, _quoted, doubleQuoted, singleQuoted) => {
-    const declarations = String(doubleQuoted ?? singleQuoted ?? '')
-      .split(';')
+  return html.replace(/\sstyle\s*=\s*("([^"]*)"|'([^']*)')/gi, (_match, _quoted, doubleQuoted, singleQuoted) => {
+    const quote = doubleQuoted !== undefined ? '"' : "'";
+    const declarations = splitDeclarations(decodeAttribute(String(doubleQuoted ?? singleQuoted ?? '')))
       .map((declaration) => declaration.trim())
       .filter(Boolean)
       .filter((declaration) => {
@@ -719,10 +727,52 @@ export function stripStyleProperties(html: string, properties: string[]): string
         return property === 'font-size' && /(em|rem|%|ex|ch)$/i.test(value);
       });
     if (declarations.length === 0) return '';
-    const quote = doubleQuoted !== undefined ? '"' : "'";
-    void match;
-    return ` style=${quote}${declarations.join('; ')}${quote}`;
+    return ` style=${quote}${encodeAttribute(declarations.join('; '), quote)}${quote}`;
   });
+}
+
+/** An attribute value as the browser reads it: the entities markup uses for it. */
+function decodeAttribute(value: string): string {
+  return value.replace(/&(?:#(\d+)|#x([\da-f]+)|(quot|apos|amp|lt|gt));/gi,
+    (entity, decimal: string | undefined, hex: string | undefined, name: string | undefined) => {
+      if (decimal) return String.fromCodePoint(Number(decimal));
+      if (hex) return String.fromCodePoint(Number.parseInt(hex, 16));
+      const named: Record<string, string> = { quot: '"', apos: "'", amp: '&', lt: '<', gt: '>' };
+      return named[name!.toLowerCase()] ?? entity;
+    });
+}
+
+function encodeAttribute(value: string, quote: '"' | "'"): string {
+  const escaped = value.replace(/&/g, '&amp;');
+  return quote === '"' ? escaped.replace(/"/g, '&quot;') : escaped.replace(/'/g, '&#39;');
+}
+
+/** CSS declarations, split on the `;`s outside strings and parentheses. */
+function splitDeclarations(css: string): string[] {
+  const parts: string[] = [];
+  let current = '';
+  let inString: string | null = null;
+  let depth = 0;
+  for (let index = 0; index < css.length; index += 1) {
+    const char = css[index];
+    if (inString) {
+      if (char === '\\') { current += char + (css[index + 1] ?? ''); index += 1; continue; }
+      if (char === inString) inString = null;
+    } else if (char === '"' || char === "'") {
+      inString = char;
+    } else if (char === '(') {
+      depth += 1;
+    } else if (char === ')') {
+      depth = Math.max(0, depth - 1);
+    } else if (char === ';' && depth === 0) {
+      parts.push(current);
+      current = '';
+      continue;
+    }
+    current += char;
+  }
+  parts.push(current);
+  return parts;
 }
 
 /**

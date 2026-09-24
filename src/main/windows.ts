@@ -122,18 +122,38 @@ function showFullscreenWindow(win: BrowserWindow): void {
   win.setFullScreen(true);
 }
 
+/**
+ * Minimum window size, as the platform will actually honour it.
+ *
+ * A tiling compositor sizes windows itself: Hyprland hands each window its
+ * share of the screen — two columns on a 1920px display is ~940px — and a
+ * client that insists on more simply renders wider than the box it was given,
+ * so its right edge disappears under the neighbour and the window stops
+ * tracking the tile. The editor layout has no need for the floor anyway: the
+ * rail bottoms out at 150px and the sidebar at 240px, leaving the canvas the
+ * rest. So on Linux the request drops to a token floor and the compositor
+ * decides; elsewhere the stated minimum stands.
+ */
+function minimumSize(width: number, height: number): { minWidth: number; minHeight: number } {
+  if (process.platform === 'linux') return { minWidth: 480, minHeight: 360 };
+  return { minWidth: width, minHeight: height };
+}
+
 export function createEditorWindow(query = '', state?: WindowContinuityState): BrowserWindow {
   const win = new BrowserWindow({
     width: 1600,
     height: 1000,
     ...continuityOptions(state),
-    minWidth: 1100,
-    minHeight: 700,
+    ...minimumSize(1100, 700),
     backgroundColor: APP_BACKGROUND,
     show: false,
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     webPreferences: {
       backgroundThrottling: !HEADLESS_TEST,
+      // A hidden window is never mapped, so it gets no compositor frames and
+      // every DevTools input event waits out a ~1 s fallback. Offscreen
+      // rendering keeps producing frames with nothing on screen.
+      offscreen: HEADLESS_TEST,
       preload: preload(),
       contextIsolation: true,
       nodeIntegration: false,
@@ -157,13 +177,16 @@ export function createCollabHostWindow(url: string, state?: WindowContinuityStat
     width: 1600,
     height: 1000,
     ...continuityOptions(state),
-    minWidth: 1100,
-    minHeight: 700,
+    ...minimumSize(1100, 700),
     backgroundColor: APP_BACKGROUND,
     show: false,
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     webPreferences: {
       backgroundThrottling: !HEADLESS_TEST,
+      // A hidden window is never mapped, so it gets no compositor frames and
+      // every DevTools input event waits out a ~1 s fallback. Offscreen
+      // rendering keeps producing frames with nothing on screen.
+      offscreen: HEADLESS_TEST,
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
@@ -203,6 +226,10 @@ export function createPresentWindow(
     show: false,
     webPreferences: {
       backgroundThrottling: !HEADLESS_TEST,
+      // A hidden window is never mapped, so it gets no compositor frames and
+      // every DevTools input event waits out a ~1 s fallback. Offscreen
+      // rendering keeps producing frames with nothing on screen.
+      offscreen: HEADLESS_TEST,
       preload: preload(),
       contextIsolation: true,
       nodeIntegration: false,
@@ -239,6 +266,10 @@ export function createPresenterWindow(
     show: false,
     webPreferences: {
       backgroundThrottling: !HEADLESS_TEST,
+      // A hidden window is never mapped, so it gets no compositor frames and
+      // every DevTools input event waits out a ~1 s fallback. Offscreen
+      // rendering keeps producing frames with nothing on screen.
+      offscreen: HEADLESS_TEST,
       preload: preload(), contextIsolation: true, nodeIntegration: false, sandbox: false,
     },
   });
@@ -273,6 +304,10 @@ export function createPdfWindow(query: string): BrowserWindow {
     backgroundColor: '#000000',
     webPreferences: {
       backgroundThrottling: !HEADLESS_TEST,
+      // A hidden window is never mapped, so it gets no compositor frames and
+      // every DevTools input event waits out a ~1 s fallback. Offscreen
+      // rendering keeps producing frames with nothing on screen.
+      offscreen: HEADLESS_TEST,
       preload: preload(),
       contextIsolation: true,
       nodeIntegration: false,
@@ -288,13 +323,16 @@ export function createTrimWindow(): BrowserWindow {
   const win = new BrowserWindow({
     width: 1100,
     height: 820,
-    minWidth: 800,
-    minHeight: 640,
+    ...minimumSize(800, 640),
     backgroundColor: APP_BACKGROUND,
     title: 'Trim & Crop',
     show: false,
     webPreferences: {
       backgroundThrottling: !HEADLESS_TEST,
+      // A hidden window is never mapped, so it gets no compositor frames and
+      // every DevTools input event waits out a ~1 s fallback. Offscreen
+      // rendering keeps producing frames with nothing on screen.
+      offscreen: HEADLESS_TEST,
       preload: preload(),
       contextIsolation: true,
       nodeIntegration: false,
@@ -312,13 +350,16 @@ export function createRasterWindow(): BrowserWindow {
   const win = new BrowserWindow({
     width: 1180,
     height: 860,
-    minWidth: 760,
-    minHeight: 580,
+    ...minimumSize(760, 580),
     backgroundColor: APP_BACKGROUND,
     title: 'Raster Paint',
     show: false,
     webPreferences: {
       backgroundThrottling: !HEADLESS_TEST,
+      // A hidden window is never mapped, so it gets no compositor frames and
+      // every DevTools input event waits out a ~1 s fallback. Offscreen
+      // rendering keeps producing frames with nothing on screen.
+      offscreen: HEADLESS_TEST,
       preload: preload(),
       contextIsolation: true,
       nodeIntegration: false,

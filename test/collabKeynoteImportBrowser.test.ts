@@ -91,6 +91,11 @@ describe.skipIf(!electronBinary)('Keynote import in the headless-server Web UI',
       browser.log,
     );
     editor = await Cdp.connect(target.webSocketDebuggerUrl!);
+    // The file is set through DevTools below. Left alone, the click on
+    // "Keynote…" opened the native chooser, which on a Wayland desktop took
+    // the hidden test window's Electron down with it.
+    await editor.call('Page.enable');
+    await editor.call('Page.setInterceptFileChooserDialog', { enabled: true });
 
     await eventually(
       async () => editor!.evaluate<boolean>(

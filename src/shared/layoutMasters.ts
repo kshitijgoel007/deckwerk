@@ -58,6 +58,23 @@ export function layoutMaster(
   return deck.layoutMasters?.[layout] ?? defaultLayoutMasters()[layout];
 }
 
+/** The prompt copy a fresh placeholder is created holding. */
+const PROMPT_COPY: Record<'title' | 'body', string> = {
+  title: 'Slide title',
+  body: 'Body text',
+};
+
+/** Does this box still hold nothing but the prompt it was created with? */
+function isUnwrittenPrompt(element: SlideElement, slot: 'title' | 'body'): boolean {
+  if (element.type !== 'text') return false;
+  const written = element.html
+    .replace(/<[^>]*>/g, '')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/[\s ​⁠]+/g, ' ')
+    .trim();
+  return written === '' || written === PROMPT_COPY[slot];
+}
+
 function textForSlot(slide: Slide, slot: 'title' | 'body'): TextEl | undefined {
   return slide.elements.find((element): element is TextEl => element.type === 'text'
     && (element.layoutPlaceholder === slot || element.class.includes(roleClass(slot))));
@@ -170,6 +187,23 @@ export function syncSlideWithLayoutMaster(
     }
     copyPlaceholderPresentation(target, source, options.replaceStyle === true);
   }
+
+  // A prompt the new layout has no slot for, and that nobody has written
+  // into, goes: switching a fresh slide from Title + body to Title slide used
+  // to leave the empty body prompt standing on top of the title. Two
+  // independent things must both say "unwritten" before a box is dropped --
+  // the `placeholder` class the first content commit retires, and the text
+  // itself still being the prompt copy or nothing at all. Either one alone
+  // would eventually eat an author's words: a path that writes html without
+  // clearing the class, or a title that genuinely reads "Slide title".
+  const slots = new Set(master.elements
+    .map((element) => (element.type === 'text' ? element.layoutPlaceholder : undefined))
+    .filter((slot): slot is 'title' | 'body' => slot !== undefined));
+  slide.elements = slide.elements.filter((element) => {
+    const slot = layoutSlotOf(element);
+    if (slot === null || slots.has(slot)) return true;
+    return !element.class.includes('placeholder') || !isUnwrittenPrompt(element, slot);
+  });
 
   const decorations = master.elements.filter((element) => (
     element.type !== 'text' || !element.layoutPlaceholder

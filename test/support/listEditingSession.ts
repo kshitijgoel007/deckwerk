@@ -55,7 +55,12 @@ const OUTLINE = `(root) => {
     out.push('  '.repeat(depth) + list.tagName.toLowerCase() + (start ? '@' + start : ''));
     for (const item of [...list.children]) {
       if (item.tagName !== 'LI') {
+        // A sub-list Chromium wrote as a sibling of the items. It is marked,
+        // and then walked like any other: an empty item inside it is an
+        // empty bullet the author sees, and hiding it behind the marker is
+        // exactly how an invented bullet went unnoticed.
         out.push('  '.repeat(depth) + '?' + item.tagName.toLowerCase());
+        if (/^(?:UL|OL)$/.test(item.tagName)) walk(item, depth + 1);
         continue;
       }
       out.push('  '.repeat(depth) + '- ' + ownText(item));
@@ -71,6 +76,80 @@ const OUTLINE = `(root) => {
   return out;
 }`;
 
+/** The blocks an author puts a caret in; the nearest one holds the caret. */
+export const TEXT_BLOCKS = 'li, p, div, td, th';
+
+/**
+ * Chromium's own list-editing output, legal in the live box and never in what
+ * is stored. Its indent command writes a sub-list as a *sibling* of the item
+ * it belongs to, and its Return inside such an item can leave an item nested
+ * in an item; the editor repairs both on the way to the deck rather than on
+ * the live surface, because rewriting the live DOM would cost the caret.
+ * Suites assert against `liveProblems()` on screen and the unfiltered
+ * `persistedProblems()` on what was saved.
+ */
+export const CHROMIUM_NESTING_QUIRKS = [
+  'a list is nested directly inside a list',
+  'a block is nested inside a block that cannot contain it',
+  'a list item is outside a list',
+];
+
+export interface TextRun {
+  /** Index of the run's block among the box's blocks, in document order. */
+  block: number;
+  blockTag: string;
+  text: string;
+  bold: boolean;
+  italic: boolean;
+  underline: boolean;
+  /** Computed, so an inherited size and an authored one read the same. */
+  fontSize: string;
+  fontFamily: string;
+  color: string;
+  /** `super`, `sub` or `baseline`, from the nearest ancestor that shifts it. */
+  baseline: string;
+}
+
+/**
+ * The formatting of one text node, resolved the way the editor's toolbar
+ * resolves it (see `textNodeFormatState` in canvas.ts): the nearest inline
+ * declaration or tag decides, else the computed style does.
+ */
+export const RUN_FORMATS = `((text, root) => {
+  const state = (format) => {
+    for (let node = text.parentElement; node && node !== root; node = node.parentElement) {
+      if (format === 'bold' && node.style.fontWeight) {
+        return node.style.fontWeight === 'bold' || Number.parseInt(node.style.fontWeight, 10) >= 600;
+      }
+      if (format === 'italic' && node.style.fontStyle) return node.style.fontStyle === 'italic';
+      if (format === 'underline' && node.style.textDecorationLine) {
+        return node.style.textDecorationLine.includes('underline');
+      }
+      if (format === 'bold' && node.matches('b, strong')) return true;
+      if (format === 'italic' && node.matches('i, em')) return true;
+      if (format === 'underline' && node.matches('u')) return true;
+    }
+    const computed = getComputedStyle(text.parentElement);
+    if (format === 'bold') {
+      return computed.fontWeight === 'bold' || Number.parseInt(computed.fontWeight, 10) >= 600;
+    }
+    if (format === 'italic') return computed.fontStyle === 'italic';
+    return computed.textDecorationLine.includes('underline');
+  };
+  const computed = getComputedStyle(text.parentElement);
+  let baseline = 'baseline';
+  for (let node = text.parentElement; node && node !== root; node = node.parentElement) {
+    const shift = getComputedStyle(node).verticalAlign;
+    if (shift === 'super' || shift === 'sub') { baseline = shift; break; }
+    if (node.matches('sup')) { baseline = 'super'; break; }
+    if (node.matches('sub')) { baseline = 'sub'; break; }
+  }
+  return {
+    bold: state('bold'), italic: state('italic'), underline: state('underline'),
+    fontSize: computed.fontSize, fontFamily: computed.fontFamily, color: computed.color, baseline,
+  };
+})`;
+
 export interface ListEditingSession {
   cdp: Cdp;
   port: number;
@@ -84,12 +163,21 @@ export interface ListEditingSession {
   caretIn(text: string, where?: 'start' | 'end'): Promise<void>;
   /** The live block structure. */
   outline(): Promise<string[]>;
+  /** Own text (sub-lists excluded, whitespace collapsed) of every `selector` block, in order. */
+  blocksOf(selector: string): Promise<string[]>;
+  /**
+   * Every text run of the box with the formatting an author sees on it, in
+   * document order — the oracle for "what I typed came out underlined".
+   */
+  runs(): Promise<TextRun[]>;
   /** The block structure of what the collaboration server has stored. */
   persistedOutline(): Promise<string[]>;
   /** Wait until the server has stored a box matching `accept`. */
   expectPersisted(accept: (outline: string[]) => boolean, label: string): Promise<string[]>;
   /** Structural problems in the live box, by the shared markup invariants. */
   problems(): Promise<string[]>;
+  /** The same, minus the shapes Chromium's own list editing leaves live. */
+  liveProblems(): Promise<string[]>;
   /** The same rules applied to the stored markup. */
   persistedProblems(): Promise<string[]>;
   /** Collapsed text of the box. */
@@ -216,7 +304,12 @@ function buildSession(cdp: Cdp, port: number, deckId: string): ListEditingSessio
         (lines) => lines.length > 0);
     },
     async edit() {
-      await cdp.doubleClickText(CONTENT, 'text box');
+      // A box whose every line is empty has no glyph to aim at; its own box
+      // is still there to double-click.
+      const hasGlyphs = await cdp.evaluate<boolean>(
+        `((document.querySelector('${CONTENT}')?.textContent ?? '').trim().length > 0)`);
+      if (hasGlyphs) await cdp.doubleClickText(CONTENT, 'text box');
+      else await cdp.doubleClick(CONTENT, 'text box with no text');
       await eventually(async () => cdp.evaluate<boolean>(
         `document.querySelector('${CONTENT}')?.isContentEditable === true`,
       ), 'the text box did not enter editing');
@@ -241,6 +334,39 @@ function buildSession(cdp: Cdp, port: number, deckId: string): ListEditingSessio
         return root ? outline(root) : ['the text box is gone'];
       })()`);
     },
+    blocksOf(selector) {
+      return cdp.evaluate<string[]>(`(() => {
+        const root = document.querySelector('${CONTENT}');
+        if (!root) return [];
+        return [...root.querySelectorAll(${JSON.stringify(selector)})].map((block) => {
+          const clone = block.cloneNode(true);
+          clone.querySelectorAll('ul, ol').forEach((nested) => nested.remove());
+          return (clone.textContent ?? '').replace(/[\\s\\u00a0\\u200b\\u2060]+/g, ' ').trim();
+        });
+      })()`);
+    },
+    runs() {
+      return cdp.evaluate<TextRun[]>(`(() => {
+        const formats = ${RUN_FORMATS};
+        const root = document.querySelector('${CONTENT}');
+        if (!root) return [];
+        const blocks = [...root.querySelectorAll('${TEXT_BLOCKS}')];
+        const out = [];
+        const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+        for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+          const text = node.data.replace(/[\u200b\u2060]/g, '');
+          if (!text) continue;
+          const block = node.parentElement?.closest('${TEXT_BLOCKS}') ?? null;
+          out.push({
+            block: block ? blocks.indexOf(block) : -1,
+            blockTag: block ? block.tagName.toLowerCase() : '',
+            text,
+            ...formats(node, root),
+          });
+        }
+        return out;
+      })()`);
+    },
     async persistedOutline() {
       return outlineOf(await persistedHtml());
     },
@@ -254,6 +380,14 @@ function buildSession(cdp: Cdp, port: number, deckId: string): ListEditingSessio
         const root = document.querySelector('${CONTENT}');
         return root ? check(root) : ['the text box is gone'];
       })()`);
+    },
+    async liveProblems() {
+      const problems = await session.problems();
+      const nested = await cdp.evaluate<boolean>(
+        `Boolean(document.querySelector('${CONTENT} :is(ul, ol) :is(ul, ol, li li)'))`);
+      return nested
+        ? problems.filter((problem) => !CHROMIUM_NESTING_QUIRKS.includes(problem))
+        : problems;
     },
     async persistedProblems() {
       const html = await persistedHtml();

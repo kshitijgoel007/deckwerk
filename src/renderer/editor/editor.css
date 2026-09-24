@@ -87,18 +87,24 @@ body.mac-titlebar #toolbar { padding-left: 84px; }
   gap: 6px;
 }
 
-.toolbar-compact-file-action,
+/* With a deck open, New / Open / Import / Save As live in one File menu at
+   every width. The expanded buttons are only for the desktop welcome screen,
+   where the (deck-only) File menu is hidden and there is nothing else to
+   collide with. */
+.toolbar-expanded-file-actions { display: none; }
+body.welcome-mode .toolbar-expanded-file-actions { display: inline-flex; }
+.toolbar-compact-file-action { display: inline-block; }
 .toolbar-compact-secondary-action { display: none; }
 
 #toolbar.toolbar-hide-deck-name .bar-deck-name { display: none; }
 
+/* Once the side groups would reach the centred Insert group, the toolbar
+   gives up strict centring for a grid that keeps the three groups apart. */
 #toolbar.toolbar-compact-file {
   display: grid;
   grid-template-columns: max-content minmax(max-content, 1fr) max-content;
   gap: 8px;
 }
-#toolbar.toolbar-compact-file .toolbar-expanded-file-actions { display: none; }
-#toolbar.toolbar-compact-file .toolbar-compact-file-action { display: inline-block; }
 #toolbar.toolbar-compact-file .bar-center {
   position: static;
   justify-self: center;
@@ -2432,6 +2438,11 @@ input[type="range"] { accent-color: var(--accent); border: 0; background: transp
   position: fixed;
   z-index: 1000;
   min-width: 180px;
+  /* Never taller than the window: openContextMenu pins an over-tall menu to
+     the top edge, and the rest of it scrolls. */
+  max-height: calc(100vh - 8px);
+  overflow-y: auto;
+  box-sizing: border-box;
   border: 1px solid var(--line);
   background: var(--panel);
   box-shadow: 0 8px 30px rgb(0 0 0 / 45%);

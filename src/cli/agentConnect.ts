@@ -386,8 +386,11 @@ export function connectAgentBridge(options: ConnectOptions): AgentBridge {
 
   /* --- the file bridge the CLI talks to -------------------------------------- */
 
+  /** The sidecar write in flight, which `close` waits out before marking it not live. */
+  let contextWrite: Promise<void> = Promise.resolve();
+
   async function publishContext(): Promise<void> {
-    if (!shadow) return;
+    if (!shadow || closed) return;
     const selectedSlideIds = new Set(
       (owner?.selectedSlideIds ?? []).filter((id) => shadow!.slides.some((slide) => slide.id === id)),
     );
@@ -410,7 +413,12 @@ export function connectAgentBridge(options: ConnectOptions): AgentBridge {
       scenes: shadow.slides.map((slide, index) =>
         authoredScene(shadow!, slide, index, selectedSlideIds, selectedElementIds, activeSlideId)),
     });
-    await atomicJson(paths.context, context);
+    // A write that lands after `close` marked the sidecar not live would
+    // report a disconnected bridge as live, so writes are chained and none
+    // starts once closed.
+    contextWrite = contextWrite.catch(() => undefined)
+      .then(() => (closed ? undefined : atomicJson(paths.context, context)));
+    await contextWrite;
     // The same selection for `./deck`, which has no runtime sidecar to read.
     await atomicJson(join(dir, SELECTION_FILE), {
       activeSlideId,
@@ -882,6 +890,7 @@ export function connectAgentBridge(options: ConnectOptions): AgentBridge {
     localTimers.clear();
     for (const watcher of watchers) watcher.close();
     watchers.length = 0;
+    await contextWrite.catch(() => undefined);
     try {
       const previous = JSON.parse(await readFile(paths.context, 'utf8')) as AgentContext;
       await atomicJson(paths.context, { ...previous, live: false, updatedAt: new Date().toISOString() });
@@ -1000,8 +1009,6 @@ function waitForStop(signal?: AbortSignal): Promise<void> {
  */
 export function mirrorAgentGuide(target: SessionTarget): string {
   const hint = `
-## Finding the CLI
-
 The command here is \`./deck\`, in this folder — run it as \`./deck <command>\`.
 It takes the same commands and flags as \`slide-agent\` and talks to the
 collaboration server this folder mirrors; \`./deck help\` lists them. Nothing
@@ -1022,8 +1029,8 @@ The editor is live: saving a file in \`edit/\` updates the shared deck for
 everyone within a second or two, and every change collaborators make arrives
 here in \`deck.json\`, the theme, \`notes.md\` and \`assets/\` as it happens.
 Work exactly as this brief describes. There is nothing to upload and no URL to
-drive — this folder *is* the session, so the section about being given a URL
-does not apply to you. \`./deck preview\` prints where people watch the deck.
+drive — this folder *is* the session. \`./deck preview\` prints where people
+watch the deck.
 `;
 }
 

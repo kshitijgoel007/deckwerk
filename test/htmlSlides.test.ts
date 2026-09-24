@@ -430,6 +430,24 @@ describe('deck objects become authored HTML', () => {
       .toBe('Add & explain results');
   });
 
+  it('carries KaTeX only for pages that have maths on them', () => {
+    // ~640 KB inlined: on every export it made a blank page too big for an
+    // agent's terminal. The compiler adds it to any page that lacks it.
+    const blank = slidesToHtml([], { w: 1920, h: 1080 }, { blank: 1 });
+    expect(blank).not.toContain('data-katex-inline');
+    expect(blank.length).toBeLessThan(40_000);
+
+    const deck = emptyDeck('Maths');
+    deck.slides[0].elements = [{
+      id: 'eq', type: 'text', x: 0, y: 0, w: 800, h: 100, rot: 0, z: 1, opacity: 1,
+      class: [], style: {}, html: 'Energy: $E = mc^2$', autoFit: false, align: 'left', valign: 'top',
+    } as SlideElement];
+    expect(slidesToHtml(deck.slides, deck.canvas)).toContain('data-katex-inline');
+    // An escaped dollar is a price, not a delimiter.
+    (deck.slides[0].elements[0] as { html: string }).html = 'Costs \\$5 and \\$7';
+    expect(slidesToHtml(deck.slides, deck.canvas)).not.toContain('data-katex-inline');
+  });
+
   it('renders exported object dimensions as the measured border box', () => {
     const html = slidesToHtml(emptyDeck('Boxes').slides, { w: 1920, h: 1080 });
 

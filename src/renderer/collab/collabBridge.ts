@@ -149,6 +149,16 @@ export class CollabBridge {
     });
   }
 
+  /**
+   * Introduce this peer under a new name. The hello is only sent on connect,
+   * so the live socket is dropped and the ordinary reconnect path — which
+   * resyncs rather than reloads — carries the name to the server.
+   */
+  rename(name: string): void {
+    this.setName(name);
+    if (this.socket && this.socket.readyState === WebSocket.OPEN) this.socket.close();
+  }
+
   close(): void {
     this.closed = true;
     if (this.reconnectTimer) {

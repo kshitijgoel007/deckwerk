@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -105,6 +105,38 @@ describe('slide-agent CLI', { timeout: 60_000 }, () => {
     };
     await writeFile(paths.context, JSON.stringify(context, null, 2), 'utf8');
   }
+
+  it('stamps a live apply of a drafts/ page itself, so applying it again replaces the slide', async () => {
+    // The editor only writes ids into files under edit/. Without the CLI
+    // stamping this one, every re-apply of the draft inserted another slide.
+    await writeSidecar({});
+    await mkdir(join(dir, 'drafts'), { recursive: true });
+    const file = join(dir, 'drafts', 'slide.html');
+    const page = '<!doctype html><html><head></head><body>'
+      + '<section class="slide"><h1>Birds</h1></section></body></html>';
+    await writeFile(file, page, 'utf8');
+
+    const paths = agentRuntimePaths(dir);
+    const editor = (async () => {
+      for (let i = 0; i < 200; i++) {
+        const names = await readdir(paths.inbox).catch(() => [] as string[]);
+        if (names.length > 0) {
+          const request = JSON.parse(await readFile(join(paths.inbox, names[0]), 'utf8'));
+          await writeFile(join(paths.responses, names[0]), JSON.stringify({
+            version: 1, id: request.id, status: 'applied', revision: 'r2',
+            payload: { changes: { inserted: ['slide-new'], replaced: [], deleted: [] },
+              slides: [{ id: 'slide-new', elements: [] }] },
+          }), 'utf8');
+          return;
+        }
+        await new Promise((r) => setTimeout(r, 25));
+      }
+    })();
+    const applied = await parsed('apply', '--html', file, '--after', '1');
+    await editor;
+    expect(applied.code).toBe(EXIT_OK);
+    expect(await readFile(file, 'utf8')).toContain('<section data-slide-id="slide-new" class="slide">');
+  });
 
   it('reports the deck revision and offline status with no editor running', async () => {
     const { code, json } = await parsed('context');
@@ -351,6 +383,55 @@ describe('slide-agent CLI', { timeout: 60_000 }, () => {
       .toEqual(['slide-1', 'slide-2']);
 
     expect((await cli('new', '--count', '0')).code).toBe(EXIT_USAGE);
+  });
+
+  it('imports a draft that links the theme exactly as the browser draws it', async () => {
+    // The brief's recipe: an ordinary page in drafts/, the deck theme linked
+    // for its look, the author's own <style> for the rest, inserted after a
+    // slide by number. Linking theme.css used to make the page read as a
+    // DeckWerk export, which dropped every stylesheet rule and left a round
+    // portrait written the usual front-end ways as a square photograph.
+    await writeFile(join(dir, 'assets', 'photo.svg'),
+      '<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="800">'
+      + '<rect width="1200" height="800" fill="#246"/></svg>', 'utf8');
+    await mkdir(join(dir, 'drafts'), { recursive: true });
+    const file = join(dir, 'drafts', 'slide.html');
+    await writeFile(file, `<!doctype html>
+<html><head><base href="../"><link rel="stylesheet" href="theme.css">
+<style>
+  h1 { font-size: 80px; }
+  .face { position: absolute; top: 100px; width: 400px; height: 400px; }
+  .round { border-radius: 50%; overflow: hidden; }
+  .clip { clip-path: circle(50%); }
+  .face img { width: 100%; height: 100%; object-fit: cover; }
+  .face img.zoom { width: 180%; height: 120%; margin-left: -40%; }
+</style></head><body>
+<section class="slide" style="width:1920px;height:1080px;position:relative;overflow:hidden">
+  <h1>Team</h1>
+  <div class="face round" style="left:100px"><img src="assets/photo.svg"></div>
+  <img class="clip" src="assets/photo.svg"
+    style="position:absolute;left:600px;top:100px;width:400px;height:400px;object-fit:cover">
+  <div class="face round" style="left:1100px"><img class="zoom" src="assets/photo.svg"></div>
+</section></body></html>`, 'utf8');
+
+    const applied = await parsed('apply', '--html', file, '--after', '1');
+    expect(applied.code).toBe(EXIT_OK);
+    const deck = await onDisk();
+    const inserted = (applied.json.changes as { inserted: string[] }).inserted[0];
+    expect(deck.slides.map((slide) => slide.id)).toEqual(['slide-1', inserted, 'slide-2']);
+
+    const elements = deck.slides[1].elements;
+    expect(elements.find((el) => el.type === 'text')?.style['font-size']).toBe('80px');
+    const images = elements.filter((el) => el.type === 'image');
+    expect(images).toHaveLength(3);
+    for (const image of images) {
+      expect(image).toMatchObject({ w: 400, h: 400, maskShape: 'circle' });
+    }
+    // The zoomed picture sits behind its round window: the window is the
+    // frame, the picture its own 720x480 box, 160px to the left.
+    expect(images[2]).toMatchObject({ x: 1100, y: 100 });
+    expect(images[2].type === 'image' && images[2].sourceBox)
+      .toEqual({ x: -160, y: 0, w: 720, h: 480 });
   });
 
   it('reports what a save did to the deck, deletions by name', async () => {

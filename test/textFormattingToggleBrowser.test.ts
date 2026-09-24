@@ -43,6 +43,24 @@ afterEach(async () => {
 type Format = 'bold' | 'italic';
 type Operation = { start: number; end: number; format: Format; input: 'button' | 'shortcut' };
 
+/**
+ * Every seed the jsdom twin runs. `RUN_DEEP_FORMAT_TOGGLE=1` runs all of them
+ * here too, with the budget that workload actually needs.
+ */
+const ALL_SEEDS = [4103, 7919, 12011, 19301, 27581];
+const DEEP = process.env.RUN_DEEP_FORMAT_TOGGLE === '1';
+/**
+ * The default two-seed pass is ~120 real-input rounds. Measured at ~2.8s a
+ * round on a developer machine with nothing else running, which is ~230s --
+ * so the old 240s budget passed with 5% to spare and would go red the moment
+ * the browser tier ran anything alongside it, which it always does. That is
+ * the same way this suite was already failing (a budget measured on a
+ * narrower workload than the one it had to cover), so the margin here is
+ * deliberately large rather than fitted: a fuzzer that flakes gets muted, and
+ * a muted fuzzer finds nothing.
+ */
+const TEST_TIMEOUT = DEEP ? 1_800_000 : 600_000;
+
 describe.skipIf(!electronBinary)('stateful inline formatting in Chromium', () => {
   // ~220 rounds of real pointer selection + toggle + full-state readback:
   // ~10s on a workstation, but GitHub's 2-core runner executes comparable
@@ -50,7 +68,7 @@ describe.skipIf(!electronBinary)('stateful inline formatting in Chromium', () =>
   // 39s, listEditingFuzzBrowser 75s) and this test consumed its entire old 90s
   // budget mid-workload. 240s covers the observed CI pace with ~2x headroom.
   it('types text, repeatedly toggles words, and clears subsets without stale paint or scope drift', {
-    timeout: 240_000,
+    timeout: TEST_TIMEOUT,
   }, async () => {
     workDir = await mkdtemp(join(tmpdir(), 'format-toggle-fuzz-'));
     const decksRoot = join(workDir, 'decks');
@@ -171,10 +189,16 @@ describe.skipIf(!electronBinary)('stateful inline formatting in Chromium', () =>
     let browserStep = operations.length;
     // The fast jsdom fuzzer (textFormattingToggleFuzz) runs all five seeds for
     // correctness every gate; this browser version re-runs them to prove real
-    // Chromium input produces the same result. Two seeds prove that fidelity —
-    // enough for CI's 2-core runner, where 5 × 40 real-input rounds overran
-    // the budget. A full local run exercises all five.
-    const seeds = process.env.CI ? [4103, 7919] : [4103, 7919, 12011, 19301, 27581];
+    // Chromium input produces the same result. Two seeds prove that fidelity.
+    //
+    // The seed list used to be *wider* off CI than on it, against a timeout
+    // sized for CI's narrower one — so the suite passed in CI at 80 rounds
+    // and timed out locally at 200, every time, on any checkout. A suite that
+    // cannot finish on a developer's machine is one nobody runs before
+    // pushing, which is most of the value of having it. The default is now
+    // the same everywhere; the deep pass is opt-in and carries its own
+    // budget (see SEEDS/TEST_TIMEOUT above and the nightly workflow).
+    const seeds = DEEP ? ALL_SEEDS : ALL_SEEDS.slice(0, 2);
     for (const seed of seeds) {
       const random = mulberry32(seed);
       for (let seedStep = 0; seedStep < 40; seedStep += 1) {

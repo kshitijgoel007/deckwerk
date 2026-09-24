@@ -368,7 +368,9 @@ describe.skipIf(!runnable)('presenting with several presentations open', () => {
   it('opens a second presentation in a window of its own', async () => {
     const alpha = await editorShowing(alphaDir, 'the first deck is not open');
     await scriptDialogs({ canceled: false, filePaths: [bravoDir] });
-    await alpha.cdp.clickByText('button', 'Open', 'Open');
+    // With a deck open, New and Open live in the File menu.
+    await alpha.cdp.clickByText('.shape-menu-trigger', 'File', 'File');
+    await alpha.cdp.clickByText('.shape-menu-item', 'Open…', 'File → Open…');
 
     await editorShowing(bravoDir, 'Open did not put the second deck in a window');
     // The window the author opened from keeps the presentation it had.
@@ -388,7 +390,9 @@ describe.skipIf(!runnable)('presenting with several presentations open', () => {
     // racing over the same deck.json.
     const alpha = await editorShowing(alphaDir, 'the first deck is not open');
     await scriptDialogs({ canceled: false, filePaths: [bravoDir] });
-    await alpha.cdp.clickByText('button', 'Open', 'Open');
+    // With a deck open, New and Open live in the File menu.
+    await alpha.cdp.clickByText('.shape-menu-trigger', 'File', 'File');
+    await alpha.cdp.clickByText('.shape-menu-item', 'Open…', 'File → Open…');
     await wait(1500);
     expect(await editorWindowCount()).toBe(2);
     await markerOf(alpha, 'ALPHA DECK', 'the asking window lost its own deck');
@@ -414,8 +418,10 @@ describe.skipIf(!runnable)('presenting with several presentations open', () => {
       { canceled: false, filePaths: [keyFile] },
       { canceled: false, filePath: charlieDir },
     );
-    await alpha.cdp.clickByText('.shape-menu-trigger', 'Import…', 'Import…');
-    await alpha.cdp.clickByText('.shape-menu-item', 'Keynote…', 'Keynote…');
+    // With a deck open, New / Open / Import / Save As all live in the one
+    // File menu; the expanded buttons are the welcome screen's only.
+    await alpha.cdp.clickByText('.shape-menu-trigger', 'File', 'File');
+    await alpha.cdp.clickByText('.shape-menu-item', 'Keynote…', 'File → Keynote…');
 
     const charlie = await editorShowing(charlieDir, 'the import did not open in a window');
     await markerOf(alpha, 'ALPHA DECK', 'the import replaced the deck the author was working on');
@@ -425,7 +431,8 @@ describe.skipIf(!runnable)('presenting with several presentations open', () => {
   it('creates a new presentation in a window of its own', async () => {
     const alpha = await editorShowing(alphaDir, 'the first deck is not open');
     await scriptDialogs({ canceled: false, filePath: deltaDir });
-    await alpha.cdp.clickByText('button', 'New', 'New');
+    await alpha.cdp.clickByText('.shape-menu-trigger', 'File', 'File');
+    await alpha.cdp.clickByText('.shape-menu-item', 'New', 'File → New');
 
     const delta = await editorShowing(deltaDir, 'New did not open a window for the new deck');
     await markerOf(alpha, 'ALPHA DECK', 'New replaced the deck the author was working on');
@@ -575,8 +582,8 @@ describe.skipIf(!runnable)('presenting with several presentations open', () => {
         'the audience window never rendered a slide',
       );
       await scriptDialogs({ canceled: false, filePath: savedDir });
-      await bravo.cdp.clickByText('.shape-menu-trigger', 'Save As…', 'Save As…');
-      await bravo.cdp.clickByText('.shape-menu-item', 'Deck…', 'Deck…');
+      await bravo.cdp.clickByText('.shape-menu-trigger', 'File', 'File');
+      await bravo.cdp.clickByText('.shape-menu-item', 'Save As…', 'File → Save As…');
       await eventually(
         async () => bravo.cdp.evaluate<string | null>(
           'window.api.getDeck().then((session) => session?.dir ?? null)',

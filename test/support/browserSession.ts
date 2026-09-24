@@ -139,7 +139,10 @@ export class Cdp {
     const box = await this.evaluate<ElementBox | { error: string }>(`(() => {
       const node = document.querySelector(${JSON.stringify(selector)});
       if (!node) return { error: 'no element matches' };
-      node.scrollIntoView({ block: 'center', inline: 'center' });
+      // 'nearest' scrolls only what is out of view. 'center' scrolled even a
+      // visible control's container to centre it — the canvas host included,
+      // shifting the slide for the rest of the test.
+      node.scrollIntoView({ block: 'nearest', inline: 'nearest' });
       const rect = node.getBoundingClientRect();
       if (rect.width <= 0 || rect.height <= 0) return { error: 'element has no size' };
       const x = rect.left + rect.width / 2;
@@ -174,8 +177,11 @@ export class Cdp {
   async clickByText(selector: string, text: string, label = text): Promise<void> {
     const handle = `test-click-target-${this.clickTargets++}`;
     const found = await this.evaluate<boolean>(`(() => {
-      const node = [...document.querySelectorAll(${JSON.stringify(selector)})]
-        .find((candidate) => candidate.textContent?.trim() === ${JSON.stringify(text)});
+      // A responsive toolbar keeps a hidden copy of a control in its compact
+      // menu; the one a person can see is the one they would click.
+      const matches = [...document.querySelectorAll(${JSON.stringify(selector)})]
+        .filter((candidate) => candidate.textContent?.trim() === ${JSON.stringify(text)});
+      const node = matches.find((candidate) => candidate.getClientRects().length > 0) ?? matches[0];
       if (!node) return false;
       node.id = ${JSON.stringify(handle)};
       return true;
@@ -511,7 +517,13 @@ export class Cdp {
         range.setStart(node, offset);
         range.setEnd(node, Math.min(node.data.length, offset + 1));
         const rect = range.getBoundingClientRect();
-        return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+        const x = rect.left + rect.width / 2;
+        const y = rect.top + rect.height / 2;
+        const hit = document.elementFromPoint(x, y);
+        if (!root.contains(hit)) {
+          return { error: 'its first glyph is covered by ' + (hit?.className || hit?.tagName) };
+        }
+        return { x, y };
       }
       return { error: 'node has no rendered text' };
     })()`);

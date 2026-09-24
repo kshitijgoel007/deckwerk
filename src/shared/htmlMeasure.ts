@@ -49,11 +49,16 @@ export function authoringPageHtml(input: AuthoringPage): string {
     const structured = withStructuralCss(withBase(page.authored, page.base), page);
     const linkedTheme = themeLink(page.themeHref).test(structured);
     const themed = inlineTheme(structured, page.themeHref, page.theme, false);
-    // A complete document that explicitly links the deck theme is an exported
-    // deck page and must remain theme-driven. A standalone authored document
-    // owns its CSS instead: importing the deck theme after its <style> blocks
-    // changes the design before we even start converting it.
-    return withKatex(linkedTheme ? themed : markIndependentDocument(themed));
+    // An exported deck page — the theme linked, and the deck's own objects in
+    // it — must remain theme-driven. Anything else is an authored document
+    // that owns its CSS, whether or not it links theme.css to borrow the
+    // deck's look: an agent's draft with `h1 { font-size: 80px }` in its own
+    // <style> means that heading, and treating the page as an export kept
+    // only the inline declarations and silently dropped the rest. Nor may the
+    // deck theme be imported after a standalone page's <style> blocks, which
+    // would change the design before we even start converting it.
+    const exported = linkedTheme && /\bdata-element-id\s*=/.test(structured);
+    return withKatex(exported ? themed : markIndependentDocument(themed));
   }
   // Same order as the player: structural defaults, then the semantic type
   // fallback, then the deck's own theme, which wins.
@@ -396,9 +401,29 @@ export function measureSlides(doc: Document): MeasuredSlide[] {
     return style.display === 'none' || style.visibility === 'hidden';
   };
 
+  /**
+   * `clip-path: circle()` centred on the box — the other way a page writes a
+   * round portrait. On media it is the deck's circular mask, not something
+   * that needs an HTML fallback.
+   */
+  // Only on a square box: there `50%` and `closest-side` are both the
+  // inscribed circle, which is what the deck's mask draws.
+  const centredCircleClip = (node: HTMLElement): boolean => {
+    const clip = (computed(node).getPropertyValue('clip-path') || '').trim().replace(/\s+/g, ' ');
+    if (!/^circle\((?:50%|closest-side)?\s*(?:at (?:50% 50%|center(?: center)?))?\)$/.test(clip)) {
+      return false;
+    }
+    const box = node.getBoundingClientRect();
+    return box.width > 0 && Math.abs(box.width - box.height) <= 1;
+  };
+
   const clippedOrMasked = (node: HTMLElement): boolean => {
     const style = computed(node);
     const value = (property: string): string => style.getPropertyValue(property) || 'none';
+    const tag = node.tagName.toLowerCase();
+    const media = tag === 'img' || tag === 'video' || clippingMediaFrame(node) !== null;
+    if (media && centredCircleClip(node) && value('mask-image') === 'none'
+      && value('-webkit-mask-image') === 'none') return false;
     return value('clip-path') !== 'none'
       || value('mask-image') !== 'none'
       || value('-webkit-mask-image') !== 'none';
@@ -436,7 +461,6 @@ export function measureSlides(doc: Document): MeasuredSlide[] {
    * inside it would be swallowed by the fold.
    */
   const soleMediaChild = (node: HTMLElement): HTMLElement | null => {
-    if (!independent) return null;
     const children = [...node.children] as HTMLElement[];
     const visible = children.filter((child) => !hidden(child));
     if (visible.length !== 1) return null;
@@ -465,7 +489,53 @@ export function measureSlides(doc: Document): MeasuredSlide[] {
    * Media carries a border, a radius, a mask, a shadow and a backdrop colour
    * of its own, so every one of those goes onto the picture instead.
    */
+  /**
+   * The one picture a clipping frame shows only part of.
+   *
+   * `<div style="overflow:hidden"><img style="width:180%; margin-left:-40%"></div>`
+   * is a crop: the frame is the window and the picture sits wherever the page
+   * moved it. That is exactly the deck's `sourceBox`, so the pair becomes one
+   * cropped picture. The picture must cover the whole window — otherwise the
+   * frame's own paint shows around it and this is a card, not a crop.
+   */
+  const clippingMediaFrame = (node: HTMLElement): HTMLElement | null => {
+    const style = computed(node);
+    const clips = style.overflow === 'hidden' || style.overflow === 'clip'
+      || centredCircleClip(node);
+    if (!clips) return null;
+    const visible = ([...node.children] as HTMLElement[]).filter((child) => !hidden(child));
+    if (visible.length !== 1) return null;
+    const media = visible[0];
+    const tag = media.tagName.toLowerCase();
+    if (tag !== 'img' && tag !== 'video') return null;
+    if (node.textContent!.trim() !== '') return null;
+    const frame = node.getBoundingClientRect();
+    const inner = media.getBoundingClientRect();
+    if (!(frame.width > 0) || !(frame.height > 0)) return null;
+    const covers = inner.left <= frame.left + 1 && inner.top <= frame.top + 1
+      && inner.right >= frame.right - 1 && inner.bottom >= frame.bottom - 1;
+    return covers ? media : null;
+  };
+
+  /** A clipping frame whose picture is larger than it, so the frame is a crop. */
+  const croppingFrame = (node: HTMLElement): boolean => {
+    const media = clippingMediaFrame(node);
+    if (!media) return false;
+    const frame = node.getBoundingClientRect();
+    const inner = media.getBoundingClientRect();
+    return Math.abs(inner.left - frame.left) > 1 || Math.abs(inner.top - frame.top) > 1
+      || Math.abs(inner.width - frame.width) > 1 || Math.abs(inner.height - frame.height) > 1;
+  };
+
   const foldableMediaFrame = (node: HTMLElement): HTMLElement | null => {
+    if (croppingFrame(node)) {
+      const style = computed(node);
+      if (!ignorableComputed('background-image', style.backgroundImage.trim())) return null;
+      if (['top', 'right', 'bottom', 'left']
+        .some((side) => parseFloat(style.getPropertyValue(`padding-${side}`)) > 0)) return null;
+      const width = parseFloat(style.borderTopWidth) || 0;
+      return width > 0 ? null : clippingMediaFrame(node);
+    }
     const media = soleMediaChild(node);
     if (!media) return null;
     const style = computed(node);
@@ -481,6 +551,7 @@ export function measureSlides(doc: Document): MeasuredSlide[] {
     if (['top', 'right', 'bottom', 'left']
       .some((side) => parseFloat(style.getPropertyValue(`padding-${side}`)) > 0)) return null;
     const carries = width > 0
+      || centredCircleClip(node)
       || !ignorableComputed('box-shadow', style.boxShadow.trim())
       || !ignorableComputed('border-radius', style.borderRadius.trim());
     return carries ? media : null;
@@ -987,12 +1058,30 @@ export function measureSlides(doc: Document): MeasuredSlide[] {
     // `overflow:hidden` rounded frame. The layout container dissolves, so pass
     // its clip to the still-native image/video instead of turning the whole
     // photograph into HTML merely to retain rounded corners.
-    if (independent && (tag === 'img' || tag === 'video') && node.parentElement) {
+    //
+    // None of this depends on the deck theme, so it applies to a page that
+    // links theme.css just as much as to a standalone one: an agent writing
+    // a circular portrait in a themed page means the same circle.
+    const isMedia = tag === 'img' || tag === 'video';
+    // A frame that shows only part of the picture: the frame is the object's
+    // box, and where the picture sits behind it becomes the crop below.
+    const cropWindow = isMedia && node.parentElement && croppingFrame(node.parentElement)
+      && foldableMediaFrame(node.parentElement) === node
+      ? node.parentElement.getBoundingClientRect()
+      : null;
+    if (isMedia && centredCircleClip(node)) {
+      kept['border-radius'] = '50%';
+      delete kept['clip-path'];
+    }
+    if (isMedia && node.parentElement) {
       const parentStyle = computed(node.parentElement);
       const clipped = parentStyle.overflow === 'hidden' || parentStyle.overflow === 'clip';
       const radius = parentStyle.borderRadius.trim();
       if (clipped && radius && radius.split(/\s+/).some((part) => parseFloat(part) > 0)) {
         kept['border-radius'] = radius;
+      }
+      if (centredCircleClip(node.parentElement) && clippingMediaFrame(node.parentElement) === node) {
+        kept['border-radius'] = '50%';
       }
       // The frame becomes the media's own typed border. The picture keeps its
       // own box: the deck paints a media border *inside* the element, so the
@@ -1026,7 +1115,7 @@ export function measureSlides(doc: Document): MeasuredSlide[] {
     // makes an imported circular portrait behave like one the editor cropped.
     // (`paintedMediaBox` in shared/mediaMask.ts is the same placement rule,
     // for media whose crop is still implicit.)
-    if (independent && (tag === 'img' || tag === 'video') && !node.dataset.crop) {
+    if (isMedia && !node.dataset.crop) {
       const source = tag === 'img'
         ? { w: (node as HTMLImageElement).naturalWidth, h: (node as HTMLImageElement).naturalHeight }
         : { w: (node as HTMLVideoElement).videoWidth, h: (node as HTMLVideoElement).videoHeight };
@@ -1038,7 +1127,12 @@ export function measureSlides(doc: Document): MeasuredSlide[] {
       // leaves the picture free to re-cover when the box is resized. A
       // circular mask is always deliberate — nudging the face inside the
       // circle is the whole reason it exists.
-      const framed = position !== '50% 50%' || circular;
+      const framed = position !== '50% 50%' || circular || cropWindow !== null;
+      // Offset of the picture's own box inside the frame that crops it.
+      const shift = cropWindow
+        ? { x: rect.left - cropWindow.left, y: rect.top - cropWindow.top }
+        : { x: 0, y: 0 };
+      const hundredth = (value: number): number => Math.round(value * 100) / 100;
       if (framed && source.w > 0 && source.h > 0 && (fit === 'cover' || fit === 'contain')
         && rect.width > 0 && rect.height > 0) {
         const scale = fit === 'cover'
@@ -1058,13 +1152,16 @@ export function measureSlides(doc: Document): MeasuredSlide[] {
         const parts = position.toLowerCase().split(/\s+/);
         const vertical = ['top', 'bottom'].includes(parts[0]) && parts.length === 2;
         const [x, y] = vertical ? [parts[1], parts[0]] : parts;
-        const hundredth = (value: number): number => Math.round(value * 100) / 100;
         node.dataset.crop = [
-          hundredth(place(x ?? '50%', rect.width, drawn.w)),
-          hundredth(place(y ?? '50%', rect.height, drawn.h)),
+          hundredth(shift.x + place(x ?? '50%', rect.width, drawn.w)),
+          hundredth(shift.y + place(y ?? '50%', rect.height, drawn.h)),
           hundredth(drawn.w),
           hundredth(drawn.h),
         ].join(',');
+        delete kept['object-position'];
+      } else if (cropWindow && rect.width > 0 && rect.height > 0) {
+        // Stretched to its own box (`fill`), so that box is the whole picture.
+        node.dataset.crop = [shift.x, shift.y, rect.width, rect.height].map(hundredth).join(',');
         delete kept['object-position'];
       }
     }
@@ -1073,11 +1170,12 @@ export function measureSlides(doc: Document): MeasuredSlide[] {
       || (CONTENT_TAGS.has(tag) && tag !== 'img' && tag !== 'video'
         && node.dataset.element !== 'table');
 
+    const frameRect = cropWindow ?? rect;
     const box = {
-      x: rect.left - origin.left,
-      y: rect.top - origin.top,
-      w: rect.width,
-      h: rect.height,
+      x: frameRect.left - origin.left,
+      y: frameRect.top - origin.top,
+      w: frameRect.width,
+      h: frameRect.height,
     };
     // A text box the browser sized to its content — a flex item, an
     // inline-block, a table cell's label — is exactly as wide as its glyphs,

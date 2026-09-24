@@ -4,7 +4,7 @@
 
 *Deck* as in slide deck, and *Werk* as in the German word that means "a work (of art, literature, etc)", a factory, or a structure.
 
-Website and manual: **[deckwerk.org](https://deckwerk.org)**
+Website: **[deckwerk.org](https://deckwerk.org)**
 
 I designed DeckWerk to bring the ability to create and present polished talks to Linux. It is optimized for presentations centered on video and image content, with animation, tables, plotting, templating, and similar features reduced to the minimum.
 
@@ -101,14 +101,3 @@ DeckWerk is an open-source Electron application under the MIT license.
 ## Name
 
 *DeckWerk* combines “deck,” as in a slide deck, with the German word *Werk*: a work, creation, or craft.
-
-## User manual
-
-The user manual covers the workflows that make DeckWerk distinctive:
-
-- [Morph](manual/01-morph.md)
-- [Video and images](manual/02-video-and-images.md)
-- [Layout](manual/03-layout.md)
-- [Collaborating with humans](manual/04-collaborating-with-humans.md)
-- [Collaborating with agents](manual/05-collaborating-with-agents.md)
-- [Running a headless collaboration server](manual/06-headless-server.md)

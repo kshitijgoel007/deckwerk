@@ -29,13 +29,12 @@ describe('the per-deck agent brief', () => {
     expect(text.split('\n')[0]).toBe(AGENT_GUIDE_MARKER);
     expect(text).toContain('# Working on this deck');
     expect(text).toContain('/opt/deckwerk/bin/slide-agent');
-    expect(text).toContain('slide-agent new');
-    expect(text).toContain('“Authoring HTML” is the editable interface, not a presentation export');
-    expect(text).toContain('Single-slide fast path');
-    expect(text).toContain('There is no');
-    expect(text).toContain('slide-agent inspect . --html --slide 12,44');
-    expect(text).toContain('slide-agent web check source.html --replace 9');
-    expect(text).toContain('slide-agent docs themes');
+    // The four steps, and nothing an agent has to choose between.
+    expect(text).toContain('slide-agent render . --slide 8,9,10');
+    expect(text).toContain('drafts/slide.html');
+    expect(text).toContain('slide-agent apply . --html drafts/slide.html --after 8');
+    expect(text).toContain('## 4. Check and iterate');
+    expect(text.split('\n').length).toBeLessThan(90);
     expect(text).not.toContain('{{LAUNCHER_HINT}}');
   });
 

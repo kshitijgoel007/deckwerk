@@ -14,7 +14,10 @@ import {
 import {
   EditorStore,
   copySelectionToClipboard,
+  cutSelectionToClipboard,
   copySlidesToClipboard,
+  IN_APP_CLIPBOARD_TOKEN_PREFIX,
+  inAppClipboardToken,
   pasteFromClipboard,
 } from '../src/renderer/editor/store.js';
 
@@ -321,6 +324,26 @@ describe('cross-instance copy/paste', () => {
     expect([second.x, second.y]).toEqual([58, 58]);
   });
 
+  it('pastes in place once the original is deleted, and after a cut', async () => {
+    const store = new EditorStore(sampleDeck(), '/src-deck');
+    store.select(['image-1']);
+    await copySelectionToClipboard(store);
+    store.deleteSelection();
+    await pasteFromClipboard(store);
+    const restored = store.slide!.elements.at(-1)!;
+    expect([restored.x, restored.y]).toEqual([10, 10]);
+
+    // Cut, then paste: the spot is free again, so no nudge.
+    await cutSelectionToClipboard(store);
+    await pasteFromClipboard(store);
+    const pasted = store.slide!.elements.at(-1)!;
+    expect([pasted.x, pasted.y]).toEqual([10, 10]);
+    // A second paste of the cut is over the first, so it cascades.
+    await pasteFromClipboard(store);
+    const again = store.slide!.elements.at(-1)!;
+    expect([again.x, again.y]).toEqual([34, 34]);
+  });
+
   it('cascades repeated pastes onto another slide so copies do not stack', async () => {
     const source = new EditorStore(sampleDeck(), '/src-deck');
     source.select(['image-1']);
@@ -463,6 +486,76 @@ describe('cross-instance copy/paste', () => {
       const store = new EditorStore(sampleDeck(), '/dest-deck');
       expect(await pasteFromClipboard(store)).toEqual({ kind: 'elements', count: 1 });
       expect((store.selectedElements()[0] as { html: string }).html).toContain('<td>experiment id</td>');
+    } finally {
+      if (prior) Object.defineProperty(navigator, 'clipboard', prior);
+      else delete (navigator as unknown as Record<string, unknown>).clipboard;
+    }
+  });
+
+  // Reported: select a slide, Cmd+C, Cmd+V — and an image pastes instead of
+  // the slide, whenever the OS clipboard happens to hold one. The browser
+  // client has no pasteboard bridge, so the slide never reached the OS
+  // clipboard and the image there always won.
+  it('pastes the slide copied in the app over an older image on the browser clipboard', async () => {
+    let written = '';
+    window.api = {
+      importAssetFiles: async () => { throw new Error('the image must not be imported'); },
+    } as unknown as Window['api'];
+    const prior = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        writeText: async (text: string) => { written = text; },
+        read: async () => [{
+          types: ['text/plain', 'image/png'],
+          // jsdom's Blob has no text(); give the text item one.
+          getType: async (type: string) => (type === 'text/plain'
+            ? Object.assign(new Blob([written], { type }), { text: async () => written })
+            : new Blob([new Uint8Array([137, 80, 78, 71])], { type })),
+        }],
+      },
+    });
+    try {
+      const source = new EditorStore(sampleDeck(), '/source-deck');
+      source.selectSlide(0);
+      expect(await copySlidesToClipboard(source)).toBe(1);
+      expect(written.startsWith(IN_APP_CLIPBOARD_TOKEN_PREFIX)).toBe(true);
+      expect(written).toBe(inAppClipboardToken());
+
+      const dest = new EditorStore(sampleDeck(), '/dest-deck');
+      expect(await pasteFromClipboard(dest)).toEqual({ kind: 'slides', count: 1 });
+      expect(dest.get().deck.slides).toHaveLength(3);
+    } finally {
+      if (prior) Object.defineProperty(navigator, 'clipboard', prior);
+      else delete (navigator as unknown as Record<string, unknown>).clipboard;
+    }
+  });
+
+  it('lets an image copied after the slide win, as the newest copy', async () => {
+    window.api = {
+      importAssetFiles: async () => [{
+        src: 'assets/Screenshot.later.png', kind: 'image', width: 80, height: 60, duration: null,
+      }],
+    } as unknown as Window['api'];
+    const prior = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        writeText: async () => {},
+        // A screenshot taken after the copy: the token is gone from the text.
+        read: async () => [{
+          types: ['image/png'],
+          getType: async (type: string) => new Blob([new Uint8Array([137, 80, 78, 71])], { type }),
+        }],
+      },
+    });
+    try {
+      const source = new EditorStore(sampleDeck(), '/source-deck');
+      source.selectSlide(0);
+      await copySlidesToClipboard(source);
+      const dest = new EditorStore(sampleDeck(), '/dest-deck');
+      expect(await pasteFromClipboard(dest)).toEqual({ kind: 'elements', count: 1 });
+      expect(dest.selectedElements()[0]).toMatchObject({ type: 'image', src: 'assets/Screenshot.later.png' });
     } finally {
       if (prior) Object.defineProperty(navigator, 'clipboard', prior);
       else delete (navigator as unknown as Record<string, unknown>).clipboard;

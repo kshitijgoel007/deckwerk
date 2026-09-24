@@ -16,7 +16,7 @@ import { deckOutline, deckStyleDigest } from '@shared/deckDigest.js';
 import { slidesToHtml } from '@shared/htmlSlides.js';
 import { capabilities } from '@shared/capabilities.js';
 import { PLAYER_TYPE_CSS } from '@shared/playerTypeCss.js';
-import { CustomThemeSchema, parseDeck, type Comment, type Deck, type SlideElement } from '@shared/deck.js';
+import { CustomThemeSchema, parseDeck, type Comment, type Deck, type Slide, type SlideElement } from '@shared/deck.js';
 import { diffDecks } from '@shared/deckDiff.js';
 import { renameRetiredFields } from '@shared/fieldAliases.js';
 import {
@@ -102,7 +102,7 @@ The loop — edit HTML, the editor syncs it back:
                                           compact object inventory
   # then edit edit/<file>.html and save it; with the editor open the deck
   # follows within ~200ms. With it closed, apply the same file explicitly:
-  apply     [deck] --html <file> [--after <slideId>] [--label <text>]
+  apply     [deck] --html <file> [--after <slide>] [--label <text>]
 
 Working on a deck someone hosts on a collaboration server:
 
@@ -352,6 +352,13 @@ async function applyCommand(argv: string[], io: CliIo): Promise<number> {
   }
 
   const deck = await loadDeck(deckDir);
+  // Like every other slide reference, `--after` takes an id or a 1-based number.
+  const afterRef = options.get('after');
+  const after = afterRef === undefined ? null : slideIdForRef(deck, afterRef);
+  if (afterRef !== undefined && after === null) {
+    io.err(`No such slide: ${afterRef}`);
+    return EXIT_USAGE;
+  }
   const filePath = resolve(io.cwd, htmlPath);
   const authoredBefore = await readFile(filePath, 'utf8');
 
@@ -368,7 +375,7 @@ async function applyCommand(argv: string[], io: CliIo): Promise<number> {
       kind: 'htmlSync',
       path: filePath,
       contents: authoredBefore,
-      after: options.get('after') ?? null,
+      after,
       ...(options.get('label') ? { label: options.get('label') } : {}),
     }, 180_000);
     const outcome = (response.payload ?? {}) as Partial<{
@@ -386,7 +393,19 @@ async function applyCommand(argv: string[], io: CliIo): Promise<number> {
       ...(outcome.message ? { note: outcome.message } : {}),
     }));
     if (response.status === 'conflict') return EXIT_CONFLICT;
-    return response.status === 'error' ? EXIT_ERROR : EXIT_OK;
+    if (response.status === 'error') return EXIT_ERROR;
+    // The editor stamps ids only into files under edit/. Anything else (a
+    // drafts/ page) is stamped here, or applying it again would insert the
+    // slide a second time. A file the editor already stamped no longer
+    // matches what was sent, so this never overwrites its write.
+    if (Array.isArray(outcome.slides)) {
+      const authored = await readFile(filePath, 'utf8');
+      if (authored === authoredBefore) {
+        const adopted = adoptAuthoredIds(authored, outcome.slides as Slide[]);
+        if (adopted) await writeFile(filePath, adopted, 'utf8');
+      }
+    }
+    return EXIT_OK;
   }
 
   // The same compile the editor performs on a watched save, in a headless
@@ -395,7 +414,7 @@ async function applyCommand(argv: string[], io: CliIo): Promise<number> {
     deckDir,
     deck,
     filePath,
-    { after: options.get('after') ?? null, label: options.get('label') },
+    { after, label: options.get('label') },
   );
 
   // The compile fixed every box; whether the text inside still fits is only
