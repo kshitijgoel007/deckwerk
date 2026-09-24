@@ -177,8 +177,11 @@ export class Cdp {
   async clickByText(selector: string, text: string, label = text): Promise<void> {
     const handle = `test-click-target-${this.clickTargets++}`;
     const found = await this.evaluate<boolean>(`(() => {
-      const node = [...document.querySelectorAll(${JSON.stringify(selector)})]
-        .find((candidate) => candidate.textContent?.trim() === ${JSON.stringify(text)});
+      // A responsive toolbar keeps a hidden copy of a control in its compact
+      // menu; the one a person can see is the one they would click.
+      const matches = [...document.querySelectorAll(${JSON.stringify(selector)})]
+        .filter((candidate) => candidate.textContent?.trim() === ${JSON.stringify(text)});
+      const node = matches.find((candidate) => candidate.getClientRects().length > 0) ?? matches[0];
       if (!node) return false;
       node.id = ${JSON.stringify(handle)};
       return true;

@@ -135,45 +135,59 @@ export async function startUndoSession(deckId: string, name: string): Promise<{
 }
 
 function buildSession(cdp: Cdp, port: number, deckId: string): UndoSession {
+  /** Every element, markup normalised the way the page's parser writes it. */
+  const snapshotOf = async (deck: Deck): Promise<Snapshot> => {
+    const elements = deck.slides.flatMap((slide, index) =>
+      slide.elements.map((element) => ({ slide: index, element })));
+    const htmls = elements.map(({ element }) =>
+      'html' in element ? (element as { html: string }).html : '');
+    const normalized = await cdp.evaluate<string[]>(
+      `(${NORMALIZE})(${JSON.stringify(htmls)})`);
+    const snapshot: Snapshot = { '#slides': String(deck.slides.length) };
+    elements.forEach(({ slide, element }, index) => {
+      const comparable = { ...element as Record<string, unknown>, html: normalized[index] };
+      snapshot[`${slide}:${(element as { id: string }).id}`] = JSON.stringify(comparable);
+    });
+    return snapshot;
+  };
   const session: UndoSession = {
     cdp,
     port,
     deckId,
     async snapshot() {
       const response = await fetch(`http://127.0.0.1:${port}/api/deck?deck=${deckId}`);
-      const live = await response.json() as Deck;
-      const elements = live.slides.flatMap((slide, index) =>
-        slide.elements.map((element) => ({ slide: index, element })));
-      const htmls = elements.map(({ element }) =>
-        'html' in element ? (element as { html: string }).html : '');
-      const normalized = await cdp.evaluate<string[]>(
-        `(${NORMALIZE})(${JSON.stringify(htmls)})`);
-      const snapshot: Snapshot = { '#slides': String(live.slides.length) };
-      elements.forEach(({ slide, element }, index) => {
-        const comparable = { ...element as Record<string, unknown>, html: normalized[index] };
-        snapshot[`${slide}:${(element as { id: string }).id}`] = JSON.stringify(comparable);
-      });
-      return snapshot;
+      return snapshotOf(await response.json() as Deck);
     },
     async settle(label) {
+      // Settled when the server holds exactly what the editor holds — the
+      // moment sync is done, rather than a fixed wait per check. A deck that
+      // never matches (text mid-edit is in the editor, not yet the server)
+      // falls back to the server's copy holding still for 600 ms.
       const deadline = Date.now() + 12_000;
-      let previous = await session.snapshot();
+      let previous = '';
+      let stableSince = Date.now();
       while (Date.now() < deadline) {
-        await wait(300);
         const current = await session.snapshot();
-        if (JSON.stringify(current) === JSON.stringify(previous)) return current;
-        previous = current;
+        const live = await snapshotOf(await cdp.evaluate<Deck>('window.store.get().deck'));
+        const shown = JSON.stringify(current);
+        if (shown === JSON.stringify(live)) return current;
+        if (shown !== previous) {
+          previous = shown;
+          stableSince = Date.now();
+        } else if (Date.now() - stableSince >= 600) {
+          return current;
+        }
+        await wait(75);
       }
       throw new Error(`${label}: the persisted deck never settled`);
     },
     seal: () => wait(SEAL_MS),
+    // Callers settle() after these; that waits for the result to sync.
     async undo() {
       await cdp.chord('z', 'KeyZ', 90, MOD);
-      await wait(250);
     },
     async redo() {
       await cdp.chord('z', 'KeyZ', 90, MOD | 8);
-      await wait(250);
     },
     async editing(selector) {
       return cdp.evaluate<boolean>(

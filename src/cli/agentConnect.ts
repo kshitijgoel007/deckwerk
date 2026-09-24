@@ -386,8 +386,11 @@ export function connectAgentBridge(options: ConnectOptions): AgentBridge {
 
   /* --- the file bridge the CLI talks to -------------------------------------- */
 
+  /** The sidecar write in flight, which `close` waits out before marking it not live. */
+  let contextWrite: Promise<void> = Promise.resolve();
+
   async function publishContext(): Promise<void> {
-    if (!shadow) return;
+    if (!shadow || closed) return;
     const selectedSlideIds = new Set(
       (owner?.selectedSlideIds ?? []).filter((id) => shadow!.slides.some((slide) => slide.id === id)),
     );
@@ -410,7 +413,12 @@ export function connectAgentBridge(options: ConnectOptions): AgentBridge {
       scenes: shadow.slides.map((slide, index) =>
         authoredScene(shadow!, slide, index, selectedSlideIds, selectedElementIds, activeSlideId)),
     });
-    await atomicJson(paths.context, context);
+    // A write that lands after `close` marked the sidecar not live would
+    // report a disconnected bridge as live, so writes are chained and none
+    // starts once closed.
+    contextWrite = contextWrite.catch(() => undefined)
+      .then(() => (closed ? undefined : atomicJson(paths.context, context)));
+    await contextWrite;
     // The same selection for `./deck`, which has no runtime sidecar to read.
     await atomicJson(join(dir, SELECTION_FILE), {
       activeSlideId,
@@ -882,6 +890,7 @@ export function connectAgentBridge(options: ConnectOptions): AgentBridge {
     localTimers.clear();
     for (const watcher of watchers) watcher.close();
     watchers.length = 0;
+    await contextWrite.catch(() => undefined);
     try {
       const previous = JSON.parse(await readFile(paths.context, 'utf8')) as AgentContext;
       await atomicJson(paths.context, { ...previous, live: false, updatedAt: new Date().toISOString() });

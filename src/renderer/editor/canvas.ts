@@ -4415,14 +4415,35 @@ export class EditorCanvas {
 
   /** The inline formats in force for what the caret types next. */
   private typingFormatsAtCaret(): TypingFormats {
+    const link = this.linkParentAtCaret();
     return {
       bold: this.textSelectionFormatState('bold'),
       italic: this.textSelectionFormatState('italic'),
-      underline: this.textSelectionFormatState('underline'),
+      underline: link
+        ? this.elementFormatState(link.element, link.content, 'underline')
+        : this.textSelectionFormatState('underline'),
       superscript: this.textSelectionFormatState('superscript'),
       subscript: this.textSelectionFormatState('subscript'),
       runStyles: this.runStylesAtCaret(),
     };
+  }
+
+  /**
+   * When the caret takes its formats from a link, the element the link sits
+   * in. A link's underline is the link's own styling, not a format the author
+   * switched on: Return ends the link, and the next line must not start
+   * underlined because of it.
+   */
+  private linkParentAtCaret(): { element: Element; content: HTMLElement } | null {
+    if (!this.editingId) return null;
+    const content = this.slideLayer.querySelector<HTMLElement>(
+      `[data-element-id="${CSS.escape(this.editingId)}"] .text-content`,
+    );
+    const range = content ? this.activeTextRange(content) : null;
+    if (!content || !range?.collapsed) return null;
+    const link = this.textNodeAtCaret(content, range)?.parentElement?.closest('a') ?? null;
+    if (!link || !content.contains(link) || !link.parentElement) return null;
+    return { element: link.parentElement, content };
   }
 
   /**

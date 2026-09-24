@@ -216,6 +216,9 @@ describe.skipIf(!runnable)('clipboard screenshot paste in the headless-server We
       browser.log,
     );
     editor = await Cdp.connect(target.webSocketDebuggerUrl!);
+    // As in the desktop case: a window nobody can see is never focused, and
+    // the async clipboard refuses to write to an unfocused document.
+    await editor.call('Emulation.setFocusEmulationEnabled', { enabled: true });
     await eventually(async () => editor!.evaluate<boolean>(`(() => (
       document.getElementById('status')?.textContent?.includes('connected as Clipboard Browser') === true
       && Boolean(document.querySelector('#canvas .slide'))
