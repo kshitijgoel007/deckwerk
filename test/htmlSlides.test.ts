@@ -440,7 +440,7 @@ describe('deck objects become authored HTML', () => {
     const deck = emptyDeck('Maths');
     deck.slides[0].elements = [{
       id: 'eq', type: 'text', x: 0, y: 0, w: 800, h: 100, rot: 0, z: 1, opacity: 1,
-      class: [], style: {}, html: 'Energy: $E = mc^2$', autoFit: false,
+      class: [], style: {}, html: 'Energy: $E = mc^2$', autoFit: false, align: 'left', valign: 'top',
     } as SlideElement];
     expect(slidesToHtml(deck.slides, deck.canvas)).toContain('data-katex-inline');
     // An escaped dollar is a price, not a delimiter.

@@ -150,6 +150,10 @@ export function createEditorWindow(query = '', state?: WindowContinuityState): B
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     webPreferences: {
       backgroundThrottling: !HEADLESS_TEST,
+      // A hidden window is never mapped, so it gets no compositor frames and
+      // every DevTools input event waits out a ~1 s fallback. Offscreen
+      // rendering keeps producing frames with nothing on screen.
+      offscreen: HEADLESS_TEST,
       preload: preload(),
       contextIsolation: true,
       nodeIntegration: false,
@@ -179,6 +183,10 @@ export function createCollabHostWindow(url: string, state?: WindowContinuityStat
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     webPreferences: {
       backgroundThrottling: !HEADLESS_TEST,
+      // A hidden window is never mapped, so it gets no compositor frames and
+      // every DevTools input event waits out a ~1 s fallback. Offscreen
+      // rendering keeps producing frames with nothing on screen.
+      offscreen: HEADLESS_TEST,
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
@@ -218,6 +226,10 @@ export function createPresentWindow(
     show: false,
     webPreferences: {
       backgroundThrottling: !HEADLESS_TEST,
+      // A hidden window is never mapped, so it gets no compositor frames and
+      // every DevTools input event waits out a ~1 s fallback. Offscreen
+      // rendering keeps producing frames with nothing on screen.
+      offscreen: HEADLESS_TEST,
       preload: preload(),
       contextIsolation: true,
       nodeIntegration: false,
@@ -254,6 +266,10 @@ export function createPresenterWindow(
     show: false,
     webPreferences: {
       backgroundThrottling: !HEADLESS_TEST,
+      // A hidden window is never mapped, so it gets no compositor frames and
+      // every DevTools input event waits out a ~1 s fallback. Offscreen
+      // rendering keeps producing frames with nothing on screen.
+      offscreen: HEADLESS_TEST,
       preload: preload(), contextIsolation: true, nodeIntegration: false, sandbox: false,
     },
   });
@@ -288,6 +304,10 @@ export function createPdfWindow(query: string): BrowserWindow {
     backgroundColor: '#000000',
     webPreferences: {
       backgroundThrottling: !HEADLESS_TEST,
+      // A hidden window is never mapped, so it gets no compositor frames and
+      // every DevTools input event waits out a ~1 s fallback. Offscreen
+      // rendering keeps producing frames with nothing on screen.
+      offscreen: HEADLESS_TEST,
       preload: preload(),
       contextIsolation: true,
       nodeIntegration: false,
@@ -309,6 +329,10 @@ export function createTrimWindow(): BrowserWindow {
     show: false,
     webPreferences: {
       backgroundThrottling: !HEADLESS_TEST,
+      // A hidden window is never mapped, so it gets no compositor frames and
+      // every DevTools input event waits out a ~1 s fallback. Offscreen
+      // rendering keeps producing frames with nothing on screen.
+      offscreen: HEADLESS_TEST,
       preload: preload(),
       contextIsolation: true,
       nodeIntegration: false,
@@ -332,6 +356,10 @@ export function createRasterWindow(): BrowserWindow {
     show: false,
     webPreferences: {
       backgroundThrottling: !HEADLESS_TEST,
+      // A hidden window is never mapped, so it gets no compositor frames and
+      // every DevTools input event waits out a ~1 s fallback. Offscreen
+      // rendering keeps producing frames with nothing on screen.
+      offscreen: HEADLESS_TEST,
       preload: preload(),
       contextIsolation: true,
       nodeIntegration: false,

@@ -808,6 +808,15 @@ export class EditorCanvas {
     // the renderer-injected target yet. Intercept activation at the canvas edge
     // and open it explicitly; this also keeps the authored HTML unmodified.
     this.host.addEventListener('click', (event) => openSlideLinkInNewTab(event));
+    // The host clips (overflow: hidden) but can still be scrolled by
+    // `focus()` or `scrollIntoView` on something inside it — the speaker notes
+    // drawer, a text box being edited near the edge. The slide is placed by
+    // `rescale` alone; a scroll offset nobody can see or undo would leave it
+    // shifted until reload.
+    this.host.addEventListener('scroll', () => {
+      if (this.host.scrollTop !== 0) this.host.scrollTop = 0;
+      if (this.host.scrollLeft !== 0) this.host.scrollLeft = 0;
+    });
     this.bindViewportGestures();
     this.bindDrop();
     document.addEventListener('selectionchange', () => this.captureTextSelection());

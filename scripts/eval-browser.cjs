@@ -46,6 +46,11 @@ app.whenReady().then(async () => {
       // timers align to one-second ticks. The nightly formatting matrix ran
       // at 2.8 s/case there against 145 ms/case in the shown Electron window.
       backgroundThrottling: false,
+      // Hidden, the window is never mapped: no compositor frames, so every
+      // DevTools input event waited out a ~1 s fallback (2.8 s per formatting
+      // case on a developer's machine). Offscreen rendering keeps frames coming
+      // with nothing on screen.
+      offscreen: !showWindow,
     },
   });
   // The evaluation model may navigate through CDP while this first load is in

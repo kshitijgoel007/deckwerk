@@ -139,7 +139,10 @@ export class Cdp {
     const box = await this.evaluate<ElementBox | { error: string }>(`(() => {
       const node = document.querySelector(${JSON.stringify(selector)});
       if (!node) return { error: 'no element matches' };
-      node.scrollIntoView({ block: 'center', inline: 'center' });
+      // 'nearest' scrolls only what is out of view. 'center' scrolled even a
+      // visible control's container to centre it — the canvas host included,
+      // shifting the slide for the rest of the test.
+      node.scrollIntoView({ block: 'nearest', inline: 'nearest' });
       const rect = node.getBoundingClientRect();
       if (rect.width <= 0 || rect.height <= 0) return { error: 'element has no size' };
       const x = rect.left + rect.width / 2;
