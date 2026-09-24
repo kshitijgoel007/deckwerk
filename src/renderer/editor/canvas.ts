@@ -227,8 +227,14 @@ function typedListMarkerAtCaret(
   beforeCaret.selectNodeContents(source);
   beforeCaret.setEnd(range.startContainer, range.startOffset);
   const before = visibleText(beforeCaret.toString());
+  // Return converts a one-line `- text` paragraph. Pasted plain text is one
+  // paragraph of several lines: its first line's "* " is not a marker the
+  // caret just typed, and converting it took the characters off a line the
+  // author was nowhere near (found by the exhaustive paste fuzz).
+  const oneLine = !/\n/.test((source.innerText ?? '').replace(/\n+$/, ''));
   const match = mode === 'return'
-    ? (before.length === text.length ? /^(\s*(?:[*-]|(\d+)[.)])\s+)(?=\S)/.exec(text) : null)
+    ? (before.length === text.length && oneLine
+      ? /^(\s*(?:[*-]|(\d+)[.)])\s+)(?=\S)/.exec(text) : null)
     : /^(\s*(?:[*-]|(\d+)[.)]))$/.exec(before);
   if (!match) return null;
   return {
@@ -4502,10 +4508,19 @@ export class EditorCanvas {
       : range.startContainer.parentElement;
     const block = container?.closest<HTMLElement>(TEXT_BLOCKS) ?? null;
     if (!block || block === body || !body.contains(block)) return;
-    if (block.querySelector('img, video, svg, embed, table, li, ul, ol')) return;
-    if ((block.textContent ?? '').replace(/[\s\u00a0\u200b\u2060]+/g, '') !== '') return;
+    if (block.querySelector('img, video, svg, embed, table')) return;
+    // An item split above its sub-list keeps the sub-list: only the line's
+    // own inline content, before it, is what the split cloned.
+    const nested = [...block.children].find((child) => child.matches('ul, ol')) ?? null;
+    if (!nested && block.querySelector('li, ul, ol')) return;
+    const line = nested
+      ? [...block.childNodes].slice(0, [...block.childNodes].indexOf(nested))
+      : [...block.childNodes];
+    const lineText = line.map((node) => node.textContent ?? '').join('');
+    if (lineText.replace(/[\s\u00a0\u200b\u2060]+/g, '') !== '') return;
 
-    block.replaceChildren(document.createElement('br'));
+    for (const node of line) node.remove();
+    block.insertBefore(document.createElement('br'), nested);
     const caret = document.createRange();
     caret.setStart(block, 0);
     caret.collapse(true);

@@ -6,6 +6,7 @@ import {
   MOD,
   OTHER_CONTENT,
   startListEditingSession,
+  TEXT_BLOCKS,
   type ListEditingSession,
   type TextRun,
 } from './support/listEditingSession.js';
@@ -289,6 +290,19 @@ async function runWalk(seed: number): Promise<void> {
         // stays deterministic and the list box's content stays untouched.
         if ((await session.text()).length === 0) break;
         const nonce = nextNonce();
+        // A long walk grows the list box's text past its bottom edge, over
+        // the other box: then there is nothing of the other box to click,
+        // for a person or for this walk, and the excursion is skipped.
+        if (!(await session.cdp.evaluate<boolean>(`(() => {
+          const root = document.querySelector('${OTHER_CONTENT}');
+          const text = root && document.createTreeWalker(root, NodeFilter.SHOW_TEXT).nextNode();
+          if (!text) return false;
+          const range = document.createRange();
+          range.setStart(text, 0);
+          range.setEnd(text, 1);
+          const r = range.getBoundingClientRect();
+          return root.contains(document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2));
+        })()`))) break;
         await session.cdp.doubleClickText(OTHER_CONTENT, 'the other text box');
         await eventually(async () => session.cdp.evaluate<boolean>(
           `document.querySelector('${OTHER_CONTENT}')?.isContentEditable === true`,
@@ -462,7 +476,22 @@ async function formatAndType(next: () => number, step: number, label: string): P
   if (switchOff) firstExpected[chosen[0]] = !firstExpected[chosen[0]];
   expect(flags(firstRun), `${label}: the word before Return changed its formatting`)
     .toBe(flags(firstExpected));
-  expect(secondRun.block, `${label}: Return did not open a new line`).toBe(firstRun.block + 1);
+  // The line Return opens is the next block after the typed word's own —
+  // past any block nested inside that item *before* the word (an item can
+  // hold a paragraph ahead of its text; the list walk builds such items).
+  const nestedBefore = await session.cdp.evaluate<number>(`(() => {
+    const root = document.querySelector('${CONTENT}');
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      if (!node.data.includes(${JSON.stringify(first)})) continue;
+      const block = node.parentElement.closest('${TEXT_BLOCKS}');
+      return [...block.querySelectorAll('${TEXT_BLOCKS}')].filter((inner) =>
+        inner.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_FOLLOWING).length;
+    }
+    return 0;
+  })()`);
+  expect(secondRun.block, `${label}: Return did not open a new line`)
+    .toBe(firstRun.block + 1 + nestedBefore);
   expect(flags(secondRun), `${label}: ${JSON.stringify(second)} typed on the line Return opened `
     + `${switchOff ? `after switching ${chosen[0]} off` : ''}`).toBe(flags(expected));
 }
@@ -677,7 +706,31 @@ async function moveCaret(next: () => number, where: 'start' | 'end' | 'middle' =
     await session.cdp.click(CONTENT, 'the empty text box');
     return;
   }
-  const offset = Math.min(length - 1, Math.floor(next() * length));
+  const chosen = Math.min(length - 1, Math.floor(next() * length));
+  // The glyph a click aims at can sit under the box's own resize handle
+  // (a long box's text runs past its corner); clicking there grabs the
+  // handle, which ends editing — correctly — rather than placing a caret.
+  // Take the first glyph from the chosen one on that a click really reaches.
+  const offset = await session.cdp.evaluate<number>(`(() => {
+    const root = document.querySelector('${CONTENT}');
+    const glyphs = [];
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      for (let at = 0; at < node.data.length; at += 1) glyphs.push([node, at]);
+    }
+    for (let step = 0; step < glyphs.length; step += 1) {
+      const index = (${chosen} + step) % glyphs.length;
+      const [node, at] = glyphs[index];
+      const range = document.createRange();
+      range.setStart(node, at);
+      range.setEnd(node, at + 1);
+      const rect = range.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) continue;
+      const hit = document.elementFromPoint(rect.left + rect.width * 0.2, rect.top + rect.height / 2);
+      if (hit && root.contains(hit)) return index;
+    }
+    return ${chosen};
+  })()`);
   await session.caretAt(offset);
   if (where === 'start') await session.cdp.key('Home', 36);
   if (where === 'end') await session.cdp.key('End', 35);

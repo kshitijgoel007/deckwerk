@@ -517,7 +517,13 @@ export class Cdp {
         range.setStart(node, offset);
         range.setEnd(node, Math.min(node.data.length, offset + 1));
         const rect = range.getBoundingClientRect();
-        return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+        const x = rect.left + rect.width / 2;
+        const y = rect.top + rect.height / 2;
+        const hit = document.elementFromPoint(x, y);
+        if (!root.contains(hit)) {
+          return { error: 'its first glyph is covered by ' + (hit?.className || hit?.tagName) };
+        }
+        return { x, y };
       }
       return { error: 'node has no rendered text' };
     })()`);
