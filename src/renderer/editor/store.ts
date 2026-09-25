@@ -776,9 +776,26 @@ export class EditorStore {
   private selectionWithin(deck: Deck): Set<string> {
     const selection = this.state.selection;
     if (selection.size === 0) return selection;
-    const live = new Set(deck.slides.flatMap((slide) => slide.elements.map((e) => e.id)));
-    const kept = [...selection].filter((id) => live.has(id));
-    return kept.length === selection.size ? selection : new Set(kept);
+    // Most commits edit selected objects on the active slide. Stop once all
+    // selected ids are accounted for, without indexing every object in the
+    // deck on each pointer move. Arbitrary commits can move objects between
+    // slides, so unresolved ids still get a deck-wide search.
+    const missing = new Set(selection);
+    const active = deck.slides[this.state.slideIndex];
+    if (active) {
+      for (const element of active.elements) {
+        missing.delete(element.id);
+        if (missing.size === 0) return selection;
+      }
+    }
+    for (const slide of deck.slides) {
+      if (slide === active) continue;
+      for (const element of slide.elements) {
+        missing.delete(element.id);
+        if (missing.size === 0) return selection;
+      }
+    }
+    return new Set([...selection].filter((id) => !missing.has(id)));
   }
 
   /** Keep the slide index and selection valid after history moves. */

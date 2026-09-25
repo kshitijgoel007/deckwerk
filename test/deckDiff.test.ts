@@ -66,6 +66,16 @@ describe('diffDecks round-trips', () => {
     expectRoundTrip(prev, next);
   });
 
+  it('diffs deck properties when slides retain their original references', () => {
+    const prev = deckWith(slide('s1', ['e1']), slide('s2'));
+    const next = { ...prev, title: 'Renamed', canvas: { w: 1280, h: 720 } };
+    expect(diffDecks(prev, next)).toEqual([
+      { op: 'updateDeck', title: 'Renamed', canvas: { w: 1280, h: 720 } },
+    ]);
+    expectRoundTrip(prev, next);
+    expectRoundTrip(next, prev);
+  });
+
   it('round-trips layout master changes used by persisted and collaborative history', () => {
     const prev = deckWith(slide('s1'));
     const next = structuredClone(prev);
@@ -86,6 +96,28 @@ describe('diffDecks round-trips', () => {
     next.slides[0].elements.splice(1, 1); // delete e2
     next.slides[1].elements.push(textElement('e4')); // insert e4
     expectRoundTrip(prev, next);
+  });
+
+  it('preserves operation order for copy-on-write edits without slide reordering', () => {
+    const prev = deckWith(slide('s1', ['e1', 'e2']), slide('s2', ['e3']), slide('s3'));
+    const changedElement = { ...prev.slides[0].elements[0], x: 400 };
+    const next = {
+      ...prev,
+      title: 'Renamed',
+      slides: [
+        { ...prev.slides[0], notes: 'First note', elements: [changedElement, prev.slides[0].elements[1]] },
+        { ...prev.slides[1], notes: 'Second note' },
+        prev.slides[2],
+      ],
+    };
+    expect(diffDecks(prev, next)).toEqual([
+      { op: 'updateDeck', title: 'Renamed' },
+      { op: 'setSlideProperties', slideId: 's1', slide: { id: 's1', notes: 'First note' } },
+      { op: 'replaceElement', slideId: 's1', elementId: 'e1', element: changedElement },
+      { op: 'setSlideProperties', slideId: 's2', slide: { id: 's2', notes: 'Second note' } },
+    ]);
+    expectRoundTrip(prev, next);
+    expectRoundTrip(next, prev);
   });
 
   it('diffs slide property changes without touching elements', () => {
@@ -111,12 +143,34 @@ describe('diffDecks round-trips', () => {
     expectRoundTrip(prev, next);
   });
 
+  it('diffs slide replacement even when the slide count is unchanged', () => {
+    const prev = deckWith(slide('s1'), slide('s2'), slide('s3'));
+    const replacement = slide('new', ['new-element']);
+    const next = { ...prev, slides: [prev.slides[0], replacement, prev.slides[2]] };
+    expect(diffDecks(prev, next)).toEqual([
+      { op: 'deleteSlide', slideId: 's2' },
+      { op: 'insertSlides', afterSlideId: 's1', slides: [replacement] },
+    ]);
+    expectRoundTrip(prev, next);
+    expectRoundTrip(next, prev);
+  });
+
   it('diffs pure reorders with minimal moves', () => {
     const prev = deckWith(slide('s1'), slide('s2'), slide('s3'), slide('s4'));
     const next = deckWith(slide('s2'), slide('s3'), slide('s4'), slide('s1'));
     const ops = diffDecks(prev, next);
     expect(ops.filter((op) => op.op === 'moveSlide')).toHaveLength(1);
     expectRoundTrip(prev, next);
+  });
+
+  it('keeps a long ordered run fixed when moving one shared slide', () => {
+    const prev = deckWith(...Array.from({ length: 64 }, (_, i) => slide(`s${i}`)));
+    const next = { ...prev, slides: [...prev.slides.slice(1), prev.slides[0]] };
+    expect(diffDecks(prev, next)).toEqual([
+      { op: 'moveSlide', slideId: 's0', afterSlideId: 's63' },
+    ]);
+    expectRoundTrip(prev, next);
+    expectRoundTrip(next, prev);
   });
 
   it('diffs reorder combined with edit, insert, and delete', () => {

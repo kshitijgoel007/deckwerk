@@ -16,10 +16,24 @@ import type { AgentOperation } from './agent.js';
  * a stringify.
  */
 export function diffDecks(prev: Deck, next: Deck): AgentOperation[] {
+  if (prev === next) return [];
   const ops: AgentOperation[] = [];
 
   const deckProps = diffDeckProps(prev, next);
   if (deckProps) ops.push(deckProps);
+
+  if (prev.slides === next.slides) return ops;
+  // Ordinary copy-on-write edits keep slide order intact. Compare by position
+  // instead of building ID maps and computing a longest increasing subsequence.
+  if (prev.slides.length === next.slides.length
+    && prev.slides.every((slide, index) => slide.id === next.slides[index].id)) {
+    for (let i = 0; i < next.slides.length; i++) {
+      if (prev.slides[i] !== next.slides[i]) {
+        ops.push(...diffSlide(prev.slides[i], next.slides[i]));
+      }
+    }
+    return ops;
+  }
 
   const prevIds = new Set(prev.slides.map((slide) => slide.id));
   const nextIds = new Set(next.slides.map((slide) => slide.id));
@@ -52,6 +66,7 @@ function diffDeckProps(prev: Deck, next: Deck): AgentOperation | null {
     }
   }
   for (const key of ['canvas', 'themeStyle', 'themeSelection', 'themeHistory', 'customThemes', 'layoutMasters'] as const) {
+    if (prev[key] === next[key]) continue;
     if (JSON.stringify(prev[key]) !== JSON.stringify(next[key])) {
       op[key] = structuredClone(next[key]);
       changed = true;
@@ -139,6 +154,7 @@ function diffSlide(prev: Slide, next: Slide): AgentOperation[] {
     });
   }
 
+  if (prevElements === nextElements) return ops;
   const nextById = new Map(nextElements.map((element) => [element.id, element]));
   const prevById = new Map(prevElements.map((element) => [element.id, element]));
 
@@ -190,8 +206,8 @@ function longestIncreasingSubsequence(values: number[]): number[] {
   const result: number[] = [];
   let k = tailIndices.length > 0 ? tailIndices[tailIndices.length - 1] : -1;
   while (k !== -1) {
-    result.unshift(k);
+    result.push(k);
     k = predecessors[k];
   }
-  return result;
+  return result.reverse();
 }

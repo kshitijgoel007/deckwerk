@@ -229,19 +229,21 @@ export class Inspector {
         this.store.endTransaction();
         this.changingOpacity = false;
       }
+      // Opening Props explicitly renders the latest state. While hidden, even
+      // comparing against its stale deck would needlessly walk every slide.
+      if (this.host.hidden) return;
       // Speaker notes are not shown here. Each keystroke in the notes drawer
       // commits a fresh deck, and rebuilding for it re-mounted the layout and
       // Morph previews — every slide picture in the panel flickered per key.
       if (
         this.lastDeck !== null
-        && sameDeckIgnoringNotes(deck, this.lastDeck)
         && sel === this.lastSelection
         && slideIndex === this.lastSlide
         && slideSel === this.lastSlideSelection
+        && sameDeckIgnoringNotes(deck, this.lastDeck)
       ) {
         return;
       }
-      if (this.host.hidden) return;
       this.render();
     });
     this.render();
