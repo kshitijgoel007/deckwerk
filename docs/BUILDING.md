@@ -81,6 +81,25 @@ npm run dev
 That starts the app with hot reload. `npm test` runs the suite; see
 [AGENTS.md](../AGENTS.md) for architecture and testing notes.
 
+## Dependency maintenance
+
+`package.json` pins install-script approvals to reviewed dependency versions.
+After upgrading a package with an install script, use `npm install-scripts ls`
+to identify pending approvals, review the script, and run
+`npm install-scripts approve <package>` to update its pin. Keep these approvals
+in the project so a clean `npm ci` also installs the required native binaries.
+
+The scoped `global-agent` override removes the deprecated `boolean` dependency
+from electron-builder's `@electron/get` 3.1.0 while retaining its `bootstrap()`
+API. Revisit the override when electron-builder upgrades that dependency.
+
+Electron-builder 26.15.3 still brings deprecated `glob`/`inflight` through
+`@electron/asar` 3, and `rimraf` through `electron-winstaller` → `temp`.
+These warnings remain pending compatible upstream updates. Modern `glob` and
+`rimraf` releases do not support the callback APIs those callers use; forcing
+their versions would break packaging. Deprecation warnings and `npm audit`
+results are separate checks.
+
 ## Signing
 
 Local builds are unsigned, which is fine for your own machine but means macOS

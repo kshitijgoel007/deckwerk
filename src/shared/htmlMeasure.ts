@@ -772,7 +772,7 @@ export function measureSlides(doc: Document): MeasuredSlide[] {
       segments.push(buffer);
       if (quote) {
         out.push(`${describeNode(node)}: the inline style has an unterminated ${quote} quote — `
-          + 'the browser ignores everything after it');
+          + `the browser ignores everything after it in "${clip(buffer.trim())}"`);
       }
       const style = (node as HTMLElement).style;
       for (const segment of segments) {
