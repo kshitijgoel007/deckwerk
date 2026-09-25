@@ -16,7 +16,7 @@ DeckWerk is intended for research talks, lectures, demos, and other presentation
 
 ## Installing
 
-**macOS** — via [Homebrew](https://brew.sh):
+**macOS 12 or newer** — via [Homebrew](https://brew.sh):
 
 ```bash
 brew install --cask vsitzmann/tap/deckwerk
@@ -40,7 +40,7 @@ sudo apt install ./deckwerk_*_amd64.deb
 **Windows** — download the `setup.exe` from the
 [latest release](https://github.com/vsitzmann/deckwerk/releases/latest).
 
-**From source** — you will need [Node.js](https://nodejs.org/) 22 or newer,
+**From source** — you will need [Node.js](https://nodejs.org/) 22.12 or newer,
 Python 3.10 or newer, and Git:
 
 ```bash

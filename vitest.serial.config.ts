@@ -12,7 +12,6 @@ export default defineConfig({
     include: [...SERIAL_TEST_FILES],
     fileParallelism: false,
     maxWorkers: 1,
-    minWorkers: 1,
     css: { include: [/type\.css/] },
   },
 });

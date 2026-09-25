@@ -14,7 +14,6 @@ export default defineConfig({
   },
   test: {
     include: [...PARALLEL_BROWSER_TEST_FILES],
-    minWorkers: 1,
     maxWorkers: BROWSER_WORKERS,
     css: { include: [/type\.css/] },
   },

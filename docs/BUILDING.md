@@ -32,11 +32,12 @@ is for; see [RELEASING.md](RELEASING.md).
 
 | | Version |
 | --- | --- |
-| Node.js | 22 or newer |
+| Node.js | 22.12 or newer |
 | Python | 3.10 or newer |
 | git | any |
 
 Releases are built with Node 22 and Python 3.12; newer versions of both work.
+On macOS, Electron requires macOS 12 or newer.
 Nothing else has to be installed by hand — `npm ci` fetches Electron, and
 `npm run dist` fetches the packaging tools it needs.
 

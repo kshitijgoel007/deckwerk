@@ -584,7 +584,7 @@ app.whenReady().then(async () => {
   // Packaged macOS builds get this from the bundle's .icns. During local
   // development Electron would otherwise keep its own icon in the Dock and
   // app switcher, so set the matching high-resolution artwork explicitly.
-  if (process.platform === 'darwin' && !app.isPackaged) {
+  if (process.platform === 'darwin' && !app.isPackaged && app.dock) {
     const developmentIcon = join(process.cwd(), 'resources', 'deckwerk-icon.png');
     if (existsSync(developmentIcon)) app.dock.setIcon(developmentIcon);
   }

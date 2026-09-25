@@ -136,8 +136,10 @@ module.exports = {
       // Electron sets WM_CLASS from the product name, so this is what makes
       // the running window associate with the launcher icon instead of
       // showing up as a second, generic entry in the dock/alt-tab list.
-      StartupWMClass: 'DeckWerk',
-      Keywords: 'slides;presentation;deck;keynote;talk;',
+      entry: {
+        StartupWMClass: 'DeckWerk',
+        Keywords: 'slides;presentation;deck;keynote;talk;',
+      },
     },
     artifactName: 'deckwerk-${version}-linux-${arch}.${ext}',
     // tar.gz is the source archive for the Flathub manifest, which installs a
